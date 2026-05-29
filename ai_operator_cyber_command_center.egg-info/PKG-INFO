@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: ai-operator-cyber-command-center
+Version: 1.0.0
+Summary: Master v1 STICHES Edition for AI operations and cybersecurity automation.
+Requires-Python: >=3.12
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: ruff>=0.6.0; extra == "dev"
+Requires-Dist: mypy>=1.10.0; extra == "dev"
+Requires-Dist: bandit>=1.7.9; extra == "dev"
