@@ -1,0 +1,14 @@
+{
+  "name": "ai-operator-cyber-command-center-master-v1-stiches",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "design:lint": "npx @google/design.md lint DESIGN.md",
+    "design:export:tailwind": "npx @google/design.md export --format json-tailwind DESIGN.md > tailwind.theme.json",
+    "design:export:css": "npx @google/design.md export --format css-tailwind DESIGN.md > theme.css",
+    "docs:generate": "python scripts/generate_docs_from_design.py"
+  },
+  "devDependencies": {
+    "@google/design.md": "latest"
+  }
+}
