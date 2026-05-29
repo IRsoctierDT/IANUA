@@ -13,6 +13,9 @@ dev = [
     "bandit>=1.7.9"
 ]
 
+[tool.setuptools]
+packages = ["agents"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
