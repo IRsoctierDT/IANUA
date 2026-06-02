@@ -1,42 +1,39 @@
 # Incident Report
 
 ## Generated
-2026-06-02T16:18:52.769552+00:00
+2026-06-02T16:23:36.515995+00:00
 
 ## Summary
-Detected probable authentication failure activity.
+Detected probable unknown security event activity.
 
 ## Severity
-high
+unknown
 
 ## Event Type
-authentication failure
+unknown security event
 
 ## MITRE ATT&CK Mapping
 
-- **Tactic:** Credential Access
-- **Technique:** Brute Force
-- **Technique ID:** T1110
+- **Tactic:** Initial Access
+- **Technique:** Valid Accounts
+- **Technique ID:** T1078
 - **Confidence:** medium
 
 ### MITRE Evidence
-- Authentication failure event detected.
-- Repeated failed login activity may indicate brute force behavior.
+- SSH accepted-login pattern detected.
+- Valid account usage may require legitimacy review.
 
 ### MITRE Investigation Steps
-- Check source IP frequency.
-- Review failed login count per account.
-- Verify whether MFA or account lockout controls were triggered.
+- Confirm whether the login was expected.
+- Review source IP reputation and geolocation.
+- Check for follow-on activity after login.
 
 ## Indicators
-- `10.0.0.5`
+- `192.168.1.25`
 
 ## Recommended Actions
 - Preserve the original log evidence.
 - Correlate with adjacent timestamps.
-- Check whether the source IP appears repeatedly.
-- Review account lockout, MFA, and SSH exposure.
-- Escalate for immediate human review.
 
 ## Assumptions
 - Analysis is based only on the supplied log text.
