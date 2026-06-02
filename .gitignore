@@ -1,0 +1,12 @@
+venv/
+.venv/
+.env
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+qdrant_storage/
+.cache/
+dist/
+build/
+*.egg-info/
