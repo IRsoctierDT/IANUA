@@ -1,2 +1,2 @@
 [server]
-fileWatcherType = "poll"
+fileWatcherType = "none"

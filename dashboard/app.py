@@ -4,6 +4,15 @@ import subprocess
 import streamlit as st
 
 from agents.orchestrator_agent import OrchestratorAgent
+from kb_search import search_kb
+from ollama_service import ensure_ollama_running
+from system_health import (
+    get_git_tag,
+    get_ollama_models,
+    get_python_info,
+    get_qdrant_collections,
+)
+
 
 st.set_page_config(
     page_title="AI Operator Cyber Command Center",
@@ -17,6 +26,14 @@ st.sidebar.header("System Status")
 st.sidebar.write("Model: qwen3:4b")
 st.sidebar.write("Vector DB: Qdrant")
 st.sidebar.write("Mode: Local")
+st.sidebar.subheader("Health Panel")
+st.sidebar.write("Git Version:", get_git_tag())
+st.sidebar.write("Python:", get_python_info())
+st.sidebar.write("Qdrant Collections:", get_qdrant_collections())
+ollama_status = ensure_ollama_running()
+st.sidebar.write("Ollama:", ollama_status)
+with st.sidebar.expander("Ollama Models"):
+    st.text(get_ollama_models())
 
 mode = st.radio(
     "Choose analysis mode",
