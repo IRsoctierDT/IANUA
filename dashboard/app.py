@@ -20,7 +20,11 @@ st.sidebar.write("Mode: Local")
 
 mode = st.radio(
     "Choose analysis mode",
-    ["Single Log Entry", "Batch Log File"],
+    [
+        "Single Log Entry",
+        "Batch Log File",
+        "Knowledge Base Search",
+    ],
 )
 
 agent = OrchestratorAgent()
@@ -107,3 +111,27 @@ if mode == "Batch Log File":
                 file_name="batch_soc_results.txt",
                 mime="text/plain",
             )
+
+if mode == "Knowledge Base Search":
+    from kb_search import search_kb
+
+    category = st.selectbox(
+        "Select knowledge base category",
+        ["all", "cybersecurity", "mitre", "nist", "owasp", "cis", "security-plus"],
+    )
+
+    query = st.text_input(
+        "Search the cybersecurity knowledge base",
+        value="What are the NIST CSF functions?",
+    )
+
+    if st.button("Search Knowledge Base"):
+        points = search_kb(query=query, category=category)
+
+        for index, point in enumerate(points, start=1):
+            st.subheader(f"Result {index}")
+            st.write("Score:", point.score)
+            st.write("Source:", point.payload.get("source"))
+            st.write("Category:", point.payload.get("category"))
+            st.write("Chunk:", point.payload.get("chunk_index"))
+            st.markdown(point.payload.get("text", ""))
