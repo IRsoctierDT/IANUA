@@ -6,7 +6,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
 
 COLLECTION = "cybersecurity_kb_chunks"
-KB_DIR = Path("knowledge-base/cybersecurity")
+KB_DIR = Path("knowledge-base")
 CHUNK_SIZE = 900
 OVERLAP = 150
 
@@ -14,19 +14,16 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
 
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = OVERLAP):
+def chunk_text(text: str):
     start = 0
-    chunk_index = 0
+    index = 0
 
     while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end].strip()
-
+        chunk = text[start:start + CHUNK_SIZE].strip()
         if chunk:
-            yield chunk_index, chunk
-
-        chunk_index += 1
-        start = end - overlap
+            yield index, chunk
+        index += 1
+        start += CHUNK_SIZE - OVERLAP
 
 
 existing = [c.name for c in client.get_collections().collections]
@@ -39,12 +36,12 @@ if COLLECTION not in existing:
 
 points = []
 
-for path in KB_DIR.glob("*.md"):
+for path in KB_DIR.rglob("*.md"):
     text = path.read_text(encoding="utf-8")
 
     for chunk_index, chunk in chunk_text(text):
-        vector = model.encode(chunk).tolist()
         point_id = str(uuid5(NAMESPACE_URL, f"{path}:{chunk_index}"))
+        vector = model.encode(chunk).tolist()
 
         points.append(
             PointStruct(
@@ -52,6 +49,7 @@ for path in KB_DIR.glob("*.md"):
                 vector=vector,
                 payload={
                     "source": str(path),
+                    "category": path.parent.name,
                     "chunk_index": chunk_index,
                     "text": chunk,
                 },
@@ -61,4 +59,4 @@ for path in KB_DIR.glob("*.md"):
 if points:
     client.upsert(collection_name=COLLECTION, points=points)
 
-print(f"Ingested {len(points)} chunks into {COLLECTION}")
+print(f"Ingested {len(points)} chunks from {KB_DIR} into {COLLECTION}")
