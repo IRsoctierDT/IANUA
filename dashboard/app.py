@@ -18,6 +18,12 @@ st.set_page_config(
     page_title="AI Operator Cyber Command Center",
     layout="wide",
 )
+# st.sidebar.write("Qdrant Collections:", get_qdrant_collections())
+# ollama_status = ensure_ollama_running()
+# st.sidebar.write("Ollama:", ollama_status)
+#
+# with st.sidebar.expander("Ollama Models"):
+#     st.text(get_ollama_models())
 
 st.title("AI Operator Cyber Command Center")
 st.caption("Local AI-assisted SOC workflow")
@@ -26,14 +32,29 @@ st.sidebar.header("System Status")
 st.sidebar.write("Model: qwen3:4b")
 st.sidebar.write("Vector DB: Qdrant")
 st.sidebar.write("Mode: Local")
+
+
+with st.sidebar.expander("Ollama Models"):
+    st.text(get_ollama_models())
+    
 st.sidebar.subheader("Health Panel")
 st.sidebar.write("Git Version:", get_git_tag())
 st.sidebar.write("Python:", get_python_info())
 st.sidebar.write("Qdrant Collections:", get_qdrant_collections())
+
 ollama_status = ensure_ollama_running()
 st.sidebar.write("Ollama:", ollama_status)
+
 with st.sidebar.expander("Ollama Models"):
     st.text(get_ollama_models())
+
+tab_soc, tab_batch, tab_kb, tab_health, tab_reports = st.tabs([
+    "SOC Workflow",
+    "Batch Processing",
+    "Knowledge Base Search",
+    "System Health",
+    "Reports",
+])
 
 mode = st.radio(
     "Choose analysis mode",
@@ -41,6 +62,8 @@ mode = st.radio(
         "Single Log Entry",
         "Batch Log File",
         "Knowledge Base Search",
+        "System Health",
+        "Reports",
     ],
 )
 
