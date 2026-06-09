@@ -11,6 +11,7 @@ Do not merely use AI. Build systems with AI.
 ## What This Repository Contains
 
 - Master v1 architecture
+- Master v1.3 architecture
 - STICHES/DESIGN.md identity system
 - Codex-ready instructions
 - Python agent scaffold
@@ -20,6 +21,12 @@ Do not merely use AI. Build systems with AI.
 - Portfolio roadmap
 - Dashboard concept
 - SOC Analyst Agent starter
+- MITRE ATT&CK data
+- NIST Cybersecurity Framework
+- NIST 800-61 Incident Response
+- OWASP Top 10
+- CIS Controls
+- Security+ study notes
 
 ## Primary Layers
 
