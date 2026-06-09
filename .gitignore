@@ -10,3 +10,11 @@ qdrant_storage/
 dist/
 build/
 *.egg-info/
+
+# Generated outputs
+reports/pdf/
+reports/markdown/*.md
+sample-logs/batch_soc_results.txt
+
+# Installers
+*.dmg

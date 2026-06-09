@@ -18,47 +18,92 @@ st.sidebar.write("Model: qwen3:4b")
 st.sidebar.write("Vector DB: Qdrant")
 st.sidebar.write("Mode: Local")
 
-log_text = st.text_area(
-    "Paste a security log entry",
-    value="Failed password for root from 10.0.0.5 port 22 ssh2",
-    height=150,
+mode = st.radio(
+    "Choose analysis mode",
+    ["Single Log Entry", "Batch Log File"],
 )
 
-if st.button("Run SOC Workflow"):
-    agent = OrchestratorAgent()
-    result = agent.process_log(log_text)
+agent = OrchestratorAgent()
 
-    st.subheader("SOC Analysis")
-    st.json(result["soc"])
+if mode == "Single Log Entry":
+    log_text = st.text_area(
+        "Paste a security log entry",
+        value="Failed password for root from 10.0.0.5 port 22 ssh2",
+        height=150,
+    )
 
-    st.subheader("MITRE ATT&CK Mapping")
-    st.json(result["mitre"])
+    if st.button("Run SOC Workflow"):
+        result = agent.process_log(log_text)
 
-    st.subheader("Threat Intelligence")
-    st.json(result["threat_intel"])
+        st.subheader("SOC Analysis")
+        st.json(result["soc"])
 
-    st.success("Incident workflow completed.")
+        st.subheader("MITRE ATT&CK Mapping")
+        st.json(result["mitre"])
 
-    markdown_report = Path("reports/markdown/orchestrated_incident.md")
+        st.subheader("Threat Intelligence")
+        st.json(result["threat_intel"])
 
-    if markdown_report.exists():
-        st.subheader("Markdown Report")
-        st.code(markdown_report.read_text(encoding="utf-8"))
+        st.success("Incident workflow completed.")
 
-    try:
-        subprocess.run(
-            ["python", "scripts/convert_report_to_pdf.py"],
-            check=True,
-        )
-        pdf_report = Path("reports/pdf/sample_incident_report.pdf")
+        markdown_report = Path("reports/markdown/orchestrated_incident.md")
 
-        if pdf_report.exists():
-            st.subheader("PDF Report")
+        if markdown_report.exists():
+            st.subheader("Markdown Report")
+            st.code(markdown_report.read_text(encoding="utf-8"))
+
+        try:
+            subprocess.run(["python", "scripts/convert_report_to_pdf.py"], check=True)
+            pdf_report = Path("reports/pdf/sample_incident_report.pdf")
+
+            if pdf_report.exists():
+                st.subheader("PDF Report")
+                st.download_button(
+                    "Download PDF Incident Report",
+                    data=pdf_report.read_bytes(),
+                    file_name="sample_incident_report.pdf",
+                    mime="application/pdf",
+                )
+        except Exception as exc:
+            st.warning(f"PDF generation skipped: {exc}")
+
+if mode == "Batch Log File":
+    uploaded_file = st.file_uploader(
+        "Upload a log file",
+        type=["log", "txt"],
+    )
+
+    if uploaded_file is not None:
+        raw_text = uploaded_file.read().decode("utf-8", errors="ignore")
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+
+        st.write(f"Loaded {len(lines)} log entries.")
+
+        if st.button("Run Batch SOC Workflow"):
+            results = []
+
+            for index, line in enumerate(lines, start=1):
+                result = agent.process_log(line)
+                results.append(
+                    {
+                        "event": index,
+                        "log": line,
+                        "event_type": result["soc"]["event_type"],
+                        "severity": result["soc"]["severity"],
+                        "mitre_technique": result["mitre"]["technique_id"],
+                        "mitre_name": result["mitre"]["technique"],
+                        "indicators": ", ".join(result["soc"]["indicators"]),
+                    }
+                )
+
+            st.subheader("Batch Results")
+            st.dataframe(results, use_container_width=True)
+
+            output = "\n".join(str(item) for item in results)
+
             st.download_button(
-                "Download PDF Incident Report",
-                data=pdf_report.read_bytes(),
-                file_name="sample_incident_report.pdf",
-                mime="application/pdf",
+                "Download Batch Results",
+                data=output,
+                file_name="batch_soc_results.txt",
+                mime="text/plain",
             )
-    except Exception as exc:
-        st.warning(f"PDF generation skipped: {exc}")
