@@ -1,0 +1,21 @@
+name: Bug report
+description: Report a defect (functional or security-adjacent).
+labels: ["bug", "triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Expected vs. actual behavior. Do NOT paste secrets or PII.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations: { required: true }
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options: [agents, mcp, rag, scripts, infra, docs, ci]
+    validations: { required: true }

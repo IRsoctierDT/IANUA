@@ -1,20 +1,22 @@
-venv/
-.venv/
-.env
+# Python
 __pycache__/
-*.pyc
-.DS_Store
-node_modules/
-qdrant_storage/
-.cache/
-dist/
+*.py[cod]
+.venv/
 build/
+dist/
 *.egg-info/
 
-# Generated outputs
-reports/pdf/
-reports/markdown/*.md
-sample-logs/batch_soc_results.txt
+# Tooling
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# Installers
-*.dmg
+# Secrets & local data (AGENTS.md §5)
+.env
+*.key
+*.pem
+data/
+!data/.gitkeep
