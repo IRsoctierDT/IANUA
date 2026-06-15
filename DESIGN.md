@@ -1,128 +1,190 @@
----
-version: "alpha"
-name: "AI Operator Cyber Command Center"
-description: "STICHES/DESIGN.md identity system for AI operations, cybersecurity automation, RAG systems, governance, dashboard design, and portfolio documentation."
-colors:
-  primary: "#111827"
-  secondary: "#374151"
-  tertiary: "#2563EB"
-  accent: "#10B981"
-  warning: "#F59E0B"
-  danger: "#DC2626"
-  neutral: "#F9FAFB"
-  surface: "#FFFFFF"
-  border: "#D1D5DB"
-  muted: "#6B7280"
-  on-primary: "#FFFFFF"
-  on-tertiary: "#FFFFFF"
-typography:
-  h1:
-    fontFamily: "Inter"
-    fontSize: "2.75rem"
-    fontWeight: 800
-    lineHeight: "1.1"
-    letterSpacing: "-0.03em"
-  h2:
-    fontFamily: "Inter"
-    fontSize: "2rem"
-    fontWeight: 750
-    lineHeight: "1.2"
-    letterSpacing: "-0.02em"
-  h3:
-    fontFamily: "Inter"
-    fontSize: "1.35rem"
-    fontWeight: 700
-    lineHeight: "1.25"
-  body-md:
-    fontFamily: "Inter"
-    fontSize: "1rem"
-    fontWeight: 400
-    lineHeight: "1.65"
-  code:
-    fontFamily: "JetBrains Mono"
-    fontSize: "0.92rem"
-    fontWeight: 500
-    lineHeight: "1.55"
-rounded:
-  sm: "4px"
-  md: "8px"
-  lg: "14px"
-  xl: "22px"
-spacing:
-  xs: "4px"
-  sm: "8px"
-  md: "16px"
-  lg: "24px"
-  xl: "40px"
-  xxl: "64px"
-components:
-  command-card:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.primary}"
-    borderColor: "{colors.border}"
-    rounded: "{rounded.lg}"
-    padding: "24px"
-  agent-status-panel:
-    backgroundColor: "{colors.neutral}"
-    textColor: "{colors.primary}"
-    borderColor: "{colors.border}"
-    rounded: "{rounded.md}"
-    padding: "16px"
-  governance-warning:
-    backgroundColor: "{colors.warning}"
-    textColor: "{colors.primary}"
-    rounded: "{rounded.md}"
-    padding: "16px"
-  risk-alert:
-    backgroundColor: "{colors.danger}"
-    textColor: "{colors.on-primary}"
-    rounded: "{rounded.md}"
-    padding: "16px"
+# DESIGN.md — AI Operator Cyber Command Center
+
+> Architecture, trust boundaries, and decision record for this repository.
+> Read this **before** any change (see [`AGENTS.md`](./AGENTS.md) §2). Update it whenever the
+> architecture, a trust boundary, or a major dependency changes.
+
 ---
 
-# STICHES / DESIGN.md System
+## 1. Executive Summary
 
-## Overview
+The AI Operator Cyber Command Center is a **local-first, security-hardened platform** for
+running AI/agent workloads, RAG pipelines, and defensive cybersecurity automation. It is
+built so that the **safe configuration is the default configuration**: least privilege,
+auditable actions, layered validation, and human approval for anything irreversible or
+externally visible.
 
-This file is the canonical design and documentation identity for the AI Operator Cyber Command Center.
+This document describes the intended architecture so that agents and humans make changes
+that *fit the design* rather than eroding it.
 
-It is designed to guide:
-- Markdown documentation
-- Dashboard design
-- Agent-generated reports
-- Portfolio case studies
-- Governance warnings
-- Cybersecurity incident reports
-- Future UI tokens
+---
 
-## Visual Principle
+## 2. Objectives
 
-The system must feel like a professional security operations console combined with an executive research archive.
+1. Serve and orchestrate **local LLMs** (e.g. via Ollama) with no dependence on external
+   inference for core workflows.
+2. Provide a **RAG subsystem** for grounding agents in trusted, local document corpora.
+3. Expose capabilities to agents through **MCP servers** with strict, validated tool
+   surfaces.
+4. Support **defensive, lab-scoped** cybersecurity automation (detection content, log
+   enrichment, triage helpers).
+5. Keep every component **portfolio-grade**: typed, tested, documented, and reviewable.
 
-## Documentation Principle
+**Non-objectives:** offensive tooling against unowned systems; any workflow that requires
+hard-coded secrets or unaudited external network access (see `AGENTS.md` §5).
 
-Every serious document should separate:
-- Facts
-- Assumptions
-- Analysis
-- Recommendations
-- Unknowns
-- Evidence
+---
 
-## Color Rules
+## 3. Architecture Overview
 
-Blue means action.  
-Green means validated success.  
-Amber means caution or review required.  
-Red means security risk or failed control.  
-Dark neutral means authority, structure, and command focus.
+```
+                        ┌──────────────────────────────────────────┐
+                        │                 Human                     │
+                        │  (approves gates, owns secrets, reviews)  │
+                        └───────────────┬──────────────────────────┘
+                                        │ approval gates (AGENTS.md §5.1)
+                                        ▼
+┌───────────────┐   plans/tasks   ┌──────────────────┐   validated tool calls
+│   Planner /   │ ───────────────▶│   Orchestrator   │ ─────────────────────────┐
+│   Reviewer    │◀─────────────── │  (agents/)       │                          │
+└───────────────┘   findings      └────────┬─────────┘                          ▼
+                                           │                              ┌─────────────┐
+                          ┌────────────────┼──────────────────┐          │  MCP tools  │
+                          ▼                ▼                  ▼          │  (mcp/)     │
+                   ┌────────────┐   ┌────────────┐    ┌────────────┐     │ allow-listed│
+                   │  Local LLM │   │    RAG     │    │ Detections │     └──────┬──────┘
+                   │  (Ollama)  │   │  (rag/)    │    │(detections/)│            │
+                   └────────────┘   └─────┬──────┘    └────────────┘            ▼
+                                          │                              ┌─────────────┐
+                                          ▼                              │  Filesystem │
+                                   ┌────────────┐                        │  / lab data │
+                                   │ Vector store│   ◀── trust boundary ─│  (data/)    │
+                                   └────────────┘                        └─────────────┘
+```
 
-## Agent Instruction
+**Layers:**
 
-Before creating documentation, dashboard components, or portfolio surfaces, agents should inspect `DESIGN.md`, `AGENTS.md`, and the existing repository structure.
+- **Orchestration (`agents/`)** — role logic (planner/builder/reviewer/security), policy
+  enforcement, and tool wiring. This is the control plane.
+- **Capability surfaces (`mcp/`, `agents/tools/`)** — every tool validates its own input,
+  enforces an allow-list, and is the *only* sanctioned way for an agent to reach the
+  filesystem, network, or a model.
+- **Knowledge (`rag/`)** — ingestion → chunking → embedding → retrieval over **trusted local
+  corpora** only.
+- **Inference** — local LLMs by default; any remote model is an explicit, gated decision.
+- **Domain content (`detections/`)** — defensive, lab-scoped detection engineering.
 
-## Prohibited Style
+---
 
-Do not generate casual, playful, generic startup-style documentation.  
-Do not hide governance controls.  
-Do not create agents that perform destructive or external actions without human approval.
+## 4. Module Responsibilities
+
+| Path | Responsibility | Key invariants |
+|---|---|---|
+| `agents/roles/` | Role definitions and their mandates | A role announces itself; honors its review priorities |
+| `agents/tools/` | Adapters from agent intent → real capability | Each adapter validates input and enforces least privilege |
+| `agents/policies/` | Guardrails, allow/deny lists, approval logic | Default deny; gates fail closed |
+| `rag/` | Document ingestion and retrieval | Only trusted local sources; no PII/client data |
+| `mcp/` | MCP servers exposed to agents | Minimal, typed, validated tool surface |
+| `detections/` | Defensive detection content | Lab-scoped; no offensive payloads |
+| `scripts/` | Operational CLI entrypoints | Idempotent; dry-run for destructive ops |
+| `infra/` | IaC / containers / deploy manifests | No real secrets; deploy behind approval gate |
+| `tests/security/` | Authz, validation, injection, secret-leak tests | Must pass before any boundary change merges |
+
+---
+
+## 5. Trust Boundaries & Data Flows
+
+A **trust boundary** is any point where data or control crosses from a less-trusted zone to
+a more-trusted one. Crossing one requires validation and (often) an approval gate.
+
+1. **Human → Orchestrator** — the human is the root of trust; only the human owns secrets
+   and approves gates.
+2. **Orchestrator → Tools/MCP** — agent intent is *untrusted input*. Tools validate
+   arguments, enforce allow-lists, and sandbox execution. Never pass LLM-generated strings
+   to a shell, file path, or query without sanitization.
+3. **External/LLM data → RAG/Logic** — model output and ingested documents are untrusted.
+   Validate schemas; never deserialize untrusted data unsafely; guard against prompt
+   injection influencing tool calls.
+4. **System → Filesystem/Network** — filesystem reach is scoped to the project and lab
+   `data/`; network egress is default-deny and limited to lab hosts. Any other egress is a
+   gated action.
+
+**Sensitive data** (logs, legal docs, client info, credentials, PII) never crosses outward
+across these boundaries and is never committed.
+
+---
+
+## 6. Security Architecture
+
+- **Least privilege** at every layer — tools request the minimum scope; processes run with
+  the minimum permissions.
+- **Defense in depth** — input validation *and* allow-lists *and* sandboxing *and*
+  monitoring; no single point of trust.
+- **Secure defaults** — safe behavior with zero flags; opting into risk is explicit and
+  logged.
+- **Auditability** — security-relevant actions emit structured logs suitable for review.
+- **Secret management** — secrets live in environment/secret stores, documented as keys only
+  in `.env.example`; never in source, tests, or logs.
+- **Encryption** — in transit (TLS for any network call) and at rest for any sensitive
+  store.
+- **Fail closed** — on ambiguity, missing config, or failed validation, deny and halt rather
+  than proceed.
+
+---
+
+## 7. Implementation Notes
+
+- Python is the baseline, fully type-annotated and `mypy`-clean. Bash for glue; Swift only
+  for macOS-specific targets.
+- All configuration is environment-driven and documented in `.env.example`.
+- Use the shared structured logger; never `print()` security events.
+- New dependencies are pinned and justified (purpose, maintenance, license, risk) per
+  `AGENTS.md` §4.
+- Quality gates (`compileall`, `pytest`, `ruff`, `mypy`, `bandit`, plus SCA and secret
+  scanning) run locally and in CI per `AGENTS.md` §7–§8.
+
+---
+
+## 8. Risks & Mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Prompt injection steering tool calls | Unauthorized action | Allow-listed tools, input validation, human gates |
+| Secret leakage in code/logs | Credential compromise | Secret scanning in pre-commit + CI; `.env.example` only |
+| Unsafe shell/exec from LLM output | RCE / data loss | Sanitize inputs; avoid shell where possible; sandbox |
+| Dependency vulnerability | Supply-chain compromise | `pip-audit` SCA; pinned, justified deps |
+| Scope creep into offensive tooling | Legal/ethical exposure | Lawful-lab boundary (§5); escalate ambiguous cases |
+| Architectural drift | Erosion of trust boundaries | This doc is authoritative; reviewers enforce it |
+
+---
+
+## 9. Cost Considerations
+
+Local-first and open-source by default keeps recurring cost near zero (compute is the
+existing workstation/lab). Remote inference, paid APIs, or cloud infrastructure are
+**explicit, gated decisions** with documented cost justification — never an unannounced
+default.
+
+---
+
+## 10. Future Enhancements
+
+- Formalize a policy-as-code layer in `agents/policies/` (e.g. OPA-style allow/deny).
+- Add signed, tamper-evident audit logging with retention policy.
+- Expand `tests/security/` with property-based fuzzing on tool input validators.
+- Container-level sandboxing (rootless, seccomp/AppArmor) for MCP tool execution.
+- Optional SBOM generation and dependency provenance attestation in CI.
+
+---
+
+## 11. Decision Log
+
+| Date | Decision | Rationale |
+|---|---|---|
+| _initial_ | Local-first inference (Ollama) as default | Cost, privacy, no external dependency for core flows |
+| _initial_ | Default-deny network egress | Minimize attack surface and data-exfil risk |
+| _initial_ | Allow-listed, self-validating tool surfaces | Contain prompt-injection blast radius |
+| _initial_ | `AGENTS.md` as platform-neutral charter | One rule set across Codex/Claude/other agents |
+
+> Append new architectural decisions here (date, decision, rationale) so the history stays
+> auditable.

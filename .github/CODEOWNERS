@@ -1,0 +1,11 @@
+# CODEOWNERS — required reviewers for sensitive areas (AGENTS.md §8).
+# Replace @owner with your GitHub handle/team. Security-relevant paths require review.
+
+*                       @owner
+/agents/                @owner
+/mcp/                   @owner
+/infra/                 @owner
+/.github/               @owner
+/AGENTS.md              @owner
+/DESIGN.md              @owner
+/SECURITY.md            @owner
