@@ -6,13 +6,16 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["agents*", "rag*", "mcp*", "dashboard*", "cli*", "scripts*"]
+
 [project]
 name = "ai-operator-cyber-command-center"
 version = "0.1.0"
 description = "Portfolio-grade environment for AI ops, cybersecurity automation, RAG, and agentic workflows."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = "Proprietary"
 authors = [{ name = "Ivan Rozenblad" }]
 
 # Pin runtime deps here as the project grows. Justify each addition per AGENTS.md §4.
@@ -99,7 +102,8 @@ addopts = [
   "--strict-markers",
   "--strict-config",
   "--cov=agents",
-  "--cov=scripts",
+  "--cov=rag",
+  "--cov=mcp",
   "--cov-report=term-missing",
   "--cov-fail-under=85",
 ]
@@ -111,7 +115,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agents", "scripts"]
+source = ["agents", "rag", "mcp"]
 omit = ["tests/*", "*/__init__.py"]
 
 [tool.coverage.report]

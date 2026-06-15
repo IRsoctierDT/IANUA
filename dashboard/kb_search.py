@@ -1,15 +1,31 @@
+from __future__ import annotations
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 from sentence_transformers import SentenceTransformer
 
 COLLECTION = "cybersecurity_kb_chunks"
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
+_model: SentenceTransformer | None = None
+_client: QdrantClient | None = None
+
+
+def _get_model() -> SentenceTransformer:
+    global _model
+    if _model is None:
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
+
+
+def _get_client() -> QdrantClient:
+    global _client
+    if _client is None:
+        _client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
+    return _client
 
 
 def search_kb(query: str, category: str | None = None, limit: int = 5):
-    vector = model.encode(query).tolist()
+    vector = _get_model().encode(query).tolist()
 
     query_filter = None
 
@@ -23,7 +39,7 @@ def search_kb(query: str, category: str | None = None, limit: int = 5):
             ]
         )
 
-    results = client.query_points(
+    results = _get_client().query_points(
         collection_name=COLLECTION,
         query=vector,
         query_filter=query_filter,

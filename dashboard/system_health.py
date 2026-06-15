@@ -4,7 +4,7 @@ from qdrant_client import QdrantClient
 
 
 def get_python_info():
-    return sys.executable
+    return sys.version
 
 
 def get_git_tag():
