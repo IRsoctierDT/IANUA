@@ -60,16 +60,24 @@ def run_query(store: InMemoryVectorStore, embedder: Embedder, query: str, k: int
     """Embed the query and return the top-k chunk previews."""
     (query_vec,) = embedder.embed([query])
     hits = store.query(query_vec, k=k)
-    return [f"[{score:.3f}] {chunk.source}#{chunk.index}: {chunk.text[:120]}" for chunk, score in hits]
+    return [
+        f"[{score:.3f}] {chunk.source}#{chunk.index}: {chunk.text[:120]}" for chunk, score in hits
+    ]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="rag_cli", description="Ingest -> embed -> query a local corpus.")
-    parser.add_argument("--corpus", required=True, type=Path, help="Path to the trusted corpus directory.")
+    parser = argparse.ArgumentParser(
+        prog="rag_cli", description="Ingest -> embed -> query a local corpus."
+    )
+    parser.add_argument(
+        "--corpus", required=True, type=Path, help="Path to the trusted corpus directory."
+    )
     parser.add_argument("--query", required=True, help="Natural-language query string.")
     parser.add_argument("--k", type=int, default=5, help="Number of results to return (default 5).")
     parser.add_argument("--model", default="nomic-embed-text", help="Ollama embedding model.")
-    parser.add_argument("--offline", action="store_true", help="Use the offline embedder (no Ollama/network).")
+    parser.add_argument(
+        "--offline", action="store_true", help="Use the offline embedder (no Ollama/network)."
+    )
     args = parser.parse_args(argv)
 
     try:

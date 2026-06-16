@@ -19,7 +19,7 @@ def chunk_text(text: str):
     index = 0
 
     while start < len(text):
-        chunk = text[start:start + CHUNK_SIZE].strip()
+        chunk = text[start : start + CHUNK_SIZE].strip()
         if chunk:
             yield index, chunk
         index += 1

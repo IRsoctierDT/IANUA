@@ -40,13 +40,15 @@ with st.sidebar.expander("Ollama Models"):
 
 agent = OrchestratorAgent()
 
-tab_soc, tab_batch, tab_kb, tab_health, tab_reports = st.tabs([
-    "SOC Workflow",
-    "Batch Processing",
-    "Knowledge Base Search",
-    "System Health",
-    "Reports",
-])
+tab_soc, tab_batch, tab_kb, tab_health, tab_reports = st.tabs(
+    [
+        "SOC Workflow",
+        "Batch Processing",
+        "Knowledge Base Search",
+        "System Health",
+        "Reports",
+    ]
+)
 
 with tab_soc:
     log_text = st.text_area(

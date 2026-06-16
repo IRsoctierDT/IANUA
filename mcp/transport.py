@@ -85,7 +85,9 @@ def handle_request(registry: ToolRegistry, request: dict[str, Any]) -> dict[str,
             output = registry.dispatch(name, arguments)
         except ValidationError as exc:
             # Tool/allow-list violation -> structured tool error, not a crash.
-            return _result(req_id, {"isError": True, "content": [{"type": "text", "text": str(exc)}]})
+            return _result(
+                req_id, {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            )
         except Exception:
             return _error(req_id, INTERNAL_ERROR, "internal error")
         return _result(req_id, {"isError": False, "content": [{"type": "json", "json": output}]})

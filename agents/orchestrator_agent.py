@@ -7,7 +7,6 @@ from agents.threat_intel_agent import ThreatIntelAgent
 
 
 class OrchestratorAgent:
-
     def __init__(self) -> None:
         self.soc = SocAnalystAgent()
         self.mitre = MitreMapperAgent()

@@ -96,9 +96,7 @@ class ThreatIntelAgent:
         first, second, *_ = [int(part) for part in value.split(".")]
 
         return (
-            first == 10
-            or (first == 172 and 16 <= second <= 31)
-            or (first == 192 and second == 168)
+            first == 10 or (first == 172 and 16 <= second <= 31) or (first == 192 and second == 168)
         )
 
 

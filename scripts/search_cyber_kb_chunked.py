@@ -11,9 +11,7 @@ client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Search cybersecurity knowledge base chunks."
-    )
+    parser = argparse.ArgumentParser(description="Search cybersecurity knowledge base chunks.")
     parser.add_argument("--query", help="Search query")
     parser.add_argument(
         "--category",
