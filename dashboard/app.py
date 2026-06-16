@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
-import subprocess
 
 import streamlit as st
-
 from agents.orchestrator_agent import OrchestratorAgent
 from kb_search import search_kb
 from ollama_service import ensure_ollama_running
@@ -16,7 +15,6 @@ from system_health import (
     get_python_info,
     get_qdrant_collections,
 )
-
 
 st.set_page_config(
     page_title="AI Operator Cyber Command Center",

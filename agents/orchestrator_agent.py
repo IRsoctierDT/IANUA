@@ -1,7 +1,7 @@
-from agents.soc_analyst_agent import SocAnalystAgent
-from agents.mitre_mapper_agent import MitreMapperAgent
-from agents.threat_intel_agent import ThreatIntelAgent
 from agents.incident_report_agent import IncidentReportAgent
+from agents.mitre_mapper_agent import MitreMapperAgent
+from agents.soc_analyst_agent import SocAnalystAgent
+from agents.threat_intel_agent import ThreatIntelAgent
 
 
 class OrchestratorAgent:

@@ -1,5 +1,6 @@
 import subprocess
 import sys
+
 from qdrant_client import QdrantClient
 
 
@@ -10,8 +11,8 @@ def get_python_info():
 def get_git_tag():
     try:
         return subprocess.check_output(
-            ["git", "describe", "--tags", "--abbrev=0"],
-            text=True
+            ["git", "describe", "--tags", "--abbrev=0"],  # noqa: S607 - git is a known system tool
+            text=True,
         ).strip()
     except Exception:
         return "unknown"
@@ -19,7 +20,7 @@ def get_git_tag():
 
 def get_ollama_models():
     try:
-        return subprocess.check_output(["ollama", "list"], text=True)
+        return subprocess.check_output(["ollama", "list"], text=True)  # noqa: S607 - ollama is a known system tool
     except Exception as exc:
         return f"Ollama unavailable: {exc}"
 

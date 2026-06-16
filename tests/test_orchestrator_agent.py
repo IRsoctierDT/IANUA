@@ -1,6 +1,6 @@
-import pytest
 from pathlib import Path
 
+import pytest
 from agents.orchestrator_agent import OrchestratorAgent
 
 
@@ -38,7 +38,6 @@ def test_process_log_no_indicators_when_no_ip():
 
 @pytest.mark.unit
 def test_process_log_writes_report(tmp_path: Path, monkeypatch):
-    report_path = tmp_path / "orchestrated_incident.md"
     monkeypatch.chdir(tmp_path)
     (tmp_path / "reports" / "markdown").mkdir(parents=True)
 

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from agents.tools.validation import ValidationError
 from rag.ingest import Chunk, chunk_text, discover_documents, embed_chunks, ingest
 from rag.retrieve import InMemoryVectorStore

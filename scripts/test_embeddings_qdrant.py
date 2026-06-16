@@ -1,5 +1,5 @@
-from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 client = QdrantClient(url="http://localhost:6333")

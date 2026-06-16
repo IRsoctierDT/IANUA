@@ -1,35 +1,34 @@
 # Incident Report
 
 ## Generated
-2026-06-02T16:23:36.515995+00:00
+2026-06-16T00:01:36.299430+00:00
 
 ## Summary
-Detected probable unknown security event activity.
+Detected probable ids alert activity.
 
 ## Severity
-unknown
+medium
 
 ## Event Type
-unknown security event
+ids alert
 
 ## MITRE ATT&CK Mapping
 
-- **Tactic:** Initial Access
-- **Technique:** Valid Accounts
-- **Technique ID:** T1078
-- **Confidence:** medium
+- **Tactic:** Detection-dependent
+- **Technique:** Requires analyst review
+- **Technique ID:** UNKNOWN
+- **Confidence:** low
 
 ### MITRE Evidence
-- SSH accepted-login pattern detected.
-- Valid account usage may require legitimacy review.
+- IDS alert requires signature and packet-context review.
 
 ### MITRE Investigation Steps
-- Confirm whether the login was expected.
-- Review source IP reputation and geolocation.
-- Check for follow-on activity after login.
+- Review IDS signature metadata.
+- Correlate with destination asset exposure.
+- Inspect packet capture if available.
 
 ## Indicators
-- `192.168.1.25`
+- None detected
 
 ## Recommended Actions
 - Preserve the original log evidence.

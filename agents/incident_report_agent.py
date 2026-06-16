@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from agents.soc_analyst_agent import SocAnalystAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
+from agents.soc_analyst_agent import SocAnalystAgent
 
 
 class IncidentReportAgent:
@@ -41,7 +41,7 @@ class IncidentReportAgent:
         report = f"""# Incident Report
 
 ## Generated
-{datetime.now(timezone.utc).isoformat()}
+{datetime.now(UTC).isoformat()}
 
 ## Summary
 {soc_result["summary"]}

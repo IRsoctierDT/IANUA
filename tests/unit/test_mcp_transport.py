@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from mcp.server import build_default_registry
 from mcp.transport import handle_request, serve
 
