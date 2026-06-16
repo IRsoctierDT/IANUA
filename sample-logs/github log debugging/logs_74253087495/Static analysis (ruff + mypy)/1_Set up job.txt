@@ -1,0 +1,31 @@
+﻿2026-06-16T00:28:12.1979255Z Current runner version: '2.335.1'
+2026-06-16T00:28:12.2056743Z ##[group]Runner Image Provisioner
+2026-06-16T00:28:12.2058259Z Hosted Compute Agent
+2026-06-16T00:28:12.2059291Z Version: 20260527.539
+2026-06-16T00:28:12.2060264Z Commit: a891dd388383b896fa6ac04a82c0b75cec981078
+2026-06-16T00:28:12.2061362Z Build Date: 2026-05-27T21:39:57Z
+2026-06-16T00:28:12.2062625Z Worker ID: {c9d117d8-9f5a-4f0f-8c94-43e4c48965cd}
+2026-06-16T00:28:12.2063848Z Azure Region: centralus
+2026-06-16T00:28:12.2064868Z ##[endgroup]
+2026-06-16T00:28:12.2087321Z ##[group]Operating System
+2026-06-16T00:28:12.2088656Z Ubuntu
+2026-06-16T00:28:12.2089483Z 24.04.4
+2026-06-16T00:28:12.2090333Z LTS
+2026-06-16T00:28:12.2091208Z ##[endgroup]
+2026-06-16T00:28:12.2092052Z ##[group]Runner Image
+2026-06-16T00:28:12.2092944Z Image: ubuntu-24.04
+2026-06-16T00:28:12.2094002Z Version: 20260607.184.1
+2026-06-16T00:28:12.2095718Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260607.184/images/ubuntu/Ubuntu2404-Readme.md
+2026-06-16T00:28:12.2109027Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260607.184
+2026-06-16T00:28:12.2110599Z ##[endgroup]
+2026-06-16T00:28:12.2112494Z ##[group]GITHUB_TOKEN Permissions
+2026-06-16T00:28:12.2115905Z Contents: read
+2026-06-16T00:28:12.2116967Z Metadata: read
+2026-06-16T00:28:12.2138537Z ##[endgroup]
+2026-06-16T00:28:12.2141785Z Secret source: Actions
+2026-06-16T00:28:12.2143478Z Prepare workflow directory
+2026-06-16T00:28:12.2710064Z Prepare all required actions
+2026-06-16T00:28:12.2765536Z Getting action download info
+2026-06-16T00:28:12.6439929Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-06-16T00:28:12.7369197Z Download action repository 'actions/setup-python@v5' (SHA:a26af69be951a213d495a4c3e4e4022e16d87065)
+2026-06-16T00:28:12.9328936Z Complete job name: Static analysis (ruff + mypy)

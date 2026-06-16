@@ -1,0 +1,119 @@
+﻿2026-06-16T00:28:49.3121669Z ##[group]Run actions/checkout@v4
+2026-06-16T00:28:49.3122505Z with:
+2026-06-16T00:28:49.3122989Z   fetch-depth: 0
+2026-06-16T00:28:49.3123593Z   repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:28:49.3128587Z   token: ***
+2026-06-16T00:28:49.3129082Z   ssh-strict: true
+2026-06-16T00:28:49.3129527Z   ssh-user: git
+2026-06-16T00:28:49.3129968Z   persist-credentials: true
+2026-06-16T00:28:49.3130443Z   clean: true
+2026-06-16T00:28:49.3130883Z   sparse-checkout-cone-mode: true
+2026-06-16T00:28:49.3131401Z   fetch-tags: false
+2026-06-16T00:28:49.3131846Z   show-progress: true
+2026-06-16T00:28:49.3132295Z   lfs: false
+2026-06-16T00:28:49.3132710Z   submodules: false
+2026-06-16T00:28:49.3133151Z   set-safe-directory: true
+2026-06-16T00:28:49.3133853Z env:
+2026-06-16T00:28:49.3134263Z   PYTHON_VERSION: 3.11
+2026-06-16T00:28:49.3134755Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:28:49.3135308Z ##[endgroup]
+2026-06-16T00:28:49.4474461Z Syncing repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:28:49.5330530Z ##[group]Getting Git version info
+2026-06-16T00:28:49.5332354Z Working directory is '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:28:49.5335110Z [command]/usr/bin/git version
+2026-06-16T00:28:49.5336045Z git version 2.54.0
+2026-06-16T00:28:49.5339622Z ##[endgroup]
+2026-06-16T00:28:49.5373338Z Temporarily overriding HOME='/home/runner/work/_temp/56743d61-1f21-42a3-8cde-fec1a3cd9c11' before making global git config changes
+2026-06-16T00:28:49.5375752Z Adding repository directory to the temporary git global config as a safe directory
+2026-06-16T00:28:49.5378623Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:28:49.5382582Z Deleting the contents of '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:28:49.5385287Z ##[group]Initializing the repository
+2026-06-16T00:28:49.5387045Z [command]/usr/bin/git init /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:28:49.5389419Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-06-16T00:28:49.5391026Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-06-16T00:28:49.5392727Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-06-16T00:28:49.5394178Z hint: call:
+2026-06-16T00:28:49.5395146Z hint:
+2026-06-16T00:28:49.5396007Z hint: 	git config --global init.defaultBranch <name>
+2026-06-16T00:28:49.5397064Z hint:
+2026-06-16T00:28:49.5398521Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-06-16T00:28:49.5400268Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-06-16T00:28:49.5401542Z hint:
+2026-06-16T00:28:49.5402291Z hint: 	git branch -m <name>
+2026-06-16T00:28:49.5403143Z hint:
+2026-06-16T00:28:49.5404224Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-06-16T00:28:49.5406532Z Initialized empty Git repository in /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center/.git/
+2026-06-16T00:28:49.5410366Z [command]/usr/bin/git remote add origin https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:28:49.5414330Z ##[endgroup]
+2026-06-16T00:28:49.5415613Z ##[group]Disabling automatic garbage collection
+2026-06-16T00:28:49.5416796Z [command]/usr/bin/git config --local gc.auto 0
+2026-06-16T00:28:49.5530060Z ##[endgroup]
+2026-06-16T00:28:49.5531335Z ##[group]Setting up auth
+2026-06-16T00:28:49.5532582Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-06-16T00:28:49.5536392Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-06-16T00:28:49.5541010Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-06-16T00:28:49.5545686Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-06-16T00:28:49.5786372Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-06-16T00:28:49.5789980Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-06-16T00:28:49.5969686Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-06-16T00:28:49.6004670Z ##[endgroup]
+2026-06-16T00:28:49.6006194Z ##[group]Fetching the repository
+2026-06-16T00:28:49.6015690Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2026-06-16T00:28:51.9818516Z From https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:28:51.9822156Z  * [new branch]      dependabot/github_actions/actions/checkout-6 -> origin/dependabot/github_actions/actions/checkout-6
+2026-06-16T00:28:51.9825865Z  * [new branch]      dependabot/github_actions/actions/download-artifact-8 -> origin/dependabot/github_actions/actions/download-artifact-8
+2026-06-16T00:28:51.9830038Z  * [new branch]      dependabot/github_actions/actions/setup-python-6 -> origin/dependabot/github_actions/actions/setup-python-6
+2026-06-16T00:28:51.9833675Z  * [new branch]      dependabot/github_actions/actions/upload-artifact-7 -> origin/dependabot/github_actions/actions/upload-artifact-7
+2026-06-16T00:28:51.9837494Z  * [new branch]      dependabot/github_actions/github/codeql-action-4 -> origin/dependabot/github_actions/github/codeql-action-4
+2026-06-16T00:28:51.9841702Z  * [new branch]      feature-agent-orchestrator -> origin/feature-agent-orchestrator
+2026-06-16T00:28:51.9844782Z  * [new branch]      feature/all-kb-ingestion -> origin/feature/all-kb-ingestion
+2026-06-16T00:28:51.9848205Z  * [new branch]      feature/batch-log-processing -> origin/feature/batch-log-processing
+2026-06-16T00:28:51.9851984Z  * [new branch]      feature/category-filtered-search -> origin/feature/category-filtered-search
+2026-06-16T00:28:51.9855606Z  * [new branch]      feature/chunked-rag    -> origin/feature/chunked-rag
+2026-06-16T00:28:51.9858889Z  * [new branch]      feature/cli-runner     -> origin/feature/cli-runner
+2026-06-16T00:28:51.9862344Z  * [new branch]      feature/dashboard-health-panel -> origin/feature/dashboard-health-panel
+2026-06-16T00:28:51.9865304Z  * [new branch]      feature/dashboard-kb-search -> origin/feature/dashboard-kb-search
+2026-06-16T00:28:51.9868808Z  * [new branch]      feature/dashboard-tabs -> origin/feature/dashboard-tabs
+2026-06-16T00:28:51.9872363Z  * [new branch]      feature/incident-report-agent -> origin/feature/incident-report-agent
+2026-06-16T00:28:51.9875285Z  * [new branch]      feature/kb-expansion   -> origin/feature/kb-expansion
+2026-06-16T00:28:51.9878838Z  * [new branch]      feature/mitre-mapper-agent -> origin/feature/mitre-mapper-agent
+2026-06-16T00:28:51.9882669Z  * [new branch]      feature/streamlit-dashboard -> origin/feature/streamlit-dashboard
+2026-06-16T00:28:51.9886244Z  * [new branch]      feature/threat-intel-agent -> origin/feature/threat-intel-agent
+2026-06-16T00:28:51.9889684Z  * [new branch]      feature/v1-readme      -> origin/feature/v1-readme
+2026-06-16T00:28:51.9892248Z  * [new branch]      main                   -> origin/main
+2026-06-16T00:28:51.9894732Z  * [new tag]         v0.1.0                 -> v0.1.0
+2026-06-16T00:28:51.9897156Z  * [new tag]         v0.2.0                 -> v0.2.0
+2026-06-16T00:28:51.9899803Z  * [new tag]         v0.3.0                 -> v0.3.0
+2026-06-16T00:28:51.9902310Z  * [new tag]         v0.4.0                 -> v0.4.0
+2026-06-16T00:28:51.9904833Z  * [new tag]         v0.5.0                 -> v0.5.0
+2026-06-16T00:28:51.9907639Z  * [new tag]         v0.6.0                 -> v0.6.0
+2026-06-16T00:28:51.9910369Z  * [new tag]         v0.7.0                 -> v0.7.0
+2026-06-16T00:28:51.9913153Z  * [new tag]         v0.8.0                 -> v0.8.0
+2026-06-16T00:28:51.9915779Z  * [new tag]         v0.9.0                 -> v0.9.0
+2026-06-16T00:28:51.9918525Z  * [new tag]         v1.0.0                 -> v1.0.0
+2026-06-16T00:28:51.9939603Z  * [new tag]         v1.1.0                 -> v1.1.0
+2026-06-16T00:28:51.9941896Z  * [new tag]         v1.3.0                 -> v1.3.0
+2026-06-16T00:28:51.9944196Z  * [new tag]         v1.4.0                 -> v1.4.0
+2026-06-16T00:28:51.9946421Z  * [new tag]         v1.5.0                 -> v1.5.0
+2026-06-16T00:28:51.9949902Z  * [new tag]         v1.6.0                 -> v1.6.0
+2026-06-16T00:28:51.9952264Z  * [new tag]         v1.7.0                 -> v1.7.0
+2026-06-16T00:28:51.9958807Z [command]/usr/bin/git branch --list --remote origin/main
+2026-06-16T00:28:51.9985046Z   origin/main
+2026-06-16T00:28:52.0007345Z [command]/usr/bin/git rev-parse refs/remotes/origin/main
+2026-06-16T00:28:52.0023479Z 9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f
+2026-06-16T00:28:52.0033591Z ##[endgroup]
+2026-06-16T00:28:52.0036495Z ##[group]Determining the checkout info
+2026-06-16T00:28:52.0040188Z ##[endgroup]
+2026-06-16T00:28:52.0042037Z [command]/usr/bin/git sparse-checkout disable
+2026-06-16T00:28:52.0085670Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-06-16T00:28:52.0131642Z ##[group]Checking out the ref
+2026-06-16T00:28:52.0134933Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-06-16T00:28:53.1403302Z Updating files:  98% (6944/7077)
+2026-06-16T00:28:53.2023033Z Updating files:  99% (7007/7077)
+2026-06-16T00:28:53.2029195Z Updating files: 100% (7077/7077)
+2026-06-16T00:28:53.2029916Z Updating files: 100% (7077/7077), done.
+2026-06-16T00:28:53.2100127Z Switched to a new branch 'main'
+2026-06-16T00:28:53.2109883Z branch 'main' set up to track 'origin/main'.
+2026-06-16T00:28:53.2131208Z ##[endgroup]
+2026-06-16T00:28:53.2177529Z [command]/usr/bin/git log -1 --format=%H
+2026-06-16T00:28:53.2206213Z 9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f

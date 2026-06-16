@@ -1,0 +1,32 @@
+﻿2026-06-16T00:29:32.8044832Z ##[group]Run actions/upload-artifact@v4
+2026-06-16T00:29:32.8045163Z with:
+2026-06-16T00:29:32.8045369Z   name: coverage-3.12
+2026-06-16T00:29:32.8045605Z   path: coverage.xml
+2026-06-16T00:29:32.8045836Z   if-no-files-found: ignore
+2026-06-16T00:29:32.8046081Z   compression-level: 6
+2026-06-16T00:29:32.8046300Z   overwrite: false
+2026-06-16T00:29:32.8046520Z   include-hidden-files: false
+2026-06-16T00:29:32.8046941Z env:
+2026-06-16T00:29:32.8047130Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:32.8047370Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:32.8047724Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8048160Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib/pkgconfig
+2026-06-16T00:29:32.8048597Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8048985Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8049372Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8049803Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib
+2026-06-16T00:29:32.8050132Z ##[endgroup]
+2026-06-16T00:29:32.9924528Z (node:2155) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:29:32.9926118Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:29:33.0271754Z With the provided path, there will be 1 file uploaded
+2026-06-16T00:29:33.0308851Z Artifact name is valid!
+2026-06-16T00:29:33.0310066Z Root directory input is valid!
+2026-06-16T00:29:33.1871667Z Beginning upload of artifact content to blob storage
+2026-06-16T00:29:33.2076463Z (node:2155) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:29:33.2384416Z Uploaded bytes 1914
+2026-06-16T00:29:33.2532313Z Finished uploading artifact content to blob storage!
+2026-06-16T00:29:33.2533752Z SHA256 digest of uploaded artifact zip is c9eb6b21eebc67db0808a748935b0020e614b795feea7265c61b730462337fb3
+2026-06-16T00:29:33.2535181Z Finalizing artifact upload
+2026-06-16T00:29:33.4209872Z Artifact coverage-3.12.zip successfully finalized. Artifact ID 7654348866
+2026-06-16T00:29:33.4211719Z Artifact coverage-3.12 has been successfully uploaded! Final size is 1914 bytes. Artifact ID is 7654348866
+2026-06-16T00:29:33.4220195Z Artifact download URL: https://github.com/IRsoctierDT/ai-operator-cyber-command-center/actions/runs/27585615324/artifacts/7654348866

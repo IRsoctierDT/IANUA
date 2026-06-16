@@ -1,0 +1,52 @@
+﻿2026-06-16T00:29:31.5772256Z ##[group]Run python -m pytest --cov-report=xml
+2026-06-16T00:29:31.5772709Z [36;1mpython -m pytest --cov-report=xml[0m
+2026-06-16T00:29:31.5805795Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:31.5806068Z env:
+2026-06-16T00:29:31.5806268Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:31.5806525Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:31.5806882Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5807318Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib/pkgconfig
+2026-06-16T00:29:31.5807759Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5808167Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5808556Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5808955Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib
+2026-06-16T00:29:31.5809474Z ##[endgroup]
+2026-06-16T00:29:32.4296052Z ============================= test session starts ==============================
+2026-06-16T00:29:32.4297332Z platform linux -- Python 3.12.13, pytest-9.1.0, pluggy-1.6.0
+2026-06-16T00:29:32.4298840Z rootdir: /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:32.4305379Z configfile: pyproject.toml
+2026-06-16T00:29:32.4306103Z testpaths: tests
+2026-06-16T00:29:32.4306722Z plugins: cov-7.1.0
+2026-06-16T00:29:32.4307326Z collected 49 items
+2026-06-16T00:29:32.4307769Z 
+2026-06-16T00:29:32.4447094Z tests/integration/test_rag_cli.py ...                                    [  6%]
+2026-06-16T00:29:32.4542320Z tests/security/test_path_traversal.py ....                               [ 14%]
+2026-06-16T00:29:32.4649641Z tests/test_incident_report_agent.py .....                                [ 24%]
+2026-06-16T00:29:32.4690908Z tests/test_mitre_mapper_agent.py ...                                     [ 30%]
+2026-06-16T00:29:32.4786331Z tests/test_orchestrator_agent.py .....                                   [ 40%]
+2026-06-16T00:29:32.4837420Z tests/test_soc_analyst_agent.py ....                                     [ 48%]
+2026-06-16T00:29:32.4888353Z tests/test_threat_intel_agent.py ....                                    [ 57%]
+2026-06-16T00:29:32.4956613Z tests/unit/test_embeddings.py .....                                      [ 67%]
+2026-06-16T00:29:32.5057989Z tests/unit/test_mcp_server.py .....                                      [ 77%]
+2026-06-16T00:29:32.5189143Z tests/unit/test_mcp_transport.py ......                                  [ 89%]
+2026-06-16T00:29:32.7516326Z tests/unit/test_rag.py .....                                             [100%]
+2026-06-16T00:29:32.7517136Z 
+2026-06-16T00:29:32.7517792Z ================================ tests coverage ================================
+2026-06-16T00:29:32.7518748Z _______________ coverage: platform linux, python 3.12.13-final-0 _______________
+2026-06-16T00:29:32.7519438Z 
+2026-06-16T00:29:32.7519854Z Name                           Stmts   Miss Branch BrPart  Cover   Missing
+2026-06-16T00:29:32.7521164Z --------------------------------------------------------------------------
+2026-06-16T00:29:32.7522073Z agents/soc_analyst_agent.py       67      5     26      3    89%   68-70, 80, 83
+2026-06-16T00:29:32.7523037Z agents/threat_intel_agent.py      33      1     10      1    95%   72
+2026-06-16T00:29:32.7523943Z mcp/server.py                     44      4     12      4    86%   44, 56, 72, 75
+2026-06-16T00:29:32.7524852Z mcp/transport.py                  60      9     18      3    82%   56, 83, 91-92, 96, 112-115
+2026-06-16T00:29:32.7525777Z rag/embeddings.py                 45      8     12      1    84%   31-37, 75
+2026-06-16T00:29:32.7526694Z rag/ingest.py                     50      2     22      5    90%   35->exit, 49, 53->47, 71->69, 90
+2026-06-16T00:29:32.7527655Z rag/retrieve.py                   30      3     10      5    80%   21, 26, 31->exit, 32->exit, 46
+2026-06-16T00:29:32.7528561Z --------------------------------------------------------------------------
+2026-06-16T00:29:32.7529838Z TOTAL                            399     32    122     22    89%
+2026-06-16T00:29:32.7530590Z 
+2026-06-16T00:29:32.7530960Z 4 files skipped due to complete coverage.
+2026-06-16T00:29:32.7531648Z Coverage XML written to file coverage.xml
+2026-06-16T00:29:32.7532408Z Required test coverage of 85% reached. Total coverage: 88.87%
+2026-06-16T00:29:32.7533204Z ============================== 49 passed in 0.49s ==============================
