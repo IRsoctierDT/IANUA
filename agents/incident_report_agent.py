@@ -65,6 +65,16 @@ class IncidentReportAgent:
 ### MITRE Investigation Steps
 {chr(10).join(f"- {s}" for s in mitre_result["recommended_investigation"])}
 
+## Evidence
+
+| Field | Value | Significance |
+|-------|-------|--------------|
+{chr(10).join(f"| {e['field']} | {e['value']} | {e['significance']} |" for e in soc_result.get("evidence", [])) or "| — | — | No structured evidence captured. |"}
+
+## Severity Score
+
+**{soc_result.get("severity_score", "N/A")} / 100**
+
 ## Indicators
 {chr(10).join(f"- `{i}`" for i in indicators) if indicators else "- None detected"}
 
