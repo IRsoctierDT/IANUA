@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Any, Literal
 
 Confidence = Literal["low", "medium", "high"]
 
@@ -16,7 +16,7 @@ class MitreMappingResult:
 
 
 class MitreMapperAgent:
-    def map_event(self, event_type: str, log_text: str = "") -> dict:
+    def map_event(self, event_type: str, log_text: str = "") -> dict[str, Any]:
         normalized_event = event_type.lower()
         normalized_log = log_text.lower()
 

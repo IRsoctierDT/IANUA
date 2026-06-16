@@ -32,7 +32,7 @@ def _urllib_transport(url: str, body: dict[str, object], timeout: float) -> dict
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed by OllamaEmbedder.__post_init__
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - host allow-listed by OllamaEmbedder.__post_init__
-            return json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))  # type: ignore[no-any-return]
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ValidationError(f"embedding request failed: {exc}") from exc
 

@@ -99,6 +99,20 @@ strict_equality = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+module = [
+  "qdrant_client",
+  "qdrant_client.*",
+  "sentence_transformers",
+  "weasyprint",
+  "markdown",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "scripts.*"
+ignore_errors = true
+
 # ---------------------------------------------------------------------------
 # pytest + coverage (AGENTS.md §7 check #2, §7.1 coverage gate)
 # ---------------------------------------------------------------------------

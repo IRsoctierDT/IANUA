@@ -1,3 +1,5 @@
+from typing import Any
+
 from agents.incident_report_agent import IncidentReportAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.soc_analyst_agent import SocAnalystAgent
@@ -6,13 +8,13 @@ from agents.threat_intel_agent import ThreatIntelAgent
 
 class OrchestratorAgent:
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.soc = SocAnalystAgent()
         self.mitre = MitreMapperAgent()
         self.threat = ThreatIntelAgent()
         self.report = IncidentReportAgent()
 
-    def process_log(self, log_text: str) -> dict:
+    def process_log(self, log_text: str) -> dict[str, Any]:
         soc_result = self.soc.analyze_log(log_text)
 
         mitre_result = self.mitre.map_event(

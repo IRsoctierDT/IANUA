@@ -8,7 +8,7 @@ from agents.soc_analyst_agent import SocAnalystAgent
 
 
 class IncidentReportAgent:
-    def __init__(self):
+    def __init__(self) -> None:
         self.soc_agent = SocAnalystAgent()
         self.mitre_mapper = MitreMapperAgent()
 

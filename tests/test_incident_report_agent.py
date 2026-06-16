@@ -5,7 +5,7 @@ from agents.incident_report_agent import IncidentReportAgent
 
 
 @pytest.mark.unit
-def test_generates_report_file(tmp_path: Path):
+def test_generates_report_file(tmp_path: Path) -> None:
     agent = IncidentReportAgent()
     output = tmp_path / "report.md"
     result = agent.generate_report(
@@ -17,7 +17,7 @@ def test_generates_report_file(tmp_path: Path):
 
 
 @pytest.mark.unit
-def test_report_contains_severity(tmp_path: Path):
+def test_report_contains_severity(tmp_path: Path) -> None:
     agent = IncidentReportAgent()
     output = tmp_path / "report.md"
     agent.generate_report(
@@ -30,7 +30,7 @@ def test_report_contains_severity(tmp_path: Path):
 
 
 @pytest.mark.unit
-def test_creates_parent_directories(tmp_path: Path):
+def test_creates_parent_directories(tmp_path: Path) -> None:
     agent = IncidentReportAgent()
     output = tmp_path / "nested" / "deep" / "report.md"
     agent.generate_report(
@@ -41,7 +41,7 @@ def test_creates_parent_directories(tmp_path: Path):
 
 
 @pytest.mark.unit
-def test_uses_precomputed_results_not_reanalyze(tmp_path: Path):
+def test_uses_precomputed_results_not_reanalyze(tmp_path: Path) -> None:
     agent = IncidentReportAgent()
     output = tmp_path / "report.md"
     fake_soc = {
@@ -68,7 +68,7 @@ def test_uses_precomputed_results_not_reanalyze(tmp_path: Path):
 
 
 @pytest.mark.unit
-def test_no_indicators_shows_none(tmp_path: Path):
+def test_no_indicators_shows_none(tmp_path: Path) -> None:
     agent = IncidentReportAgent()
     output = tmp_path / "report.md"
     agent.generate_report(
