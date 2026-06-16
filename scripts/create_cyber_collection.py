@@ -11,11 +11,7 @@ if COLLECTION in existing:
     print(f"Collection already exists: {COLLECTION}")
 else:
     client.create_collection(
-        collection_name=COLLECTION,
-        vectors_config=VectorParams(
-            size=384,
-            distance=Distance.COSINE
-        )
+        collection_name=COLLECTION, vectors_config=VectorParams(size=384, distance=Distance.COSINE)
     )
     print(f"Created collection: {COLLECTION}")
 

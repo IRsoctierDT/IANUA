@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import markdown
 from weasyprint import HTML
 
@@ -12,10 +13,7 @@ TARGET.parent.mkdir(parents=True, exist_ok=True)
 
 markdown_text = SOURCE.read_text(encoding="utf-8")
 
-html_body = markdown.markdown(
-    markdown_text,
-    extensions=["tables", "fenced_code"]
-)
+html_body = markdown.markdown(markdown_text, extensions=["tables", "fenced_code"])
 
 html_document = f"""
 <html>

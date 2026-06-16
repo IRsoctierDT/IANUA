@@ -1,9 +1,8 @@
 import shutil
 import subprocess
 import time
-from urllib.request import urlopen
 from urllib.error import URLError
-
+from urllib.request import urlopen
 
 OLLAMA_URL = "http://localhost:11434/api/tags"
 
@@ -14,7 +13,7 @@ def is_ollama_installed() -> bool:
 
 def is_ollama_running() -> bool:
     try:
-        with urlopen(OLLAMA_URL, timeout=2) as response:
+        with urlopen(OLLAMA_URL, timeout=2) as response:  # noqa: S310 - localhost constant
             return response.status == 200
     except URLError:
         return False
@@ -30,7 +29,7 @@ def ensure_ollama_running(timeout_seconds: int = 10) -> str:
         return "Ollama running"
 
     subprocess.Popen(
-        ["ollama", "serve"],
+        ["ollama", "serve"],  # noqa: S607 - ollama is a known, user-installed system tool
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,

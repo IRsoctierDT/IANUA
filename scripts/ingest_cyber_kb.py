@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 from sentence_transformers import SentenceTransformer

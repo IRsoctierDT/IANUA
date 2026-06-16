@@ -7,8 +7,7 @@ It does not perform network activity, scanning, exploitation, or external action
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Literal
-
+from typing import Any, Literal
 
 Severity = Literal["low", "medium", "high", "critical", "unknown"]
 
@@ -32,7 +31,7 @@ class SocAnalystAgent:
     def __init__(self, name: str = "SOC Analyst Agent") -> None:
         self.name = name
 
-    def analyze_log(self, log_text: str) -> dict[str, object]:
+    def analyze_log(self, log_text: str) -> dict[str, Any]:
         """Analyze a log entry or log block."""
         if not isinstance(log_text, str):
             raise ValueError("log_text must be a string.")

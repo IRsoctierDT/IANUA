@@ -1,5 +1,5 @@
 from pathlib import Path
-from uuid import uuid5, NAMESPACE_URL
+from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -19,7 +19,7 @@ def chunk_text(text: str):
     index = 0
 
     while start < len(text):
-        chunk = text[start:start + CHUNK_SIZE].strip()
+        chunk = text[start : start + CHUNK_SIZE].strip()
         if chunk:
             yield index, chunk
         index += 1

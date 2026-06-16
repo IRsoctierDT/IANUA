@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from agents.tools.validation import ValidationError
 from mcp.server import build_default_registry
 

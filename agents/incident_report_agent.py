@@ -1,62 +1,78 @@
-from pathlib import Path
-from datetime import datetime, timezone
+from __future__ import annotations
 
-from agents.soc_analyst_agent import SocAnalystAgent
+from datetime import UTC, datetime
+from pathlib import Path
+
 from agents.mitre_mapper_agent import MitreMapperAgent
+from agents.soc_analyst_agent import SocAnalystAgent
 
 
 class IncidentReportAgent:
-    def __init__(self):
+    def __init__(self) -> None:
         self.soc_agent = SocAnalystAgent()
         self.mitre_mapper = MitreMapperAgent()
 
-    def generate_report(self, log_text: str, output_path: str) -> Path:
-        result = self.soc_agent.analyze_log(log_text)
-        mitre = self.mitre_mapper.map_event(
-            result["event_type"],
-            log_text,
-        )
+    def generate_report(
+        self,
+        log_text: str,
+        output_path: str,
+        *,
+        soc_result: dict | None = None,
+        mitre_result: dict | None = None,
+    ) -> Path:
+        """Write a markdown incident report.
+
+        Pass pre-computed ``soc_result`` and ``mitre_result`` to avoid
+        re-running analysis when the orchestrator has already done it.
+        """
+        if soc_result is None:
+            soc_result = self.soc_agent.analyze_log(log_text)
+        if mitre_result is None:
+            mitre_result = self.mitre_mapper.map_event(
+                soc_result["event_type"],
+                log_text,
+            )
 
         target = Path(output_path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        indicators = result.get("indicators", [])
+        indicators = soc_result.get("indicators", [])
 
         report = f"""# Incident Report
 
 ## Generated
-{datetime.now(timezone.utc).isoformat()}
+{datetime.now(UTC).isoformat()}
 
 ## Summary
-{result["summary"]}
+{soc_result["summary"]}
 
 ## Severity
-{result["severity"]}
+{soc_result["severity"]}
 
 ## Event Type
-{result["event_type"]}
+{soc_result["event_type"]}
 
 ## MITRE ATT&CK Mapping
 
-- **Tactic:** {mitre["tactic"]}
-- **Technique:** {mitre["technique"]}
-- **Technique ID:** {mitre["technique_id"]}
-- **Confidence:** {mitre["confidence"]}
+- **Tactic:** {mitre_result["tactic"]}
+- **Technique:** {mitre_result["technique"]}
+- **Technique ID:** {mitre_result["technique_id"]}
+- **Confidence:** {mitre_result["confidence"]}
 
 ### MITRE Evidence
-{chr(10).join(f"- {e}" for e in mitre["evidence"])}
+{chr(10).join(f"- {e}" for e in mitre_result["evidence"])}
 
 ### MITRE Investigation Steps
-{chr(10).join(f"- {s}" for s in mitre["recommended_investigation"])}
+{chr(10).join(f"- {s}" for s in mitre_result["recommended_investigation"])}
 
 ## Indicators
 {chr(10).join(f"- `{i}`" for i in indicators) if indicators else "- None detected"}
 
 ## Recommended Actions
-{chr(10).join(f"- {a}" for a in result["recommended_actions"])}
+{chr(10).join(f"- {a}" for a in soc_result["recommended_actions"])}
 
 ## Assumptions
-{chr(10).join(f"- {a}" for a in result["assumptions"])}
+{chr(10).join(f"- {a}" for a in soc_result["assumptions"])}
 """
 
         target.write_text(report, encoding="utf-8")

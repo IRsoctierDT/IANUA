@@ -1,6 +1,5 @@
-from dataclasses import dataclass, asdict
-from typing import Literal
-
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
 
 Confidence = Literal["low", "medium", "high"]
 
@@ -16,7 +15,7 @@ class ThreatIntelResult:
 
 
 class ThreatIntelAgent:
-    def analyze_indicator(self, indicator: str) -> dict:
+    def analyze_indicator(self, indicator: str) -> dict[str, Any]:
         cleaned = indicator.strip()
 
         if not cleaned:
@@ -97,9 +96,7 @@ class ThreatIntelAgent:
         first, second, *_ = [int(part) for part in value.split(".")]
 
         return (
-            first == 10
-            or (first == 172 and 16 <= second <= 31)
-            or (first == 192 and second == 168)
+            first == 10 or (first == 172 and 16 <= second <= 31) or (first == 192 and second == 168)
         )
 
 

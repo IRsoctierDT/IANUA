@@ -9,11 +9,7 @@ def main():
         description="Run SOC AI incident workflow against each line in a log file."
     )
 
-    parser.add_argument(
-        "--file",
-        required=True,
-        help="Path to log file."
-    )
+    parser.add_argument("--file", required=True, help="Path to log file.")
 
     args = parser.parse_args()
 
@@ -22,11 +18,7 @@ def main():
     if not path.exists():
         raise SystemExit(f"Log file not found: {path}")
 
-    lines = [
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     agent = OrchestratorAgent()
 

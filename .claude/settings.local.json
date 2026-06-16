@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python -m mypy agents scripts tests)",
+      "Bash(python -m pytest tests/ --ignore=tests/integration -q)",
+      "Bash(ruff check *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(ruff format *)",
+      "Bash(ruff --version)",
+      "Bash(pip index *)"
+    ]
+  }
+}

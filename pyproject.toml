@@ -6,13 +6,24 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+packages = [
+  "agents",
+  "agents.tools",
+  "agents.roles",
+  "agents.policies",
+  "rag",
+  "mcp",
+  "dashboard",
+  "scripts",
+]
+
 [project]
 name = "ai-operator-cyber-command-center"
 version = "0.1.0"
 description = "Portfolio-grade environment for AI ops, cybersecurity automation, RAG, and agentic workflows."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
 authors = [{ name = "Ivan Rozenblad" }]
 
 # Pin runtime deps here as the project grows. Justify each addition per AGENTS.md §4.
@@ -21,7 +32,7 @@ dependencies = []
 [project.optional-dependencies]
 # Install with:  pip install -e ".[dev]"
 dev = [
-  "ruff>=0.6",
+  "ruff==0.15.17",
   "mypy>=1.11",
   "pytest>=8.0",
   "pytest-cov>=5.0",
@@ -88,6 +99,20 @@ strict_equality = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+module = [
+  "qdrant_client",
+  "qdrant_client.*",
+  "sentence_transformers",
+  "weasyprint",
+  "markdown",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "scripts.*"
+ignore_errors = true
+
 # ---------------------------------------------------------------------------
 # pytest + coverage (AGENTS.md §7 check #2, §7.1 coverage gate)
 # ---------------------------------------------------------------------------
@@ -99,7 +124,8 @@ addopts = [
   "--strict-markers",
   "--strict-config",
   "--cov=agents",
-  "--cov=scripts",
+  "--cov=rag",
+  "--cov=mcp",
   "--cov-report=term-missing",
   "--cov-fail-under=85",
 ]
@@ -111,7 +137,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agents", "scripts"]
+source = ["agents", "rag", "mcp"]
 omit = ["tests/*", "*/__init__.py"]
 
 [tool.coverage.report]

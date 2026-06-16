@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from agents.tools.validation import ValidationError
+
 from mcp.server import ToolRegistry, build_default_registry
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -84,8 +85,10 @@ def handle_request(registry: ToolRegistry, request: dict[str, Any]) -> dict[str,
             output = registry.dispatch(name, arguments)
         except ValidationError as exc:
             # Tool/allow-list violation -> structured tool error, not a crash.
-            return _result(req_id, {"isError": True, "content": [{"type": "text", "text": str(exc)}]})
-        except Exception:  # noqa: BLE001 - never leak internals over the wire
+            return _result(
+                req_id, {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+            )
+        except Exception:
             return _error(req_id, INTERNAL_ERROR, "internal error")
         return _result(req_id, {"isError": False, "content": [{"type": "json", "json": output}]})
 
