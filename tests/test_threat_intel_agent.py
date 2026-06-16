@@ -1,5 +1,4 @@
 import pytest
-
 from agents.threat_intel_agent import ThreatIntelAgent
 
 

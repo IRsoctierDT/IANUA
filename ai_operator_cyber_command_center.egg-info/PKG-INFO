@@ -1,10 +1,86 @@
 Metadata-Version: 2.4
 Name: ai-operator-cyber-command-center
-Version: 1.0.0
-Summary: Master v1 STICHES Edition for AI operations and cybersecurity automation.
-Requires-Python: >=3.12
+Version: 0.1.0
+Summary: Portfolio-grade environment for AI ops, cybersecurity automation, RAG, and agentic workflows.
+Author: Ivan Rozenblad
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
 Provides-Extra: dev
-Requires-Dist: pytest>=8.0.0; extra == "dev"
-Requires-Dist: ruff>=0.6.0; extra == "dev"
-Requires-Dist: mypy>=1.10.0; extra == "dev"
-Requires-Dist: bandit>=1.7.9; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.11; extra == "dev"
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Requires-Dist: bandit>=1.7; extra == "dev"
+Requires-Dist: pip-audit>=2.7; extra == "dev"
+Requires-Dist: detect-secrets>=1.5; extra == "dev"
+Requires-Dist: pre-commit>=3.7; extra == "dev"
+
+# AI Operator Cyber Command Center
+
+Portfolio-grade environment for **AI operations, cybersecurity automation, RAG systems,
+and agentic workflows** — built secure-by-default (least privilege, auditability, defense
+in depth, human-in-the-loop for irreversible actions).
+
+## Governance
+- **[AGENTS.md](./AGENTS.md)** — operating charter for any coding agent (also `CLAUDE.md`).
+- **[DESIGN.md](./DESIGN.md)** — architecture, trust boundaries, decision log.
+- **[SECURITY.md](./SECURITY.md)** — vulnerability reporting & policy.
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — human + agent workflow.
+
+## Quickstart
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pre-commit install
+pre-commit install --hook-type pre-push
+detect-secrets scan > .secrets.baseline   # one-time, then review & commit
+```
+
+## Quality gates (must be green — AGENTS.md §7)
+```bash
+python -m compileall .
+python -m pytest                 # incl. tests/security, 85% coverage gate
+ruff check .
+mypy agents scripts tests
+bandit -c pyproject.toml -r agents scripts
+```
+
+## Layout
+```
+agents/      orchestration, roles, tools, policies   tests/       unit | integration | security
+rag/         ingestion → retrieval                   infra/       IaC / deploy (gated)
+mcp/         MCP servers exposed to agents            detections/  defensive, lab-scoped content
+scripts/     operational CLI entrypoints             data/        lab data only (gitignored)
+```
+
+## Run the MCP server (stdio)
+```bash
+# Speaks line-delimited JSON-RPC 2.0 over stdio; root confined to ./data.
+MCP_ROOT=./data python -m mcp.transport
+# methods: initialize | tools/list | tools/call
+```
+
+## One-command pipeline (ingest → embed → query)
+```bash
+# Uses local Ollama embeddings:
+python -m scripts.rag_cli --corpus ./corpus --query "zero trust segmentation" --k 3
+# Fully offline (no Ollama, deterministic embedder) — good for CI/air-gapped labs:
+python -m scripts.rag_cli --corpus ./corpus --query "ids tuning" --offline
+```
+
+## Embeddings (local Ollama)
+```python
+from rag.embeddings import OllamaEmbedder   # default-deny egress; loopback only
+from rag.ingest import ingest, embed_chunks
+from rag.retrieve import InMemoryVectorStore
+
+embedder = OllamaEmbedder(model="nomic-embed-text")   # talks to 127.0.0.1:11434
+pairs = embed_chunks(ingest(Path("./corpus")), embedder)
+store = InMemoryVectorStore()
+for chunk, vec in pairs:
+    store.add(chunk, vec)
+```
+> `OllamaEmbedder` enforces a host allow-list, bounded timeout, and fails closed. To reach a
+> non-loopback Ollama host, pass `allowed_hosts=frozenset({...})` deliberately (AGENTS.md §5.1).
+
+> Security tooling here is for **defensive, lawful-lab use only**. See AGENTS.md §5.

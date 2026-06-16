@@ -9,25 +9,16 @@ def main():
         description="Run SOC AI incident workflow from a log string or file."
     )
 
-    parser.add_argument(
-        "--log",
-        help="Raw log text to analyze."
-    )
+    parser.add_argument("--log", help="Raw log text to analyze.")
 
-    parser.add_argument(
-        "--file",
-        help="Path to a log file to analyze."
-    )
+    parser.add_argument("--file", help="Path to a log file to analyze.")
 
     args = parser.parse_args()
 
     if not args.log and not args.file:
         raise SystemExit("Provide either --log or --file")
 
-    if args.file:
-        log_text = Path(args.file).read_text(encoding="utf-8")
-    else:
-        log_text = args.log
+    log_text = Path(args.file).read_text(encoding="utf-8") if args.file else args.log
 
     agent = OrchestratorAgent()
     result = agent.process_log(log_text)

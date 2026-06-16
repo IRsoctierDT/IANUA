@@ -1,0 +1,12 @@
+name: Security concern (non-sensitive)
+description: For NON-sensitive hardening ideas only. Real vulnerabilities go to SECURITY.md (private).
+labels: ["security", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: "⚠️ Do NOT file exploitable vulnerabilities here. Report privately per SECURITY.md."
+  - type: textarea
+    id: concern
+    attributes:
+      label: Hardening suggestion
+    validations: { required: true }
