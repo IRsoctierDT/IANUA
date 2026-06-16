@@ -29,10 +29,10 @@ DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::
 
 def _urllib_transport(url: str, body: dict[str, object], timeout: float) -> dict[str, object]:
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed by OllamaEmbedder.__post_init__
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - host allow-listed below
-            return json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - host allow-listed by OllamaEmbedder.__post_init__
+            return json.loads(resp.read().decode("utf-8"))  # type: ignore[no-any-return]
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ValidationError(f"embedding request failed: {exc}") from exc
 

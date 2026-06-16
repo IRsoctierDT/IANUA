@@ -1,1 +1,5 @@
 agents
+dashboard
+mcp
+rag
+scripts

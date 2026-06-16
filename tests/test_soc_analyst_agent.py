@@ -1,5 +1,4 @@
 import pytest
-
 from agents.soc_analyst_agent import SocAnalystAgent
 
 

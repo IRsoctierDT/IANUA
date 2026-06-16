@@ -66,7 +66,7 @@ def chunk_text(source: str, text: str, *, size: int = 800, overlap: int = 100) -
         raise ValidationError("require size > 0 and 0 <= overlap < size")
     chunks: list[Chunk] = []
     step = size - overlap
-    for i, start in enumerate(range(0, max(len(text), 1), step)):
+    for i, start in enumerate(range(0, len(text) or 1, step)):
         window = text[start : start + size].strip()
         if window:
             chunks.append(Chunk(source=source, index=i, text=window))
