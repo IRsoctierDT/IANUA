@@ -20,7 +20,7 @@ def get_git_tag():
 
 def get_ollama_models():
     try:
-        return subprocess.check_output(["ollama", "list"], text=True)  # noqa: S607 - ollama is a known system tool
+        return subprocess.check_output(["ollama", "list"], text=True)  # noqa: S607 - hardcoded trusted command
     except Exception as exc:
         return f"Ollama unavailable: {exc}"
 
