@@ -52,7 +52,15 @@ def test_shipped_knowledge_base_is_retrievable(capsys: pytest.CaptureFixture[str
     semantic by design).
     """
     code = main(
-        ["--corpus", str(_KNOWLEDGE_BASE), "--query", "security operations", "--k", "3", "--offline"]
+        [
+            "--corpus",
+            str(_KNOWLEDGE_BASE),
+            "--query",
+            "security operations",
+            "--k",
+            "3",
+            "--offline",
+        ]
     )
     out = capsys.readouterr().out
     assert code == 0
