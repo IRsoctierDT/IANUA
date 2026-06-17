@@ -1,0 +1,32 @@
+[
+  {
+    "timestamp": "2025-06-15T14:00:01Z",
+    "host": "web-01",
+    "user": "root",
+    "src_ip": "203.0.113.42",
+    "severity": "high",
+    "message": "Failed password for root from 203.0.113.42 port 22 ssh2"
+  },
+  {
+    "timestamp": "2025-06-15T14:00:03Z",
+    "host": "web-01",
+    "user": "admin",
+    "src_ip": "203.0.113.42",
+    "severity": "medium",
+    "message": "Failed password for invalid user admin from 203.0.113.42 port 22 ssh2"
+  },
+  {
+    "timestamp": "2025-06-15T14:05:00Z",
+    "host": "fw-edge",
+    "src_ip": "198.51.100.7",
+    "severity": "low",
+    "message": "Blocked outbound connection to 198.51.100.7 port 443"
+  },
+  {
+    "timestamp": "2025-06-15T14:10:00Z",
+    "host": "ids-01",
+    "src_ip": "10.0.0.99",
+    "severity": "medium",
+    "message": "Suricata alert: ET SCAN Nmap TCP scan detected from 10.0.0.99"
+  }
+]
