@@ -9,14 +9,11 @@ permissions:
   security-events: write
   actions: read   # codeql-action reads the workflow run for telemetry/context
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: github/codeql-action/init@v4
         with: { languages: python }
       # upload: never avoids a 403 when GitHub Code Scanning is not yet enabled
@@ -27,7 +24,7 @@ jobs:
         with:
           upload: never
           output: sarif-results
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: codeql-sarif
           path: sarif-results/
