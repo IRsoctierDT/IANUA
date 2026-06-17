@@ -1,0 +1,32 @@
+﻿2026-06-16T00:28:48.4115919Z Current runner version: '2.335.1'
+2026-06-16T00:28:48.4151434Z ##[group]Runner Image Provisioner
+2026-06-16T00:28:48.4152678Z Hosted Compute Agent
+2026-06-16T00:28:48.4153749Z Version: 20260527.539
+2026-06-16T00:28:48.4154779Z Commit: a891dd388383b896fa6ac04a82c0b75cec981078
+2026-06-16T00:28:48.4156050Z Build Date: 2026-05-27T21:39:57Z
+2026-06-16T00:28:48.4157324Z Worker ID: {6cf1b644-e15e-4935-ba2e-a50cf61bea10}
+2026-06-16T00:28:48.4158746Z Azure Region: eastus
+2026-06-16T00:28:48.4159816Z ##[endgroup]
+2026-06-16T00:28:48.4161634Z ##[group]Operating System
+2026-06-16T00:28:48.4162811Z Ubuntu
+2026-06-16T00:28:48.4163712Z 24.04.4
+2026-06-16T00:28:48.4164520Z LTS
+2026-06-16T00:28:48.4165466Z ##[endgroup]
+2026-06-16T00:28:48.4166349Z ##[group]Runner Image
+2026-06-16T00:28:48.4167386Z Image: ubuntu-24.04
+2026-06-16T00:28:48.4168808Z Version: 20260607.184.1
+2026-06-16T00:28:48.4170556Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260607.184/images/ubuntu/Ubuntu2404-Readme.md
+2026-06-16T00:28:48.4173534Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260607.184
+2026-06-16T00:28:48.4175676Z ##[endgroup]
+2026-06-16T00:28:48.4177481Z ##[group]GITHUB_TOKEN Permissions
+2026-06-16T00:28:48.4180753Z Contents: read
+2026-06-16T00:28:48.4181754Z Metadata: read
+2026-06-16T00:28:48.4182633Z ##[endgroup]
+2026-06-16T00:28:48.4185763Z Secret source: Actions
+2026-06-16T00:28:48.4187341Z Prepare workflow directory
+2026-06-16T00:28:48.4733837Z Prepare all required actions
+2026-06-16T00:28:48.4790914Z Getting action download info
+2026-06-16T00:28:48.8095361Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-06-16T00:28:48.9115450Z Download action repository 'actions/setup-python@v5' (SHA:a26af69be951a213d495a4c3e4e4022e16d87065)
+2026-06-16T00:28:48.9956272Z Download action repository 'gitleaks/gitleaks-action@v2' (SHA:ff98106e4c7b2bc287b24eaf42907196329070c7)
+2026-06-16T00:28:49.2426740Z Complete job name: Security (bandit + pip-audit + gitleaks)

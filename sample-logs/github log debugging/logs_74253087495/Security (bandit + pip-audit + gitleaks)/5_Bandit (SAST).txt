@@ -1,0 +1,41 @@
+﻿2026-06-16T00:29:03.9358952Z ##[group]Run bandit -c pyproject.toml -r agents scripts
+2026-06-16T00:29:03.9359453Z [36;1mbandit -c pyproject.toml -r agents scripts[0m
+2026-06-16T00:29:03.9395158Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:03.9395433Z env:
+2026-06-16T00:29:03.9395641Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:03.9395896Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:03.9396253Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:03.9396694Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:29:03.9397130Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:03.9397508Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:03.9397874Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:03.9398527Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:29:03.9399071Z ##[endgroup]
+2026-06-16T00:29:04.1321340Z [main]	INFO	profile include tests: None
+2026-06-16T00:29:04.1322413Z [main]	INFO	profile exclude tests: None
+2026-06-16T00:29:04.1323285Z [main]	INFO	cli include tests: None
+2026-06-16T00:29:04.1323987Z [main]	INFO	cli exclude tests: None
+2026-06-16T00:29:04.1324654Z [main]	INFO	using config: pyproject.toml
+2026-06-16T00:29:04.1325351Z [main]	INFO	running on Python 3.11.15
+2026-06-16T00:29:04.2339509Z Run started:2026-06-16 00:29:04.233675+00:00
+2026-06-16T00:29:04.2340125Z 
+2026-06-16T00:29:04.2340447Z Test results:
+2026-06-16T00:29:04.2341009Z 	No issues identified.
+2026-06-16T00:29:04.2341376Z 
+2026-06-16T00:29:04.2341655Z Code scanned:
+2026-06-16T00:29:04.2342101Z 	Total lines of code: 855
+2026-06-16T00:29:04.2342607Z 	Total lines skipped (#nosec): 0
+2026-06-16T00:29:04.2343411Z 	Total potential issues skipped due to specifically being disabled (e.g., #nosec BXXX): 0
+2026-06-16T00:29:04.2344104Z 
+2026-06-16T00:29:04.2344383Z Run metrics:
+2026-06-16T00:29:04.2344863Z 	Total issues (by severity):
+2026-06-16T00:29:04.2345367Z 		Undefined: 0
+2026-06-16T00:29:04.2345800Z 		Low: 0
+2026-06-16T00:29:04.2346200Z 		Medium: 0
+2026-06-16T00:29:04.2346604Z 		High: 0
+2026-06-16T00:29:04.2347040Z 	Total issues (by confidence):
+2026-06-16T00:29:04.2347553Z 		Undefined: 0
+2026-06-16T00:29:04.2348121Z 		Low: 0
+2026-06-16T00:29:04.2348536Z 		Medium: 0
+2026-06-16T00:29:04.2348944Z 		High: 0
+2026-06-16T00:29:04.2349367Z Files skipped (0):

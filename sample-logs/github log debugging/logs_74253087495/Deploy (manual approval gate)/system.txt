@@ -1,0 +1,4 @@
+2026-06-16T00:30:07.0110000Z Evaluating deploy.if
+2026-06-16T00:30:07.0110000Z Evaluating: (success() && (((github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main'))))
+2026-06-16T00:30:07.0110000Z Expanded: (true && (('push' == 'workflow_dispatch') && (github.ref == 'refs/heads/main')))
+2026-06-16T00:30:07.0110000Z Result: false

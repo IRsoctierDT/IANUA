@@ -1,0 +1,262 @@
+﻿2026-06-16T00:29:59.8514544Z ##[group]Run python -m build
+2026-06-16T00:29:59.8514879Z [36;1mpython -m build[0m
+2026-06-16T00:29:59.8548955Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:59.8549226Z env:
+2026-06-16T00:29:59.8549422Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:59.8549684Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:59.8550049Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8550499Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:29:59.8550932Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8551345Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8551746Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8552133Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:29:59.8552472Z ##[endgroup]
+2026-06-16T00:30:00.0088497Z * Creating isolated environment: venv+pip...
+2026-06-16T00:30:00.0928135Z * Installing packages in isolated environment:
+2026-06-16T00:30:00.0929372Z   - setuptools>=68
+2026-06-16T00:30:00.0946661Z   - wheel
+2026-06-16T00:30:01.3986711Z * Getting build dependencies for sdist...
+2026-06-16T00:30:01.9865599Z running egg_info
+2026-06-16T00:30:01.9878648Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:01.9890807Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:01.9897717Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:01.9899406Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:01.9946795Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:01.9964717Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:02.0214578Z * Building sdist...
+2026-06-16T00:30:02.1621295Z running sdist
+2026-06-16T00:30:02.1622171Z running egg_info
+2026-06-16T00:30:02.1643797Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:02.1656310Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:02.1662726Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:02.1664403Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:02.1711582Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:02.1729638Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:02.1731296Z running check
+2026-06-16T00:30:02.1757094Z creating ai_operator_cyber_command_center-0.1.0
+2026-06-16T00:30:02.1760132Z creating ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1762121Z creating ai_operator_cyber_command_center-0.1.0/agents/policies
+2026-06-16T00:30:02.1763882Z creating ai_operator_cyber_command_center-0.1.0/agents/roles
+2026-06-16T00:30:02.1765672Z creating ai_operator_cyber_command_center-0.1.0/agents/tools
+2026-06-16T00:30:02.1767891Z creating ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1769717Z creating ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1776722Z creating ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1794940Z creating ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1805236Z creating ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1806475Z creating ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1807557Z copying files to ai_operator_cyber_command_center-0.1.0...
+2026-06-16T00:30:02.1809089Z copying README.md -> ai_operator_cyber_command_center-0.1.0
+2026-06-16T00:30:02.1810264Z copying pyproject.toml -> ai_operator_cyber_command_center-0.1.0
+2026-06-16T00:30:02.1826877Z copying agents/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1829160Z copying agents/incident_report_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1830884Z copying agents/mitre_mapper_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1832315Z copying agents/orchestrator_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1833685Z copying agents/soc_analyst_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1835064Z copying agents/threat_intel_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1836754Z copying agents/policies/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents/policies
+2026-06-16T00:30:02.1838199Z copying agents/roles/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents/roles
+2026-06-16T00:30:02.1839542Z copying agents/tools/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents/tools
+2026-06-16T00:30:02.1840949Z copying agents/tools/validation.py -> ai_operator_cyber_command_center-0.1.0/agents/tools
+2026-06-16T00:30:02.1842844Z copying ai_operator_cyber_command_center.egg-info/PKG-INFO -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1844983Z copying ai_operator_cyber_command_center.egg-info/SOURCES.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1847472Z copying ai_operator_cyber_command_center.egg-info/dependency_links.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1849760Z copying ai_operator_cyber_command_center.egg-info/requires.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1851970Z copying ai_operator_cyber_command_center.egg-info/top_level.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1853739Z copying dashboard/__init__.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1855044Z copying dashboard/app.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1856615Z copying dashboard/kb_search.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1857993Z copying dashboard/ollama_service.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1859398Z copying dashboard/system_health.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1860686Z copying mcp/__init__.py -> ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1861842Z copying mcp/server.py -> ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1863008Z copying mcp/transport.py -> ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1864137Z copying rag/__init__.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1865256Z copying rag/embeddings.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1866794Z copying rag/ingest.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1867997Z copying rag/retrieve.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1869199Z copying scripts/__init__.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1870528Z copying scripts/ask_cyber_kb.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1871927Z copying scripts/ask_cyber_kb_chunked_ollama.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1873369Z copying scripts/ask_cyber_kb_ollama.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1874725Z copying scripts/convert_report_to_pdf.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1876656Z copying scripts/create_cyber_collection.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1878182Z copying scripts/generate_docs_from_design.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1879541Z copying scripts/ingest_cyber_kb.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1881151Z copying scripts/ingest_cyber_kb_chunked.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1882493Z copying scripts/rag_cli.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1883737Z copying scripts/search_cyber_kb.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1885013Z copying scripts/search_cyber_kb_chunked.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1886814Z copying scripts/test_embeddings_qdrant.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1888122Z copying scripts/test_qdrant.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1889437Z copying tests/test_incident_report_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1890861Z copying tests/test_mitre_mapper_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1892265Z copying tests/test_orchestrator_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1893634Z copying tests/test_soc_analyst_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1894930Z copying tests/test_threat_intel_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1896927Z copying ai_operator_cyber_command_center.egg-info/SOURCES.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1898517Z Writing ai_operator_cyber_command_center-0.1.0/setup.cfg
+2026-06-16T00:30:02.1899360Z Creating tar archive
+2026-06-16T00:30:02.2040934Z removing 'ai_operator_cyber_command_center-0.1.0' (and everything under it)
+2026-06-16T00:30:02.2618761Z * Building wheel from sdist
+2026-06-16T00:30:02.2671840Z * Creating isolated environment: venv+pip...
+2026-06-16T00:30:02.2695358Z * Installing packages in isolated environment:
+2026-06-16T00:30:02.2696520Z   - setuptools>=68
+2026-06-16T00:30:02.2697088Z   - wheel
+2026-06-16T00:30:03.4137177Z * Getting build dependencies for wheel...
+2026-06-16T00:30:03.8255485Z running egg_info
+2026-06-16T00:30:03.8268517Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:03.8279737Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:03.8286849Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:03.8288784Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:03.8336520Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:03.8354390Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:03.8619532Z * Building wheel...
+2026-06-16T00:30:03.9988413Z running bdist_wheel
+2026-06-16T00:30:04.0032169Z running build
+2026-06-16T00:30:04.0032944Z running build_py
+2026-06-16T00:30:04.0046717Z creating build/lib/agents
+2026-06-16T00:30:04.0049627Z copying agents/__init__.py -> build/lib/agents
+2026-06-16T00:30:04.0057242Z copying agents/mitre_mapper_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0058254Z copying agents/threat_intel_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0059308Z copying agents/orchestrator_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0060411Z copying agents/incident_report_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0061489Z copying agents/soc_analyst_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0064140Z creating build/lib/agents/tools
+2026-06-16T00:30:04.0066222Z copying agents/tools/__init__.py -> build/lib/agents/tools
+2026-06-16T00:30:04.0068483Z copying agents/tools/validation.py -> build/lib/agents/tools
+2026-06-16T00:30:04.0071321Z creating build/lib/agents/roles
+2026-06-16T00:30:04.0073005Z copying agents/roles/__init__.py -> build/lib/agents/roles
+2026-06-16T00:30:04.0075658Z creating build/lib/agents/policies
+2026-06-16T00:30:04.0077663Z copying agents/policies/__init__.py -> build/lib/agents/policies
+2026-06-16T00:30:04.0080552Z creating build/lib/rag
+2026-06-16T00:30:04.0097100Z copying rag/__init__.py -> build/lib/rag
+2026-06-16T00:30:04.0107117Z copying rag/ingest.py -> build/lib/rag
+2026-06-16T00:30:04.0107886Z copying rag/retrieve.py -> build/lib/rag
+2026-06-16T00:30:04.0108769Z copying rag/embeddings.py -> build/lib/rag
+2026-06-16T00:30:04.0109644Z creating build/lib/mcp
+2026-06-16T00:30:04.0110358Z copying mcp/__init__.py -> build/lib/mcp
+2026-06-16T00:30:04.0111200Z copying mcp/transport.py -> build/lib/mcp
+2026-06-16T00:30:04.0112269Z copying mcp/server.py -> build/lib/mcp
+2026-06-16T00:30:04.0122538Z creating build/lib/dashboard
+2026-06-16T00:30:04.0123439Z copying dashboard/kb_search.py -> build/lib/dashboard
+2026-06-16T00:30:04.0124442Z copying dashboard/__init__.py -> build/lib/dashboard
+2026-06-16T00:30:04.0125390Z copying dashboard/app.py -> build/lib/dashboard
+2026-06-16T00:30:04.0126635Z copying dashboard/ollama_service.py -> build/lib/dashboard
+2026-06-16T00:30:04.0127675Z copying dashboard/system_health.py -> build/lib/dashboard
+2026-06-16T00:30:04.0128599Z creating build/lib/scripts
+2026-06-16T00:30:04.0129473Z copying scripts/search_cyber_kb_chunked.py -> build/lib/scripts
+2026-06-16T00:30:04.0130533Z copying scripts/ingest_cyber_kb.py -> build/lib/scripts
+2026-06-16T00:30:04.0131472Z copying scripts/__init__.py -> build/lib/scripts
+2026-06-16T00:30:04.0132456Z copying scripts/ask_cyber_kb_ollama.py -> build/lib/scripts
+2026-06-16T00:30:04.0133527Z copying scripts/create_cyber_collection.py -> build/lib/scripts
+2026-06-16T00:30:04.0134617Z copying scripts/ingest_cyber_kb_chunked.py -> build/lib/scripts
+2026-06-16T00:30:04.0135660Z copying scripts/search_cyber_kb.py -> build/lib/scripts
+2026-06-16T00:30:04.0136943Z copying scripts/ask_cyber_kb.py -> build/lib/scripts
+2026-06-16T00:30:04.0137958Z copying scripts/convert_report_to_pdf.py -> build/lib/scripts
+2026-06-16T00:30:04.0138953Z copying scripts/rag_cli.py -> build/lib/scripts
+2026-06-16T00:30:04.0139873Z copying scripts/test_qdrant.py -> build/lib/scripts
+2026-06-16T00:30:04.0140914Z copying scripts/generate_docs_from_design.py -> build/lib/scripts
+2026-06-16T00:30:04.0142057Z copying scripts/ask_cyber_kb_chunked_ollama.py -> build/lib/scripts
+2026-06-16T00:30:04.0143199Z copying scripts/test_embeddings_qdrant.py -> build/lib/scripts
+2026-06-16T00:30:04.0144050Z running egg_info
+2026-06-16T00:30:04.0153199Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:04.0165176Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:04.0172098Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:04.0173714Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:04.0201106Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:04.0219012Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:04.0249939Z installing to build/bdist.linux-x86_64/wheel
+2026-06-16T00:30:04.0250770Z running install
+2026-06-16T00:30:04.0308724Z running install_lib
+2026-06-16T00:30:04.0320360Z creating build/bdist.linux-x86_64/wheel
+2026-06-16T00:30:04.0322695Z creating build/bdist.linux-x86_64/wheel/rag
+2026-06-16T00:30:04.0324667Z copying build/lib/rag/__init__.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0326685Z copying build/lib/rag/ingest.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0328686Z copying build/lib/rag/retrieve.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0330586Z copying build/lib/rag/embeddings.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0332908Z creating build/bdist.linux-x86_64/wheel/scripts
+2026-06-16T00:30:04.0334934Z copying build/lib/scripts/search_cyber_kb_chunked.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0337033Z copying build/lib/scripts/ingest_cyber_kb.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0347187Z copying build/lib/scripts/__init__.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0348826Z copying build/lib/scripts/ask_cyber_kb_ollama.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0350541Z copying build/lib/scripts/create_cyber_collection.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0352139Z copying build/lib/scripts/ingest_cyber_kb_chunked.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0353608Z copying build/lib/scripts/search_cyber_kb.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0354980Z copying build/lib/scripts/ask_cyber_kb.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0356689Z copying build/lib/scripts/convert_report_to_pdf.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0358128Z copying build/lib/scripts/rag_cli.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0359464Z copying build/lib/scripts/test_qdrant.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0360952Z copying build/lib/scripts/generate_docs_from_design.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0362548Z copying build/lib/scripts/ask_cyber_kb_chunked_ollama.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0364097Z copying build/lib/scripts/test_embeddings_qdrant.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0365368Z creating build/bdist.linux-x86_64/wheel/dashboard
+2026-06-16T00:30:04.0366771Z copying build/lib/dashboard/kb_search.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0368151Z copying build/lib/dashboard/__init__.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0369500Z copying build/lib/dashboard/app.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0370899Z copying build/lib/dashboard/ollama_service.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0372404Z copying build/lib/dashboard/system_health.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0373597Z creating build/bdist.linux-x86_64/wheel/mcp
+2026-06-16T00:30:04.0374620Z copying build/lib/mcp/__init__.py -> build/bdist.linux-x86_64/wheel/./mcp
+2026-06-16T00:30:04.0375877Z copying build/lib/mcp/transport.py -> build/bdist.linux-x86_64/wheel/./mcp
+2026-06-16T00:30:04.0377355Z copying build/lib/mcp/server.py -> build/bdist.linux-x86_64/wheel/./mcp
+2026-06-16T00:30:04.0378435Z creating build/bdist.linux-x86_64/wheel/agents
+2026-06-16T00:30:04.0379385Z creating build/bdist.linux-x86_64/wheel/agents/policies
+2026-06-16T00:30:04.0380646Z copying build/lib/agents/policies/__init__.py -> build/bdist.linux-x86_64/wheel/./agents/policies
+2026-06-16T00:30:04.0382087Z copying build/lib/agents/__init__.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0383450Z copying build/lib/agents/mitre_mapper_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0385082Z copying build/lib/agents/threat_intel_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0387300Z copying build/lib/agents/orchestrator_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0389126Z copying build/lib/agents/incident_report_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0391301Z creating build/bdist.linux-x86_64/wheel/agents/tools
+2026-06-16T00:30:04.0393228Z copying build/lib/agents/tools/__init__.py -> build/bdist.linux-x86_64/wheel/./agents/tools
+2026-06-16T00:30:04.0394920Z copying build/lib/agents/tools/validation.py -> build/bdist.linux-x86_64/wheel/./agents/tools
+2026-06-16T00:30:04.0397241Z creating build/bdist.linux-x86_64/wheel/agents/roles
+2026-06-16T00:30:04.0399138Z copying build/lib/agents/roles/__init__.py -> build/bdist.linux-x86_64/wheel/./agents/roles
+2026-06-16T00:30:04.0400799Z copying build/lib/agents/soc_analyst_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0402132Z running install_egg_info
+2026-06-16T00:30:04.0414944Z Copying ai_operator_cyber_command_center.egg-info to build/bdist.linux-x86_64/wheel/./ai_operator_cyber_command_center-0.1.0-py3.11.egg-info
+2026-06-16T00:30:04.0423756Z running install_scripts
+2026-06-16T00:30:04.0433856Z creating build/bdist.linux-x86_64/wheel/ai_operator_cyber_command_center-0.1.0.dist-info/WHEEL
+2026-06-16T00:30:04.0438789Z creating '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center/dist/.tmp-i1snsp7b/ai_operator_cyber_command_center-0.1.0-py3-none-any.whl' and adding 'build/bdist.linux-x86_64/wheel' to it
+2026-06-16T00:30:04.0441614Z adding 'agents/__init__.py'
+2026-06-16T00:30:04.0445064Z adding 'agents/incident_report_agent.py'
+2026-06-16T00:30:04.0448457Z adding 'agents/mitre_mapper_agent.py'
+2026-06-16T00:30:04.0451172Z adding 'agents/orchestrator_agent.py'
+2026-06-16T00:30:04.0454306Z adding 'agents/soc_analyst_agent.py'
+2026-06-16T00:30:04.0457618Z adding 'agents/threat_intel_agent.py'
+2026-06-16T00:30:04.0460049Z adding 'agents/policies/__init__.py'
+2026-06-16T00:30:04.0462621Z adding 'agents/roles/__init__.py'
+2026-06-16T00:30:04.0464833Z adding 'agents/tools/__init__.py'
+2026-06-16T00:30:04.0467514Z adding 'agents/tools/validation.py'
+2026-06-16T00:30:04.0470910Z adding 'dashboard/__init__.py'
+2026-06-16T00:30:04.0474288Z adding 'dashboard/app.py'
+2026-06-16T00:30:04.0477090Z adding 'dashboard/kb_search.py'
+2026-06-16T00:30:04.0479338Z adding 'dashboard/ollama_service.py'
+2026-06-16T00:30:04.0481443Z adding 'dashboard/system_health.py'
+2026-06-16T00:30:04.0483660Z adding 'mcp/__init__.py'
+2026-06-16T00:30:04.0487542Z adding 'mcp/server.py'
+2026-06-16T00:30:04.0492417Z adding 'mcp/transport.py'
+2026-06-16T00:30:04.0493142Z adding 'rag/__init__.py'
+2026-06-16T00:30:04.0495295Z adding 'rag/embeddings.py'
+2026-06-16T00:30:04.0498492Z adding 'rag/ingest.py'
+2026-06-16T00:30:04.0517027Z adding 'rag/retrieve.py'
+2026-06-16T00:30:04.0517725Z adding 'scripts/__init__.py'
+2026-06-16T00:30:04.0518542Z adding 'scripts/ask_cyber_kb.py'
+2026-06-16T00:30:04.0519394Z adding 'scripts/ask_cyber_kb_chunked_ollama.py'
+2026-06-16T00:30:04.0520250Z adding 'scripts/ask_cyber_kb_ollama.py'
+2026-06-16T00:30:04.0521069Z adding 'scripts/convert_report_to_pdf.py'
+2026-06-16T00:30:04.0521865Z adding 'scripts/create_cyber_collection.py'
+2026-06-16T00:30:04.0522620Z adding 'scripts/generate_docs_from_design.py'
+2026-06-16T00:30:04.0523457Z adding 'scripts/ingest_cyber_kb.py'
+2026-06-16T00:30:04.0524267Z adding 'scripts/ingest_cyber_kb_chunked.py'
+2026-06-16T00:30:04.0525043Z adding 'scripts/rag_cli.py'
+2026-06-16T00:30:04.0525855Z adding 'scripts/search_cyber_kb.py'
+2026-06-16T00:30:04.0528167Z adding 'scripts/search_cyber_kb_chunked.py'
+2026-06-16T00:30:04.0530236Z adding 'scripts/test_embeddings_qdrant.py'
+2026-06-16T00:30:04.0532129Z adding 'scripts/test_qdrant.py'
+2026-06-16T00:30:04.0534911Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/METADATA'
+2026-06-16T00:30:04.0547270Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/WHEEL'
+2026-06-16T00:30:04.0557251Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/top_level.txt'
+2026-06-16T00:30:04.0558390Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/RECORD'
+2026-06-16T00:30:04.0559340Z removing build/bdist.linux-x86_64/wheel
+2026-06-16T00:30:04.1124028Z Successfully built ai_operator_cyber_command_center-0.1.0.tar.gz and ai_operator_cyber_command_center-0.1.0-py3-none-any.whl
