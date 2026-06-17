@@ -65,7 +65,7 @@ class SocAnalystAgent:
 
         event_type = self._classify_event(log_text)
         severity = self._estimate_severity(log_text, event_type, structured)
-        severity_score = self._score_severity(severity, log_text, event_type)
+        severity_score = self._score_severity(severity, log_text, event_type, structured)
         indicators = self._extract_indicators(log_text, structured)
         evidence = self._build_evidence(log_text, structured, event_type)
 
@@ -156,14 +156,17 @@ class SocAnalystAgent:
             return cast(Severity, explicit)
 
         lowered = log_text.lower()
+        # Check both flat log text and the structured user/account fields.
+        user_val = structured.get("user", structured.get("account", "")).lower()
+        is_privileged = (
+            "root" in lowered
+            or "administrator" in lowered
+            or user_val in ("root", "administrator", "admin")
+        )
         if event_type == "authentication failure":
-            if "root" in lowered or "administrator" in lowered:
-                return "high"
-            return "medium"
+            return "high" if is_privileged else "medium"
         if event_type == "successful login":
-            if "root" in lowered or "administrator" in lowered:
-                return "high"
-            return "low"
+            return "high" if is_privileged else "low"
         if event_type == "ids alert":
             return "medium"
         if event_type == "firewall block":
@@ -173,12 +176,22 @@ class SocAnalystAgent:
         return "unknown"
 
     @staticmethod
-    def _score_severity(severity: Severity, log_text: str, event_type: str) -> int:
+    def _score_severity(
+        severity: Severity,
+        log_text: str,
+        event_type: str,
+        structured: dict[str, Any],
+    ) -> int:
         """Return a 0-100 numeric score; apply modifiers for aggravating signals."""
         base = _SEVERITY_SCORES.get(severity, 0)
         lowered = log_text.lower()
+        user_val = structured.get("user", structured.get("account", "")).lower()
         bonus = 0
-        if "root" in lowered or "administrator" in lowered:
+        if (
+            "root" in lowered
+            or "administrator" in lowered
+            or user_val in ("root", "administrator", "admin")
+        ):
             bonus += 10
         if event_type == "authentication failure" and any(
             kw in lowered for kw in ("repeated", "multiple", "brute")

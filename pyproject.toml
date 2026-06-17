@@ -6,17 +6,9 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = [
-  "agents",
-  "agents.tools",
-  "agents.roles",
-  "agents.policies",
-  "rag",
-  "mcp",
-  "dashboard",
-  "scripts",
-]
+[tool.setuptools.packages.find]
+include = ["agents*", "rag*", "mcp*", "dashboard*", "scripts*"]
+exclude = ["tests*"]
 
 [project]
 name = "ai-operator-cyber-command-center"

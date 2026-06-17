@@ -7,6 +7,11 @@ from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.soc_analyst_agent import SocAnalystAgent
 
 
+def _md_cell(text: str) -> str:
+    """Escape pipe and newline characters so they don't break a Markdown table cell."""
+    return text.replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 class IncidentReportAgent:
     def __init__(self) -> None:
         self.soc_agent = SocAnalystAgent()
@@ -69,7 +74,7 @@ class IncidentReportAgent:
 
 | Field | Value | Significance |
 |-------|-------|--------------|
-{chr(10).join(f"| {e['field']} | {e['value']} | {e['significance']} |" for e in soc_result.get("evidence", [])) or "| — | — | No structured evidence captured. |"}
+{chr(10).join(f"| {_md_cell(e['field'])} | {_md_cell(e['value'])} | {_md_cell(e['significance'])} |" for e in soc_result.get("evidence", [])) or "| — | — | No structured evidence captured. |"}
 
 ## Severity Score
 
