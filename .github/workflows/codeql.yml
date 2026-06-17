@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   security-events: write
+  actions: read   # codeql-action reads the workflow run for telemetry/context
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -16,6 +17,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with: { languages: python }
-      - uses: github/codeql-action/analyze@v3
+      # upload: never avoids a 403 when GitHub Code Scanning is not yet enabled
+      # in the repo settings (Settings → Security → Code scanning).
+      # Remove the upload/output overrides and re-enable security-events: write
+      # once Code Scanning is turned on — the results will then appear inline on PRs.
+      - uses: github/codeql-action/analyze@v4
+        with:
+          upload: never
+          output: sarif-results
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeql-sarif
+          path: sarif-results/
+          if-no-files-found: error
