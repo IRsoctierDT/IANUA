@@ -11,6 +11,18 @@ def test_process_log_returns_all_keys() -> None:
     assert "soc" in result
     assert "mitre" in result
     assert "threat_intel" in result
+    assert "knowledge_base" in result
+
+
+@pytest.mark.unit
+def test_process_log_knowledge_base_is_list_of_refs() -> None:
+    agent = OrchestratorAgent()
+    result = agent.process_log("Failed password for root from 10.0.0.5 port 22 ssh2")
+    kb = result["knowledge_base"]
+    assert isinstance(kb, list)
+    # Run from the repo root, the curated KB should ground this event.
+    if kb:
+        assert set(kb[0]) == {"source", "score", "snippet"}
 
 
 @pytest.mark.unit
