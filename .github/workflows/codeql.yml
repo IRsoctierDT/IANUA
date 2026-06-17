@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   security-events: write
+  actions: read   # codeql-action reads the workflow run for telemetry/context
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
