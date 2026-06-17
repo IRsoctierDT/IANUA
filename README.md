@@ -21,13 +21,15 @@ security operation.
 | **Threat Intel Agent** — IOC enrichment and indicator summarization | Agent | Complete |
 | **Knowledge Base Agent** — grounds incident reports in the cited cybersecurity corpus | Agent | Complete |
 | **Business Proposal Agent** — structures client needs into a reviewable proposal / SOW draft ([doc](./docs/agents/BUSINESS_PROPOSAL_AGENT.md)) | Agent | Complete |
+| **Legal/Compliance Research Agent** — triages a legal inquiry into a verify-don't-assert authority checklist ([doc](./docs/agents/LEGAL_COMPLIANCE_AGENT.md)) | Agent | Complete |
+| **Knowledge Curator Agent** — organizes raw notes into retrieval-ready KB entries ([doc](./docs/agents/KNOWLEDGE_CURATOR_AGENT.md)) | Agent | Complete |
 | **Orchestrator Agent** — Multi-agent workflow coordination | Agent | Complete |
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |
 | **Dashboard** — AI ops UI with tabbed layout | Dashboard | In Progress |
 
-**Agents planned:** Legal/Compliance Research · Knowledge Curator · Portfolio Documentation · Executive Assistant
+**Agents planned:** Portfolio Documentation · Executive Assistant
 
 ### Case studies
 
