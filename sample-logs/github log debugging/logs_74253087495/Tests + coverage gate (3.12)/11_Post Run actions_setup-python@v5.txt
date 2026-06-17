@@ -1,0 +1,7 @@
+﻿2026-06-16T00:29:33.4414425Z Post job cleanup.
+2026-06-16T00:29:33.5717661Z (node:2167) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:29:33.5719230Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:29:33.5928578Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center --files-from manifest.txt --use-compress-program zstdmt
+2026-06-16T00:29:33.8541163Z (node:2167) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:29:34.6496381Z Sent 43790036 of 43790036 (100.0%), 51.5 MBs/sec
+2026-06-16T00:29:34.7683148Z Cache saved with the key: setup-python-Linux-x64-24.04-Ubuntu-python-3.12.13-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3

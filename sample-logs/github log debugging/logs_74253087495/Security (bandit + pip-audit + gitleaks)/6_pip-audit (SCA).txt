@@ -1,0 +1,17 @@
+﻿2026-06-16T00:29:04.2603430Z ##[group]Run pip-audit
+2026-06-16T00:29:04.2603715Z [36;1mpip-audit[0m
+2026-06-16T00:29:04.2637937Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:04.2638328Z env:
+2026-06-16T00:29:04.2638538Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:04.2638800Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:04.2639170Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:04.2639606Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:29:04.2640063Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:04.2640440Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:04.2640809Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:04.2641181Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:29:04.2641512Z ##[endgroup]
+2026-06-16T00:29:05.7135518Z No known vulnerabilities found
+2026-06-16T00:29:05.7144919Z Name                             Skip Reason
+2026-06-16T00:29:05.7146032Z -------------------------------- -----------------------------------------------------------------------------------------------
+2026-06-16T00:29:05.7147564Z ai-operator-cyber-command-center Dependency not found on PyPI and could not be audited: ai-operator-cyber-command-center (0.1.0)

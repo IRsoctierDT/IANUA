@@ -1,0 +1,79 @@
+﻿2026-06-16T00:29:14.7714256Z ##[group]Run actions/checkout@v4
+2026-06-16T00:29:14.7715615Z with:
+2026-06-16T00:29:14.7716627Z   repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:14.7728063Z   token: ***
+2026-06-16T00:29:14.7728847Z   ssh-strict: true
+2026-06-16T00:29:14.7729654Z   ssh-user: git
+2026-06-16T00:29:14.7730835Z   persist-credentials: true
+2026-06-16T00:29:14.7731791Z   clean: true
+2026-06-16T00:29:14.7732615Z   sparse-checkout-cone-mode: true
+2026-06-16T00:29:14.7733611Z   fetch-depth: 1
+2026-06-16T00:29:14.7734401Z   fetch-tags: false
+2026-06-16T00:29:14.7735225Z   show-progress: true
+2026-06-16T00:29:14.7736068Z   lfs: false
+2026-06-16T00:29:14.7736819Z   submodules: false
+2026-06-16T00:29:14.7737650Z   set-safe-directory: true
+2026-06-16T00:29:14.7738840Z env:
+2026-06-16T00:29:14.7739587Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:14.7740698Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:14.7741780Z ##[endgroup]
+2026-06-16T00:29:14.8869097Z Syncing repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:14.8873792Z ##[group]Getting Git version info
+2026-06-16T00:29:14.8877281Z Working directory is '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:29:14.8881433Z [command]/usr/bin/git version
+2026-06-16T00:29:14.9113165Z git version 2.54.0
+2026-06-16T00:29:14.9118517Z ##[endgroup]
+2026-06-16T00:29:14.9127292Z Temporarily overriding HOME='/home/runner/work/_temp/b783dedc-218d-4054-b842-5365d4b50cde' before making global git config changes
+2026-06-16T00:29:14.9132704Z Adding repository directory to the temporary git global config as a safe directory
+2026-06-16T00:29:14.9143676Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:14.9154574Z Deleting the contents of '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:29:14.9159745Z ##[group]Initializing the repository
+2026-06-16T00:29:14.9163925Z [command]/usr/bin/git init /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:15.0096310Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-06-16T00:29:15.0100545Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-06-16T00:29:15.0108506Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-06-16T00:29:15.0132520Z hint: call:
+2026-06-16T00:29:15.0141478Z hint:
+2026-06-16T00:29:15.0143430Z hint: 	git config --global init.defaultBranch <name>
+2026-06-16T00:29:15.0145763Z hint:
+2026-06-16T00:29:15.0147887Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-06-16T00:29:15.0152090Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-06-16T00:29:15.0155005Z hint:
+2026-06-16T00:29:15.0156643Z hint: 	git branch -m <name>
+2026-06-16T00:29:15.0158606Z hint:
+2026-06-16T00:29:15.0161370Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-06-16T00:29:15.0166572Z Initialized empty Git repository in /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center/.git/
+2026-06-16T00:29:15.0315985Z [command]/usr/bin/git remote add origin https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:15.0323261Z ##[endgroup]
+2026-06-16T00:29:15.0326003Z ##[group]Disabling automatic garbage collection
+2026-06-16T00:29:15.0328585Z [command]/usr/bin/git config --local gc.auto 0
+2026-06-16T00:29:15.0334347Z ##[endgroup]
+2026-06-16T00:29:15.0336866Z ##[group]Setting up auth
+2026-06-16T00:29:15.0339382Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-06-16T00:29:15.0356927Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-06-16T00:29:15.0365688Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-06-16T00:29:15.0376015Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-06-16T00:29:15.0398813Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-06-16T00:29:15.0587688Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-06-16T00:29:15.0753687Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-06-16T00:29:15.0788474Z ##[endgroup]
+2026-06-16T00:29:15.0791601Z ##[group]Fetching the repository
+2026-06-16T00:29:15.0801855Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f:refs/remotes/origin/main
+2026-06-16T00:29:16.7753882Z From https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:16.7761941Z  * [new ref]         9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f -> origin/main
+2026-06-16T00:29:16.7797472Z ##[endgroup]
+2026-06-16T00:29:16.7799053Z ##[group]Determining the checkout info
+2026-06-16T00:29:16.7800916Z ##[endgroup]
+2026-06-16T00:29:16.7806825Z [command]/usr/bin/git sparse-checkout disable
+2026-06-16T00:29:16.7860121Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-06-16T00:29:16.7893510Z ##[group]Checking out the ref
+2026-06-16T00:29:16.7895083Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-06-16T00:29:17.8318980Z Updating files:  98% (6992/7077)
+2026-06-16T00:29:17.9045022Z Updating files:  99% (7007/7077)
+2026-06-16T00:29:17.9061554Z Updating files: 100% (7077/7077)
+2026-06-16T00:29:17.9077206Z Updating files: 100% (7077/7077), done.
+2026-06-16T00:29:17.9132293Z Switched to a new branch 'main'
+2026-06-16T00:29:17.9135046Z branch 'main' set up to track 'origin/main'.
+2026-06-16T00:29:17.9163046Z ##[endgroup]
+2026-06-16T00:29:17.9234010Z [command]/usr/bin/git log -1 --format=%H
+2026-06-16T00:29:17.9260113Z 9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f

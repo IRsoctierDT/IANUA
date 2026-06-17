@@ -1,0 +1,25 @@
+﻿2026-06-16T00:29:58.1777399Z ##[group]Run pip install build
+2026-06-16T00:29:58.1777766Z [36;1mpip install build[0m
+2026-06-16T00:29:58.1989418Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:58.1989729Z env:
+2026-06-16T00:29:58.1989947Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:58.1990225Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:58.1990636Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1991105Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:29:58.1991595Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1992018Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1992439Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1992854Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:29:58.1993218Z ##[endgroup]
+2026-06-16T00:29:59.5301247Z Collecting build
+2026-06-16T00:29:59.5884467Z   Downloading build-1.5.0-py3-none-any.whl.metadata (5.7 kB)
+2026-06-16T00:29:59.6057505Z Collecting packaging>=24.0 (from build)
+2026-06-16T00:29:59.6073964Z   Using cached packaging-26.2-py3-none-any.whl.metadata (3.5 kB)
+2026-06-16T00:29:59.6166750Z Collecting pyproject_hooks (from build)
+2026-06-16T00:29:59.6206946Z   Downloading pyproject_hooks-1.2.0-py3-none-any.whl.metadata (1.3 kB)
+2026-06-16T00:29:59.6293493Z Downloading build-1.5.0-py3-none-any.whl (26 kB)
+2026-06-16T00:29:59.6348721Z Using cached packaging-26.2-py3-none-any.whl (100 kB)
+2026-06-16T00:29:59.6394587Z Downloading pyproject_hooks-1.2.0-py3-none-any.whl (10 kB)
+2026-06-16T00:29:59.7079784Z Installing collected packages: pyproject_hooks, packaging, build
+2026-06-16T00:29:59.7996566Z 
+2026-06-16T00:29:59.8017457Z Successfully installed build-1.5.0 packaging-26.2 pyproject_hooks-1.2.0

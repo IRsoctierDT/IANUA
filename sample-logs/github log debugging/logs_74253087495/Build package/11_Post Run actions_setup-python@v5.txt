@@ -1,0 +1,4 @@
+﻿2026-06-16T00:30:04.8812750Z Post job cleanup.
+2026-06-16T00:30:05.0136195Z Cache hit occurred on the primary key setup-python-Linux-x64-24.04-Ubuntu-python-3.11.15-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3, not saving cache.
+2026-06-16T00:30:05.0138815Z (node:2190) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:30:05.0140181Z (Use `node --trace-deprecation ...` to show where the warning was created)

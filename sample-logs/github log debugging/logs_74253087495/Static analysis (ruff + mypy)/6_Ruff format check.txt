@@ -1,0 +1,14 @@
+﻿2026-06-16T00:28:30.5582901Z ##[group]Run ruff format --check .
+2026-06-16T00:28:30.5583420Z [36;1mruff format --check .[0m
+2026-06-16T00:28:30.5617347Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:28:30.5617621Z env:
+2026-06-16T00:28:30.5617832Z   PYTHON_VERSION: 3.11
+2026-06-16T00:28:30.5618089Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:28:30.5618454Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:28:30.5618888Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:28:30.5619315Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:28:30.5619731Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:28:30.5620103Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:28:30.5620481Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:28:30.5620809Z ##[endgroup]
+2026-06-16T00:28:30.5832371Z 53 files already formatted

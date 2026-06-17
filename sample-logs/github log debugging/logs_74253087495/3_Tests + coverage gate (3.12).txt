@@ -1,0 +1,427 @@
+﻿2026-06-16T00:29:12.9977745Z Current runner version: '2.335.1'
+2026-06-16T00:29:13.0055273Z ##[group]Runner Image Provisioner
+2026-06-16T00:29:13.0056878Z Hosted Compute Agent
+2026-06-16T00:29:13.0057998Z Version: 20260527.539
+2026-06-16T00:29:13.0059213Z Commit: a891dd388383b896fa6ac04a82c0b75cec981078
+2026-06-16T00:29:13.0061064Z Build Date: 2026-05-27T21:39:57Z
+2026-06-16T00:29:13.0062484Z Worker ID: {95f038cb-68a7-4ff6-9a21-de1e54fe481d}
+2026-06-16T00:29:13.0063984Z Azure Region: eastus
+2026-06-16T00:29:13.0065094Z ##[endgroup]
+2026-06-16T00:29:13.0068094Z ##[group]Operating System
+2026-06-16T00:29:13.0069294Z Ubuntu
+2026-06-16T00:29:13.0070204Z 24.04.4
+2026-06-16T00:29:13.0082237Z LTS
+2026-06-16T00:29:13.0083169Z ##[endgroup]
+2026-06-16T00:29:13.0084092Z ##[group]Runner Image
+2026-06-16T00:29:13.0085202Z Image: ubuntu-24.04
+2026-06-16T00:29:13.0086195Z Version: 20260607.184.1
+2026-06-16T00:29:13.0088399Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260607.184/images/ubuntu/Ubuntu2404-Readme.md
+2026-06-16T00:29:13.0091372Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260607.184
+2026-06-16T00:29:13.0093156Z ##[endgroup]
+2026-06-16T00:29:13.0095233Z ##[group]GITHUB_TOKEN Permissions
+2026-06-16T00:29:13.0098389Z Contents: read
+2026-06-16T00:29:13.0099374Z Metadata: read
+2026-06-16T00:29:13.0120767Z ##[endgroup]
+2026-06-16T00:29:13.0123992Z Secret source: Actions
+2026-06-16T00:29:13.0125606Z Prepare workflow directory
+2026-06-16T00:29:13.1041556Z Prepare all required actions
+2026-06-16T00:29:13.1098702Z Getting action download info
+2026-06-16T00:29:13.4978466Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-06-16T00:29:14.3555379Z Download action repository 'actions/setup-python@v5' (SHA:a26af69be951a213d495a4c3e4e4022e16d87065)
+2026-06-16T00:29:14.4387130Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-06-16T00:29:14.6849098Z Complete job name: Tests + coverage gate (3.12)
+2026-06-16T00:29:14.7714286Z ##[group]Run actions/checkout@v4
+2026-06-16T00:29:14.7715627Z with:
+2026-06-16T00:29:14.7716633Z   repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:14.7728072Z   token: ***
+2026-06-16T00:29:14.7728855Z   ssh-strict: true
+2026-06-16T00:29:14.7729657Z   ssh-user: git
+2026-06-16T00:29:14.7730848Z   persist-credentials: true
+2026-06-16T00:29:14.7731796Z   clean: true
+2026-06-16T00:29:14.7732619Z   sparse-checkout-cone-mode: true
+2026-06-16T00:29:14.7733615Z   fetch-depth: 1
+2026-06-16T00:29:14.7734412Z   fetch-tags: false
+2026-06-16T00:29:14.7735232Z   show-progress: true
+2026-06-16T00:29:14.7736072Z   lfs: false
+2026-06-16T00:29:14.7736822Z   submodules: false
+2026-06-16T00:29:14.7737654Z   set-safe-directory: true
+2026-06-16T00:29:14.7738850Z env:
+2026-06-16T00:29:14.7739591Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:14.7740704Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:14.7741784Z ##[endgroup]
+2026-06-16T00:29:14.8869353Z Syncing repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:14.8873820Z ##[group]Getting Git version info
+2026-06-16T00:29:14.8877315Z Working directory is '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:29:14.8881461Z [command]/usr/bin/git version
+2026-06-16T00:29:14.9113209Z git version 2.54.0
+2026-06-16T00:29:14.9118538Z ##[endgroup]
+2026-06-16T00:29:14.9127359Z Temporarily overriding HOME='/home/runner/work/_temp/b783dedc-218d-4054-b842-5365d4b50cde' before making global git config changes
+2026-06-16T00:29:14.9132738Z Adding repository directory to the temporary git global config as a safe directory
+2026-06-16T00:29:14.9143712Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:14.9154608Z Deleting the contents of '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:29:14.9159805Z ##[group]Initializing the repository
+2026-06-16T00:29:14.9163951Z [command]/usr/bin/git init /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:15.0096374Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-06-16T00:29:15.0100574Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-06-16T00:29:15.0108538Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-06-16T00:29:15.0132549Z hint: call:
+2026-06-16T00:29:15.0141508Z hint:
+2026-06-16T00:29:15.0143456Z hint: 	git config --global init.defaultBranch <name>
+2026-06-16T00:29:15.0145783Z hint:
+2026-06-16T00:29:15.0147922Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-06-16T00:29:15.0152148Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-06-16T00:29:15.0155028Z hint:
+2026-06-16T00:29:15.0156673Z hint: 	git branch -m <name>
+2026-06-16T00:29:15.0158625Z hint:
+2026-06-16T00:29:15.0161443Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-06-16T00:29:15.0166601Z Initialized empty Git repository in /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center/.git/
+2026-06-16T00:29:15.0316029Z [command]/usr/bin/git remote add origin https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:15.0323289Z ##[endgroup]
+2026-06-16T00:29:15.0326027Z ##[group]Disabling automatic garbage collection
+2026-06-16T00:29:15.0328607Z [command]/usr/bin/git config --local gc.auto 0
+2026-06-16T00:29:15.0334373Z ##[endgroup]
+2026-06-16T00:29:15.0336887Z ##[group]Setting up auth
+2026-06-16T00:29:15.0339405Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-06-16T00:29:15.0356963Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-06-16T00:29:15.0366109Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-06-16T00:29:15.0376048Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-06-16T00:29:15.0398847Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-06-16T00:29:15.0587737Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-06-16T00:29:15.0753742Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-06-16T00:29:15.0788508Z ##[endgroup]
+2026-06-16T00:29:15.0791633Z ##[group]Fetching the repository
+2026-06-16T00:29:15.0801935Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f:refs/remotes/origin/main
+2026-06-16T00:29:16.7753995Z From https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:16.7761967Z  * [new ref]         9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f -> origin/main
+2026-06-16T00:29:16.7797491Z ##[endgroup]
+2026-06-16T00:29:16.7799071Z ##[group]Determining the checkout info
+2026-06-16T00:29:16.7800933Z ##[endgroup]
+2026-06-16T00:29:16.7806849Z [command]/usr/bin/git sparse-checkout disable
+2026-06-16T00:29:16.7860143Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-06-16T00:29:16.7893542Z ##[group]Checking out the ref
+2026-06-16T00:29:16.7895103Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-06-16T00:29:17.8319071Z Updating files:  98% (6992/7077)
+2026-06-16T00:29:17.9045095Z Updating files:  99% (7007/7077)
+2026-06-16T00:29:17.9061590Z Updating files: 100% (7077/7077)
+2026-06-16T00:29:17.9077237Z Updating files: 100% (7077/7077), done.
+2026-06-16T00:29:17.9132372Z Switched to a new branch 'main'
+2026-06-16T00:29:17.9135083Z branch 'main' set up to track 'origin/main'.
+2026-06-16T00:29:17.9163066Z ##[endgroup]
+2026-06-16T00:29:17.9234034Z [command]/usr/bin/git log -1 --format=%H
+2026-06-16T00:29:17.9260133Z 9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f
+2026-06-16T00:29:17.9530972Z ##[group]Run actions/setup-python@v5
+2026-06-16T00:29:17.9531318Z with:
+2026-06-16T00:29:17.9531528Z   python-version: 3.12
+2026-06-16T00:29:17.9531758Z   cache: pip
+2026-06-16T00:29:17.9531966Z   check-latest: false
+2026-06-16T00:29:17.9534960Z   token: ***
+2026-06-16T00:29:17.9535181Z   update-environment: true
+2026-06-16T00:29:17.9535436Z   allow-prereleases: false
+2026-06-16T00:29:17.9535684Z   freethreaded: false
+2026-06-16T00:29:17.9535898Z env:
+2026-06-16T00:29:17.9536087Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:17.9536366Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:17.9536678Z ##[endgroup]
+2026-06-16T00:29:18.0962662Z ##[group]Installed versions
+2026-06-16T00:29:18.1082180Z (node:2066) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:29:18.1084284Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:29:18.1096020Z Successfully set up CPython (3.12.13)
+2026-06-16T00:29:18.1097032Z ##[endgroup]
+2026-06-16T00:29:19.5658008Z [command]/opt/hostedtoolcache/Python/3.12.13/x64/bin/pip cache dir
+2026-06-16T00:29:20.0533610Z /home/runner/.cache/pip
+2026-06-16T00:29:20.1614562Z Cache hit for: setup-python-Linux-x64-24.04-Ubuntu-python-3.12.13-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3
+2026-06-16T00:29:20.1772513Z (node:2066) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:29:20.6932489Z Received 43791239 of 43791239 (100.0%), 88.9 MBs/sec
+2026-06-16T00:29:20.6933793Z Cache Size: ~42 MB (43791239 B)
+2026-06-16T00:29:20.7206337Z [command]/usr/bin/tar -xf /home/runner/work/_temp/1db39a0c-578c-4a7a-b1d1-69b56cd49a0d/cache.tzst -P -C /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center --use-compress-program unzstd
+2026-06-16T00:29:20.8742260Z Cache restored successfully
+2026-06-16T00:29:20.8761957Z Cache restored from key: setup-python-Linux-x64-24.04-Ubuntu-python-3.12.13-pip-fa9b7c511bbd2e864bbc2df32f0ef50468fe8bc0ce2cb1a4935836a2302692bb
+2026-06-16T00:29:20.8904112Z ##[group]Run pip install -e ".[dev]"
+2026-06-16T00:29:20.8904678Z [36;1mpip install -e ".[dev]"[0m
+2026-06-16T00:29:20.9131656Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:20.9132104Z env:
+2026-06-16T00:29:20.9132429Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:20.9132851Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:20.9133476Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:20.9134237Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib/pkgconfig
+2026-06-16T00:29:20.9134998Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:20.9135650Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:20.9136310Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:20.9136981Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib
+2026-06-16T00:29:20.9137548Z ##[endgroup]
+2026-06-16T00:29:21.7467740Z Obtaining file:///home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:21.7547021Z   Installing build dependencies: started
+2026-06-16T00:29:22.7451655Z   Installing build dependencies: finished with status 'done'
+2026-06-16T00:29:22.7452503Z   Checking if build backend supports build_editable: started
+2026-06-16T00:29:23.1931537Z   Checking if build backend supports build_editable: finished with status 'done'
+2026-06-16T00:29:23.1940720Z   Getting requirements to build editable: started
+2026-06-16T00:29:23.6620019Z   Getting requirements to build editable: finished with status 'done'
+2026-06-16T00:29:23.6641007Z   Preparing editable metadata (pyproject.toml): started
+2026-06-16T00:29:23.9191656Z   Preparing editable metadata (pyproject.toml): finished with status 'done'
+2026-06-16T00:29:24.4751559Z Collecting ruff==0.15.17 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.4771554Z   Using cached ruff-0.15.17-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (26 kB)
+2026-06-16T00:29:24.6150623Z Collecting mypy>=1.11 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.6173100Z   Using cached mypy-2.1.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.3 kB)
+2026-06-16T00:29:24.6502948Z Collecting pytest>=8.0 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.6541230Z   Using cached pytest-9.1.0-py3-none-any.whl.metadata (7.6 kB)
+2026-06-16T00:29:24.6691141Z Collecting pytest-cov>=5.0 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.6710831Z   Using cached pytest_cov-7.1.0-py3-none-any.whl.metadata (32 kB)
+2026-06-16T00:29:24.6911102Z Collecting bandit>=1.7 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.6931054Z   Using cached bandit-1.9.4-py3-none-any.whl.metadata (7.1 kB)
+2026-06-16T00:29:24.7133883Z Collecting pip-audit>=2.7 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.7160931Z   Using cached pip_audit-2.10.1-py3-none-any.whl.metadata (28 kB)
+2026-06-16T00:29:24.7335528Z Collecting detect-secrets>=1.5 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.7360972Z   Using cached detect_secrets-1.5.0-py3-none-any.whl.metadata (23 kB)
+2026-06-16T00:29:24.7701142Z Collecting pre-commit>=3.7 (from ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.7721029Z   Using cached pre_commit-4.6.0-py2.py3-none-any.whl.metadata (1.2 kB)
+2026-06-16T00:29:24.8169595Z Collecting PyYAML>=5.3.1 (from bandit>=1.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.8201554Z   Using cached pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+2026-06-16T00:29:24.8401173Z Collecting stevedore>=1.20.0 (from bandit>=1.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.8421054Z   Using cached stevedore-5.8.0-py3-none-any.whl.metadata (2.3 kB)
+2026-06-16T00:29:24.8871227Z Collecting rich (from bandit>=1.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.8891285Z   Using cached rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+2026-06-16T00:29:24.9264754Z Collecting requests (from detect-secrets>=1.5->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.9311230Z   Using cached requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)
+2026-06-16T00:29:24.9621653Z Collecting typing_extensions>=4.6.0 (from mypy>=1.11->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.9651210Z   Using cached typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+2026-06-16T00:29:24.9820190Z Collecting mypy_extensions>=1.0.0 (from mypy>=1.11->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:24.9916317Z   Using cached mypy_extensions-1.1.0-py3-none-any.whl.metadata (1.1 kB)
+2026-06-16T00:29:25.0121302Z Collecting pathspec>=1.0.0 (from mypy>=1.11->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.0141145Z   Using cached pathspec-1.1.1-py3-none-any.whl.metadata (14 kB)
+2026-06-16T00:29:25.1362524Z Collecting librt>=0.11.0 (from mypy>=1.11->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.1377917Z   Using cached librt-0.11.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (1.3 kB)
+2026-06-16T00:29:25.1595389Z Collecting ast-serialize<1.0.0,>=0.3.0 (from mypy>=1.11->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.1608848Z   Using cached ast_serialize-0.5.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (1.3 kB)
+2026-06-16T00:29:25.1734651Z Collecting CacheControl>=0.13.0 (from CacheControl[filecache]>=0.13.0->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.1747526Z   Using cached cachecontrol-0.14.4-py3-none-any.whl.metadata (3.1 kB)
+2026-06-16T00:29:25.2000732Z Collecting cyclonedx-python-lib<12,>=5 (from pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.2014189Z   Using cached cyclonedx_python_lib-11.10.0-py3-none-any.whl.metadata (6.9 kB)
+2026-06-16T00:29:25.2171600Z Collecting packaging>=23.0.0 (from pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.2184264Z   Using cached packaging-26.2-py3-none-any.whl.metadata (3.5 kB)
+2026-06-16T00:29:25.2301243Z Collecting pip-api>=0.0.28 (from pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.2314153Z   Using cached pip_api-0.0.34-py3-none-any.whl.metadata (6.6 kB)
+2026-06-16T00:29:25.2404472Z Collecting pip-requirements-parser>=32.0.0 (from pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.2417071Z   Using cached pip_requirements_parser-32.0.1-py3-none-any.whl.metadata (9.3 kB)
+2026-06-16T00:29:25.2655111Z Collecting tomli>=2.2.1 (from pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.2668589Z   Using cached tomli-2.4.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (10 kB)
+2026-06-16T00:29:25.2753524Z Collecting tomli-w>=1.2.0 (from pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.2766208Z   Using cached tomli_w-1.2.0-py3-none-any.whl.metadata (5.7 kB)
+2026-06-16T00:29:25.2902886Z Collecting platformdirs>=4.2.0 (from pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.2915971Z   Using cached platformdirs-4.10.0-py3-none-any.whl.metadata (5.5 kB)
+2026-06-16T00:29:25.3043110Z Collecting license-expression<31,>=30 (from cyclonedx-python-lib<12,>=5->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.3055848Z   Using cached license_expression-30.4.4-py3-none-any.whl.metadata (11 kB)
+2026-06-16T00:29:25.3374975Z Collecting packageurl-python<2,>=0.11 (from cyclonedx-python-lib<12,>=5->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.3389280Z   Using cached packageurl_python-0.17.6-py3-none-any.whl.metadata (5.1 kB)
+2026-06-16T00:29:25.3523885Z Collecting py-serializable<3.0.0,>=2.1.0 (from cyclonedx-python-lib<12,>=5->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.3536837Z   Using cached py_serializable-2.1.0-py3-none-any.whl.metadata (4.3 kB)
+2026-06-16T00:29:25.3638042Z Collecting sortedcontainers<3.0.0,>=2.4.0 (from cyclonedx-python-lib<12,>=5->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.3651292Z   Using cached sortedcontainers-2.4.0-py2.py3-none-any.whl.metadata (10 kB)
+2026-06-16T00:29:25.3796374Z Collecting boolean.py>=4.0 (from license-expression<31,>=30->cyclonedx-python-lib<12,>=5->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.3809014Z   Using cached boolean_py-5.0-py3-none-any.whl.metadata (2.3 kB)
+2026-06-16T00:29:25.3921848Z Collecting defusedxml<0.8.0,>=0.7.1 (from py-serializable<3.0.0,>=2.1.0->cyclonedx-python-lib<12,>=5->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.3934409Z   Using cached defusedxml-0.7.1-py2.py3-none-any.whl.metadata (32 kB)
+2026-06-16T00:29:25.4590999Z Collecting msgpack<2.0.0,>=0.5.2 (from CacheControl>=0.13.0->CacheControl[filecache]>=0.13.0->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.4605108Z   Using cached msgpack-1.2.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (8.1 kB)
+2026-06-16T00:29:25.4807206Z Collecting filelock>=3.8.0 (from CacheControl[filecache]>=0.13.0->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.4820015Z   Using cached filelock-3.29.4-py3-none-any.whl.metadata (2.0 kB)
+2026-06-16T00:29:25.4850662Z Requirement already satisfied: pip in /opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages (from pip-api>=0.0.28->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0) (26.1.2)
+2026-06-16T00:29:25.5059730Z Collecting pyparsing (from pip-requirements-parser>=32.0.0->pip-audit>=2.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.5073101Z   Using cached pyparsing-3.3.2-py3-none-any.whl.metadata (5.8 kB)
+2026-06-16T00:29:25.5177652Z Collecting cfgv>=2.0.0 (from pre-commit>=3.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.5190541Z   Using cached cfgv-3.5.0-py2.py3-none-any.whl.metadata (8.9 kB)
+2026-06-16T00:29:25.5485165Z Collecting identify>=1.0.0 (from pre-commit>=3.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.5497963Z   Using cached identify-2.6.19-py2.py3-none-any.whl.metadata (4.4 kB)
+2026-06-16T00:29:25.5621811Z Collecting nodeenv>=0.11.1 (from pre-commit>=3.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.5636750Z   Using cached nodeenv-1.10.0-py2.py3-none-any.whl.metadata (24 kB)
+2026-06-16T00:29:25.5957260Z Collecting virtualenv>=20.10.0 (from pre-commit>=3.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.5970174Z   Using cached virtualenv-21.5.0-py3-none-any.whl.metadata (3.4 kB)
+2026-06-16T00:29:25.6101478Z Collecting iniconfig>=1.0.1 (from pytest>=8.0->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.6114650Z   Using cached iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
+2026-06-16T00:29:25.6271186Z Collecting pluggy<2,>=1.5 (from pytest>=8.0->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.6290965Z   Using cached pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+2026-06-16T00:29:25.6450938Z Collecting pygments>=2.7.2 (from pytest>=8.0->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.6463553Z   Using cached pygments-2.20.0-py3-none-any.whl.metadata (2.5 kB)
+2026-06-16T00:29:25.9762121Z Collecting coverage>=7.10.6 (from coverage[toml]>=7.10.6->pytest-cov>=5.0->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:25.9777192Z   Using cached coverage-7.14.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (8.6 kB)
+2026-06-16T00:29:26.0652348Z Collecting charset_normalizer<4,>=2 (from requests->detect-secrets>=1.5->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.0667134Z   Using cached charset_normalizer-3.4.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (40 kB)
+2026-06-16T00:29:26.0822666Z Collecting idna<4,>=2.5 (from requests->detect-secrets>=1.5->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.0835266Z   Using cached idna-3.18-py3-none-any.whl.metadata (6.1 kB)
+2026-06-16T00:29:26.1016924Z Collecting urllib3<3,>=1.26 (from requests->detect-secrets>=1.5->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.1029890Z   Using cached urllib3-2.7.0-py3-none-any.whl.metadata (6.9 kB)
+2026-06-16T00:29:26.1405844Z Collecting certifi>=2023.5.7 (from requests->detect-secrets>=1.5->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.1420330Z   Using cached certifi-2026.5.20-py3-none-any.whl.metadata (2.5 kB)
+2026-06-16T00:29:26.1568245Z Collecting markdown-it-py>=2.2.0 (from rich->bandit>=1.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.1581509Z   Using cached markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+2026-06-16T00:29:26.1708894Z Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich->bandit>=1.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.1721858Z   Using cached mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+2026-06-16T00:29:26.1844027Z Collecting distlib<1,>=0.3.7 (from virtualenv>=20.10.0->pre-commit>=3.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.1856716Z   Using cached distlib-0.4.3-py2.py3-none-any.whl.metadata (5.3 kB)
+2026-06-16T00:29:26.1978192Z Collecting python-discovery>=1.4.2 (from virtualenv>=20.10.0->pre-commit>=3.7->ai-operator-cyber-command-center==0.1.0)
+2026-06-16T00:29:26.1991135Z   Using cached python_discovery-1.4.2-py3-none-any.whl.metadata (5.6 kB)
+2026-06-16T00:29:26.2088210Z Using cached ruff-0.15.17-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (11.6 MB)
+2026-06-16T00:29:26.2143712Z Using cached bandit-1.9.4-py3-none-any.whl (134 kB)
+2026-06-16T00:29:26.2156240Z Using cached detect_secrets-1.5.0-py3-none-any.whl (120 kB)
+2026-06-16T00:29:26.2169472Z Using cached mypy-2.1.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (15.1 MB)
+2026-06-16T00:29:26.2237440Z Using cached ast_serialize-0.5.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.3 MB)
+2026-06-16T00:29:26.2254160Z Using cached librt-0.11.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (513 kB)
+2026-06-16T00:29:26.2267236Z Using cached mypy_extensions-1.1.0-py3-none-any.whl (5.0 kB)
+2026-06-16T00:29:26.2278710Z Using cached pathspec-1.1.1-py3-none-any.whl (57 kB)
+2026-06-16T00:29:26.2290172Z Using cached pip_audit-2.10.1-py3-none-any.whl (62 kB)
+2026-06-16T00:29:26.2302179Z Using cached cyclonedx_python_lib-11.10.0-py3-none-any.whl (527 kB)
+2026-06-16T00:29:26.2315453Z Using cached license_expression-30.4.4-py3-none-any.whl (120 kB)
+2026-06-16T00:29:26.2327058Z Using cached packageurl_python-0.17.6-py3-none-any.whl (36 kB)
+2026-06-16T00:29:26.2338461Z Using cached py_serializable-2.1.0-py3-none-any.whl (23 kB)
+2026-06-16T00:29:26.2350163Z Using cached defusedxml-0.7.1-py2.py3-none-any.whl (25 kB)
+2026-06-16T00:29:26.2362277Z Using cached sortedcontainers-2.4.0-py2.py3-none-any.whl (29 kB)
+2026-06-16T00:29:26.2373882Z Using cached typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+2026-06-16T00:29:26.2385159Z Using cached boolean_py-5.0-py3-none-any.whl (26 kB)
+2026-06-16T00:29:26.2396479Z Using cached cachecontrol-0.14.4-py3-none-any.whl (22 kB)
+2026-06-16T00:29:26.2408424Z Using cached msgpack-1.2.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (420 kB)
+2026-06-16T00:29:26.2424559Z Using cached filelock-3.29.4-py3-none-any.whl (42 kB)
+2026-06-16T00:29:26.2436198Z Using cached packaging-26.2-py3-none-any.whl (100 kB)
+2026-06-16T00:29:26.2447828Z Using cached pip_api-0.0.34-py3-none-any.whl (120 kB)
+2026-06-16T00:29:26.2459969Z Using cached pip_requirements_parser-32.0.1-py3-none-any.whl (35 kB)
+2026-06-16T00:29:26.2471739Z Using cached platformdirs-4.10.0-py3-none-any.whl (22 kB)
+2026-06-16T00:29:26.2483133Z Using cached pre_commit-4.6.0-py2.py3-none-any.whl (226 kB)
+2026-06-16T00:29:26.2495134Z Using cached cfgv-3.5.0-py2.py3-none-any.whl (7.4 kB)
+2026-06-16T00:29:26.2506803Z Using cached identify-2.6.19-py2.py3-none-any.whl (99 kB)
+2026-06-16T00:29:26.2518349Z Using cached nodeenv-1.10.0-py2.py3-none-any.whl (23 kB)
+2026-06-16T00:29:26.2530065Z Using cached pytest-9.1.0-py3-none-any.whl (386 kB)
+2026-06-16T00:29:26.2543061Z Using cached pluggy-1.6.0-py3-none-any.whl (20 kB)
+2026-06-16T00:29:26.2554634Z Using cached iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+2026-06-16T00:29:26.2566174Z Using cached pygments-2.20.0-py3-none-any.whl (1.2 MB)
+2026-06-16T00:29:26.2582057Z Using cached pytest_cov-7.1.0-py3-none-any.whl (22 kB)
+2026-06-16T00:29:26.2594034Z Using cached coverage-7.14.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (254 kB)
+2026-06-16T00:29:26.2606604Z Using cached pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (807 kB)
+2026-06-16T00:29:26.2620710Z Using cached requests-2.34.2-py3-none-any.whl (73 kB)
+2026-06-16T00:29:26.2633263Z Using cached charset_normalizer-3.4.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (216 kB)
+2026-06-16T00:29:26.2644990Z Using cached idna-3.18-py3-none-any.whl (65 kB)
+2026-06-16T00:29:26.2656696Z Using cached urllib3-2.7.0-py3-none-any.whl (131 kB)
+2026-06-16T00:29:26.2668970Z Using cached certifi-2026.5.20-py3-none-any.whl (134 kB)
+2026-06-16T00:29:26.2680604Z Using cached rich-15.0.0-py3-none-any.whl (310 kB)
+2026-06-16T00:29:26.2693381Z Using cached markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+2026-06-16T00:29:26.2705078Z Using cached mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+2026-06-16T00:29:26.2716587Z Using cached stevedore-5.8.0-py3-none-any.whl (54 kB)
+2026-06-16T00:29:26.2728648Z Using cached tomli-2.4.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (253 kB)
+2026-06-16T00:29:26.2740540Z Using cached tomli_w-1.2.0-py3-none-any.whl (6.7 kB)
+2026-06-16T00:29:26.2752355Z Using cached virtualenv-21.5.0-py3-none-any.whl (4.6 MB)
+2026-06-16T00:29:26.2780199Z Using cached distlib-0.4.3-py2.py3-none-any.whl (470 kB)
+2026-06-16T00:29:26.2793754Z Using cached python_discovery-1.4.2-py3-none-any.whl (33 kB)
+2026-06-16T00:29:26.2805254Z Using cached pyparsing-3.3.2-py3-none-any.whl (122 kB)
+2026-06-16T00:29:26.3554232Z Building wheels for collected packages: ai-operator-cyber-command-center
+2026-06-16T00:29:26.3564862Z   Building editable for ai-operator-cyber-command-center (pyproject.toml): started
+2026-06-16T00:29:26.5831059Z   Building editable for ai-operator-cyber-command-center (pyproject.toml): finished with status 'done'
+2026-06-16T00:29:26.5837541Z   Created wheel for ai-operator-cyber-command-center: filename=ai_operator_cyber_command_center-0.1.0-0.editable-py3-none-any.whl size=4627 sha256=7d19c0582615357d177528c0a7bffcb9fce3e0524dcbb55369cc138688833d94
+2026-06-16T00:29:26.5839936Z   Stored in directory: /tmp/pip-ephem-wheel-cache-4wzd6haj/wheels/45/7e/45/92698aeadecbcdbf46354f16805ebd32e9ed67ddd3bfb3656a
+2026-06-16T00:29:26.5857012Z Successfully built ai-operator-cyber-command-center
+2026-06-16T00:29:26.6721065Z Installing collected packages: sortedcontainers, distlib, boolean.py, urllib3, typing_extensions, tomli-w, tomli, stevedore, ruff, PyYAML, pyparsing, pygments, pluggy, platformdirs, pip-api, pathspec, packaging, packageurl-python, nodeenv, mypy_extensions, msgpack, mdurl, license-expression, librt, iniconfig, idna, identify, filelock, defusedxml, coverage, charset_normalizer, cfgv, certifi, ast-serialize, ai-operator-cyber-command-center, requests, python-discovery, pytest, py-serializable, pip-requirements-parser, mypy, markdown-it-py, virtualenv, rich, pytest-cov, detect-secrets, cyclonedx-python-lib, CacheControl, pre-commit, bandit, pip-audit
+2026-06-16T00:29:31.4150564Z 
+2026-06-16T00:29:31.4200007Z Successfully installed CacheControl-0.14.4 PyYAML-6.0.3 ai-operator-cyber-command-center-0.1.0 ast-serialize-0.5.0 bandit-1.9.4 boolean.py-5.0 certifi-2026.5.20 cfgv-3.5.0 charset_normalizer-3.4.7 coverage-7.14.1 cyclonedx-python-lib-11.10.0 defusedxml-0.7.1 detect-secrets-1.5.0 distlib-0.4.3 filelock-3.29.4 identify-2.6.19 idna-3.18 iniconfig-2.3.0 librt-0.11.0 license-expression-30.4.4 markdown-it-py-4.2.0 mdurl-0.1.2 msgpack-1.2.0 mypy-2.1.0 mypy_extensions-1.1.0 nodeenv-1.10.0 packageurl-python-0.17.6 packaging-26.2 pathspec-1.1.1 pip-api-0.0.34 pip-audit-2.10.1 pip-requirements-parser-32.0.1 platformdirs-4.10.0 pluggy-1.6.0 pre-commit-4.6.0 py-serializable-2.1.0 pygments-2.20.0 pyparsing-3.3.2 pytest-9.1.0 pytest-cov-7.1.0 python-discovery-1.4.2 requests-2.34.2 rich-15.0.0 ruff-0.15.17 sortedcontainers-2.4.0 stevedore-5.8.0 tomli-2.4.1 tomli-w-1.2.0 typing_extensions-4.15.0 urllib3-2.7.0 virtualenv-21.5.0
+2026-06-16T00:29:31.5772268Z ##[group]Run python -m pytest --cov-report=xml
+2026-06-16T00:29:31.5772712Z [36;1mpython -m pytest --cov-report=xml[0m
+2026-06-16T00:29:31.5805812Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:31.5806070Z env:
+2026-06-16T00:29:31.5806271Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:31.5806528Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:31.5806885Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5807321Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib/pkgconfig
+2026-06-16T00:29:31.5807761Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5808169Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5808558Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:31.5808963Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib
+2026-06-16T00:29:31.5809477Z ##[endgroup]
+2026-06-16T00:29:32.4296262Z ============================= test session starts ==============================
+2026-06-16T00:29:32.4297339Z platform linux -- Python 3.12.13, pytest-9.1.0, pluggy-1.6.0
+2026-06-16T00:29:32.4298850Z rootdir: /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:32.4305391Z configfile: pyproject.toml
+2026-06-16T00:29:32.4306111Z testpaths: tests
+2026-06-16T00:29:32.4306727Z plugins: cov-7.1.0
+2026-06-16T00:29:32.4307331Z collected 49 items
+2026-06-16T00:29:32.4307776Z 
+2026-06-16T00:29:32.4447108Z tests/integration/test_rag_cli.py ...                                    [  6%]
+2026-06-16T00:29:32.4542335Z tests/security/test_path_traversal.py ....                               [ 14%]
+2026-06-16T00:29:32.4649655Z tests/test_incident_report_agent.py .....                                [ 24%]
+2026-06-16T00:29:32.4690922Z tests/test_mitre_mapper_agent.py ...                                     [ 30%]
+2026-06-16T00:29:32.4786364Z tests/test_orchestrator_agent.py .....                                   [ 40%]
+2026-06-16T00:29:32.4837434Z tests/test_soc_analyst_agent.py ....                                     [ 48%]
+2026-06-16T00:29:32.4888367Z tests/test_threat_intel_agent.py ....                                    [ 57%]
+2026-06-16T00:29:32.4956627Z tests/unit/test_embeddings.py .....                                      [ 67%]
+2026-06-16T00:29:32.5058004Z tests/unit/test_mcp_server.py .....                                      [ 77%]
+2026-06-16T00:29:32.5189165Z tests/unit/test_mcp_transport.py ......                                  [ 89%]
+2026-06-16T00:29:32.7516367Z tests/unit/test_rag.py .....                                             [100%]
+2026-06-16T00:29:32.7517141Z 
+2026-06-16T00:29:32.7517799Z ================================ tests coverage ================================
+2026-06-16T00:29:32.7518754Z _______________ coverage: platform linux, python 3.12.13-final-0 _______________
+2026-06-16T00:29:32.7519442Z 
+2026-06-16T00:29:32.7519877Z Name                           Stmts   Miss Branch BrPart  Cover   Missing
+2026-06-16T00:29:32.7521170Z --------------------------------------------------------------------------
+2026-06-16T00:29:32.7522077Z agents/soc_analyst_agent.py       67      5     26      3    89%   68-70, 80, 83
+2026-06-16T00:29:32.7523041Z agents/threat_intel_agent.py      33      1     10      1    95%   72
+2026-06-16T00:29:32.7523956Z mcp/server.py                     44      4     12      4    86%   44, 56, 72, 75
+2026-06-16T00:29:32.7524856Z mcp/transport.py                  60      9     18      3    82%   56, 83, 91-92, 96, 112-115
+2026-06-16T00:29:32.7525781Z rag/embeddings.py                 45      8     12      1    84%   31-37, 75
+2026-06-16T00:29:32.7526699Z rag/ingest.py                     50      2     22      5    90%   35->exit, 49, 53->47, 71->69, 90
+2026-06-16T00:29:32.7527659Z rag/retrieve.py                   30      3     10      5    80%   21, 26, 31->exit, 32->exit, 46
+2026-06-16T00:29:32.7529005Z --------------------------------------------------------------------------
+2026-06-16T00:29:32.7529844Z TOTAL                            399     32    122     22    89%
+2026-06-16T00:29:32.7530596Z 
+2026-06-16T00:29:32.7530964Z 4 files skipped due to complete coverage.
+2026-06-16T00:29:32.7531651Z Coverage XML written to file coverage.xml
+2026-06-16T00:29:32.7532412Z Required test coverage of 85% reached. Total coverage: 88.87%
+2026-06-16T00:29:32.7533209Z ============================== 49 passed in 0.49s ==============================
+2026-06-16T00:29:32.8044843Z ##[group]Run actions/upload-artifact@v4
+2026-06-16T00:29:32.8045166Z with:
+2026-06-16T00:29:32.8045371Z   name: coverage-3.12
+2026-06-16T00:29:32.8045607Z   path: coverage.xml
+2026-06-16T00:29:32.8045838Z   if-no-files-found: ignore
+2026-06-16T00:29:32.8046083Z   compression-level: 6
+2026-06-16T00:29:32.8046303Z   overwrite: false
+2026-06-16T00:29:32.8046522Z   include-hidden-files: false
+2026-06-16T00:29:32.8046944Z env:
+2026-06-16T00:29:32.8047132Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:32.8047373Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:32.8047727Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8048163Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib/pkgconfig
+2026-06-16T00:29:32.8048600Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8048987Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8049406Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-06-16T00:29:32.8049805Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib
+2026-06-16T00:29:32.8050134Z ##[endgroup]
+2026-06-16T00:29:32.9924557Z (node:2155) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:29:32.9926125Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:29:33.0271789Z With the provided path, there will be 1 file uploaded
+2026-06-16T00:29:33.0308865Z Artifact name is valid!
+2026-06-16T00:29:33.0310077Z Root directory input is valid!
+2026-06-16T00:29:33.1871695Z Beginning upload of artifact content to blob storage
+2026-06-16T00:29:33.2076493Z (node:2155) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:29:33.2384478Z Uploaded bytes 1914
+2026-06-16T00:29:33.2532377Z Finished uploading artifact content to blob storage!
+2026-06-16T00:29:33.2533771Z SHA256 digest of uploaded artifact zip is c9eb6b21eebc67db0808a748935b0020e614b795feea7265c61b730462337fb3
+2026-06-16T00:29:33.2535191Z Finalizing artifact upload
+2026-06-16T00:29:33.4209898Z Artifact coverage-3.12.zip successfully finalized. Artifact ID 7654348866
+2026-06-16T00:29:33.4211732Z Artifact coverage-3.12 has been successfully uploaded! Final size is 1914 bytes. Artifact ID is 7654348866
+2026-06-16T00:29:33.4220213Z Artifact download URL: https://github.com/IRsoctierDT/ai-operator-cyber-command-center/actions/runs/27585615324/artifacts/7654348866
+2026-06-16T00:29:33.4414434Z Post job cleanup.
+2026-06-16T00:29:33.5717701Z (node:2167) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:29:33.5719246Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:29:33.5928599Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center --files-from manifest.txt --use-compress-program zstdmt
+2026-06-16T00:29:33.8541200Z (node:2167) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:29:34.6496417Z Sent 43790036 of 43790036 (100.0%), 51.5 MBs/sec
+2026-06-16T00:29:34.7683256Z Cache saved with the key: setup-python-Linux-x64-24.04-Ubuntu-python-3.12.13-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3
+2026-06-16T00:29:34.7882213Z Post job cleanup.
+2026-06-16T00:29:34.8859988Z [command]/usr/bin/git version
+2026-06-16T00:29:34.8902563Z git version 2.54.0
+2026-06-16T00:29:34.8981795Z Temporarily overriding HOME='/home/runner/work/_temp/b0579584-6977-452b-a8fb-a539b9fc6a5c' before making global git config changes
+2026-06-16T00:29:34.8983640Z Adding repository directory to the temporary git global config as a safe directory
+2026-06-16T00:29:34.8985451Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:34.9045154Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-06-16T00:29:34.9099999Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-06-16T00:29:34.9455727Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-06-16T00:29:35.1105537Z http.https://github.com/.extraheader
+2026-06-16T00:29:35.1107460Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-06-16T00:29:35.1149391Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-06-16T00:29:35.1400813Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-06-16T00:29:35.1429531Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-06-16T00:29:35.1831832Z Cleaning up orphan processes
+2026-06-16T00:29:35.2137078Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

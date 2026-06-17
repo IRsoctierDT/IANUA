@@ -185,6 +185,7 @@ default.
 | _initial_ | Default-deny network egress | Minimize attack surface and data-exfil risk |
 | _initial_ | Allow-listed, self-validating tool surfaces | Contain prompt-injection blast radius |
 | _initial_ | `AGENTS.md` as platform-neutral charter | One rule set across Codex/Claude/other agents |
+| 2026-06-17 | KnowledgeBaseAgent uses deterministic term-overlap retrieval, not the vector RAG pipeline | Incident-report grounding must be reproducible, network-free, and CI-testable. The vector pipeline (`rag/`) remains the path for semantic search via a local model; the two are complementary, not redundant. Both load the corpus through `rag.ingest` for shared path-traversal safety. |
 
 > Append new architectural decisions here (date, decision, rationale) so the history stays
 > auditable.

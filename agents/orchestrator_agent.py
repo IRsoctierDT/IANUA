@@ -1,6 +1,7 @@
 from typing import Any
 
 from agents.incident_report_agent import IncidentReportAgent
+from agents.knowledge_base_agent import KnowledgeBaseAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.soc_analyst_agent import SocAnalystAgent
 from agents.threat_intel_agent import ThreatIntelAgent
@@ -11,6 +12,7 @@ class OrchestratorAgent:
         self.soc = SocAnalystAgent()
         self.mitre = MitreMapperAgent()
         self.threat = ThreatIntelAgent()
+        self.knowledge_base = KnowledgeBaseAgent()
         self.report = IncidentReportAgent()
 
     def process_log(self, log_text: str) -> dict[str, Any]:
@@ -25,17 +27,21 @@ class OrchestratorAgent:
 
         intel_results = [self.threat.analyze_indicator(ind) for ind in indicators]
 
+        kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
+
         self.report.generate_report(
             log_text,
             "reports/markdown/orchestrated_incident.md",
             soc_result=soc_result,
             mitre_result=mitre_result,
+            kb_references=kb_references,
         )
 
         return {
             "soc": soc_result,
             "mitre": mitre_result,
             "threat_intel": intel_results,
+            "knowledge_base": kb_references,
         }
 
 

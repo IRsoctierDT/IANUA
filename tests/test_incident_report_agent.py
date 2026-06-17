@@ -77,3 +77,34 @@ def test_no_indicators_shows_none(tmp_path: Path) -> None:
     )
     content = output.read_text(encoding="utf-8")
     assert "None detected" in content
+
+
+@pytest.mark.unit
+def test_kb_references_render_when_supplied(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    kb_refs = [
+        {"source": "mitre.md", "score": 0.44, "snippet": "# MITRE ATT&CK Enterprise overview"},
+    ]
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        kb_references=kb_refs,
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "## Knowledge Base References" in content
+    assert "mitre.md" in content
+    assert "0.44" in content
+
+
+@pytest.mark.unit
+def test_kb_references_absent_shows_none_captured(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "## Knowledge Base References" in content
+    assert "None captured" in content

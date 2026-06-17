@@ -1,0 +1,27 @@
+﻿2026-06-16T00:29:26.7740923Z ##[group]Run actions/setup-python@v5
+2026-06-16T00:29:26.7741280Z with:
+2026-06-16T00:29:26.7741503Z   python-version: 3.11
+2026-06-16T00:29:26.7741733Z   cache: pip
+2026-06-16T00:29:26.7741938Z   check-latest: false
+2026-06-16T00:29:26.7745050Z   token: ***
+2026-06-16T00:29:26.7745271Z   update-environment: true
+2026-06-16T00:29:26.7745527Z   allow-prereleases: false
+2026-06-16T00:29:26.7745771Z   freethreaded: false
+2026-06-16T00:29:26.7745983Z env:
+2026-06-16T00:29:26.7746176Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:26.7746449Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:26.7746745Z ##[endgroup]
+2026-06-16T00:29:26.9089180Z ##[group]Installed versions
+2026-06-16T00:29:26.9451494Z (node:2064) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:29:26.9453163Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:29:26.9454280Z Successfully set up CPython (3.11.15)
+2026-06-16T00:29:26.9455622Z ##[endgroup]
+2026-06-16T00:29:28.3661910Z [command]/opt/hostedtoolcache/Python/3.11.15/x64/bin/pip cache dir
+2026-06-16T00:29:30.1861416Z /home/runner/.cache/pip
+2026-06-16T00:29:30.3331973Z Cache hit for: setup-python-Linux-x64-24.04-Ubuntu-python-3.11.15-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3
+2026-06-16T00:29:30.3404787Z (node:2064) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:29:31.2064872Z Received 43588963 of 43588963 (100.0%), 56.0 MBs/sec
+2026-06-16T00:29:31.2066024Z Cache Size: ~42 MB (43588963 B)
+2026-06-16T00:29:31.2132335Z [command]/usr/bin/tar -xf /home/runner/work/_temp/3a889712-e769-45b7-be5f-7701ca51feb8/cache.tzst -P -C /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center --use-compress-program unzstd
+2026-06-16T00:29:31.3622871Z Cache restored successfully
+2026-06-16T00:29:31.3692254Z Cache restored from key: setup-python-Linux-x64-24.04-Ubuntu-python-3.11.15-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3

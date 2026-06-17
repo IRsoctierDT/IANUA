@@ -16,6 +16,7 @@ security operation.
 | Component | Layer | Status |
 |---|---|---|
 | **SOC Analyst Agent v0.2** — JSON/text log triage, severity scoring (0-100), evidence table, MITRE mapping, incident report | Agent | Complete |
+| **SOC Analyst Agent v0.2** — JSON/text log triage, severity scoring (0-100), evidence table, MITRE mapping, incident report ([case study](./docs/case-studies/soc-analyst-v0.2.md)) | Agent | Complete |
 | **Incident Report Agent** — Markdown incident reports from structured SOC + MITRE output | Agent | Complete |
 | **MITRE Mapper Agent** — ATT&CK tactic/technique mapping with confidence scoring | Agent | Complete |
 | **Threat Intel Agent** — IOC enrichment and indicator summarization | Agent | Complete |
@@ -26,6 +27,10 @@ security operation.
 | **Dashboard** — AI ops UI with tabbed layout | Dashboard | In Progress |
 
 **Agents planned:** Legal/Compliance Research · Business Proposal · Knowledge Curator · Portfolio Documentation · Executive Assistant
+
+### Case studies
+
+- [SOC Analyst Agent v0.2](./docs/case-studies/soc-analyst-v0.2.md) — raw log line → triaged, MITRE-mapped, human-reviewable incident report, fully local.
 
 ---
 

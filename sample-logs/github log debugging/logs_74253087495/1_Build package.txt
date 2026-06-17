@@ -1,0 +1,477 @@
+﻿2026-06-16T00:29:49.6654085Z Current runner version: '2.335.1'
+2026-06-16T00:29:49.6689311Z ##[group]Runner Image Provisioner
+2026-06-16T00:29:49.6690671Z Hosted Compute Agent
+2026-06-16T00:29:49.6691754Z Version: 20260527.539
+2026-06-16T00:29:49.6692833Z Commit: a891dd388383b896fa6ac04a82c0b75cec981078
+2026-06-16T00:29:49.6694166Z Build Date: 2026-05-27T21:39:57Z
+2026-06-16T00:29:49.6695344Z Worker ID: {268f9d3e-11dd-4832-ac9c-21e2c9e5ff56}
+2026-06-16T00:29:49.6696957Z Azure Region: eastus
+2026-06-16T00:29:49.6697952Z ##[endgroup]
+2026-06-16T00:29:49.6700385Z ##[group]Operating System
+2026-06-16T00:29:49.6701455Z Ubuntu
+2026-06-16T00:29:49.6702342Z 24.04.4
+2026-06-16T00:29:49.6703190Z LTS
+2026-06-16T00:29:49.6704088Z ##[endgroup]
+2026-06-16T00:29:49.6704954Z ##[group]Runner Image
+2026-06-16T00:29:49.6706202Z Image: ubuntu-24.04
+2026-06-16T00:29:49.6707633Z Version: 20260607.184.1
+2026-06-16T00:29:49.6709802Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260607.184/images/ubuntu/Ubuntu2404-Readme.md
+2026-06-16T00:29:49.6712674Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260607.184
+2026-06-16T00:29:49.6714935Z ##[endgroup]
+2026-06-16T00:29:49.6717454Z ##[group]GITHUB_TOKEN Permissions
+2026-06-16T00:29:49.6720269Z Contents: read
+2026-06-16T00:29:49.6721613Z Metadata: read
+2026-06-16T00:29:49.6722641Z ##[endgroup]
+2026-06-16T00:29:49.6725789Z Secret source: Actions
+2026-06-16T00:29:49.6727661Z Prepare workflow directory
+2026-06-16T00:29:49.7305051Z Prepare all required actions
+2026-06-16T00:29:49.7362518Z Getting action download info
+2026-06-16T00:29:50.1378285Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-06-16T00:29:50.2302957Z Download action repository 'actions/setup-python@v5' (SHA:a26af69be951a213d495a4c3e4e4022e16d87065)
+2026-06-16T00:29:50.3156968Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-06-16T00:29:50.5379063Z Complete job name: Build package
+2026-06-16T00:29:50.6157635Z ##[group]Run actions/checkout@v4
+2026-06-16T00:29:50.6158507Z with:
+2026-06-16T00:29:50.6159055Z   repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:50.6163321Z   token: ***
+2026-06-16T00:29:50.6163750Z   ssh-strict: true
+2026-06-16T00:29:50.6164182Z   ssh-user: git
+2026-06-16T00:29:50.6164622Z   persist-credentials: true
+2026-06-16T00:29:50.6165102Z   clean: true
+2026-06-16T00:29:50.6165542Z   sparse-checkout-cone-mode: true
+2026-06-16T00:29:50.6166271Z   fetch-depth: 1
+2026-06-16T00:29:50.6166749Z   fetch-tags: false
+2026-06-16T00:29:50.6167191Z   show-progress: true
+2026-06-16T00:29:50.6167631Z   lfs: false
+2026-06-16T00:29:50.6168037Z   submodules: false
+2026-06-16T00:29:50.6168479Z   set-safe-directory: true
+2026-06-16T00:29:50.6169212Z env:
+2026-06-16T00:29:50.6169620Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:50.6170114Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:50.6170668Z ##[endgroup]
+2026-06-16T00:29:50.7825610Z Syncing repository: IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:50.7832866Z ##[group]Getting Git version info
+2026-06-16T00:29:50.7835581Z Working directory is '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:29:50.7852115Z [command]/usr/bin/git version
+2026-06-16T00:29:50.7853297Z git version 2.54.0
+2026-06-16T00:29:50.7856778Z ##[endgroup]
+2026-06-16T00:29:50.7870199Z Temporarily overriding HOME='/home/runner/work/_temp/0036ee8d-8990-437e-8c3f-6204b25090b6' before making global git config changes
+2026-06-16T00:29:50.7871766Z Adding repository directory to the temporary git global config as a safe directory
+2026-06-16T00:29:50.7874087Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:50.7914626Z Deleting the contents of '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center'
+2026-06-16T00:29:50.7927228Z ##[group]Initializing the repository
+2026-06-16T00:29:50.7929648Z [command]/usr/bin/git init /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:29:50.8051625Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-06-16T00:29:50.8053395Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-06-16T00:29:50.8054782Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-06-16T00:29:50.8055836Z hint: call:
+2026-06-16T00:29:50.8057668Z hint:
+2026-06-16T00:29:50.8058655Z hint: 	git config --global init.defaultBranch <name>
+2026-06-16T00:29:50.8069644Z hint:
+2026-06-16T00:29:50.8070845Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-06-16T00:29:50.8072285Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-06-16T00:29:50.8073900Z hint:
+2026-06-16T00:29:50.8074934Z hint: 	git branch -m <name>
+2026-06-16T00:29:50.8076295Z hint:
+2026-06-16T00:29:50.8077632Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-06-16T00:29:50.8080141Z Initialized empty Git repository in /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center/.git/
+2026-06-16T00:29:50.8084083Z [command]/usr/bin/git remote add origin https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:50.8160750Z ##[endgroup]
+2026-06-16T00:29:50.8162429Z ##[group]Disabling automatic garbage collection
+2026-06-16T00:29:50.8163802Z [command]/usr/bin/git config --local gc.auto 0
+2026-06-16T00:29:50.8199951Z ##[endgroup]
+2026-06-16T00:29:50.8201581Z ##[group]Setting up auth
+2026-06-16T00:29:50.8202731Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-06-16T00:29:50.8241289Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-06-16T00:29:50.8635545Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-06-16T00:29:50.8668090Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-06-16T00:29:50.8904248Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-06-16T00:29:50.8936967Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-06-16T00:29:50.9169811Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-06-16T00:29:50.9204727Z ##[endgroup]
+2026-06-16T00:29:50.9206737Z ##[group]Fetching the repository
+2026-06-16T00:29:50.9237601Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f:refs/remotes/origin/main
+2026-06-16T00:29:52.7639637Z From https://github.com/IRsoctierDT/ai-operator-cyber-command-center
+2026-06-16T00:29:52.7668304Z  * [new ref]         9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f -> origin/main
+2026-06-16T00:29:52.7727965Z ##[endgroup]
+2026-06-16T00:29:52.7737920Z ##[group]Determining the checkout info
+2026-06-16T00:29:52.7739943Z ##[endgroup]
+2026-06-16T00:29:52.7741335Z [command]/usr/bin/git sparse-checkout disable
+2026-06-16T00:29:52.7812540Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-06-16T00:29:52.7865648Z ##[group]Checking out the ref
+2026-06-16T00:29:52.7867884Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-06-16T00:29:53.8389360Z Updating files:  98% (6980/7077)
+2026-06-16T00:29:53.9048758Z Updating files:  99% (7007/7077)
+2026-06-16T00:29:53.9052148Z Updating files: 100% (7077/7077)
+2026-06-16T00:29:53.9053899Z Updating files: 100% (7077/7077), done.
+2026-06-16T00:29:53.9126887Z Switched to a new branch 'main'
+2026-06-16T00:29:53.9130630Z branch 'main' set up to track 'origin/main'.
+2026-06-16T00:29:53.9166649Z ##[endgroup]
+2026-06-16T00:29:53.9207008Z [command]/usr/bin/git log -1 --format=%H
+2026-06-16T00:29:53.9232419Z 9e084bf0404b1ee03d8bc74aca7cecb2a5d0a55f
+2026-06-16T00:29:53.9552867Z ##[group]Run actions/setup-python@v5
+2026-06-16T00:29:53.9553944Z with:
+2026-06-16T00:29:53.9554862Z   python-version: 3.11
+2026-06-16T00:29:53.9555811Z   cache: pip
+2026-06-16T00:29:53.9556926Z   check-latest: false
+2026-06-16T00:29:53.9561077Z   token: ***
+2026-06-16T00:29:53.9562025Z   update-environment: true
+2026-06-16T00:29:53.9563016Z   allow-prereleases: false
+2026-06-16T00:29:53.9564036Z   freethreaded: false
+2026-06-16T00:29:53.9564961Z env:
+2026-06-16T00:29:53.9565831Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:53.9566945Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:53.9567913Z ##[endgroup]
+2026-06-16T00:29:54.1006841Z ##[group]Installed versions
+2026-06-16T00:29:54.1237794Z (node:2061) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:29:54.1240286Z Successfully set up CPython (3.11.15)
+2026-06-16T00:29:54.1245152Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:29:54.1251999Z ##[endgroup]
+2026-06-16T00:29:55.6342693Z [command]/opt/hostedtoolcache/Python/3.11.15/x64/bin/pip cache dir
+2026-06-16T00:29:57.5161707Z /home/runner/.cache/pip
+2026-06-16T00:29:57.6104226Z Cache hit for: setup-python-Linux-x64-24.04-Ubuntu-python-3.11.15-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3
+2026-06-16T00:29:57.6217964Z (node:2061) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:29:58.0266224Z Received 43588963 of 43588963 (100.0%), 116.1 MBs/sec
+2026-06-16T00:29:58.0267509Z Cache Size: ~42 MB (43588963 B)
+2026-06-16T00:29:58.0303346Z [command]/usr/bin/tar -xf /home/runner/work/_temp/bf13d697-abe7-4f8e-8a26-1c68c764465d/cache.tzst -P -C /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center --use-compress-program unzstd
+2026-06-16T00:29:58.1514299Z Cache restored successfully
+2026-06-16T00:29:58.1539727Z Cache restored from key: setup-python-Linux-x64-24.04-Ubuntu-python-3.11.15-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3
+2026-06-16T00:29:58.1777416Z ##[group]Run pip install build
+2026-06-16T00:29:58.1777771Z [36;1mpip install build[0m
+2026-06-16T00:29:58.1989434Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:58.1989733Z env:
+2026-06-16T00:29:58.1989950Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:58.1990242Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:58.1990641Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1991109Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:29:58.1991600Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1992022Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1992442Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:58.1992858Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:29:58.1993222Z ##[endgroup]
+2026-06-16T00:29:59.5301294Z Collecting build
+2026-06-16T00:29:59.5884590Z   Downloading build-1.5.0-py3-none-any.whl.metadata (5.7 kB)
+2026-06-16T00:29:59.6057535Z Collecting packaging>=24.0 (from build)
+2026-06-16T00:29:59.6073984Z   Using cached packaging-26.2-py3-none-any.whl.metadata (3.5 kB)
+2026-06-16T00:29:59.6166769Z Collecting pyproject_hooks (from build)
+2026-06-16T00:29:59.6206964Z   Downloading pyproject_hooks-1.2.0-py3-none-any.whl.metadata (1.3 kB)
+2026-06-16T00:29:59.6293513Z Downloading build-1.5.0-py3-none-any.whl (26 kB)
+2026-06-16T00:29:59.6348737Z Using cached packaging-26.2-py3-none-any.whl (100 kB)
+2026-06-16T00:29:59.6394603Z Downloading pyproject_hooks-1.2.0-py3-none-any.whl (10 kB)
+2026-06-16T00:29:59.7079804Z Installing collected packages: pyproject_hooks, packaging, build
+2026-06-16T00:29:59.7996603Z 
+2026-06-16T00:29:59.8017477Z Successfully installed build-1.5.0 packaging-26.2 pyproject_hooks-1.2.0
+2026-06-16T00:29:59.8514557Z ##[group]Run python -m build
+2026-06-16T00:29:59.8514882Z [36;1mpython -m build[0m
+2026-06-16T00:29:59.8548962Z shell: /usr/bin/bash -e {0}
+2026-06-16T00:29:59.8549229Z env:
+2026-06-16T00:29:59.8549424Z   PYTHON_VERSION: 3.11
+2026-06-16T00:29:59.8549686Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:29:59.8550052Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8550502Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:29:59.8550935Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8551347Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8551748Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:29:59.8552135Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:29:59.8552475Z ##[endgroup]
+2026-06-16T00:30:00.0088560Z * Creating isolated environment: venv+pip...
+2026-06-16T00:30:00.0928248Z * Installing packages in isolated environment:
+2026-06-16T00:30:00.0929382Z   - setuptools>=68
+2026-06-16T00:30:00.0946674Z   - wheel
+2026-06-16T00:30:01.3986769Z * Getting build dependencies for sdist...
+2026-06-16T00:30:01.9865650Z running egg_info
+2026-06-16T00:30:01.9878664Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:01.9890821Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:01.9897731Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:01.9899419Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:01.9946811Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:01.9964733Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:02.0214624Z * Building sdist...
+2026-06-16T00:30:02.1621342Z running sdist
+2026-06-16T00:30:02.1622230Z running egg_info
+2026-06-16T00:30:02.1643814Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:02.1656327Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:02.1662741Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:02.1664417Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:02.1711598Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:02.1729653Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:02.1731308Z running check
+2026-06-16T00:30:02.1757109Z creating ai_operator_cyber_command_center-0.1.0
+2026-06-16T00:30:02.1760143Z creating ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1762132Z creating ai_operator_cyber_command_center-0.1.0/agents/policies
+2026-06-16T00:30:02.1763917Z creating ai_operator_cyber_command_center-0.1.0/agents/roles
+2026-06-16T00:30:02.1765683Z creating ai_operator_cyber_command_center-0.1.0/agents/tools
+2026-06-16T00:30:02.1767904Z creating ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1769730Z creating ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1776737Z creating ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1794954Z creating ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1805251Z creating ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1806487Z creating ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1807570Z copying files to ai_operator_cyber_command_center-0.1.0...
+2026-06-16T00:30:02.1809101Z copying README.md -> ai_operator_cyber_command_center-0.1.0
+2026-06-16T00:30:02.1810275Z copying pyproject.toml -> ai_operator_cyber_command_center-0.1.0
+2026-06-16T00:30:02.1826893Z copying agents/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1829448Z copying agents/incident_report_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1830896Z copying agents/mitre_mapper_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1832326Z copying agents/orchestrator_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1833696Z copying agents/soc_analyst_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1835074Z copying agents/threat_intel_agent.py -> ai_operator_cyber_command_center-0.1.0/agents
+2026-06-16T00:30:02.1836767Z copying agents/policies/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents/policies
+2026-06-16T00:30:02.1838210Z copying agents/roles/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents/roles
+2026-06-16T00:30:02.1839553Z copying agents/tools/__init__.py -> ai_operator_cyber_command_center-0.1.0/agents/tools
+2026-06-16T00:30:02.1840976Z copying agents/tools/validation.py -> ai_operator_cyber_command_center-0.1.0/agents/tools
+2026-06-16T00:30:02.1842857Z copying ai_operator_cyber_command_center.egg-info/PKG-INFO -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1844996Z copying ai_operator_cyber_command_center.egg-info/SOURCES.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1847484Z copying ai_operator_cyber_command_center.egg-info/dependency_links.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1849772Z copying ai_operator_cyber_command_center.egg-info/requires.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1851983Z copying ai_operator_cyber_command_center.egg-info/top_level.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1853751Z copying dashboard/__init__.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1855066Z copying dashboard/app.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1856626Z copying dashboard/kb_search.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1858003Z copying dashboard/ollama_service.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1859410Z copying dashboard/system_health.py -> ai_operator_cyber_command_center-0.1.0/dashboard
+2026-06-16T00:30:02.1860697Z copying mcp/__init__.py -> ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1861851Z copying mcp/server.py -> ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1863018Z copying mcp/transport.py -> ai_operator_cyber_command_center-0.1.0/mcp
+2026-06-16T00:30:02.1864146Z copying rag/__init__.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1865264Z copying rag/embeddings.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1866818Z copying rag/ingest.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1868006Z copying rag/retrieve.py -> ai_operator_cyber_command_center-0.1.0/rag
+2026-06-16T00:30:02.1869209Z copying scripts/__init__.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1870537Z copying scripts/ask_cyber_kb.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1871936Z copying scripts/ask_cyber_kb_chunked_ollama.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1873380Z copying scripts/ask_cyber_kb_ollama.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1874732Z copying scripts/convert_report_to_pdf.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1876669Z copying scripts/create_cyber_collection.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1878192Z copying scripts/generate_docs_from_design.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1879767Z copying scripts/ingest_cyber_kb.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1881158Z copying scripts/ingest_cyber_kb_chunked.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1882500Z copying scripts/rag_cli.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1883744Z copying scripts/search_cyber_kb.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1885021Z copying scripts/search_cyber_kb_chunked.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1886827Z copying scripts/test_embeddings_qdrant.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1888129Z copying scripts/test_qdrant.py -> ai_operator_cyber_command_center-0.1.0/scripts
+2026-06-16T00:30:02.1889446Z copying tests/test_incident_report_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1890869Z copying tests/test_mitre_mapper_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1892290Z copying tests/test_orchestrator_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1893643Z copying tests/test_soc_analyst_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1894940Z copying tests/test_threat_intel_agent.py -> ai_operator_cyber_command_center-0.1.0/tests
+2026-06-16T00:30:02.1896940Z copying ai_operator_cyber_command_center.egg-info/SOURCES.txt -> ai_operator_cyber_command_center-0.1.0/ai_operator_cyber_command_center.egg-info
+2026-06-16T00:30:02.1898526Z Writing ai_operator_cyber_command_center-0.1.0/setup.cfg
+2026-06-16T00:30:02.1899366Z Creating tar archive
+2026-06-16T00:30:02.2040949Z removing 'ai_operator_cyber_command_center-0.1.0' (and everything under it)
+2026-06-16T00:30:02.2618808Z * Building wheel from sdist
+2026-06-16T00:30:02.2671871Z * Creating isolated environment: venv+pip...
+2026-06-16T00:30:02.2695380Z * Installing packages in isolated environment:
+2026-06-16T00:30:02.2696532Z   - setuptools>=68
+2026-06-16T00:30:02.2697096Z   - wheel
+2026-06-16T00:30:03.4137266Z * Getting build dependencies for wheel...
+2026-06-16T00:30:03.8255531Z running egg_info
+2026-06-16T00:30:03.8268545Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:03.8279756Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:03.8286867Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:03.8288799Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:03.8336538Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:03.8354409Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:03.8619571Z * Building wheel...
+2026-06-16T00:30:03.9988475Z running bdist_wheel
+2026-06-16T00:30:04.0032200Z running build
+2026-06-16T00:30:04.0032957Z running build_py
+2026-06-16T00:30:04.0046734Z creating build/lib/agents
+2026-06-16T00:30:04.0049672Z copying agents/__init__.py -> build/lib/agents
+2026-06-16T00:30:04.0057256Z copying agents/mitre_mapper_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0058264Z copying agents/threat_intel_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0059318Z copying agents/orchestrator_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0060421Z copying agents/incident_report_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0061499Z copying agents/soc_analyst_agent.py -> build/lib/agents
+2026-06-16T00:30:04.0064151Z creating build/lib/agents/tools
+2026-06-16T00:30:04.0066235Z copying agents/tools/__init__.py -> build/lib/agents/tools
+2026-06-16T00:30:04.0068494Z copying agents/tools/validation.py -> build/lib/agents/tools
+2026-06-16T00:30:04.0071333Z creating build/lib/agents/roles
+2026-06-16T00:30:04.0073017Z copying agents/roles/__init__.py -> build/lib/agents/roles
+2026-06-16T00:30:04.0075677Z creating build/lib/agents/policies
+2026-06-16T00:30:04.0077674Z copying agents/policies/__init__.py -> build/lib/agents/policies
+2026-06-16T00:30:04.0080837Z creating build/lib/rag
+2026-06-16T00:30:04.0097115Z copying rag/__init__.py -> build/lib/rag
+2026-06-16T00:30:04.0107130Z copying rag/ingest.py -> build/lib/rag
+2026-06-16T00:30:04.0107892Z copying rag/retrieve.py -> build/lib/rag
+2026-06-16T00:30:04.0108778Z copying rag/embeddings.py -> build/lib/rag
+2026-06-16T00:30:04.0109653Z creating build/lib/mcp
+2026-06-16T00:30:04.0110366Z copying mcp/__init__.py -> build/lib/mcp
+2026-06-16T00:30:04.0111207Z copying mcp/transport.py -> build/lib/mcp
+2026-06-16T00:30:04.0112278Z copying mcp/server.py -> build/lib/mcp
+2026-06-16T00:30:04.0122552Z creating build/lib/dashboard
+2026-06-16T00:30:04.0123448Z copying dashboard/kb_search.py -> build/lib/dashboard
+2026-06-16T00:30:04.0124451Z copying dashboard/__init__.py -> build/lib/dashboard
+2026-06-16T00:30:04.0125399Z copying dashboard/app.py -> build/lib/dashboard
+2026-06-16T00:30:04.0126646Z copying dashboard/ollama_service.py -> build/lib/dashboard
+2026-06-16T00:30:04.0127698Z copying dashboard/system_health.py -> build/lib/dashboard
+2026-06-16T00:30:04.0128606Z creating build/lib/scripts
+2026-06-16T00:30:04.0129482Z copying scripts/search_cyber_kb_chunked.py -> build/lib/scripts
+2026-06-16T00:30:04.0130543Z copying scripts/ingest_cyber_kb.py -> build/lib/scripts
+2026-06-16T00:30:04.0131480Z copying scripts/__init__.py -> build/lib/scripts
+2026-06-16T00:30:04.0132474Z copying scripts/ask_cyber_kb_ollama.py -> build/lib/scripts
+2026-06-16T00:30:04.0133536Z copying scripts/create_cyber_collection.py -> build/lib/scripts
+2026-06-16T00:30:04.0134627Z copying scripts/ingest_cyber_kb_chunked.py -> build/lib/scripts
+2026-06-16T00:30:04.0135669Z copying scripts/search_cyber_kb.py -> build/lib/scripts
+2026-06-16T00:30:04.0136954Z copying scripts/ask_cyber_kb.py -> build/lib/scripts
+2026-06-16T00:30:04.0137967Z copying scripts/convert_report_to_pdf.py -> build/lib/scripts
+2026-06-16T00:30:04.0138962Z copying scripts/rag_cli.py -> build/lib/scripts
+2026-06-16T00:30:04.0139894Z copying scripts/test_qdrant.py -> build/lib/scripts
+2026-06-16T00:30:04.0140923Z copying scripts/generate_docs_from_design.py -> build/lib/scripts
+2026-06-16T00:30:04.0142067Z copying scripts/ask_cyber_kb_chunked_ollama.py -> build/lib/scripts
+2026-06-16T00:30:04.0143205Z copying scripts/test_embeddings_qdrant.py -> build/lib/scripts
+2026-06-16T00:30:04.0144056Z running egg_info
+2026-06-16T00:30:04.0153213Z writing ai_operator_cyber_command_center.egg-info/PKG-INFO
+2026-06-16T00:30:04.0165190Z writing dependency_links to ai_operator_cyber_command_center.egg-info/dependency_links.txt
+2026-06-16T00:30:04.0172111Z writing requirements to ai_operator_cyber_command_center.egg-info/requires.txt
+2026-06-16T00:30:04.0173729Z writing top-level names to ai_operator_cyber_command_center.egg-info/top_level.txt
+2026-06-16T00:30:04.0201120Z reading manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:04.0219036Z writing manifest file 'ai_operator_cyber_command_center.egg-info/SOURCES.txt'
+2026-06-16T00:30:04.0249966Z installing to build/bdist.linux-x86_64/wheel
+2026-06-16T00:30:04.0250777Z running install
+2026-06-16T00:30:04.0308737Z running install_lib
+2026-06-16T00:30:04.0320373Z creating build/bdist.linux-x86_64/wheel
+2026-06-16T00:30:04.0322706Z creating build/bdist.linux-x86_64/wheel/rag
+2026-06-16T00:30:04.0324679Z copying build/lib/rag/__init__.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0326698Z copying build/lib/rag/ingest.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0328698Z copying build/lib/rag/retrieve.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0330597Z copying build/lib/rag/embeddings.py -> build/bdist.linux-x86_64/wheel/./rag
+2026-06-16T00:30:04.0332922Z creating build/bdist.linux-x86_64/wheel/scripts
+2026-06-16T00:30:04.0334947Z copying build/lib/scripts/search_cyber_kb_chunked.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0337046Z copying build/lib/scripts/ingest_cyber_kb.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0347426Z copying build/lib/scripts/__init__.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0348838Z copying build/lib/scripts/ask_cyber_kb_ollama.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0350564Z copying build/lib/scripts/create_cyber_collection.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0352150Z copying build/lib/scripts/ingest_cyber_kb_chunked.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0353619Z copying build/lib/scripts/search_cyber_kb.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0354990Z copying build/lib/scripts/ask_cyber_kb.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0356702Z copying build/lib/scripts/convert_report_to_pdf.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0358138Z copying build/lib/scripts/rag_cli.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0359485Z copying build/lib/scripts/test_qdrant.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0360977Z copying build/lib/scripts/generate_docs_from_design.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0362560Z copying build/lib/scripts/ask_cyber_kb_chunked_ollama.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0364108Z copying build/lib/scripts/test_embeddings_qdrant.py -> build/bdist.linux-x86_64/wheel/./scripts
+2026-06-16T00:30:04.0365378Z creating build/bdist.linux-x86_64/wheel/dashboard
+2026-06-16T00:30:04.0366782Z copying build/lib/dashboard/kb_search.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0368161Z copying build/lib/dashboard/__init__.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0369511Z copying build/lib/dashboard/app.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0370910Z copying build/lib/dashboard/ollama_service.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0372426Z copying build/lib/dashboard/system_health.py -> build/bdist.linux-x86_64/wheel/./dashboard
+2026-06-16T00:30:04.0373608Z creating build/bdist.linux-x86_64/wheel/mcp
+2026-06-16T00:30:04.0374630Z copying build/lib/mcp/__init__.py -> build/bdist.linux-x86_64/wheel/./mcp
+2026-06-16T00:30:04.0375888Z copying build/lib/mcp/transport.py -> build/bdist.linux-x86_64/wheel/./mcp
+2026-06-16T00:30:04.0377365Z copying build/lib/mcp/server.py -> build/bdist.linux-x86_64/wheel/./mcp
+2026-06-16T00:30:04.0378445Z creating build/bdist.linux-x86_64/wheel/agents
+2026-06-16T00:30:04.0379393Z creating build/bdist.linux-x86_64/wheel/agents/policies
+2026-06-16T00:30:04.0380657Z copying build/lib/agents/policies/__init__.py -> build/bdist.linux-x86_64/wheel/./agents/policies
+2026-06-16T00:30:04.0382098Z copying build/lib/agents/__init__.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0383464Z copying build/lib/agents/mitre_mapper_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0385112Z copying build/lib/agents/threat_intel_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0387313Z copying build/lib/agents/orchestrator_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0389139Z copying build/lib/agents/incident_report_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0391313Z creating build/bdist.linux-x86_64/wheel/agents/tools
+2026-06-16T00:30:04.0393241Z copying build/lib/agents/tools/__init__.py -> build/bdist.linux-x86_64/wheel/./agents/tools
+2026-06-16T00:30:04.0394932Z copying build/lib/agents/tools/validation.py -> build/bdist.linux-x86_64/wheel/./agents/tools
+2026-06-16T00:30:04.0397255Z creating build/bdist.linux-x86_64/wheel/agents/roles
+2026-06-16T00:30:04.0399149Z copying build/lib/agents/roles/__init__.py -> build/bdist.linux-x86_64/wheel/./agents/roles
+2026-06-16T00:30:04.0400810Z copying build/lib/agents/soc_analyst_agent.py -> build/bdist.linux-x86_64/wheel/./agents
+2026-06-16T00:30:04.0402142Z running install_egg_info
+2026-06-16T00:30:04.0415173Z Copying ai_operator_cyber_command_center.egg-info to build/bdist.linux-x86_64/wheel/./ai_operator_cyber_command_center-0.1.0-py3.11.egg-info
+2026-06-16T00:30:04.0423771Z running install_scripts
+2026-06-16T00:30:04.0433871Z creating build/bdist.linux-x86_64/wheel/ai_operator_cyber_command_center-0.1.0.dist-info/WHEEL
+2026-06-16T00:30:04.0438804Z creating '/home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center/dist/.tmp-i1snsp7b/ai_operator_cyber_command_center-0.1.0-py3-none-any.whl' and adding 'build/bdist.linux-x86_64/wheel' to it
+2026-06-16T00:30:04.0441626Z adding 'agents/__init__.py'
+2026-06-16T00:30:04.0445076Z adding 'agents/incident_report_agent.py'
+2026-06-16T00:30:04.0448493Z adding 'agents/mitre_mapper_agent.py'
+2026-06-16T00:30:04.0451184Z adding 'agents/orchestrator_agent.py'
+2026-06-16T00:30:04.0454317Z adding 'agents/soc_analyst_agent.py'
+2026-06-16T00:30:04.0457630Z adding 'agents/threat_intel_agent.py'
+2026-06-16T00:30:04.0460060Z adding 'agents/policies/__init__.py'
+2026-06-16T00:30:04.0462648Z adding 'agents/roles/__init__.py'
+2026-06-16T00:30:04.0464845Z adding 'agents/tools/__init__.py'
+2026-06-16T00:30:04.0467527Z adding 'agents/tools/validation.py'
+2026-06-16T00:30:04.0470922Z adding 'dashboard/__init__.py'
+2026-06-16T00:30:04.0474300Z adding 'dashboard/app.py'
+2026-06-16T00:30:04.0477102Z adding 'dashboard/kb_search.py'
+2026-06-16T00:30:04.0479350Z adding 'dashboard/ollama_service.py'
+2026-06-16T00:30:04.0481455Z adding 'dashboard/system_health.py'
+2026-06-16T00:30:04.0483675Z adding 'mcp/__init__.py'
+2026-06-16T00:30:04.0487555Z adding 'mcp/server.py'
+2026-06-16T00:30:04.0492430Z adding 'mcp/transport.py'
+2026-06-16T00:30:04.0493152Z adding 'rag/__init__.py'
+2026-06-16T00:30:04.0495307Z adding 'rag/embeddings.py'
+2026-06-16T00:30:04.0498504Z adding 'rag/ingest.py'
+2026-06-16T00:30:04.0517041Z adding 'rag/retrieve.py'
+2026-06-16T00:30:04.0517737Z adding 'scripts/__init__.py'
+2026-06-16T00:30:04.0518551Z adding 'scripts/ask_cyber_kb.py'
+2026-06-16T00:30:04.0519415Z adding 'scripts/ask_cyber_kb_chunked_ollama.py'
+2026-06-16T00:30:04.0520260Z adding 'scripts/ask_cyber_kb_ollama.py'
+2026-06-16T00:30:04.0521079Z adding 'scripts/convert_report_to_pdf.py'
+2026-06-16T00:30:04.0521870Z adding 'scripts/create_cyber_collection.py'
+2026-06-16T00:30:04.0522625Z adding 'scripts/generate_docs_from_design.py'
+2026-06-16T00:30:04.0523466Z adding 'scripts/ingest_cyber_kb.py'
+2026-06-16T00:30:04.0524275Z adding 'scripts/ingest_cyber_kb_chunked.py'
+2026-06-16T00:30:04.0525050Z adding 'scripts/rag_cli.py'
+2026-06-16T00:30:04.0525865Z adding 'scripts/search_cyber_kb.py'
+2026-06-16T00:30:04.0528180Z adding 'scripts/search_cyber_kb_chunked.py'
+2026-06-16T00:30:04.0530248Z adding 'scripts/test_embeddings_qdrant.py'
+2026-06-16T00:30:04.0532140Z adding 'scripts/test_qdrant.py'
+2026-06-16T00:30:04.0534923Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/METADATA'
+2026-06-16T00:30:04.0547285Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/WHEEL'
+2026-06-16T00:30:04.0557277Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/top_level.txt'
+2026-06-16T00:30:04.0558400Z adding 'ai_operator_cyber_command_center-0.1.0.dist-info/RECORD'
+2026-06-16T00:30:04.0559347Z removing build/bdist.linux-x86_64/wheel
+2026-06-16T00:30:04.1124074Z Successfully built ai_operator_cyber_command_center-0.1.0.tar.gz and ai_operator_cyber_command_center-0.1.0-py3-none-any.whl
+2026-06-16T00:30:04.1327221Z ##[group]Run actions/upload-artifact@v4
+2026-06-16T00:30:04.1327533Z with:
+2026-06-16T00:30:04.1327731Z   name: dist
+2026-06-16T00:30:04.1327923Z   path: dist/
+2026-06-16T00:30:04.1328128Z   if-no-files-found: warn
+2026-06-16T00:30:04.1328366Z   compression-level: 6
+2026-06-16T00:30:04.1328589Z   overwrite: false
+2026-06-16T00:30:04.1328993Z   include-hidden-files: false
+2026-06-16T00:30:04.1329228Z env:
+2026-06-16T00:30:04.1329410Z   PYTHON_VERSION: 3.11
+2026-06-16T00:30:04.1329659Z   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+2026-06-16T00:30:04.1330006Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:30:04.1330441Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib/pkgconfig
+2026-06-16T00:30:04.1330867Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:30:04.1331253Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:30:04.1331642Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.15/x64
+2026-06-16T00:30:04.1332074Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.15/x64/lib
+2026-06-16T00:30:04.1332399Z ##[endgroup]
+2026-06-16T00:30:04.3522760Z (node:2178) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:30:04.3558262Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:30:04.3666978Z With the provided path, there will be 2 files uploaded
+2026-06-16T00:30:04.3706509Z Artifact name is valid!
+2026-06-16T00:30:04.3734522Z Root directory input is valid!
+2026-06-16T00:30:04.5485248Z Beginning upload of artifact content to blob storage
+2026-06-16T00:30:04.5774260Z (node:2178) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-06-16T00:30:04.6189054Z Uploaded bytes 63051
+2026-06-16T00:30:04.6371524Z Finished uploading artifact content to blob storage!
+2026-06-16T00:30:04.6372897Z SHA256 digest of uploaded artifact zip is 8bc174ab678808ffd623c002ef4136fa681e054fc2824e2045e484dbe55f2e3c
+2026-06-16T00:30:04.6374118Z Finalizing artifact upload
+2026-06-16T00:30:04.8620363Z Artifact dist.zip successfully finalized. Artifact ID 7654355652
+2026-06-16T00:30:04.8621727Z Artifact dist has been successfully uploaded! Final size is 63051 bytes. Artifact ID is 7654355652
+2026-06-16T00:30:04.8629167Z Artifact download URL: https://github.com/IRsoctierDT/ai-operator-cyber-command-center/actions/runs/27585615324/artifacts/7654355652
+2026-06-16T00:30:04.8812760Z Post job cleanup.
+2026-06-16T00:30:05.0136246Z Cache hit occurred on the primary key setup-python-Linux-x64-24.04-Ubuntu-python-3.11.15-pip-a0d8d31f9fe79dda3daa17e17166e7f0eaf933b587a54afb21ffae2795ee38f3, not saving cache.
+2026-06-16T00:30:05.0138831Z (node:2190) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-06-16T00:30:05.0140186Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-06-16T00:30:05.0272414Z Post job cleanup.
+2026-06-16T00:30:05.1198181Z [command]/usr/bin/git version
+2026-06-16T00:30:05.1241366Z git version 2.54.0
+2026-06-16T00:30:05.1318353Z Temporarily overriding HOME='/home/runner/work/_temp/187ab578-55ff-4561-a0b4-8b525a0dac02' before making global git config changes
+2026-06-16T00:30:05.1320013Z Adding repository directory to the temporary git global config as a safe directory
+2026-06-16T00:30:05.1323465Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/ai-operator-cyber-command-center/ai-operator-cyber-command-center
+2026-06-16T00:30:05.1368835Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-06-16T00:30:05.1412977Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-06-16T00:30:05.1682166Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-06-16T00:30:05.1712350Z http.https://github.com/.extraheader
+2026-06-16T00:30:05.1725376Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-06-16T00:30:05.1763395Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-06-16T00:30:05.2127918Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-06-16T00:30:05.2207283Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-06-16T00:30:05.2785021Z Cleaning up orphan processes
+2026-06-16T00:30:05.3167210Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
