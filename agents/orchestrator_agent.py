@@ -15,7 +15,23 @@ class OrchestratorAgent:
         self.knowledge_base = KnowledgeBaseAgent()
         self.report = IncidentReportAgent()
 
-    def process_log(self, log_text: str) -> dict[str, Any]:
+    def process_log(
+        self,
+        log_text: str,
+        report_path: str = "reports/markdown/orchestrated_incident.md",
+    ) -> dict[str, Any]:
+        """Run the full agent pipeline over a single log line.
+
+        Inputs:
+            log_text: Raw log line to analyze.
+            report_path: Destination for the generated Markdown incident
+                report. Defaults to the tracked sample location; tests should
+                override this to a temporary path to avoid mutating the working
+                tree.
+
+        Returns a dict with the SOC, MITRE, threat-intel, and knowledge-base
+        results for the event.
+        """
         soc_result = self.soc.analyze_log(log_text)
 
         mitre_result = self.mitre.map_event(
@@ -31,7 +47,7 @@ class OrchestratorAgent:
 
         self.report.generate_report(
             log_text,
-            "reports/markdown/orchestrated_incident.md",
+            report_path,
             soc_result=soc_result,
             mitre_result=mitre_result,
             kb_references=kb_references,

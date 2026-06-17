@@ -5,9 +5,12 @@ from agents.orchestrator_agent import OrchestratorAgent
 
 
 @pytest.mark.unit
-def test_process_log_returns_all_keys() -> None:
+def test_process_log_returns_all_keys(tmp_path: Path) -> None:
     agent = OrchestratorAgent()
-    result = agent.process_log("Failed password for root from 10.0.0.5 port 22 ssh2")
+    result = agent.process_log(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        report_path=str(tmp_path / "report.md"),
+    )
     assert "soc" in result
     assert "mitre" in result
     assert "threat_intel" in result
@@ -15,9 +18,12 @@ def test_process_log_returns_all_keys() -> None:
 
 
 @pytest.mark.unit
-def test_process_log_knowledge_base_is_list_of_refs() -> None:
+def test_process_log_knowledge_base_is_list_of_refs(tmp_path: Path) -> None:
     agent = OrchestratorAgent()
-    result = agent.process_log("Failed password for root from 10.0.0.5 port 22 ssh2")
+    result = agent.process_log(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        report_path=str(tmp_path / "report.md"),
+    )
     kb = result["knowledge_base"]
     assert isinstance(kb, list)
     # Run from the repo root, the curated KB should ground this event.
@@ -26,9 +32,12 @@ def test_process_log_knowledge_base_is_list_of_refs() -> None:
 
 
 @pytest.mark.unit
-def test_process_log_soc_event_type() -> None:
+def test_process_log_soc_event_type(tmp_path: Path) -> None:
     agent = OrchestratorAgent()
-    result = agent.process_log("Failed password for root from 10.0.0.5 port 22 ssh2")
+    result = agent.process_log(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        report_path=str(tmp_path / "report.md"),
+    )
     assert result["soc"]["event_type"] == "authentication failure"
     assert result["soc"]["severity"] == "high"
 
@@ -36,15 +45,21 @@ def test_process_log_soc_event_type() -> None:
 @pytest.mark.unit
 def test_process_log_threat_intel_populated(tmp_path: Path) -> None:
     agent = OrchestratorAgent()
-    result = agent.process_log("Failed password for root from 10.0.0.5 port 22 ssh2")
+    result = agent.process_log(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        report_path=str(tmp_path / "report.md"),
+    )
     assert isinstance(result["threat_intel"], list)
     assert len(result["threat_intel"]) > 0
 
 
 @pytest.mark.unit
-def test_process_log_no_indicators_when_no_ip() -> None:
+def test_process_log_no_indicators_when_no_ip(tmp_path: Path) -> None:
     agent = OrchestratorAgent()
-    result = agent.process_log("Suricata alert: suspicious traffic detected")
+    result = agent.process_log(
+        "Suricata alert: suspicious traffic detected",
+        report_path=str(tmp_path / "report.md"),
+    )
     assert result["threat_intel"] == []
 
 
