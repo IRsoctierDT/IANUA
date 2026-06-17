@@ -15,18 +15,19 @@ security operation.
 
 | Component | Layer | Status |
 |---|---|---|
-| **SOC Analyst Agent v0.2** — JSON/text log triage, severity scoring (0-100), evidence table, MITRE mapping, incident report | Agent | Complete |
 | **SOC Analyst Agent v0.2** — JSON/text log triage, severity scoring (0-100), evidence table, MITRE mapping, incident report ([case study](./docs/case-studies/soc-analyst-v0.2.md)) | Agent | Complete |
 | **Incident Report Agent** — Markdown incident reports from structured SOC + MITRE output | Agent | Complete |
 | **MITRE Mapper Agent** — ATT&CK tactic/technique mapping with confidence scoring | Agent | Complete |
 | **Threat Intel Agent** — IOC enrichment and indicator summarization | Agent | Complete |
+| **Knowledge Base Agent** — grounds incident reports in the cited cybersecurity corpus | Agent | Complete |
+| **Business Proposal Agent** — structures client needs into a reviewable proposal / SOW draft ([doc](./docs/agents/BUSINESS_PROPOSAL_AGENT.md)) | Agent | Complete |
 | **Orchestrator Agent** — Multi-agent workflow coordination | Agent | Complete |
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |
 | **Dashboard** — AI ops UI with tabbed layout | Dashboard | In Progress |
 
-**Agents planned:** Legal/Compliance Research · Business Proposal · Knowledge Curator · Portfolio Documentation · Executive Assistant
+**Agents planned:** Legal/Compliance Research · Knowledge Curator · Portfolio Documentation · Executive Assistant
 
 ### Case studies
 
