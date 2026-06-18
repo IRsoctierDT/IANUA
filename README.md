@@ -19,6 +19,7 @@ security operation.
 | **Incident Report Agent** — Markdown incident reports from structured SOC + MITRE output | Agent | Complete |
 | **MITRE Mapper Agent** — ATT&CK tactic/technique mapping with confidence scoring | Agent | Complete |
 | **Threat Intel Agent** — IOC enrichment and indicator summarization | Agent | Complete |
+| **Vulnerability Assessment Agent** — ranks authorized scan findings into a remediation priority order ([doc](./docs/agents/VULNERABILITY_ASSESSMENT_AGENT.md)) | Agent | Complete |
 | **Knowledge Base Agent** — grounds incident reports in the cited cybersecurity corpus | Agent | Complete |
 | **Business Proposal Agent** — structures client needs into a reviewable proposal / SOW draft ([doc](./docs/agents/BUSINESS_PROPOSAL_AGENT.md)) | Agent | Complete |
 | **Legal/Compliance Research Agent** — triages a legal inquiry into a verify-don't-assert authority checklist ([doc](./docs/agents/LEGAL_COMPLIANCE_AGENT.md)) | Agent | Complete |
