@@ -29,7 +29,7 @@ security operation.
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |
-| **Dashboard** — AI ops UI with tabbed layout | Dashboard | In Progress |
+| **Dashboard** — Streamlit command center: SOC workflow (severity + KB grounding), batch processing, KB search, system health, reports | Dashboard | Complete |
 
 **All eight agent blueprints are built.** Further work is enhancement, not new surface.
 
@@ -112,6 +112,14 @@ MCP_ROOT=./data python -m mcp.transport
 # Speaks line-delimited JSON-RPC 2.0; methods: initialize | tools/list | tools/call
 ```
 
+**Run the dashboard (Streamlit command center):**
+```bash
+pip install -e ".[dashboard]"     # streamlit + qdrant-client + sentence-transformers
+streamlit run dashboard/app.py
+# Tabs: SOC Workflow · Batch Processing · Knowledge Base Search · System Health · Reports
+# KB search and health panels degrade gracefully if Qdrant/Ollama aren't running.
+```
+
 ---
 
 ## Quality gates (must be green — [`AGENTS.md`](./AGENTS.md) §7)
@@ -120,7 +128,7 @@ MCP_ROOT=./data python -m mcp.transport
 python -m compileall .
 python -m pytest                 # unit + integration + security; 85% coverage gate
 ruff check .
-mypy agents scripts tests
+mypy agents scripts tests dashboard
 bandit -c pyproject.toml -r agents scripts
 ```
 

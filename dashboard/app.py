@@ -7,9 +7,10 @@ from pathlib import Path
 
 import streamlit as st
 from agents.orchestrator_agent import OrchestratorAgent
-from kb_search import search_kb
-from ollama_service import ensure_ollama_running
-from system_health import (
+
+from dashboard.kb_search import search_kb
+from dashboard.ollama_service import ensure_ollama_running
+from dashboard.system_health import (
     get_git_tag,
     get_ollama_models,
     get_python_info,
@@ -60,15 +61,33 @@ with tab_soc:
 
     if st.button("Run SOC Workflow"):
         result = agent.process_log(log_text)
+        soc = result["soc"]
+
+        # At-a-glance severity before the raw JSON.
+        col_sev, col_score, col_event = st.columns(3)
+        col_sev.metric("Severity", str(soc.get("severity", "unknown")).upper())
+        col_score.metric("Severity score", f"{soc.get('severity_score', 'N/A')} / 100")
+        col_event.metric("Event type", soc.get("event_type", "unknown"))
 
         st.subheader("SOC Analysis")
-        st.json(result["soc"])
+        st.json(soc)
 
         st.subheader("MITRE ATT&CK Mapping")
         st.json(result["mitre"])
 
         st.subheader("Threat Intelligence")
         st.json(result["threat_intel"])
+
+        # Surface the knowledge-base grounding the orchestrator now returns.
+        kb_references = result.get("knowledge_base", [])
+        st.subheader("Knowledge Base References")
+        if kb_references:
+            for ref in kb_references:
+                st.markdown(
+                    f"- **{ref['source']}** (relevance {ref['score']:.2f}) — {ref['snippet']}"
+                )
+        else:
+            st.caption("No knowledge-base references matched this event.")
 
         st.success("Incident workflow completed.")
 
@@ -114,6 +133,7 @@ with tab_batch:
                         "log": line,
                         "event_type": res["soc"]["event_type"],
                         "severity": res["soc"]["severity"],
+                        "severity_score": res["soc"].get("severity_score"),
                         "mitre_technique": res["mitre"]["technique_id"],
                         "mitre_name": res["mitre"]["technique"],
                         "indicators": ", ".join(res["soc"]["indicators"]),

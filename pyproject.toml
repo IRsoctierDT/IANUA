@@ -34,6 +34,13 @@ dev = [
   "pre-commit>=3.7",
 ]
 
+# Install with:  pip install -e ".[dashboard]"  (runs the Streamlit command center)
+dashboard = [
+  "streamlit>=1.36",
+  "qdrant-client>=1.9",
+  "sentence-transformers>=3.0",
+]
+
 # ---------------------------------------------------------------------------
 # Ruff — lint + format (replaces flake8/isort/black)
 # ---------------------------------------------------------------------------
@@ -74,7 +81,7 @@ indent-style = "space"
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
-files = ["agents", "scripts", "tests"]
+files = ["agents", "scripts", "tests", "dashboard"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
@@ -96,6 +103,7 @@ module = [
   "qdrant_client",
   "qdrant_client.*",
   "sentence_transformers",
+  "streamlit",
   "weasyprint",
   "markdown",
 ]

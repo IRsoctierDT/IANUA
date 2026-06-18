@@ -1,4 +1,12 @@
+"""Semantic search over the Qdrant-backed cybersecurity knowledge base.
+
+Used by the dashboard's Knowledge Base Search tab. Requires a running Qdrant and
+the sentence-transformers model; both are loaded lazily and cached.
+"""
+
 from __future__ import annotations
+
+from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
@@ -24,7 +32,11 @@ def _get_client() -> QdrantClient:
     return _client
 
 
-def search_kb(query: str, category: str | None = None, limit: int = 5):
+def search_kb(query: str, category: str | None = None, limit: int = 5) -> list[Any]:
+    """Return up to ``limit`` Qdrant points most similar to ``query``.
+
+    Optionally filtered to a single ``category`` (anything but "all").
+    """
     vector = _get_model().encode(query).tolist()
 
     query_filter = None
@@ -46,4 +58,4 @@ def search_kb(query: str, category: str | None = None, limit: int = 5):
         limit=limit,
     )
 
-    return results.points
+    return list(results.points)

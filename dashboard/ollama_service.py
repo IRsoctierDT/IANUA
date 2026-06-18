@@ -14,7 +14,7 @@ def is_ollama_installed() -> bool:
 def is_ollama_running() -> bool:
     try:
         with urlopen(OLLAMA_URL, timeout=2) as response:  # noqa: S310 - localhost constant
-            return response.status == 200
+            return bool(response.status == 200)
     except URLError:
         return False
     except Exception:
