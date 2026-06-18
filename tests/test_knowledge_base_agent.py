@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,52 @@ def test_reference_for_event_builds_query_and_returns_dicts(tmp_path: Path) -> N
     assert isinstance(refs, list)
     assert refs and refs[0]["source"] == "mitre.md"
     assert set(refs[0]) == {"source", "score", "snippet"}  # asdict shape
+
+
+# --- semantic mode -------------------------------------------------------------
+
+
+class _FakeEmbedder:
+    """Deterministic, network-free embedder: [#mitre, #owasp, bias] per text."""
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        vectors = []
+        for text in texts:
+            lowered = text.lower()
+            vectors.append([float(lowered.count("mitre")), float(lowered.count("owasp")), 0.01])
+        return vectors
+
+
+class _DeadEmbedder:
+    """Embedder that fails closed, like an unreachable Ollama."""
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        raise ValidationError("embedder unreachable")
+
+
+@pytest.mark.unit
+def test_default_mode_is_lexical(tmp_path: Path) -> None:
+    kb = KnowledgeBaseAgent(_make_kb(tmp_path / "kb"))
+    assert kb.mode == "lexical"
+
+
+@pytest.mark.unit
+def test_semantic_mode_ranks_by_injected_embedder(tmp_path: Path) -> None:
+    kb = KnowledgeBaseAgent(_make_kb(tmp_path / "kb"), mode="semantic", embedder=_FakeEmbedder())
+    refs = kb.retrieve("mitre attack overview", k=2)
+    assert refs and refs[0].source == "mitre.md"
+    assert all(isinstance(r, KnowledgeReference) for r in refs)
+
+
+@pytest.mark.unit
+def test_semantic_falls_back_to_lexical_when_embedder_fails(tmp_path: Path) -> None:
+    kb = KnowledgeBaseAgent(_make_kb(tmp_path / "kb"), mode="semantic", embedder=_DeadEmbedder())
+    # Lexical fallback still surfaces the right doc rather than raising.
+    refs = kb.retrieve("brute force credential access", k=2)
+    assert refs and refs[0].source == "mitre.md"
+
+
+@pytest.mark.unit
+def test_semantic_empty_query_returns_empty(tmp_path: Path) -> None:
+    kb = KnowledgeBaseAgent(_make_kb(tmp_path / "kb"), mode="semantic", embedder=_FakeEmbedder())
+    assert kb.retrieve("   ", k=3) == []
