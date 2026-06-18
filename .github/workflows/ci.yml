@@ -46,7 +46,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy agents scripts tests
+        run: mypy agents scripts tests dashboard
 
   # ---------------------------------------------------------------- Stage 2
   security:
