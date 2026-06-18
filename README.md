@@ -23,13 +23,14 @@ security operation.
 | **Business Proposal Agent** — structures client needs into a reviewable proposal / SOW draft ([doc](./docs/agents/BUSINESS_PROPOSAL_AGENT.md)) | Agent | Complete |
 | **Legal/Compliance Research Agent** — triages a legal inquiry into a verify-don't-assert authority checklist ([doc](./docs/agents/LEGAL_COMPLIANCE_AGENT.md)) | Agent | Complete |
 | **Knowledge Curator Agent** — organizes raw notes into retrieval-ready KB entries ([doc](./docs/agents/KNOWLEDGE_CURATOR_AGENT.md)) | Agent | Complete |
+| **Portfolio Documentation Agent** — drafts GitHub-ready READMEs/case studies (AGENTS.md §9 structure) ([doc](./docs/agents/PORTFOLIO_DOCUMENTATION_AGENT.md)) | Agent | Complete |
 | **Orchestrator Agent** — Multi-agent workflow coordination | Agent | Complete |
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |
 | **Dashboard** — AI ops UI with tabbed layout | Dashboard | In Progress |
 
-**Agents planned:** Portfolio Documentation · Executive Assistant
+**Agents planned:** Executive Assistant
 
 ### Case studies
 
