@@ -58,4 +58,4 @@ def search_kb(query: str, category: str | None = None, limit: int = 5) -> list[A
         limit=limit,
     )
 
-    return results.points
+    return list(results.points)
