@@ -13,6 +13,8 @@ All notable changes to this project. Versions correspond to git tags.
 - **Opt-in semantic retrieval** for the Knowledge Base Agent (`mode="semantic"`):
   local-embedding cosine ranking via the loopback-only, fail-closed `OllamaEmbedder`,
   with automatic fallback to lexical when Ollama is unreachable.
+- **Vulnerability Assessment Agent** — ranks authorized scan findings into a
+  remediation priority order (no scanning; unrated findings stay "unknown").
 - **Legal/Compliance Research Agent** — triages a legal inquiry into a
   verify-don't-assert authority checklist (no advice, no fabricated citations).
 - **Business Proposal Agent** — structures client needs into a reviewable
