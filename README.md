@@ -24,13 +24,14 @@ security operation.
 | **Legal/Compliance Research Agent** — triages a legal inquiry into a verify-don't-assert authority checklist ([doc](./docs/agents/LEGAL_COMPLIANCE_AGENT.md)) | Agent | Complete |
 | **Knowledge Curator Agent** — organizes raw notes into retrieval-ready KB entries ([doc](./docs/agents/KNOWLEDGE_CURATOR_AGENT.md)) | Agent | Complete |
 | **Portfolio Documentation Agent** — drafts GitHub-ready READMEs/case studies (AGENTS.md §9 structure) ([doc](./docs/agents/PORTFOLIO_DOCUMENTATION_AGENT.md)) | Agent | Complete |
+| **Executive Assistant Agent** — prioritizes tasks/notes into a reviewable plan with blockers & decision log ([doc](./docs/agents/EXECUTIVE_ASSISTANT_AGENT.md)) | Agent | Complete |
 | **Orchestrator Agent** — Multi-agent workflow coordination | Agent | Complete |
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |
 | **Dashboard** — Streamlit command center: SOC workflow (severity + KB grounding), batch processing, KB search, system health, reports | Dashboard | Complete |
 
-**Agents planned:** Executive Assistant
+**All eight agent blueprints are built.** Further work is enhancement, not new surface.
 
 ### Case studies
 
