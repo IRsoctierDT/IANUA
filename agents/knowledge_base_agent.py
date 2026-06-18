@@ -4,10 +4,14 @@ Given a query (or a SOC/MITRE result), this agent retrieves the most relevant
 references from the local ``knowledge-base/`` corpus so incident reports can cite
 authoritative framework context (MITRE ATT&CK, OWASP, NIST CSF, CIS, etc.).
 
-Security & determinism (DESIGN.md §5):
-- **No network egress.** Retrieval is a deterministic, dependency-free term-overlap
-  score — no embedding service, no external calls. (The vector RAG pipeline in
-  ``rag/`` remains the path for semantic search via a local model.)
+Two retrieval modes (DESIGN.md §5):
+- **lexical** (default) — a deterministic, dependency-free term-overlap score. No
+  network, fully reproducible, CI-safe. This is what the agent pipeline uses.
+- **semantic** — embeds the query and corpus chunks via the local ``OllamaEmbedder``
+  (loopback-only, fail-closed) and ranks by cosine similarity. If Ollama is
+  unreachable it **falls back to lexical**, so callers never break.
+
+Other guarantees:
 - **Trusted, confined corpus.** Documents are loaded through ``rag.ingest.ingest()``,
   which enforces an extension allow-list, rejects symlinks, and confines reads to the
   corpus root (path-traversal safe).
@@ -20,11 +24,15 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from rag.ingest import ingest
+from rag.embeddings import OllamaEmbedder
+from rag.ingest import Chunk, Embedder, ingest
+from rag.retrieve import _cosine
 
 from agents.tools.validation import ValidationError
+
+RetrievalMode = Literal["lexical", "semantic"]
 
 # Default location of the curated corpus, relative to the working directory.
 DEFAULT_KB_ROOT = Path("knowledge-base")
@@ -77,24 +85,31 @@ class KnowledgeReference:
 class KnowledgeBaseAgent:
     """Retrieve relevant references from the local cybersecurity knowledge base."""
 
-    def __init__(self, kb_root: Path | str = DEFAULT_KB_ROOT, *, snippet_chars: int = 160) -> None:
+    def __init__(
+        self,
+        kb_root: Path | str = DEFAULT_KB_ROOT,
+        *,
+        snippet_chars: int = 160,
+        mode: RetrievalMode = "lexical",
+        embedder: Embedder | None = None,
+    ) -> None:
         self.kb_root = Path(kb_root)
         self.snippet_chars = snippet_chars
+        self.mode = mode
+        # Injectable for tests; constructed lazily for semantic mode otherwise.
+        self.embedder = embedder
 
     def retrieve(self, query: str, k: int = 3) -> list[KnowledgeReference]:
         """Return the top-``k`` knowledge-base documents most relevant to ``query``.
 
-        Relevance is the fraction of query terms that appear in a document's best
-        chunk (deterministic, network-free). Results are aggregated to one reference
-        per source document — ranked by that best score, with a clean snippet drawn
-        from the document's opening so a report cites the framework, not a mid-table
-        fragment. Only positive-scoring documents are returned.
+        Results are aggregated to one reference per source document, ranked by the
+        document's best-scoring chunk, with a clean snippet drawn from the document's
+        opening. Only positive-scoring documents are returned. In ``semantic`` mode,
+        an unreachable embedder falls back to ``lexical`` so callers never break.
         """
         if k <= 0:
             raise ValidationError("k must be positive")
-
-        query_terms = _tokenize(query)
-        if not query_terms:
+        if not query.strip():
             return []
 
         try:
@@ -102,30 +117,65 @@ class KnowledgeBaseAgent:
         except ValidationError:
             # Missing/unreadable corpus: fail soft with no references.
             return []
+        if not chunks:
+            return []
 
-        # Aggregate per source: best chunk score + a snippet from the doc's opening.
-        best_score: dict[str, float] = {}
-        opening: dict[str, str] = {}
+        openings = self._openings(chunks)
+
+        if self.mode == "semantic":
+            try:
+                scores = self._semantic_scores(query, chunks)
+                return self._aggregate(scores, openings, k)
+            except ValidationError:
+                # Ollama unreachable / fails closed -> graceful lexical fallback.
+                pass
+
+        return self._aggregate(self._lexical_scores(query, chunks), openings, k)
+
+    def _openings(self, chunks: list[Chunk]) -> dict[str, str]:
+        """Map each source to a clean snippet drawn from its opening chunk."""
+        return {
+            c.source: " ".join(c.text.split())[: self.snippet_chars] for c in chunks if c.index == 0
+        }
+
+    @staticmethod
+    def _lexical_scores(query: str, chunks: list[Chunk]) -> dict[str, float]:
+        """Best per-source term-overlap score (fraction of query terms present)."""
+        query_terms = _tokenize(query)
+        if not query_terms:
+            return {}
+        best: dict[str, float] = {}
         for chunk in chunks:
-            if chunk.index == 0:
-                opening[chunk.source] = " ".join(chunk.text.split())[: self.snippet_chars]
             chunk_terms = _tokenize(chunk.text)
             if not chunk_terms:
                 continue
             score = len(query_terms & chunk_terms) / len(query_terms)
-            if score > best_score.get(chunk.source, 0.0):
-                best_score[chunk.source] = score
+            if score > best.get(chunk.source, 0.0):
+                best[chunk.source] = score
+        return best
 
+    def _semantic_scores(self, query: str, chunks: list[Chunk]) -> dict[str, float]:
+        """Best per-source cosine similarity using the local embedder."""
+        embedder = self.embedder or OllamaEmbedder()
+        vectors = embedder.embed([query, *(c.text for c in chunks)])
+        query_vec = vectors[0]
+        best: dict[str, float] = {}
+        for chunk, vec in zip(chunks, vectors[1:], strict=True):
+            score = _cosine(query_vec, vec)
+            if score > best.get(chunk.source, 0.0):
+                best[chunk.source] = score
+        return best
+
+    @staticmethod
+    def _aggregate(
+        scores: dict[str, float], openings: dict[str, str], k: int
+    ) -> list[KnowledgeReference]:
+        """Build positive-scoring references, ranked high-first (stable by source)."""
         refs = [
-            KnowledgeReference(
-                source=source,
-                score=score,
-                snippet=opening.get(source, ""),
-            )
-            for source, score in best_score.items()
+            KnowledgeReference(source=source, score=score, snippet=openings.get(source, ""))
+            for source, score in scores.items()
             if score > 0.0
         ]
-        # Highest score first; ties broken by source name for determinism.
         refs.sort(key=lambda ref: (-ref.score, ref.source))
         return refs[:k]
 
