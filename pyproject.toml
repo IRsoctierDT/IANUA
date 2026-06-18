@@ -12,7 +12,7 @@ exclude = ["tests*"]
 
 [project]
 name = "ai-operator-cyber-command-center"
-version = "0.1.0"
+version = "1.8.0"
 description = "Portfolio-grade environment for AI ops, cybersecurity automation, RAG, and agentic workflows."
 readme = "README.md"
 requires-python = ">=3.11"
