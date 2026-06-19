@@ -25,13 +25,16 @@ class IncidentReportAgent:
         soc_result: dict | None = None,
         mitre_result: dict | None = None,
         kb_references: list[dict] | None = None,
+        detection_matches: list[dict] | None = None,
     ) -> Path:
         """Write a markdown incident report.
 
         Pass pre-computed ``soc_result`` and ``mitre_result`` to avoid
         re-running analysis when the orchestrator has already done it.
         ``kb_references`` (from the Knowledge Base Agent) adds cited framework
-        context; when omitted, the report notes that none were attached.
+        context; ``detection_matches`` (from the Detection Matcher Agent) lists
+        the Sigma rules that cover the event's technique. When either is omitted,
+        the report notes that none were attached.
         """
         if soc_result is None:
             soc_result = self.soc_agent.analyze_log(log_text)
@@ -91,6 +94,9 @@ class IncidentReportAgent:
 
 ## Knowledge Base References
 {chr(10).join(f"- **{_md_cell(r['source'])}** (relevance {r['score']:.2f}) — {_md_cell(r['snippet'])}" for r in kb_references) if kb_references else "- None captured"}
+
+## Detection Coverage
+{chr(10).join(f"- **{_md_cell(d['title'])}** [{d['level']}] — `{d['file']}` ({d['technique']})" for d in detection_matches) if detection_matches else "- No Sigma rule covers this technique yet"}
 
 ## Assumptions
 {chr(10).join(f"- {a}" for a in soc_result["assumptions"])}
