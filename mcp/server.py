@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agents.policies import ActionClass, AuditLogger, PolicyEngine
 from agents.tools.validation import ValidationError, resolve_within
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -25,18 +26,33 @@ ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 @dataclass(frozen=True)
 class Tool:
-    """A single, named capability exposed to agents."""
+    """A single, named capability exposed to agents.
+
+    ``action_class`` declares the capability's risk class so the registry's policy
+    engine can gate it (AGENTS.md §5.1). Defaults to ``read_only``.
+    """
 
     name: str
     description: str
     handler: ToolHandler
+    action_class: ActionClass = "read_only"
 
 
 @dataclass
 class ToolRegistry:
-    """Allow-list of callable tools. Nothing runs unless it is registered here."""
+    """Allow-list of callable tools, gated by the policy engine (AGENTS.md §5/§5.1).
+
+    Every dispatch is evaluated by ``policy`` before the handler runs: only
+    ``allow`` decisions execute; ``require_approval`` and ``deny`` are blocked
+    (fail closed) so a non-read-only tool cannot run autonomously without an
+    operator allow-list entry. When an ``audit`` logger is provided, each decision
+    is recorded to the tamper-evident trail.
+    """
 
     root: Path
+    policy: PolicyEngine = field(default_factory=PolicyEngine)
+    audit: AuditLogger | None = None
+    actor: str = "mcp"
     _tools: dict[str, Tool] = field(default_factory=dict)
 
     def register(self, tool: Tool) -> None:
@@ -48,18 +64,47 @@ class ToolRegistry:
         return [{"name": t.name, "description": t.description} for t in self._tools.values()]
 
     def dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Route a tool call. Unknown tool -> fail closed (AGENTS.md §3)."""
+        """Route a tool call. Unknown tool / blocked policy -> fail closed (§3, §5.1)."""
         tool = self._tools.get(name)
         if tool is None:
             raise ValidationError(f"tool not in allow-list: {name!r}")
         if not isinstance(arguments, dict):
             raise ValidationError("arguments must be an object")
+
+        decision = self.policy.decide(action_class=tool.action_class, label=tool.name)
+        if self.audit is not None:
+            self.audit.record(
+                actor=self.actor,
+                action=f"tool:{tool.name}",
+                action_class=decision.action_class,
+                decision=decision.decision,
+                reason=decision.reason,
+            )
+        if decision.decision != "allow":
+            raise ValidationError(
+                f"tool {name!r} blocked by policy: {decision.decision} ({decision.reason})"
+            )
+
         return tool.handler(arguments)
 
 
-def build_default_registry(root: Path) -> ToolRegistry:
-    """Construct a registry with one safe, illustrative read-only tool."""
-    registry = ToolRegistry(root=root.resolve())
+def build_default_registry(
+    root: Path,
+    *,
+    policy: PolicyEngine | None = None,
+    audit: AuditLogger | None = None,
+) -> ToolRegistry:
+    """Construct a registry with one safe, illustrative read-only tool.
+
+    Pass a configured ``policy`` (e.g. with operator allow-lists) and/or an
+    ``audit`` logger to gate and record tool calls; both default to a fresh
+    default-deny policy and no audit sink.
+    """
+    registry = ToolRegistry(
+        root=root.resolve(),
+        policy=policy or PolicyEngine(),
+        audit=audit,
+    )
 
     def read_text_file(args: dict[str, Any]) -> dict[str, Any]:
         """Read a UTF-8 text file confined to the registry root."""
