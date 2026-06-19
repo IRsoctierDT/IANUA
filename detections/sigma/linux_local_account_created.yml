@@ -1,0 +1,28 @@
+title: Linux Local Account Created
+id: bda08d3a-23d7-4930-94f1-810ed86a9615
+status: experimental
+description: >-
+  Detects creation of a local Linux account (useradd/adduser). Adversaries create
+  accounts to establish persistence; in most environments account creation is rare
+  and change-controlled.
+references:
+  - https://attack.mitre.org/techniques/T1136/001/
+author: AI Operator Cyber Command Center
+date: 2026-06-19
+tags:
+  - attack.persistence
+  - attack.t1136.001
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection:
+    message|contains:
+      - "new user"
+      - "useradd"
+  condition: selection
+fields:
+  - user
+falsepositives:
+  - Legitimate onboarding or provisioning automation
+level: medium

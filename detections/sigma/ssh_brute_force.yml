@@ -2,27 +2,25 @@ title: SSH Brute Force - Repeated Failed Passwords
 id: 61b25aa1-4c94-4224-889a-c3e1882eda32
 status: experimental
 description: >-
-  Detects repeated failed SSH password authentication from a single source
-  address within a short window, indicative of brute-force credential access.
+  Ten or more failed SSH password authentications from a single source address
+  within five minutes — indicative of brute-force credential access. Modeled as a
+  Sigma correlation over the ssh_failed_password base rule.
 references:
   - https://attack.mitre.org/techniques/T1110/
 author: AI Operator Cyber Command Center
 date: 2026-06-19
+correlation:
+  type: event_count
+  rules:
+    - ssh_failed_password
+  group-by:
+    - src_ip
+  timespan: 5m
+  condition:
+    gte: 10
 tags:
   - attack.credential-access
   - attack.t1110
-logsource:
-  product: linux
-  service: sshd
-detection:
-  selection:
-    message|contains: "Failed password"
-  timeframe: 5m
-  condition: selection | count() by src_ip > 10
-fields:
-  - src_ip
-  - user
 falsepositives:
-  - Users repeatedly mistyping passwords
   - Misconfigured automation or service accounts retrying credentials
 level: high

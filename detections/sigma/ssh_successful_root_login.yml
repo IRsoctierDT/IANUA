@@ -1,4 +1,5 @@
 title: Successful SSH Root Login
+name: ssh_accepted_root_login
 id: 131b3a50-42e2-45b2-89a1-f304a7387622
 status: experimental
 description: >-

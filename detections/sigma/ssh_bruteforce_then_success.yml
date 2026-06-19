@@ -1,0 +1,28 @@
+title: SSH Brute Force Followed by Successful Root Login
+id: cb797ff0-3808-4369-b779-138bba40a765
+status: experimental
+description: >-
+  A successful root SSH login from a source address that just exhibited repeated
+  failed passwords, within ten minutes — the classic credential-access-to-access
+  chain (brute force succeeding). High-confidence compromise signal.
+references:
+  - https://attack.mitre.org/techniques/T1110/
+  - https://attack.mitre.org/techniques/T1078/
+author: AI Operator Cyber Command Center
+date: 2026-06-19
+correlation:
+  type: temporal_ordered
+  rules:
+    - ssh_failed_password
+    - ssh_accepted_root_login
+  group-by:
+    - src_ip
+  timespan: 10m
+tags:
+  - attack.credential-access
+  - attack.t1110
+  - attack.initial-access
+  - attack.t1078
+falsepositives:
+  - An administrator mistyping their password several times before a legitimate login
+level: critical
