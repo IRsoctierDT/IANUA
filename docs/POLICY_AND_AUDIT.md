@@ -71,9 +71,16 @@ elif decision.decision == "deny":
 
 Zero runtime cost beyond local file I/O; pure standard library, no external services.
 
+## Adoption status
+
+- ✅ **MCP tool surface (`mcp/server.py`)** — `ToolRegistry.dispatch` gates every
+  tool call through the policy engine: each `Tool` declares an `action_class`, and
+  only `allow` decisions execute (`require_approval`/`deny` fail closed). An optional
+  `AuditLogger` records every decision, including blocked attempts. Read-only tools
+  run as before; a non-read-only tool needs an operator allow-list entry to run.
+
 ## Future Enhancements
 
-- Wire `guard()` into the MCP tools and `agents/tools/` capability surfaces (the
-  places that actually touch filesystem/network).
+- Extend `action_class` declarations as write/network tools are added.
 - Optional signing of the audit chain head for stronger tamper-evidence.
 - A policy-as-code config file for per-environment allow/deny lists.
