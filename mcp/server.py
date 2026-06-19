@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.policies import ActionClass, AuditLogger, PolicyEngine
+from agents.tools.guarded import enforce
 from agents.tools.validation import ValidationError, resolve_within
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -71,20 +72,15 @@ class ToolRegistry:
         if not isinstance(arguments, dict):
             raise ValidationError("arguments must be an object")
 
-        decision = self.policy.decide(action_class=tool.action_class, label=tool.name)
-        if self.audit is not None:
-            self.audit.record(
-                actor=self.actor,
-                action=f"tool:{tool.name}",
-                action_class=decision.action_class,
-                decision=decision.decision,
-                reason=decision.reason,
-            )
-        if decision.decision != "allow":
-            raise ValidationError(
-                f"tool {name!r} blocked by policy: {decision.decision} ({decision.reason})"
-            )
-
+        # Single, shared enforcement path (agents/tools/guarded.py): evaluate +
+        # audit + fail closed. Raises ToolBlockedError (a ValidationError) if gated.
+        enforce(
+            action_class=tool.action_class,
+            name=tool.name,
+            engine=self.policy,
+            audit=self.audit,
+            actor=self.actor,
+        )
         return tool.handler(arguments)
 
 
