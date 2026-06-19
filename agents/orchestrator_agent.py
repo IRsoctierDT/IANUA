@@ -1,5 +1,6 @@
 from typing import Any
 
+from agents.detection_matcher_agent import DetectionMatcherAgent
 from agents.incident_report_agent import IncidentReportAgent
 from agents.knowledge_base_agent import KnowledgeBaseAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
@@ -13,6 +14,7 @@ class OrchestratorAgent:
         self.mitre = MitreMapperAgent()
         self.threat = ThreatIntelAgent()
         self.knowledge_base = KnowledgeBaseAgent()
+        self.detections = DetectionMatcherAgent()
         self.report = IncidentReportAgent()
 
     def process_log(
@@ -45,12 +47,15 @@ class OrchestratorAgent:
 
         kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
 
+        detection_matches = self.detections.match_for_event(mitre_result)
+
         self.report.generate_report(
             log_text,
             report_path,
             soc_result=soc_result,
             mitre_result=mitre_result,
             kb_references=kb_references,
+            detection_matches=detection_matches,
         )
 
         return {
@@ -58,6 +63,7 @@ class OrchestratorAgent:
             "mitre": mitre_result,
             "threat_intel": intel_results,
             "knowledge_base": kb_references,
+            "detections": detection_matches,
         }
 
 

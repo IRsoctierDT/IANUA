@@ -15,6 +15,21 @@ def test_process_log_returns_all_keys(tmp_path: Path) -> None:
     assert "mitre" in result
     assert "threat_intel" in result
     assert "knowledge_base" in result
+    assert "detections" in result
+
+
+@pytest.mark.unit
+def test_process_log_detections_cover_technique(tmp_path: Path) -> None:
+    agent = OrchestratorAgent()
+    result = agent.process_log(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        report_path=str(tmp_path / "report.md"),
+    )
+    detections = result["detections"]
+    assert isinstance(detections, list)
+    # Run from the repo root, the T1110 brute-force rules should match.
+    if detections:
+        assert set(detections[0]) == {"rule_id", "title", "level", "technique", "file"}
 
 
 @pytest.mark.unit
