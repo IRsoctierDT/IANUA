@@ -180,12 +180,19 @@ class PolicyEngine:
         self._deny = frozenset(d.strip().lower() for d in deny)
 
     def evaluate(self, action: str) -> PolicyDecision:
-        """Return a :class:`PolicyDecision` for the described ``action``."""
+        """Classify ``action`` from its description and return a decision."""
         if not isinstance(action, str) or not action.strip():
             raise ValueError("action must be a non-empty string.")
+        return self.decide(action_class=classify_action(action), label=action)
 
-        key = action.strip().lower()
-        action_class = classify_action(action)
+    def decide(self, *, action_class: ActionClass, label: str = "") -> PolicyDecision:
+        """Decide for a known ``action_class`` (e.g. a registered tool's declared class).
+
+        ``label`` is the human-meaningful action string used for allow/deny-list
+        matching and recorded on the decision.
+        """
+        action = label.strip() or action_class
+        key = label.strip().lower()
 
         # §5 prohibitions are non-negotiable — no allow-list override.
         if action_class == "boundary_crossing":
@@ -193,9 +200,9 @@ class PolicyEngine:
                 action, action_class, "deny", "Crosses an AGENTS.md §5 prohibition."
             )
 
-        if key in self._deny:
+        if key and key in self._deny:
             return self._decide(action, action_class, "deny", "Action is on the deny-list.")
-        if key in self._allow:
+        if key and key in self._allow:
             return self._decide(
                 action, action_class, "allow", "Action is on the operator allow-list."
             )
