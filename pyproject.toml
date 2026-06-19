@@ -32,6 +32,7 @@ dev = [
   "pip-audit>=2.7",
   "detect-secrets>=1.5",
   "pre-commit>=3.7",
+  "pyyaml>=6.0",          # detections/ Sigma-rule validation tests
 ]
 
 # Install with:  pip install -e ".[dashboard]"  (runs the Streamlit command center)
@@ -106,6 +107,7 @@ module = [
   "streamlit",
   "weasyprint",
   "markdown",
+  "yaml",
 ]
 ignore_missing_imports = true
 

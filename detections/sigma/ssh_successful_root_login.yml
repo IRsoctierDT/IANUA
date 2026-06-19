@@ -1,0 +1,29 @@
+title: Successful SSH Root Login
+id: 131b3a50-42e2-45b2-89a1-f304a7387622
+status: experimental
+description: >-
+  Detects a successful interactive SSH login as root. Direct root login should be
+  rare in hardened environments and may indicate misuse of valid accounts,
+  especially following failed-login activity from the same source.
+references:
+  - https://attack.mitre.org/techniques/T1078/
+author: AI Operator Cyber Command Center
+date: 2026-06-19
+tags:
+  - attack.initial-access
+  - attack.persistence
+  - attack.t1078
+logsource:
+  product: linux
+  service: sshd
+detection:
+  selection:
+    message|startswith: "Accepted"
+    message|contains: " root "
+  condition: selection
+fields:
+  - src_ip
+  - user
+falsepositives:
+  - Environments that intentionally permit direct root SSH for break-glass access
+level: medium
