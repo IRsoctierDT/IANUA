@@ -6,7 +6,7 @@ from agents.knowledge_base_agent import KnowledgeBaseAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.soc_analyst_agent import SocAnalystAgent
 from agents.threat_intel_agent import ThreatIntelAgent
-from agents.tools.llm import Generator
+from agents.tools.llm import Generator, resolve_generator
 
 
 class OrchestratorAgent:
@@ -17,9 +17,10 @@ class OrchestratorAgent:
         self.knowledge_base = KnowledgeBaseAgent()
         self.detections = DetectionMatcherAgent()
         self.report = IncidentReportAgent()
-        # Opt-in local LLM for the report's AI narrative; None keeps the pipeline
-        # deterministic and network-free (the default).
-        self.generator = generator
+        # On by default via env (LLM_NARRATIVE=auto): the report's AI narrative is
+        # produced when a local model is reachable, and fails soft otherwise. Pass
+        # an explicit generator to override, or set LLM_NARRATIVE=off to disable.
+        self.generator = generator if generator is not None else resolve_generator()
 
     def process_log(
         self,
