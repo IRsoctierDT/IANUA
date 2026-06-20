@@ -43,7 +43,7 @@ def _urllib_transport(url: str, body: dict[str, object], timeout: float) -> dict
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed by OllamaGenerator.__post_init__
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - host allow-listed by OllamaGenerator.__post_init__
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310 - scheme restricted to http/https and host allow-listed in __post_init__
             return json.loads(resp.read().decode("utf-8"))  # type: ignore[no-any-return]
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ValidationError(f"generation request failed: {exc}") from exc
