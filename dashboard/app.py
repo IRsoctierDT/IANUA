@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ st.title("AI Operator Cyber Command Center")
 st.caption("Local AI-assisted SOC workflow")
 
 st.sidebar.header("System Status")
-st.sidebar.write("Model: qwen3:4b")
+st.sidebar.write("Model:", os.environ.get("LLM_MODEL", "qwen3.5:9b"))
 st.sidebar.write("Vector DB: Qdrant")
 st.sidebar.write("Mode: Local")
 

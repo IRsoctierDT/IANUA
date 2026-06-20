@@ -5,11 +5,39 @@ from pathlib import Path
 
 from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.soc_analyst_agent import SocAnalystAgent
+from agents.tools.llm import Generator
+from agents.tools.validation import ValidationError
+
+_NARRATIVE_SYSTEM = (
+    "You are a SOC analyst assistant. In 2-3 sentences, summarize ONLY the facts "
+    "provided. Do not invent hosts, accounts, IPs, or conclusions not present in the "
+    "input. Be precise and defensive."
+)
 
 
 def _md_cell(text: str) -> str:
     """Escape pipe and newline characters so they don't break a Markdown table cell."""
     return text.replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
+def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str:
+    """Return an AI-generated narrative, or a clear note when it is off/unavailable.
+
+    Opt-in and fail-soft: with no generator the deterministic report is unchanged;
+    if the local model errors, the section records that rather than failing the report.
+    """
+    if generator is None:
+        return "_AI narrative not enabled (no local model configured)._"
+    facts = (
+        f"event_type={soc.get('event_type')}; severity={soc.get('severity')} "
+        f"({soc.get('severity_score')}/100); indicators={soc.get('indicators')}; "
+        f"mitre={mitre.get('technique_id')} {mitre.get('technique')}."
+    )
+    try:
+        text = generator.generate(facts, system=_NARRATIVE_SYSTEM)
+    except ValidationError as exc:
+        return f"_AI narrative unavailable (generator error: {exc})._"
+    return text.strip()
 
 
 class IncidentReportAgent:
@@ -26,6 +54,7 @@ class IncidentReportAgent:
         mitre_result: dict | None = None,
         kb_references: list[dict] | None = None,
         detection_matches: list[dict] | None = None,
+        generator: Generator | None = None,
     ) -> Path:
         """Write a markdown incident report.
 
@@ -48,6 +77,7 @@ class IncidentReportAgent:
         target.parent.mkdir(parents=True, exist_ok=True)
 
         indicators = soc_result.get("indicators", [])
+        narrative = _build_narrative(soc_result, mitre_result, generator)
 
         report = f"""# Incident Report
 
@@ -56,6 +86,9 @@ class IncidentReportAgent:
 
 ## Summary
 {soc_result["summary"]}
+
+## Analyst Narrative (AI-generated)
+{narrative}
 
 ## Severity
 {soc_result["severity"]}
