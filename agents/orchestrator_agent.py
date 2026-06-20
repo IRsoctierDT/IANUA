@@ -6,16 +6,20 @@ from agents.knowledge_base_agent import KnowledgeBaseAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.soc_analyst_agent import SocAnalystAgent
 from agents.threat_intel_agent import ThreatIntelAgent
+from agents.tools.llm import Generator
 
 
 class OrchestratorAgent:
-    def __init__(self) -> None:
+    def __init__(self, *, generator: Generator | None = None) -> None:
         self.soc = SocAnalystAgent()
         self.mitre = MitreMapperAgent()
         self.threat = ThreatIntelAgent()
         self.knowledge_base = KnowledgeBaseAgent()
         self.detections = DetectionMatcherAgent()
         self.report = IncidentReportAgent()
+        # Opt-in local LLM for the report's AI narrative; None keeps the pipeline
+        # deterministic and network-free (the default).
+        self.generator = generator
 
     def process_log(
         self,
@@ -56,6 +60,7 @@ class OrchestratorAgent:
             mitre_result=mitre_result,
             kb_references=kb_references,
             detection_matches=detection_matches,
+            generator=self.generator,
         )
 
         return {

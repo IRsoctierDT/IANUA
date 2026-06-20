@@ -145,3 +145,51 @@ def test_detection_matches_absent_shows_none(tmp_path: Path) -> None:
     content = output.read_text(encoding="utf-8")
     assert "## Detection Coverage" in content
     assert "No Sigma rule covers this technique yet" in content
+
+
+@pytest.mark.unit
+def test_ai_narrative_disabled_by_default(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    agent.generate_report("Failed password for root from 10.0.0.5 port 22 ssh2", str(output))
+    content = output.read_text(encoding="utf-8")
+    assert "## Analyst Narrative (AI-generated)" in content
+    assert "not enabled" in content
+
+
+@pytest.mark.unit
+def test_ai_narrative_renders_with_generator(tmp_path: Path) -> None:
+    class _FakeGen:
+        def generate(self, prompt: str, *, system: str | None = None) -> str:
+            return "Root SSH login after repeated failures; likely brute-force success."
+
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        generator=_FakeGen(),
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "## Analyst Narrative (AI-generated)" in content
+    assert "brute-force success" in content
+
+
+@pytest.mark.unit
+def test_ai_narrative_fails_soft_on_generator_error(tmp_path: Path) -> None:
+    from agents.tools.validation import ValidationError
+
+    class _DeadGen:
+        def generate(self, prompt: str, *, system: str | None = None) -> str:
+            raise ValidationError("ollama unreachable")
+
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    # The report still writes; the narrative section records the failure.
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        generator=_DeadGen(),
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "AI narrative unavailable" in content

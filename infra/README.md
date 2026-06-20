@@ -33,8 +33,9 @@ to a one-command, runnable environment.
 cp .env.example .env          # from the repo root; then set POSTGRES_PASSWORD
 docker compose --env-file .env -f infra/docker-compose.yml up -d
 docker compose -f infra/docker-compose.yml ps          # check health
-# pull an embedding model once Ollama is up:
+# pull the embedding + generation models once Ollama is up:
 docker exec aiocc-ollama ollama pull nomic-embed-text
+docker exec aiocc-ollama ollama pull qwen3.5:9b          # LLM_MODEL (~6.6GB)
 ```
 
 Tear down (data persists in volumes): `docker compose -f infra/docker-compose.yml down`.
