@@ -33,11 +33,26 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
         f"({soc.get('severity_score')}/100); indicators={soc.get('indicators')}; "
         f"mitre={mitre.get('technique_id')} {mitre.get('technique')}."
     )
+    # Prefer grammar-constrained JSON when the backend supports it (e.g. llama.cpp),
+    # so the narrative is structured and parseable rather than free text.
+    generate_json = getattr(generator, "generate_json", None)
     try:
-        text = generator.generate(facts, system=_NARRATIVE_SYSTEM)
+        if callable(generate_json):
+            return _render_structured(generate_json(facts, system=_NARRATIVE_SYSTEM))
+        return generator.generate(facts, system=_NARRATIVE_SYSTEM).strip()
     except ValidationError as exc:
         return f"_AI narrative unavailable (generator error: {exc})._"
-    return text.strip()
+
+
+def _render_structured(data: dict) -> str:
+    """Render a grammar-constrained narrative object as Markdown bullets."""
+    fields = [
+        ("Summary", "summary"),
+        ("Assessment", "assessment"),
+        ("Recommended next step", "recommended_next_step"),
+    ]
+    lines = [f"- **{label}:** {_md_cell(str(data[key]))}" for label, key in fields if data.get(key)]
+    return "\n".join(lines) or "_AI narrative returned no content._"
 
 
 class IncidentReportAgent:

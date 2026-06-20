@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from agents.tools.validation import ValidationError
@@ -32,6 +32,14 @@ DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_HOST = "http://127.0.0.1:11434"
 LLAMACPP_DEFAULT_HOST = "http://127.0.0.1:8080"
+
+# GBNF grammar (llama.cpp) constraining the analyst narrative to a strict JSON object
+# with exactly these three string fields, in order. Guarantees parseable output.
+NARRATIVE_GRAMMAR = r"""
+root ::= "{" ws "\"summary\"" ws ":" ws string ws "," ws "\"assessment\"" ws ":" ws string ws "," ws "\"recommended_next_step\"" ws ":" ws string ws "}"
+string ::= "\"" ( [^"\\] | "\\" . )* "\""
+ws ::= [ \t\n]*
+"""
 
 
 class Generator(Protocol):
@@ -124,8 +132,14 @@ class LlamaCppGenerator:
     def __post_init__(self) -> None:
         _validate_local_host(self.host, self.allowed_hosts, self.timeout)
 
-    def generate(self, prompt: str, *, system: str | None = None) -> str:
-        """Return the model's completion via the OpenAI-compatible chat endpoint."""
+    def generate(
+        self, prompt: str, *, system: str | None = None, grammar: str | None = None
+    ) -> str:
+        """Return the model's completion via the OpenAI-compatible chat endpoint.
+
+        When ``grammar`` (a GBNF string) is supplied, it is sent to ``llama-server``
+        so the output is constrained to that grammar — e.g. guaranteed-valid JSON.
+        """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
         messages: list[dict[str, str]] = []
@@ -134,6 +148,8 @@ class LlamaCppGenerator:
         messages.append({"role": "user", "content": prompt})
         url = f"{self.host.rstrip('/')}/v1/chat/completions"
         body: dict[str, object] = {"model": self.model, "messages": messages, "stream": False}
+        if grammar:
+            body["grammar"] = grammar  # llama-server GBNF extension
         payload = self.transport(url, body, self.timeout)
         try:
             choices = payload["choices"]
@@ -143,6 +159,22 @@ class LlamaCppGenerator:
         if not isinstance(text, str) or not text.strip():
             raise ValidationError("generator returned empty completion")
         return text
+
+    def generate_json(
+        self, prompt: str, *, system: str | None = None, grammar: str = NARRATIVE_GRAMMAR
+    ) -> dict[str, Any]:
+        """Generate GBNF-constrained output and return it parsed as a JSON object.
+
+        Fails closed: output that is not a JSON object raises :class:`ValidationError`.
+        """
+        raw = self.generate(prompt, system=system, grammar=grammar)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"grammar-constrained output was not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValidationError("grammar-constrained output was not a JSON object")
+        return parsed
 
 
 def resolve_generator(env: dict[str, str] | None = None) -> Generator | None:

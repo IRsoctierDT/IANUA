@@ -176,6 +176,34 @@ def test_ai_narrative_renders_with_generator(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_ai_narrative_structured_when_generator_supports_json(tmp_path: Path) -> None:
+    """A grammar-capable backend yields a structured (bulleted) narrative."""
+
+    class _JsonGen:
+        def generate(self, prompt: str, *, system: str | None = None) -> str:
+            return "free text fallback"
+
+        def generate_json(self, prompt: str, *, system: str | None = None) -> dict:
+            return {
+                "summary": "Root SSH login after failures",
+                "assessment": "Likely brute-force success",
+                "recommended_next_step": "Isolate host and rotate creds",
+            }
+
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        generator=_JsonGen(),
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "- **Summary:** Root SSH login after failures" in content
+    assert "- **Recommended next step:** Isolate host and rotate creds" in content
+    assert "free text fallback" not in content  # structured path preferred
+
+
+@pytest.mark.unit
 def test_ai_narrative_fails_soft_on_generator_error(tmp_path: Path) -> None:
     from agents.tools.validation import ValidationError
 
