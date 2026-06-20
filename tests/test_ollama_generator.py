@@ -145,3 +145,56 @@ def test_resolve_bad_host_degrades_to_none() -> None:
     from agents.tools.llm import resolve_generator
 
     assert resolve_generator({"OLLAMA_HOST": "http://evil.example:11434"}) is None
+
+
+# --- GBNF grammar-constrained JSON (llama.cpp) -------------------------------
+
+
+@pytest.mark.unit
+def test_grammar_is_sent_in_body() -> None:
+    from agents.tools.llm import NARRATIVE_GRAMMAR, LlamaCppGenerator
+
+    captured: dict = {}
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        captured.update(body)
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    LlamaCppGenerator(transport=_t).generate("facts", grammar=NARRATIVE_GRAMMAR)
+    assert "grammar" in captured
+    assert "root ::=" in captured["grammar"]
+
+
+@pytest.mark.unit
+def test_generate_json_parses_object() -> None:
+    from agents.tools.llm import LlamaCppGenerator
+
+    payload = '{"summary": "s", "assessment": "a", "recommended_next_step": "n"}'
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        return {"choices": [{"message": {"content": payload}}]}
+
+    data = LlamaCppGenerator(transport=_t).generate_json("facts")
+    assert data == {"summary": "s", "assessment": "a", "recommended_next_step": "n"}
+
+
+@pytest.mark.unit
+def test_generate_json_invalid_json_fails_closed() -> None:
+    from agents.tools.llm import LlamaCppGenerator
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        return {"choices": [{"message": {"content": "not json"}}]}
+
+    with pytest.raises(ValidationError):
+        LlamaCppGenerator(transport=_t).generate_json("facts")
+
+
+@pytest.mark.unit
+def test_generate_json_non_object_fails_closed() -> None:
+    from agents.tools.llm import LlamaCppGenerator
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        return {"choices": [{"message": {"content": "[1, 2, 3]"}}]}
+
+    with pytest.raises(ValidationError):
+        LlamaCppGenerator(transport=_t).generate_json("facts")
