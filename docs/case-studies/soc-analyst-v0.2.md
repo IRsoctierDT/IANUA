@@ -188,6 +188,30 @@ is the IETF documentation range, used here as a safe stand-in for a real externa
 The orchestrator writes the combined result to
 [`reports/markdown/orchestrated_incident.md`](../../reports/markdown/orchestrated_incident.md).
 
+**Detection coverage** is attached automatically — the report lists the Sigma rules
+covering the mapped technique (T1110), ranked by severity:
+
+```
+## Detection Coverage
+- **SSH Brute Force Followed by Successful Root Login** [critical] — ssh_bruteforce_then_success.yml (T1110)
+- **SSH Brute Force - Repeated Failed Passwords** [high] — ssh_brute_force.yml (T1110)
+- **SSH Failed Password** [low] — ssh_failed_password.yml (T1110)
+```
+
+**Optional AI narrative.** When a local model is configured (`LLM_MODEL`, default
+`qwen3.5:9b` via Ollama or llama.cpp; `LLM_NARRATIVE=auto`), the report adds a clearly
+labeled, fact-constrained summary — and **fails soft** to the deterministic report if
+no model is reachable:
+
+```
+## Analyst Narrative (AI-generated)
+A successful root SSH login from 203.0.113.42 followed repeated failed passwords,
+consistent with a brute-force compromise (T1110 → T1078). Escalate for review.
+```
+
+> The narrative is illustrative and AI-generated; it is constrained to the structured
+> facts above and never substitutes for analyst verification.
+
 ---
 
 ## 6. Risks & Mitigations
