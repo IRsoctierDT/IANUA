@@ -68,7 +68,12 @@ jobs:
           # must run on the interpreter the lock was produced for.
           python-version: "3.12"
           cache: pip
-      - run: pip install -e ".[dev]"
+      - name: Install hash-pinned dev toolchain (tamper-evident)
+        # The security job's own tools (bandit, pip-audit) install from a
+        # SHA-256 hash-pinned lock under --require-hashes, so a tampered or
+        # substituted distribution fails the build. Versions match
+        # requirements.lock; see security/sbom/requirements-dev.lock.
+        run: pip install --require-hashes -r security/sbom/requirements-dev.lock
       - name: Bandit (SAST)
         run: bandit -c pyproject.toml -r agents scripts
       - name: pip-audit (SCA) — gate on the pinned closure

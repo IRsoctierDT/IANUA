@@ -38,10 +38,15 @@ tooling (none ship at runtime); declared Python *runtime* dependencies are empty
 
 | File | Format | Scope | Source |
 |---|---|---|---|
-| `requirements.lock` | pip requirements | 117 pinned Python deps | `pip freeze` (clean closure) |
+| `requirements.lock` | pip requirements | 117 pinned Python deps (full `[dev,dashboard]`) | `pip freeze` (clean closure) |
+| `requirements-dev.lock` | pip requirements (hashed) | 52 SHA-256 hash-pinned `[dev]` tools | `uv pip compile --generate-hashes` |
 | `python.cdx.json` | CycloneDX 1.4 | 116 Python components | `pip-audit -r requirements.lock` |
 | `npm.cdx.json` | CycloneDX 1.5 | 143 npm components | `package-lock.json` (offline) |
 | `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 259 components | both, via `generate_sbom.py` |
+
+The CI **Security job** installs its own tools from `requirements-dev.lock` under
+`pip install --require-hashes`, so the toolchain that runs with repository access
+is tamper-evident, not just version-pinned.
 
 `sbom.cdx.json` is the canonical artifact. **Every** component carries a
 [purl](https://github.com/package-url/purl-spec) — `generate_sbom.py` backfills
@@ -115,12 +120,16 @@ already a required SCA gate; the npm path uses only the standard library.
 
 ## Future Enhancements
 
-1. **Hash-pin** the lock (`pip-compile --generate-hashes` / `uv pip compile`) and
-   add `--require-hashes` so installs are tamper-evident, not just version-pinned.
+1. **Hash-pin the `[dashboard]` ML stack.** Deferred: a universal
+   `--generate-hashes` resolution of torch & friends pulls in platform/CUDA-only
+   wheels (`nvidia-*`, `triton`, `pywin32`) that are fragile to verify
+   cross-platform. Options: a per-platform hashed lock, or `uv lock` adopted as
+   the project's dependency source of truth.
 2. Automate lock/SBOM refresh on dependency-PRs (Dependabot/Renovate) so the
    committed SBOM never drifts from `pyproject.toml`.
 3. Attest the SBOM (in-toto / Sigstore) for end-to-end provenance.
 
 > **Done in this change:** lockfile pinning (`requirements.lock`),
-> byte-reproducible generation, and a CI gate that fails on newly introduced
-> advisories against the pinned closure.
+> byte-reproducible generation, a CI gate that fails on newly introduced
+> advisories, and **hash-pinning of the `[dev]` toolchain**
+> (`requirements-dev.lock`, installed under `--require-hashes` in CI).
