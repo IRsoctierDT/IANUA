@@ -4,7 +4,7 @@
 #
 # Stages (ordered, fail-fast):
 #   1. Static analysis  -> ruff check + ruff format --check + mypy
-#   2. Security         -> bandit (SAST) + pip-audit (SCA) + gitleaks (secrets)
+#   2. Security         -> bandit (SAST) + pip-audit (SCA) + SBOM (CycloneDX) + gitleaks (secrets)
 #   3. Tests            -> pytest with 85% coverage gate (tests/security must pass)
 #   4. Build            -> only on a fully green pipeline
 #   5. Deploy           -> MANUAL approval gate (GitHub Environment), never automatic
@@ -69,6 +69,22 @@ jobs:
         run: bandit -c pyproject.toml -r agents scripts
       - name: pip-audit (SCA)
         run: pip-audit
+      - name: Generate SBOM (CycloneDX)
+        # pip-audit exits non-zero when advisories exist; the SBOM is still
+        # written, so don't let that fail this step. The gate above is what
+        # blocks the build. The npm half is derived offline from the lockfile.
+        run: |
+          pip-audit -f cyclonedx-json -o security/sbom/python.cdx.json \
+            --progress-spinner off || true
+          python scripts/generate_sbom.py \
+            --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-cyclonedx
+          path: security/sbom/*.cdx.json
+          if-no-files-found: error
       - name: Gitleaks (secret scan)
         uses: gitleaks/gitleaks-action@v3
         env:
