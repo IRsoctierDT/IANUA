@@ -37,9 +37,13 @@ import binascii
 import json
 import re
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+# Stable namespace for deriving deterministic CycloneDX serial numbers.
+_SBOM_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "ai-operator-cyber-command-center/sbom")
 
 # PEP 503 name normalisation for PyPI Package URLs.
 _PYPI_NAME_RE = re.compile(r"[-_.]+")
@@ -191,6 +195,19 @@ def _make_refs_deterministic(
                 affected["ref"] = remap[ref]
 
 
+def _serial_number(timestamp: str, components: list[dict[str, Any]]) -> str:
+    """Derive a deterministic CycloneDX ``serialNumber`` (URN UUID).
+
+    `actions/attest-sbom` detects CycloneDX by the presence of ``bomFormat`` *and*
+    ``serialNumber``, so the field is required for the SBOM to be attestable. We
+    derive it (UUIDv5) from the timestamp and the component purls rather than
+    using a random UUID, so generation stays byte-for-byte reproducible: identical
+    inputs always yield the same serial number.
+    """
+    key = timestamp + "\n" + "\n".join(sorted(c.get("purl", c.get("name", "")) for c in components))
+    return f"urn:uuid:{uuid.uuid5(_SBOM_NAMESPACE, key)}"
+
+
 def _root_component() -> dict[str, Any]:
     """Build the metadata.component describing the repository itself."""
     pkg = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
@@ -230,12 +247,14 @@ def merge(
     _make_refs_deterministic(py_components, vulns)
     py_components.sort(key=lambda c: c.get("purl") or c.get("name", ""))
 
+    components = py_components + npm_components
     doc: dict[str, Any] = {
         "bomFormat": "CycloneDX",
         "specVersion": SPEC_VERSION,
+        "serialNumber": _serial_number(timestamp, components),
         "version": 1,
         "metadata": _metadata(timestamp),
-        "components": py_components + npm_components,
+        "components": components,
     }
     if vulns:
         doc["vulnerabilities"] = vulns
@@ -297,6 +316,7 @@ def main() -> int:
         npm_doc: dict[str, Any] = {
             "bomFormat": "CycloneDX",
             "specVersion": SPEC_VERSION,
+            "serialNumber": _serial_number(args.timestamp, npm_components),
             "version": 1,
             "metadata": _metadata(args.timestamp),
             "components": npm_components,
