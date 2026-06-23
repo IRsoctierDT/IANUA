@@ -103,6 +103,10 @@ python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   hash-pinned resolution. It must be regenerated from a clean venv whenever the
   `[dev,dashboard]` extras change, or the SBOM and the installed code diverge.
   Hash-pinning (`--require-hashes`) is the next hardening step (see below).
+- **Python-version specific:** the lock is resolved on **Python 3.12** (the
+  `[dashboard]` stack pins 3.12-only wheels, e.g. `numpy>=2.5`). `pip-audit -r`
+  dry-run-resolves it, so the SBOM/SCA gate runs on 3.12 (see the Security job in
+  `ci.yml`); it will not resolve on 3.11.
 
 ## Cost Considerations
 

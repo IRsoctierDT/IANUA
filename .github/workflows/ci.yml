@@ -62,7 +62,11 @@ jobs:
           fetch-depth: 0          # gitleaks needs full history
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          # 3.12, not the global 3.11: requirements.lock pins the declared
+          # [dev,dashboard] closure as resolved on Python 3.12 (e.g. numpy 2.5.0,
+          # which requires >=3.12). pip-audit -r dry-run-resolves the lock, so it
+          # must run on the interpreter the lock was produced for.
+          python-version: "3.12"
           cache: pip
       - run: pip install -e ".[dev]"
       - name: Bandit (SAST)
