@@ -4,7 +4,7 @@
 #
 # Stages (ordered, fail-fast):
 #   1. Static analysis  -> ruff check + ruff format --check + mypy
-#   2. Security         -> bandit (SAST) + pip-audit (SCA) + gitleaks (secrets)
+#   2. Security         -> bandit (SAST) + pip-audit (SCA) + SBOM (CycloneDX) + gitleaks (secrets)
 #   3. Tests            -> pytest with 85% coverage gate (tests/security must pass)
 #   4. Build            -> only on a fully green pipeline
 #   5. Deploy           -> MANUAL approval gate (GitHub Environment), never automatic
@@ -62,13 +62,38 @@ jobs:
           fetch-depth: 0          # gitleaks needs full history
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          # 3.12, not the global 3.11: requirements.lock pins the declared
+          # [dev,dashboard] closure as resolved on Python 3.12 (e.g. numpy 2.5.0,
+          # which requires >=3.12). pip-audit -r dry-run-resolves the lock, so it
+          # must run on the interpreter the lock was produced for.
+          python-version: "3.12"
           cache: pip
       - run: pip install -e ".[dev]"
       - name: Bandit (SAST)
         run: bandit -c pyproject.toml -r agents scripts
-      - name: pip-audit (SCA)
-        run: pip-audit
+      - name: pip-audit (SCA) — gate on the pinned closure
+        # Audit the committed lock (declared [dev,dashboard] closure), not the
+        # ephemeral CI environment. Deterministic, so a non-zero exit means a
+        # NEW advisory landed against a pinned dependency -> block the merge.
+        run: pip-audit -r security/sbom/requirements.lock
+      - name: Generate SBOM (CycloneDX)
+        # Regenerate from the same lock for a reproducible SBOM. pip-audit exits
+        # non-zero when advisories exist; the SBOM is still written and the gate
+        # above already failed the build, so tolerate it here. npm half is
+        # derived offline from the lockfile.
+        run: |
+          pip-audit -r security/sbom/requirements.lock \
+            -f cyclonedx-json -o security/sbom/python.cdx.json \
+            --progress-spinner off || true
+          python scripts/generate_sbom.py \
+            --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-cyclonedx
+          path: security/sbom/*.cdx.json
+          if-no-files-found: error
       - name: Gitleaks (secret scan)
         uses: gitleaks/gitleaks-action@v3
         env:
