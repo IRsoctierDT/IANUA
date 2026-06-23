@@ -36,6 +36,8 @@ import base64
 import binascii
 import json
 import re
+import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +67,9 @@ def _sri_to_hash(integrity: str) -> dict[str, str] | None:
     prefix, _, b64 = integrity.partition("-")
     alg = _SRI_ALGORITHMS.get(prefix.lower())
     if alg is None:
+        # Present but unrecognised — surface it (the component is still emitted,
+        # just without a provenance hash) rather than dropping it silently.
+        print(f"warning: unsupported integrity algorithm '{prefix}'", file=sys.stderr)
         return None
     try:
         digest_hex = binascii.hexlify(base64.b64decode(b64, validate=True)).decode("ascii")
@@ -242,6 +247,19 @@ def _write_json(path: Path, doc: dict[str, Any]) -> None:
     path.write_text(json.dumps(doc, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 
 
+def _is_valid_timestamp(timestamp: str) -> bool:
+    """Return True if ``timestamp`` is a parseable ISO-8601 instant.
+
+    The value is embedded verbatim in the SBOM ``metadata.timestamp``; rejecting
+    garbage early keeps a malformed CLI argument out of the published artifact.
+    """
+    try:
+        datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
 def main() -> int:
     """CLI entry point. Returns a process exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -264,18 +282,35 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    npm_components = build_npm_components(args.lockfile)
-    npm_doc: dict[str, Any] = {
-        "bomFormat": "CycloneDX",
-        "specVersion": SPEC_VERSION,
-        "version": 1,
-        "metadata": _metadata(args.timestamp),
-        "components": npm_components,
-    }
-    _write_json(SBOM_DIR / "npm.cdx.json", npm_doc)
+    if not _is_valid_timestamp(args.timestamp):
+        print(f"error: --timestamp is not valid ISO-8601: {args.timestamp!r}", file=sys.stderr)
+        return 2
+    for label, path in (("lockfile", args.lockfile), ("Python SBOM", args.python_sbom)):
+        if not path.is_file():
+            print(f"error: {label} not found: {path}", file=sys.stderr)
+            return 2
 
-    merged = merge(args.python_sbom, npm_components, args.timestamp)
-    _write_json(SBOM_DIR / "sbom.cdx.json", merged)
+    SBOM_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        npm_components = build_npm_components(args.lockfile)
+        npm_doc: dict[str, Any] = {
+            "bomFormat": "CycloneDX",
+            "specVersion": SPEC_VERSION,
+            "version": 1,
+            "metadata": _metadata(args.timestamp),
+            "components": npm_components,
+        }
+        _write_json(SBOM_DIR / "npm.cdx.json", npm_doc)
+
+        merged = merge(args.python_sbom, npm_components, args.timestamp)
+        _write_json(SBOM_DIR / "sbom.cdx.json", merged)
+    except json.JSONDecodeError as exc:
+        print(f"error: malformed JSON in an input file: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"error: file I/O failed: {exc}", file=sys.stderr)
+        return 1
 
     py_count = len(merged["components"]) - len(npm_components)
     print(
