@@ -152,6 +152,39 @@ def _enrich_pypi_purls(components: list[dict[str, Any]]) -> list[dict[str, Any]]
     return components
 
 
+def _make_refs_deterministic(
+    components: list[dict[str, Any]], vulnerabilities: list[dict[str, Any]]
+) -> None:
+    """Replace ``pip-audit``'s random ``bom-ref`` values with stable purls.
+
+    ``pip-audit`` assigns each component a randomly-generated ``bom-ref`` (e.g.
+    ``BomRef.5446...``), which makes the SBOM differ on every run. We rewrite
+    each component's ``bom-ref`` to its (deterministic) purl and remap any
+    ``vulnerabilities[].affects[].ref`` that pointed at the old value, so
+    vulnerability-to-component linkage is preserved. Both arguments are mutated
+    in place.
+
+    Args:
+        components: components whose ``bom-ref`` should become their purl.
+        vulnerabilities: vulnerability objects whose ``affects`` refs are remapped.
+    """
+    remap: dict[str, str] = {}
+    for component in components:
+        purl = component.get("purl")
+        old_ref = component.get("bom-ref")
+        if not purl:
+            continue
+        if old_ref and old_ref != purl:
+            remap[old_ref] = purl
+        component["bom-ref"] = purl
+
+    for vuln in vulnerabilities:
+        for affected in vuln.get("affects", []):
+            ref = affected.get("ref")
+            if ref in remap:
+                affected["ref"] = remap[ref]
+
+
 def _root_component() -> dict[str, Any]:
     """Build the metadata.component describing the repository itself."""
     pkg = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
@@ -185,6 +218,9 @@ def merge(python_sbom: Path, npm_components: list[dict[str, Any]], timestamp: st
     """
     py_doc = json.loads(python_sbom.read_text(encoding="utf-8"))
     py_components: list[dict[str, Any]] = _enrich_pypi_purls(py_doc.get("components", []))
+    vulns: list[dict[str, Any]] = py_doc.get("vulnerabilities", [])
+    _make_refs_deterministic(py_components, vulns)
+    py_components.sort(key=lambda c: c.get("purl") or c.get("name", ""))
 
     doc: dict[str, Any] = {
         "bomFormat": "CycloneDX",
@@ -193,7 +229,7 @@ def merge(python_sbom: Path, npm_components: list[dict[str, Any]], timestamp: st
         "metadata": _metadata(timestamp),
         "components": py_components + npm_components,
     }
-    if vulns := py_doc.get("vulnerabilities"):
+    if vulns:
         doc["vulnerabilities"] = vulns
     return doc
 

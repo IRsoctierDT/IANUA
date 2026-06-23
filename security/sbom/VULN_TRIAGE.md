@@ -25,7 +25,7 @@ are NOT declared dependencies** of this project — chiefly an LLM/agent/RAG sta
 | Scope | Packages | Known vulns |
 |---|---|---|
 | Shared pyenv 3.12.4 (as found) | 277 | **168** |
-| **Declared closure, clean install** (`[dev,dashboard]`) | **118** | **0** |
+| **Declared closure, pinned lock** (`requirements.lock`) | **~117** | **0** |
 
 > **Method:** the table is reproduced facts, not inference — both rows were
 > produced by `pip-audit`. The canonical `sbom.cdx.json` is generated from the
@@ -91,17 +91,20 @@ a unit; if it is leftover from other work, remove it from the environment.
 
 ## Remediation Plan (ordered)
 
-1. **Use a clean project virtualenv (done — confirms 0 vulns).** Working in a
-   fresh `pip install -e ".[dev,dashboard]"` venv — rather than the shared pyenv
-   — already eliminates all 168 findings. This is the single highest-value step
-   and resolves Tiers 0–3 for the project's purposes.
-2. **Pin the closure** (compiled `requirements.txt` / lockfile) so the SBOM is
-   reproducible bit-for-bit and CI can gate with `pip-audit --locked`.
-3. **(Maintainer env hygiene, optional)** In the shared pyenv, upgrade Tier 1
+1. **Use a clean project virtualenv (done — confirms 0 vulns).** A fresh
+   `pip install -e ".[dev,dashboard]"` venv — rather than the shared pyenv —
+   eliminates all 168 findings. Highest-value step; resolves Tiers 0–3 for the
+   project's purposes.
+2. **Pin the closure (done).** [`requirements.lock`](./requirements.lock) pins
+   the declared `[dev,dashboard]` closure, making the SBOM byte-reproducible.
+3. **Gate CI on the lock (done).** `.github/workflows/ci.yml` runs
+   `pip-audit -r security/sbom/requirements.lock` — a deterministic gate that
+   **fails the build on any newly introduced advisory** against a pinned dep.
+4. **(Maintainer env hygiene, optional)** In the shared pyenv, upgrade Tier 1
    packages and remove the unused ambient LLM stack (`mem0ai`, `litellm`,
    `langchain*`) to clear the Tier 0 no-fix advisories at their source.
-4. Keep the CI SBOM job (`.github/workflows/ci.yml`) green; once the closure is
-   pinned, extend it to **fail on newly introduced advisories**.
+5. **(Next)** Hash-pin the lock (`--generate-hashes` + `--require-hashes`) for
+   tamper-evidence — see README → Future Enhancements.
 
 ## Risks & Cost
 

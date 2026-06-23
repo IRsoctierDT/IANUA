@@ -13,15 +13,16 @@
 
 This directory holds a [CycloneDX](https://cyclonedx.org/) SBOM covering the
 repository's **two package ecosystems** — Python and npm. The merged document
-(`sbom.cdx.json`) inventories **261 components** (118 Python + 143 npm) and, at
+(`sbom.cdx.json`) inventories **259 components** (116 Python + 143 npm) and, at
 generation time, **0 known vulnerabilities** per the public PyPI/OSV advisory
 databases.
 
-The canonical SBOM is generated from a **clean install of the declared
-dependency closure** (`pip install -e ".[dev,dashboard]"`, 118 Python packages:
-Streamlit, qdrant-client, sentence-transformers and their transitive stack). All
-143 npm components are `dev` build tooling (none ship at runtime); declared
-Python *runtime* dependencies are empty.
+The canonical SBOM is generated from a **pinned lockfile of the declared
+dependency closure** ([`requirements.lock`](./requirements.lock) —
+`pip install -e ".[dev,dashboard]"`: Streamlit, qdrant-client,
+sentence-transformers and their transitive stack). Generation is **byte-for-byte
+reproducible** for a fixed timestamp. All 143 npm components are `dev` build
+tooling (none ship at runtime); declared Python *runtime* dependencies are empty.
 
 > A `pip-audit` run against the maintainer's **shared** pyenv environment
 > reported 168 vulnerabilities — every one traced to stale/ambient packages
@@ -37,14 +38,18 @@ Python *runtime* dependencies are empty.
 
 | File | Format | Scope | Source |
 |---|---|---|---|
-| `python.cdx.json` | CycloneDX 1.4 | 118 Python components | `pip-audit` (clean declared env) |
+| `requirements.lock` | pip requirements | 117 pinned Python deps | `pip freeze` (clean closure) |
+| `python.cdx.json` | CycloneDX 1.4 | 116 Python components | `pip-audit -r requirements.lock` |
 | `npm.cdx.json` | CycloneDX 1.5 | 143 npm components | `package-lock.json` (offline) |
-| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 261 components | both, via `generate_sbom.py` |
+| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 259 components | both, via `generate_sbom.py` |
 
 `sbom.cdx.json` is the canonical artifact. **Every** component carries a
 [purl](https://github.com/package-url/purl-spec) — `generate_sbom.py` backfills
-`pkg:pypi/...` purls that `pip-audit` omits (PEP 503 normalised). npm components
-also include SHA-512 hashes decoded from lockfile integrity strings for
+`pkg:pypi/...` purls that `pip-audit` omits (PEP 503 normalised). For
+reproducibility it also rewrites `pip-audit`'s random `bom-ref` values to the
+stable purl (remapping vulnerability `affects` refs so linkage is preserved), so
+the output is **byte-identical across runs** for a fixed `--timestamp`. npm
+components include SHA-512 hashes decoded from lockfile integrity strings for
 provenance verification.
 
 ## Process / Architecture
@@ -67,17 +72,23 @@ network (to enrich with advisories).
 Run from the repository root, using the project interpreter (pyenv 3.12.4):
 
 ```bash
-# 1. Refresh the Python SBOM (queries public advisory DBs — see Risks).
-python -m pip_audit -f cyclonedx-json -o security/sbom/python.cdx.json \
-  --progress-spinner off
+# 0. (Only if dependencies changed) refresh the lock from a CLEAN venv:
+python -m venv /tmp/sbomenv && /tmp/sbomenv/bin/pip install -e ".[dev,dashboard]"
+/tmp/sbomenv/bin/pip freeze | grep -v '^-e ' | sort -f >> security/sbom/requirements.lock
+#   ...then restore the header comment block at the top of the file.
 
-# 2. Build the npm SBOM and merge (offline, deterministic).
+# 1. Audit + emit the Python SBOM from the pinned lock (advisory lookup):
+python -m pip_audit -r security/sbom/requirements.lock \
+  -f cyclonedx-json -o security/sbom/python.cdx.json --progress-spinner off
+
+# 2. Build the npm SBOM and merge (offline, deterministic):
 python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
 > `pip-audit` exits non-zero when vulnerabilities are found; this is expected
 > and does **not** indicate SBOM generation failure — `python.cdx.json` is still
-> written.
+> written. CI uses the same lock as a **gate** (see `.github/workflows/ci.yml`):
+> a non-zero exit there blocks the merge.
 
 ## Risks
 
@@ -88,10 +99,10 @@ python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 - **Network egress:** Step 1 sends installed package names/versions to the
   public advisory service (PyPI/OSV). No secrets or source are transmitted. The
   npm step has no network access.
-- **Unpinned Python deps:** runtime `dependencies` are empty and dev/dashboard
-  extras use `>=` ranges, so the Python inventory is environment-derived, not
-  lock-derived. Pinning (e.g. a compiled `requirements.txt`) would make it fully
-  reproducible — see Future Enhancements.
+- **Lock drift:** `requirements.lock` is a `pip freeze` snapshot, not a
+  hash-pinned resolution. It must be regenerated from a clean venv whenever the
+  `[dev,dashboard]` extras change, or the SBOM and the installed code diverge.
+  Hash-pinning (`--require-hashes`) is the next hardening step (see below).
 
 ## Cost Considerations
 
@@ -100,9 +111,12 @@ already a required SCA gate; the npm path uses only the standard library.
 
 ## Future Enhancements
 
-1. Pin the Python environment (compiled lockfile) so the SBOM is reproducible
-   bit-for-bit and `pip-audit --locked` can run in CI.
-2. Add an `sbom` job to `.github/workflows/` that regenerates and diffs the
-   SBOM on dependency changes, failing on newly introduced advisories above a
-   severity threshold.
-3. Optionally attest the SBOM (e.g. in-toto / Sigstore) for tamper-evidence.
+1. **Hash-pin** the lock (`pip-compile --generate-hashes` / `uv pip compile`) and
+   add `--require-hashes` so installs are tamper-evident, not just version-pinned.
+2. Automate lock/SBOM refresh on dependency-PRs (Dependabot/Renovate) so the
+   committed SBOM never drifts from `pyproject.toml`.
+3. Attest the SBOM (in-toto / Sigstore) for end-to-end provenance.
+
+> **Done in this change:** lockfile pinning (`requirements.lock`),
+> byte-reproducible generation, and a CI gate that fails on newly introduced
+> advisories against the pinned closure.
