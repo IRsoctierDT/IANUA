@@ -135,18 +135,33 @@ python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 Zero added cost: no new third-party dependency was introduced. `pip-audit` was
 already a required SCA gate; the npm path uses only the standard library.
 
+## SBOM attestation & drift prevention
+
+- **Provenance:** on push to `main` the `build` job binds this SBOM to the built
+  distributions with a **signed, keyless (Sigstore/OIDC) attestation**
+  (`actions/attest-sbom`), recorded in the GitHub attestations store. Verify with
+  `gh attestation verify <artifact> --repo <owner>/<repo>`.
+- **Anti-drift:** the `sbom-sync` CI job fails closed if the derived pip locks
+  disagree with `uv.lock` (`scripts/check_locks.py`) or if `sbom.cdx.json` is not
+  regenerated from the committed lock. So a Dependabot bump that updates `uv.lock`
+  without refreshing the locks/SBOM is **blocked**, not silently merged.
+
+> This is a **read-only gate**, deliberately chosen over an auto-committing,
+> write-scoped workflow (which would need `pull_request_target` / elevated tokens
+> on dependency PRs). The maintainer regenerates locally (commands above); CI
+> verifies. Auto-commit can be layered on later if the convenience is worth the
+> elevated trust surface.
+
 ## Future Enhancements
 
-1. **Attest the SBOM** (in-toto / Sigstore) for end-to-end provenance.
-2. **Auto-regenerate the SBOM on Dependabot lock bumps** (a workflow that reruns
-   the export + `generate_sbom.py` and commits to the PR), so the committed SBOM
-   never lags `uv.lock`. Deferred for the security review of an auto-committing,
-   write-scoped workflow.
+1. **Auto-commit the regenerated SBOM** on Dependabot PRs (if the write-scoped
+   workflow trust surface is accepted) — turning the drift *gate* into drift
+   *repair*.
 
 > **Done:** `uv.lock` as the dependency source of truth (`uv lock --check` gate);
-> `requirements.lock` hash-pinned and resolved for the **Linux/3.12 deployment
-> target** (SBOM includes the CUDA stack); SBOM generated with
-> `pip-audit --disable-pip` (platform-independent, byte-reproducible); a CI gate
-> that fails on newly introduced advisories; **hash-pinned `[dev]` toolchain**
-> installed under `--require-hashes`; and Dependabot (`uv` + `npm` +
-> `github-actions`) routing every update PR through the full supply-chain gate.
+> `requirements.lock` hash-pinned for the **Linux/3.12 deployment target** (SBOM
+> includes the CUDA stack); SBOM generated with `pip-audit --disable-pip`
+> (platform-independent, byte-reproducible); a CI gate that fails on newly
+> introduced advisories; **hash-pinned `[dev]` toolchain** under
+> `--require-hashes`; Dependabot (`uv` + `npm` + `github-actions`); **signed
+> Sigstore SBOM attestation**; and a **drift gate** keeping locks + SBOM in sync.
