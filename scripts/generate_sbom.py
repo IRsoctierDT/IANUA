@@ -22,8 +22,9 @@ Security considerations:
       outputs with identical content for identical inputs.
 
 Usage:
-    # 1. Refresh the Python SBOM (queries public advisory DBs; AGENTS.md §7):
-    python -m pip_audit -f cyclonedx-json -o security/sbom/python.cdx.json
+    # 1. Audit + emit the Python SBOM from the pinned lock (queries advisory DBs):
+    python -m pip_audit -r security/sbom/requirements.lock \
+        -f cyclonedx-json -o security/sbom/python.cdx.json
     # 2. Merge with npm components (offline):
     python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 """
@@ -210,7 +211,9 @@ def _metadata(timestamp: str) -> dict[str, Any]:
     }
 
 
-def merge(python_sbom: Path, npm_components: list[dict[str, Any]], timestamp: str) -> dict[str, Any]:
+def merge(
+    python_sbom: Path, npm_components: list[dict[str, Any]], timestamp: str
+) -> dict[str, Any]:
     """Merge the pip-audit Python SBOM with derived npm components.
 
     Python components carry over verbatim (preserving any ``vulnerabilities``
