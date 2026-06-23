@@ -38,11 +38,18 @@ tooling (none ship at runtime); declared Python *runtime* dependencies are empty
 
 | File | Format | Scope | Source |
 |---|---|---|---|
+| `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (144 pkgs) | `uv lock` from `pyproject.toml` |
 | `requirements.lock` | pip requirements | 117 pinned Python deps (full `[dev,dashboard]`) | `pip freeze` (clean closure) |
-| `requirements-dev.lock` | pip requirements (hashed) | 52 SHA-256 hash-pinned `[dev]` tools | `uv pip compile --generate-hashes` |
+| `requirements-dev.lock` | pip requirements (hashed) | 52 SHA-256 hash-pinned `[dev]` tools | `uv export --extra dev` (from `uv.lock`) |
 | `python.cdx.json` | CycloneDX 1.4 | 116 Python components | `pip-audit -r requirements.lock` |
 | `npm.cdx.json` | CycloneDX 1.5 | 143 npm components | `package-lock.json` (offline) |
 | `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 259 components | both, via `generate_sbom.py` |
+
+**`uv.lock` (repo root) is the dependency source of truth.** It is the universal,
+hashed resolution of `pyproject.toml`; CI fails closed via `uv lock --check` if
+`pyproject.toml` changes without re-locking. `requirements-dev.lock` is exported
+from it; `requirements.lock` remains a platform-resolved snapshot for the SBOM/SCA
+(see [Future Enhancements](#future-enhancements) for migrating it to a uv export).
 
 The CI **Security job** installs its own tools from `requirements-dev.lock` under
 `pip install --require-hashes`, so the toolchain that runs with repository access
@@ -104,10 +111,10 @@ python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 - **Network egress:** Step 1 sends installed package names/versions to the
   public advisory service (PyPI/OSV). No secrets or source are transmitted. The
   npm step has no network access.
-- **Lock drift:** `requirements.lock` is a `pip freeze` snapshot, not a
-  hash-pinned resolution. It must be regenerated from a clean venv whenever the
-  `[dev,dashboard]` extras change, or the SBOM and the installed code diverge.
-  Hash-pinning (`--require-hashes`) is the next hardening step (see below).
+- **Lock drift:** `requirements.lock` is a platform-resolved snapshot, not yet
+  exported from `uv.lock`. `uv lock --check` keeps `uv.lock` ↔ `pyproject.toml`
+  honest, but the pip snapshot must be refreshed when the closure changes (see
+  Future Enhancements for full migration to a `uv export`).
 - **Python-version specific:** the lock is resolved on **Python 3.12** (the
   `[dashboard]` stack pins 3.12-only wheels, e.g. `numpy>=2.5`). `pip-audit -r`
   dry-run-resolves it, so the SBOM/SCA gate runs on 3.12 (see the Security job in
@@ -120,14 +127,19 @@ already a required SCA gate; the npm path uses only the standard library.
 
 ## Future Enhancements
 
-1. **Hash-pin the `[dashboard]` ML stack.** Deferred: a universal
-   `--generate-hashes` resolution of torch & friends pulls in platform/CUDA-only
-   wheels (`nvidia-*`, `triton`, `pywin32`) that are fragile to verify
-   cross-platform. Options: a per-platform hashed lock, or `uv lock` adopted as
-   the project's dependency source of truth.
-2. Automate lock/SBOM refresh on dependency-PRs (Dependabot/Renovate) so the
-   committed SBOM never drifts from `pyproject.toml`.
-3. Attest the SBOM (in-toto / Sigstore) for end-to-end provenance.
+1. **Migrate `requirements.lock` + the SBOM to a `uv export`.** Now that `uv.lock`
+   is the source of truth, the full closure can be exported hashed
+   (`uv export --all-extras`, verified 0 advisories). The open decision is the
+   **target platform**: a universal/markered export makes the pip-audit-generated
+   SBOM platform-dependent (CUDA/Windows packages appear or not by OS), so this
+   needs a maintainer call on which platform the SBOM should represent (e.g.
+   `uv export --python-platform linux` for an as-deployed Linux SBOM).
+2. Attest the SBOM (in-toto / Sigstore) for end-to-end provenance.
+
+> **Done:** `uv.lock` adopted as the dependency source of truth with a
+> `uv lock --check` CI gate; `requirements-dev.lock` exported from it and
+> installed under `--require-hashes`; Dependabot configured (`uv` + `npm` +
+> `github-actions`) so dependency-update PRs run the full supply-chain gate.
 
 > **Done in this change:** lockfile pinning (`requirements.lock`),
 > byte-reproducible generation, a CI gate that fails on newly introduced
