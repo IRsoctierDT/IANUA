@@ -83,17 +83,19 @@ jobs:
       - name: Bandit (SAST)
         run: bandit -c pyproject.toml -r agents scripts
       - name: pip-audit (SCA) — gate on the pinned closure
-        # Audit the committed lock (declared [dev,dashboard] closure), not the
-        # ephemeral CI environment. Deterministic, so a non-zero exit means a
-        # NEW advisory landed against a pinned dependency -> block the merge.
-        run: pip-audit -r security/sbom/requirements.lock
+        # Audit the committed Linux/3.12 lock (declared [dev,dashboard] closure),
+        # not the ephemeral CI environment. --disable-pip reads the fully-hashed
+        # lock directly with no resolver, so it is platform-independent and
+        # deterministic: a non-zero exit means a NEW advisory landed against a
+        # pinned dependency -> block the merge.
+        run: pip-audit --disable-pip -r security/sbom/requirements.lock
       - name: Generate SBOM (CycloneDX)
         # Regenerate from the same lock for a reproducible SBOM. pip-audit exits
         # non-zero when advisories exist; the SBOM is still written and the gate
         # above already failed the build, so tolerate it here. npm half is
         # derived offline from the lockfile.
         run: |
-          pip-audit -r security/sbom/requirements.lock \
+          pip-audit --disable-pip -r security/sbom/requirements.lock \
             -f cyclonedx-json -o security/sbom/python.cdx.json \
             --progress-spinner off || true
           python scripts/generate_sbom.py \
