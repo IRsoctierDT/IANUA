@@ -35,9 +35,9 @@ jobs:
     name: Static analysis (ruff + mypy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
       - name: Verify uv.lock is in sync with pyproject.toml
         # uv.lock is the dependency source of truth; fail closed if pyproject
         # changed without re-locking (and the exported pip locks would drift).
@@ -63,7 +63,7 @@ jobs:
       contents: read
       pull-requests: read   # gitleaks-action lists PR commits via the GitHub API
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0          # gitleaks needs full history
       - uses: actions/setup-python@v6
@@ -122,7 +122,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -147,7 +147,7 @@ jobs:
     permissions:
       contents: read   # read-only: a drift gate, never auto-commits
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -184,7 +184,7 @@ jobs:
       id-token: write       # OIDC for Sigstore keyless signing
       attestations: write   # write the signed SBOM attestation
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -201,7 +201,7 @@ jobs:
         # push to main — PRs (incl. forks) lack the id-token to sign, and we
         # only attest artifacts that actually land.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/attest-sbom@v2
+        uses: actions/attest-sbom@v4
         with:
           subject-path: "dist/*"
           sbom-path: "security/sbom/sbom.cdx.json"
