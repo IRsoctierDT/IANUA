@@ -1,0 +1,6 @@
+[submodule "agent-suites/legal-suite"]
+	path = agent-suites/legal-suite
+	url = https://github.com/IRsoctierDT/legal-suite.git
+[submodule "agent-suites/consumer-protections"]
+	path = agent-suites/consumer-protections
+	url = https://github.com/IRsoctierDT/consumer-protections.git
