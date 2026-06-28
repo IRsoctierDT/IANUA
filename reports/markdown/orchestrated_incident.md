@@ -1,7 +1,7 @@
 # Incident Report
 
 ## Generated
-2026-06-17T22:26:52.723202+00:00
+2026-06-19T09:58:03.501817+00:00
 
 ## Summary
 Detected probable authentication failure activity.
@@ -53,6 +53,11 @@ authentication failure
 - **enterprise_attack_overview.md** (relevance 0.44) — # MITRE ATT&CK — Enterprise Matrix Overview **Framework:** MITRE ATT&CK® (Adversarial Tactics, Techniques, and Common Knowledge) **Matrix:** Enterprise **Author
 - **soc_fundamentals.md** (relevance 0.33) — # SOC Fundamentals **Topic:** Security Operations Center (SOC) practice **Related frameworks:** NIST CSF 2.0 (Detect/Respond), CIS Controls v8.1 (8, 13, 17) > A
 - **csf_2_overview.md** (relevance 0.22) — # NIST Cybersecurity Framework (CSF) 2.0 — Overview **Framework:** NIST Cybersecurity Framework **Version:** 2.0 (published February 2024) **Authoritative sourc
+
+## Detection Coverage
+- **SSH Brute Force Followed by Successful Root Login** [critical] — `ssh_bruteforce_then_success.yml` (T1110)
+- **SSH Brute Force - Repeated Failed Passwords** [high] — `ssh_brute_force.yml` (T1110)
+- **SSH Failed Password** [low] — `ssh_failed_password.yml` (T1110)
 
 ## Assumptions
 - Analysis is based only on the supplied log input.
