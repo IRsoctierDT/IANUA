@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SENTINEL · Agent Fleet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0a0d11;
+    --card-bg:  #0d1116;
+    --surface:  rgba(255,255,255,.03);
+    --border:   rgba(255,255,255,.07);
+    --text-0:   #e6e9ee;
+    --text-1:   #aeb6c2;
+    --text-2:   #8b94a3;
+    --text-3:   #5b636f;
+    --green:    oklch(0.74 0.12 150);
+    --amber:    oklch(0.80 0.12 80);
+    --red:      oklch(0.64 0.17 25);
+    --blue:     oklch(0.70 0.13 235);
+    --blue-dim: oklch(0.82 0.09 235);
+    --faint:    #4b515c;
+    --sans:     'IBM Plex Sans', sans-serif;
+    --mono:     'IBM Plex Mono', monospace;
+  }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text-0);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 32px;
+    min-width: 1080px;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: .3; }
+  }
+
+  /* ── header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 22px 26px;
+    border-bottom: 1px solid var(--border);
+    gap: 24px;
+    flex-wrap: nowrap;
+  }
+
+  .header-left {
+    flex-shrink: 0;
+  }
+
+  .header-left h1 {
+    font: 600 19px/1 var(--sans);
+    letter-spacing: .01em;
+    white-space: nowrap;
+  }
+
+  .header-left p {
+    font: 500 12px/1 var(--mono);
+    color: var(--text-3);
+    margin-top: 7px;
+    white-space: nowrap;
+  }
+
+  .filter-row { display: flex; gap: 8px; }
+
+  .filter-btn {
+    padding: 8px 15px;
+    border-radius: 7px;
+    font: 500 12px/1 var(--sans);
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,.07);
+    background: var(--surface);
+    color: var(--text-2);
+    transition: all .2s ease;
+    user-select: none;
+  }
+  .filter-btn:hover {
+    background: rgba(255,255,255,.08);
+    border-color: rgba(255,255,255,.2);
+    color: var(--text-0);
+  }
+  .filter-btn.active {
+    background: oklch(0.70 0.13 235 / .14);
+    border-color: oklch(0.70 0.13 235 / .35);
+    color: var(--blue-dim);
+  }
+
+  /* ── shell ── */
+  .shell {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    max-width: 1360px;
+    margin: 0 auto;
+  }
+
+  .body { padding: 22px 26px; }
+
+  /* ── section label ── */
+  .section-label {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--text-2);
+    margin-bottom: 14px;
+  }
+
+  /* ── grid ── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 26px;
+  }
+  .card-grid.hidden { display: none; }
+
+  /* ── agent card ── */
+  .agent-card {
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    padding: 17px;
+    background: var(--card-bg);
+    cursor: pointer;
+    transition: all .25s cubic-bezier(.2,.6,.2,1);
+  }
+  .agent-card:hover {
+    background: #12171f;
+    border-color: rgba(255,255,255,.2);
+    transform: translateY(-2px);
+    box-shadow: 0 12px 28px rgba(0,0,0,.32);
+  }
+  .agent-card.idle-card { opacity: .72; }
+  .agent-card.idle-card:hover { opacity: 1; }
+
+  /* top row */
+  .card-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+
+  .avatar {
+    width: 38px; height: 38px;
+    border-radius: 9px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font: 600 13px/1 var(--mono);
+    color: var(--text-1);
+    flex-shrink: 0;
+  }
+
+  .status-badge {
+    display: flex; align-items: center; gap: 7px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.04);
+  }
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.active { background: var(--green); animation: pulse 2.2s ease-in-out infinite; }
+  .status-dot.idle   { background: var(--faint); }
+  .status-dot.review { background: var(--amber); animation: pulse 1.8s ease-in-out infinite; }
+
+  .status-text {
+    font: 500 10px/1 var(--mono);
+    color: var(--text-2);
+  }
+
+  /* card body */
+  .card-name {
+    font: 600 14px/1.2 var(--sans);
+    color: var(--text-0);
+  }
+  .card-code {
+    font: 500 11px/1 var(--mono);
+    color: var(--text-3);
+    margin-top: 5px;
+  }
+  .card-task {
+    font: 400 12px/1.45 var(--sans);
+    color: #9aa2ae;
+    margin-top: 12px;
+    min-height: 34px;
+  }
+
+  /* load bar */
+  .load-track {
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(255,255,255,.06);
+    overflow: hidden;
+    margin: 8px 0 16px;
+  }
+  .load-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width .6s ease;
+  }
+  .load-fill.green  { background: var(--green); }
+  .load-fill.amber  { background: var(--amber); }
+  .load-fill.faint  { background: var(--faint); }
+
+  /* actions */
+  .card-actions { display: flex; gap: 8px; }
+
+  .action-btn {
+    flex: 1;
+    text-align: center;
+    padding: 8px;
+    border-radius: 7px;
+    font: 500 11px/1 var(--sans);
+    background: rgba(255,255,255,.04);
+    border: 1px solid var(--border);
+    color: var(--text-1);
+    cursor: pointer;
+    transition: all .2s ease;
+  }
+  .action-btn:hover {
+    background: rgba(255,255,255,.1);
+    border-color: rgba(255,255,255,.22);
+    color: #fff;
+  }
+
+  /* ── divider between sections ── */
+  .section-divider { margin-bottom: 26px; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- header -->
+  <div class="header">
+    <div class="header-left">
+      <h1>Agent Fleet</h1>
+      <p id="fleet-summary">12 agents · 9 active · 3 idle</p>
+    </div>
+    <div class="filter-row">
+      <button class="filter-btn active" data-filter="all"      onclick="setFilter(this)">All</button>
+      <button class="filter-btn"        data-filter="security" onclick="setFilter(this)">Security</button>
+      <button class="filter-btn"        data-filter="business" onclick="setFilter(this)">Business</button>
+      <button class="filter-btn"        data-filter="idle"     onclick="setFilter(this)">Idle</button>
+    </div>
+  </div>
+
+  <!-- body -->
+  <div class="body">
+
+    <!-- Security Cell -->
+    <div class="section-label" id="label-security">Security Cell</div>
+    <div class="card-grid" id="grid-security"></div>
+
+    <!-- Business & Knowledge Cell -->
+    <div class="section-label" id="label-business">Business &amp; Knowledge Cell</div>
+    <div class="card-grid" id="grid-business"></div>
+
+  </div>
+</div>
+
+<script>
+const GREEN = 'var(--green)';
+const AMBER = 'var(--amber)';
+const FAINT = 'var(--faint)';
+
+function agent(name, initials, code, task, status, load) {
+  const loadColor = status === 'idle' ? 'faint' : (load >= 70 ? 'amber' : 'green');
+  return { name, initials, code, task, status, load, loadColor };
+}
+
+const SEC_AGENTS = [
+  agent('SOC Analyst',             'SA', 'soc_analyst_agent',            'Triaging 3 alerts · scoring severity',     'active', 72),
+  agent('Threat Intel',            'TI', 'threat_intel_agent',           'Enriching IOCs across 14 feeds',           'active', 40),
+  agent('MITRE Mapper',            'MM', 'mitre_mapper_agent',           'Mapping T1059 → T1071.001',                'active', 33),
+  agent('Vulnerability Assessment','VA', 'vulnerability_assessment_agent','Scanning prod-cluster',                    'active', 58),
+  agent('Incident Report',         'IR', 'incident_report_agent',        'Drafting IR-2271 narrative',               'active', 21),
+  agent('Detection Matcher',       'DM', 'detection_matcher_agent',      'Idle · queue empty',                       'idle',    4),
+];
+
+const BIZ_AGENTS = [
+  agent('Executive Assistant',     'EA', 'executive_assistant_agent',    'Scheduling 2 review syncs',                'active', 18),
+  agent('Business Proposal',       'BP', 'business_proposal_agent',      'Idle · last run 2h ago',                   'idle',    0),
+  agent('Knowledge Base',          'KB', 'knowledge_base_agent',         'Indexing 1,240 docs (RAG)',                'active', 46),
+  agent('Knowledge Curator',       'KC', 'knowledge_curator_agent',      'Dedupe pass · 88% complete',               'active', 30),
+  agent('Legal / Compliance',      'LC', 'legal_compliance_agent',       'Reviewing vendor DPA',                     'review', 12),
+  agent('Portfolio Documentation', 'PD', 'portfolio_documentation_agent','Idle · awaiting trigger',                  'idle',    0),
+];
+
+function buildCard(a, cell) {
+  const isIdle = a.status === 'idle';
+  const card = document.createElement('div');
+  card.className = 'agent-card' + (isIdle ? ' idle-card' : '');
+  card.dataset.cell   = cell;
+  card.dataset.status = a.status;
+  card.innerHTML = `
+    <div class="card-top">
+      <div class="avatar">${a.initials}</div>
+      <div class="status-badge">
+        <div class="status-dot ${a.status}"></div>
+        <span class="status-text">${a.status}</span>
+      </div>
+    </div>
+    <div class="card-name">${a.name}</div>
+    <div class="card-code">${a.code}</div>
+    <div class="card-task">${a.task}</div>
+    <div class="load-track">
+      <div class="load-fill ${a.loadColor}" style="width:${a.load}%"></div>
+    </div>
+    <div class="card-actions">
+      <button class="action-btn">Pause</button>
+      <button class="action-btn">Redirect</button>
+    </div>
+  `;
+  return card;
+}
+
+function render() {
+  const sg = document.getElementById('grid-security');
+  const bg = document.getElementById('grid-business');
+  sg.innerHTML = '';
+  bg.innerHTML = '';
+  SEC_AGENTS.forEach(a => sg.appendChild(buildCard(a, 'security')));
+  BIZ_AGENTS.forEach(a => bg.appendChild(buildCard(a, 'business')));
+  updateSummary();
+}
+
+function setFilter(btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const filter = btn.dataset.filter;
+
+  document.querySelectorAll('.agent-card').forEach(card => {
+    let show = false;
+    if (filter === 'all')      show = true;
+    if (filter === 'security') show = card.dataset.cell   === 'security';
+    if (filter === 'business') show = card.dataset.cell   === 'business';
+    if (filter === 'idle')     show = card.dataset.status === 'idle';
+    card.style.display = show ? '' : 'none';
+  });
+
+  // Hide section labels when filter hides the whole section
+  const secVisible = filter === 'all' || filter === 'security' || filter === 'idle';
+  const bizVisible = filter === 'all' || filter === 'business' || filter === 'idle';
+  document.getElementById('label-security').style.display = secVisible ? '' : 'none';
+  document.getElementById('label-business').style.display = bizVisible ? '' : 'none';
+}
+
+function updateSummary() {
+  const all = [...SEC_AGENTS, ...BIZ_AGENTS];
+  const active = all.filter(a => a.status === 'active' || a.status === 'review').length;
+  const idle   = all.filter(a => a.status === 'idle').length;
+  document.getElementById('fleet-summary').textContent =
+    `${all.length} agents · ${active} active · ${idle} idle`;
+}
+
+render();
+</script>
+</body>
+</html>

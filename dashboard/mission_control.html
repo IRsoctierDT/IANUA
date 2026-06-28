@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SENTINEL · Mission Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0a0d11;
+    --topbar:  #0c1015;
+    --card:    #0d1116;
+    --border:  rgba(255,255,255,.06);
+    --border2: rgba(255,255,255,.08);
+    --text-0:  #e6e9ee;
+    --text-1:  #c4cad3;
+    --text-2:  #aeb6c2;
+    --text-3:  #8b94a3;
+    --text-4:  #5b636f;
+    --green:   oklch(0.74 0.12 150);
+    --amber:   oklch(0.80 0.12 80);
+    --red:     oklch(0.64 0.17 25);
+    --blue:    oklch(0.70 0.13 235);
+    --faint:   #4b515c;
+    --sans:    'IBM Plex Sans', sans-serif;
+    --mono:    'IBM Plex Mono', monospace;
+  }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text-0);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 32px;
+    min-width: 1160px;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: .3; }
+  }
+
+  /* ── shell ── */
+  .shell {
+    background: var(--bg);
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: 12px;
+    overflow: hidden;
+    max-width: 1360px;
+    margin: 0 auto;
+    font-family: var(--sans);
+  }
+
+  /* ── topbar ── */
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--topbar);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .brand-icon {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    background: var(--blue);
+    display: flex; align-items: center; justify-content: center;
+    font: 600 13px/1 var(--mono);
+    color: #06121c;
+    flex-shrink: 0;
+  }
+
+  .brand-name {
+    font: 600 16px/1 var(--sans);
+    letter-spacing: .02em;
+  }
+  .brand-name span {
+    color: var(--text-4);
+    font-weight: 500;
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .threat-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: oklch(0.80 0.12 80 / .12);
+    border: 1px solid oklch(0.80 0.12 80 / .3);
+  }
+  .threat-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--amber);
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  .threat-label {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .12em;
+    color: oklch(0.85 0.10 80);
+  }
+
+  .clock {
+    font: 500 13px/1 var(--mono);
+    color: var(--text-3);
+  }
+
+  /* ── metric strip ── */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .metric {
+    padding: 18px 22px;
+    border-right: 1px solid rgba(255,255,255,.05);
+    cursor: pointer;
+    transition: all .25s cubic-bezier(.2,.6,.2,1);
+  }
+  .metric:last-child { border-right: none; }
+  .metric:hover {
+    background: rgba(255,255,255,.05);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.16);
+    backdrop-filter: blur(8px);
+  }
+
+  .metric-label {
+    font: 500 10px/1 var(--mono);
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--text-4);
+    margin-bottom: 10px;
+  }
+  .metric-value {
+    font: 600 26px/1 var(--sans);
+  }
+
+  /* ── main grid ── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1.55fr 1fr;
+    gap: 1px;
+    background: rgba(255,255,255,.06);
+  }
+
+  .col {
+    background: var(--bg);
+    padding: 22px 24px;
+  }
+
+  /* ── orchestrator box ── */
+  .orchestrator {
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    padding: 16px 18px;
+    background: linear-gradient(180deg, oklch(0.70 0.13 235 / .08), transparent);
+    margin-bottom: 24px;
+  }
+
+  .orch-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+
+  .orch-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .orch-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+
+  .orch-title {
+    font: 600 13px/1 var(--sans);
+  }
+
+  .orch-sub, .orch-uptime {
+    font: 500 11px/1 var(--mono);
+    color: var(--text-4);
+  }
+
+  /* pipeline tiles — Glass D (Crisp Outline) */
+  .pipeline {
+    display: flex;
+    gap: 8px;
+  }
+
+  .pipeline-tile {
+    flex: 1;
+    text-align: center;
+    padding: 9px 4px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: all .25s cubic-bezier(.2,.6,.2,1);
+    background: rgba(255,255,255,.02);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,.16);
+  }
+  .pipeline-tile:hover {
+    background: rgba(255,255,255,.1);
+    backdrop-filter: blur(14px);
+    border-color: rgba(255,255,255,.32);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.2);
+  }
+
+  .tile-count {
+    font: 600 15px/1 var(--sans);
+  }
+  .tile-stage {
+    font: 500 9px/1.4 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-4);
+    margin-top: 5px;
+  }
+
+  /* ── security cell list ── */
+  .cell-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 12px;
+  }
+
+  .cell-title {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+
+  .cell-load-label {
+    font: 500 11px/1 var(--mono);
+    color: var(--text-4);
+  }
+
+  .agent-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .agent-row {
+    display: grid;
+    grid-template-columns: 30px 1fr 120px 64px;
+    align-items: center;
+    gap: 14px;
+    padding: 11px 8px;
+    border-radius: 8px;
+    background: rgba(255,255,255,.015);
+    cursor: pointer;
+    transition: all .25s cubic-bezier(.2,.6,.2,1);
+  }
+  .agent-row:hover {
+    background: rgba(255,255,255,.06);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.14);
+  }
+
+  .row-avatar {
+    width: 30px; height: 30px;
+    border-radius: 7px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid var(--border2);
+    display: flex; align-items: center; justify-content: center;
+    font: 600 11px/1 var(--mono);
+    color: var(--text-2);
+    flex-shrink: 0;
+  }
+
+  .row-info { min-width: 0; }
+  .row-name {
+    font: 600 13px/1.2 var(--sans);
+    color: var(--text-0);
+  }
+  .row-task {
+    font: 500 11px/1.3 var(--mono);
+    color: #6b7280;
+    margin-top: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .load-track {
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(255,255,255,.06);
+    overflow: hidden;
+  }
+  .load-fill {
+    height: 100%;
+    border-radius: 3px;
+  }
+
+  .row-status {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    justify-content: flex-end;
+  }
+  .status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.active { background: var(--green); animation: pulse 2.2s ease-in-out infinite; }
+  .status-dot.idle   { background: var(--faint); }
+  .status-dot.review { background: var(--amber); animation: pulse 1.8s ease-in-out infinite; }
+  .status-text {
+    font: 500 10px/1 var(--mono);
+    color: var(--text-3);
+  }
+
+  /* ── right col: live signal ── */
+  .section-label {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 14px;
+  }
+
+  .feed {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+
+  .feed-card {
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: 8px;
+    padding: 11px 13px;
+    background: rgba(255,255,255,.02);
+    cursor: pointer;
+    transition: all .25s cubic-bezier(.2,.6,.2,1);
+  }
+  .feed-card:hover {
+    background: rgba(255,255,255,.08);
+    backdrop-filter: blur(10px);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(0,0,0,.28);
+  }
+
+  .feed-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .feed-agent {
+    font: 600 11px/1 var(--mono);
+    color: var(--text-2);
+  }
+  .feed-time {
+    font: 500 10px/1 var(--mono);
+    color: var(--text-4);
+  }
+  .feed-action {
+    font: 400 12px/1.45 var(--sans);
+    color: var(--text-1);
+  }
+
+  /* ── policy / audit ── */
+  .policy {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .policy-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font: 500 11.5px/1.4 var(--mono);
+    color: var(--text-3);
+  }
+
+  .policy-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .policy-item span {
+    color: var(--text-1);
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- topbar -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-icon">S</div>
+      <div class="brand-name">SENTINEL <span>/ Command</span></div>
+    </div>
+    <div class="topbar-right">
+      <div class="threat-badge">
+        <div class="threat-dot"></div>
+        <span class="threat-label">THREAT · ELEVATED</span>
+      </div>
+      <span class="clock" id="clock">--:--:-- UTC</span>
+    </div>
+  </div>
+
+  <!-- metric strip -->
+  <div class="metrics" id="metrics"></div>
+
+  <!-- main grid -->
+  <div class="main-grid">
+
+    <!-- left col -->
+    <div class="col">
+
+      <!-- orchestrator -->
+      <div class="orchestrator">
+        <div class="orch-header">
+          <div class="orch-left">
+            <div class="orch-dot"></div>
+            <span class="orch-title">Orchestrator</span>
+            <span class="orch-sub">coordinating 9 agents</span>
+          </div>
+          <span class="orch-uptime">uptime 6d 04h</span>
+        </div>
+        <div class="pipeline" id="pipeline"></div>
+      </div>
+
+      <!-- security cell -->
+      <div class="cell-header">
+        <span class="cell-title">Security Cell · 6</span>
+        <span class="cell-load-label">load</span>
+      </div>
+      <div class="agent-rows" id="sec-agents"></div>
+
+    </div>
+
+    <!-- right col -->
+    <div class="col">
+      <div class="section-label">Live Signal</div>
+      <div class="feed" id="feed"></div>
+
+      <div class="section-label">Policy / Audit</div>
+      <div class="policy">
+        <div class="policy-item">
+          <div class="policy-dot" style="background:var(--blue)"></div>
+          <span>7 tool calls</span> gated by charter §6 today
+        </div>
+        <div class="policy-item">
+          <div class="policy-dot" style="background:var(--green)"></div>
+          <span>audit log</span> sealed · 0 drift
+        </div>
+        <div class="policy-item">
+          <div class="policy-dot" style="background:var(--amber)"></div>
+          <span>2 actions</span> awaiting human approval
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+/* ── colours ── */
+const GREEN = 'var(--green)', AMBER = 'var(--amber)', FAINT = 'var(--faint)';
+
+/* ── clock ── */
+function tick() {
+  const now = new Date();
+  const hh = String(now.getUTCHours()).padStart(2,'0');
+  const mm = String(now.getUTCMinutes()).padStart(2,'0');
+  const ss = String(now.getUTCSeconds()).padStart(2,'0');
+  document.getElementById('clock').textContent = `${hh}:${mm}:${ss} UTC`;
+}
+tick(); setInterval(tick, 1000);
+
+/* ── metrics ── */
+const METRICS = [
+  { label: 'Active agents',     value: '9/12',  color: 'var(--text-0)' },
+  { label: 'Open incidents',    value: '3',      color: 'var(--red)'    },
+  { label: 'Policy blocks · 24h', value: '7',   color: 'var(--text-0)' },
+  { label: 'Detections · 24h', value: '1,204',  color: 'var(--text-0)' },
+  { label: 'Avg latency',       value: '1.8s',   color: 'var(--text-0)' },
+];
+
+const mWrap = document.getElementById('metrics');
+METRICS.forEach(m => {
+  const el = document.createElement('div');
+  el.className = 'metric';
+  el.innerHTML = `
+    <div class="metric-label">${m.label}</div>
+    <div class="metric-value" style="color:${m.color}">${m.value}</div>
+  `;
+  mWrap.appendChild(el);
+});
+
+/* ── pipeline ── */
+const PIPELINE = [
+  { stage: 'ingest', count: '38', color: 'var(--text-0)' },
+  { stage: 'triage', count: '11', color: 'var(--text-0)' },
+  { stage: 'enrich', count: '6',  color: 'var(--text-0)' },
+  { stage: 'decide', count: '3',  color: 'var(--amber)'  },
+  { stage: 'report', count: '2',  color: 'var(--green)'  },
+];
+
+const pWrap = document.getElementById('pipeline');
+PIPELINE.forEach(p => {
+  const el = document.createElement('div');
+  el.className = 'pipeline-tile';
+  el.innerHTML = `
+    <div class="tile-count" style="color:${p.color}">${p.count}</div>
+    <div class="tile-stage">${p.stage}</div>
+  `;
+  pWrap.appendChild(el);
+});
+
+/* ── security agents (list view) ── */
+function agentRow(name, initials, task, status, load) {
+  const loadColor = status === 'idle' ? FAINT : (load >= 70 ? AMBER : GREEN);
+  return { name, initials, task, status, load, loadColor };
+}
+
+const SEC_AGENTS = [
+  agentRow('SOC Analyst',              'SA', 'Triaging 3 alerts · scoring severity',     'active', 72),
+  agentRow('Threat Intel',             'TI', 'Enriching IOCs across 14 feeds',           'active', 40),
+  agentRow('MITRE Mapper',             'MM', 'Mapping T1059 → T1071.001',                'active', 33),
+  agentRow('Vulnerability Assessment', 'VA', 'Scanning prod-cluster',                    'active', 58),
+  agentRow('Incident Report',          'IR', 'Drafting IR-2271 narrative',               'active', 21),
+  agentRow('Detection Matcher',        'DM', 'Idle · queue empty',                       'idle',    4),
+];
+
+const saWrap = document.getElementById('sec-agents');
+SEC_AGENTS.forEach(a => {
+  const el = document.createElement('div');
+  el.className = 'agent-row';
+  el.innerHTML = `
+    <div class="row-avatar">${a.initials}</div>
+    <div class="row-info">
+      <div class="row-name">${a.name}</div>
+      <div class="row-task">${a.task}</div>
+    </div>
+    <div class="load-track">
+      <div class="load-fill" style="width:${a.load}%;background:${a.loadColor}"></div>
+    </div>
+    <div class="row-status">
+      <div class="status-dot ${a.status}"></div>
+      <span class="status-text">${a.status}</span>
+    </div>
+  `;
+  saWrap.appendChild(el);
+});
+
+/* ── live feed ── */
+const FEED = [
+  { agent: 'SOC Analyst',            time: '2m',  action: 'Escalated ALERT-4821 — suspicious PowerShell on host WIN-03 — to Incident Report.', accent: AMBER },
+  { agent: 'Vulnerability Assessment',time: '4m', action: 'Flagged CVE-2026-1183 · CVSS 9.1 on prod-cluster ingress.',                        accent: AMBER },
+  { agent: 'Threat Intel',           time: '7m',  action: 'Enriched 12 IOCs from OTX + internal feeds; 3 matched known APT infra.',            accent: GREEN },
+  { agent: 'Policy Gate',            time: '9m',  action: 'Blocked outbound tool call: external-email — denied by charter §6.',                accent: 'var(--blue)' },
+];
+
+const fWrap = document.getElementById('feed');
+FEED.forEach(e => {
+  const el = document.createElement('div');
+  el.className = 'feed-card';
+  el.style.borderLeft = `2px solid ${e.accent}`;
+  el.innerHTML = `
+    <div class="feed-top">
+      <span class="feed-agent">${e.agent}</span>
+      <span class="feed-time">${e.time} ago</span>
+    </div>
+    <div class="feed-action">${e.action}</div>
+  `;
+  fWrap.appendChild(el);
+});
+</script>
+</body>
+</html>
