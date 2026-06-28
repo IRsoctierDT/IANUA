@@ -83,17 +83,19 @@ jobs:
       - name: Bandit (SAST)
         run: bandit -c pyproject.toml -r agents scripts
       - name: pip-audit (SCA) — gate on the pinned closure
-        # Audit the committed lock (declared [dev,dashboard] closure), not the
-        # ephemeral CI environment. Deterministic, so a non-zero exit means a
-        # NEW advisory landed against a pinned dependency -> block the merge.
-        run: pip-audit -r security/sbom/requirements.lock
+        # Audit the committed Linux/3.12 lock (declared [dev,dashboard] closure),
+        # not the ephemeral CI environment. --disable-pip reads the fully-hashed
+        # lock directly with no resolver, so it is platform-independent and
+        # deterministic: a non-zero exit means a NEW advisory landed against a
+        # pinned dependency -> block the merge.
+        run: pip-audit --disable-pip -r security/sbom/requirements.lock
       - name: Generate SBOM (CycloneDX)
         # Regenerate from the same lock for a reproducible SBOM. pip-audit exits
         # non-zero when advisories exist; the SBOM is still written and the gate
         # above already failed the build, so tolerate it here. npm half is
         # derived offline from the lockfile.
         run: |
-          pip-audit -r security/sbom/requirements.lock \
+          pip-audit --disable-pip -r security/sbom/requirements.lock \
             -f cyclonedx-json -o security/sbom/python.cdx.json \
             --progress-spinner off || true
           python scripts/generate_sbom.py \
@@ -137,10 +139,50 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------- Stage 4
+  # ------------------------------------------------ Stage 3b (parallel to tests)
+  sbom-sync:
+    name: SBOM & locks in sync with uv.lock
+    runs-on: ubuntu-latest
+    needs: static-analysis
+    permissions:
+      contents: read   # read-only: a drift gate, never auto-commits
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install hash-pinned dev toolchain
+        run: pip install --require-hashes -r security/sbom/requirements-dev.lock
+      - name: Derived pip locks match uv.lock (source of truth)
+        run: python scripts/check_locks.py
+      - name: SBOM is regenerated from the committed lock
+        # Rebuild the SBOM from the committed lock using the committed timestamp;
+        # fail closed if the result differs (i.e. a lock changed but the SBOM was
+        # not regenerated). Read-only — the maintainer regenerates, CI never
+        # commits. python.cdx.json is intentionally not diffed (pip-audit stamps
+        # it with a random serial number); the merged SBOM is deterministic.
+        run: |
+          ts="$(jq -r .metadata.timestamp security/sbom/sbom.cdx.json)"
+          cp security/sbom/sbom.cdx.json /tmp/sbom.before.json
+          pip-audit --disable-pip -r security/sbom/requirements.lock \
+            -f cyclonedx-json -o security/sbom/python.cdx.json --progress-spinner off || true
+          python scripts/generate_sbom.py --timestamp "$ts"
+          if ! diff -q <(jq -S '.components' /tmp/sbom.before.json) \
+                       <(jq -S '.components' security/sbom/sbom.cdx.json) >/dev/null; then
+            echo "::error::sbom.cdx.json is stale — regenerate (see security/sbom/README.md)"
+            exit 1
+          fi
+          echo "SBOM components are in sync with the committed lock."
+
   build:
     name: Build package
     runs-on: ubuntu-latest
     needs: tests
+    permissions:
+      contents: read
+      id-token: write       # OIDC for Sigstore keyless signing
+      attestations: write   # write the signed SBOM attestation
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -153,6 +195,16 @@ jobs:
         with:
           name: dist
           path: dist/
+      - name: Attest SBOM for the built artifacts (Sigstore, main only)
+        # Bind the CycloneDX SBOM to the built distributions with a signed,
+        # keyless (OIDC) attestation in the GitHub attestations store. Only on
+        # push to main — PRs (incl. forks) lack the id-token to sign, and we
+        # only attest artifacts that actually land.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: "dist/*"
+          sbom-path: "security/sbom/sbom.cdx.json"
 
   # ---------------------------------------------------------------- Stage 5
   deploy:

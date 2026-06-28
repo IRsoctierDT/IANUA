@@ -13,16 +13,19 @@
 
 This directory holds a [CycloneDX](https://cyclonedx.org/) SBOM covering the
 repository's **two package ecosystems** — Python and npm. The merged document
-(`sbom.cdx.json`) inventories **259 components** (116 Python + 143 npm) and, at
+(`sbom.cdx.json`) inventories **281 components** (138 Python + 143 npm) and, at
 generation time, **0 known vulnerabilities** per the public PyPI/OSV advisory
 databases.
 
-The canonical SBOM is generated from a **pinned lockfile of the declared
-dependency closure** ([`requirements.lock`](./requirements.lock) —
-`pip install -e ".[dev,dashboard]"`: Streamlit, qdrant-client,
-sentence-transformers and their transitive stack). Generation is **byte-for-byte
-reproducible** for a fixed timestamp. All 143 npm components are `dev` build
-tooling (none ship at runtime); declared Python *runtime* dependencies are empty.
+The canonical SBOM is generated from a **hash-pinned lockfile resolved for the
+Linux deployment target on Python 3.12** ([`requirements.lock`](./requirements.lock),
+the Linux/3.12 subset of [`uv.lock`](../../uv.lock)). It therefore includes the
+NVIDIA CUDA runtime stack that `torch` pulls in on Linux (`nvidia-*`, `triton`) —
+real, shipped, security-relevant components a macOS resolution would omit. The
+SBOM is generated with `pip-audit --disable-pip`, which reads the pinned file
+directly (no resolver), so generation is **deterministic and platform-independent**
+and byte-for-byte reproducible for a fixed timestamp. All 143 npm components are
+`dev` build tooling (none ship at runtime); declared Python *runtime* deps are empty.
 
 > A `pip-audit` run against the maintainer's **shared** pyenv environment
 > reported 168 vulnerabilities — every one traced to stale/ambient packages
@@ -39,11 +42,11 @@ tooling (none ship at runtime); declared Python *runtime* dependencies are empty
 | File | Format | Scope | Source |
 |---|---|---|---|
 | `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (144 pkgs) | `uv lock` from `pyproject.toml` |
-| `requirements.lock` | pip requirements | 117 pinned Python deps (full `[dev,dashboard]`) | `pip freeze` (clean closure) |
+| `requirements.lock` | pip requirements (hashed) | 138 Linux/3.12 deps (full `[dev,dashboard]`, incl. CUDA) | `uv pip compile --python-platform linux` |
 | `requirements-dev.lock` | pip requirements (hashed) | 52 SHA-256 hash-pinned `[dev]` tools | `uv export --extra dev` (from `uv.lock`) |
-| `python.cdx.json` | CycloneDX 1.4 | 116 Python components | `pip-audit -r requirements.lock` |
+| `python.cdx.json` | CycloneDX 1.4 | 138 Python components | `pip-audit --disable-pip -r requirements.lock` |
 | `npm.cdx.json` | CycloneDX 1.5 | 143 npm components | `package-lock.json` (offline) |
-| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 259 components | both, via `generate_sbom.py` |
+| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 281 components | both, via `generate_sbom.py` |
 
 **`uv.lock` (repo root) is the dependency source of truth.** It is the universal,
 hashed resolution of `pyproject.toml`; CI fails closed via `uv lock --check` if
@@ -84,13 +87,18 @@ network (to enrich with advisories).
 Run from the repository root, using the project interpreter (pyenv 3.12.4):
 
 ```bash
-# 0. (Only if dependencies changed) refresh the lock from a CLEAN venv:
-python -m venv /tmp/sbomenv && /tmp/sbomenv/bin/pip install -e ".[dev,dashboard]"
-/tmp/sbomenv/bin/pip freeze | grep -v '^-e ' | sort -f >> security/sbom/requirements.lock
-#   ...then restore the header comment block at the top of the file.
+# 0. (Only if dependencies changed) refresh uv.lock and the exported pip locks:
+uv lock                                                    # source of truth
+uv pip compile pyproject.toml --all-extras --generate-hashes \
+  --python-platform x86_64-unknown-linux-gnu --python-version 3.12 \
+  --no-header --no-annotate -o security/sbom/requirements.lock   # re-add header
+uv export --extra dev --no-emit-project --no-annotate --no-header \
+  -o security/sbom/requirements-dev.lock                  # re-add header
 
-# 1. Audit + emit the Python SBOM from the pinned lock (advisory lookup):
-python -m pip_audit -r security/sbom/requirements.lock \
+# 1. Emit the Python SBOM from the pinned lock. --disable-pip reads the hashed
+#    file directly (no resolver), so this is platform-independent — the Linux
+#    CUDA packages don't need to be installable on the machine generating it:
+python -m pip_audit --disable-pip -r security/sbom/requirements.lock \
   -f cyclonedx-json -o security/sbom/python.cdx.json --progress-spinner off
 
 # 2. Build the npm SBOM and merge (offline, deterministic):
@@ -111,37 +119,49 @@ python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 - **Network egress:** Step 1 sends installed package names/versions to the
   public advisory service (PyPI/OSV). No secrets or source are transmitted. The
   npm step has no network access.
-- **Lock drift:** `requirements.lock` is a platform-resolved snapshot, not yet
-  exported from `uv.lock`. `uv lock --check` keeps `uv.lock` ↔ `pyproject.toml`
-  honest, but the pip snapshot must be refreshed when the closure changes (see
-  Future Enhancements for full migration to a `uv export`).
-- **Python-version specific:** the lock is resolved on **Python 3.12** (the
-  `[dashboard]` stack pins 3.12-only wheels, e.g. `numpy>=2.5`). `pip-audit -r`
-  dry-run-resolves it, so the SBOM/SCA gate runs on 3.12 (see the Security job in
-  `ci.yml`); it will not resolve on 3.11.
+- **Target platform:** `requirements.lock` and the SBOM represent the **Linux /
+  Python 3.12** deployment target (its package+version set is the Linux/3.12
+  subset of `uv.lock`). A macOS resolution would drop the ~22 CUDA components; a
+  Windows one would swap them for `pywin32`/`colorama`. Regenerate for the chosen
+  target if the deployment platform changes.
+- **Generation uses `--disable-pip`:** the SBOM/SCA reads the fully-hashed lock
+  directly rather than resolving it, so it never tries to install the Linux-only
+  CUDA wheels — the audit runs anywhere (including macOS) and is deterministic.
+  This *requires* the lock to stay fully pinned **and** hashed; an unhashed entry
+  makes `pip-audit --disable-pip` fail closed.
 
 ## Cost Considerations
 
 Zero added cost: no new third-party dependency was introduced. `pip-audit` was
 already a required SCA gate; the npm path uses only the standard library.
 
+## SBOM attestation & drift prevention
+
+- **Provenance:** on push to `main` the `build` job binds this SBOM to the built
+  distributions with a **signed, keyless (Sigstore/OIDC) attestation**
+  (`actions/attest-sbom`), recorded in the GitHub attestations store. Verify with
+  `gh attestation verify <artifact> --repo <owner>/<repo>`.
+- **Anti-drift:** the `sbom-sync` CI job fails closed if the derived pip locks
+  disagree with `uv.lock` (`scripts/check_locks.py`) or if `sbom.cdx.json` is not
+  regenerated from the committed lock. So a Dependabot bump that updates `uv.lock`
+  without refreshing the locks/SBOM is **blocked**, not silently merged.
+
+> This is a **read-only gate**, deliberately chosen over an auto-committing,
+> write-scoped workflow (which would need `pull_request_target` / elevated tokens
+> on dependency PRs). The maintainer regenerates locally (commands above); CI
+> verifies. Auto-commit can be layered on later if the convenience is worth the
+> elevated trust surface.
+
 ## Future Enhancements
 
-1. **Migrate `requirements.lock` + the SBOM to a `uv export`.** Now that `uv.lock`
-   is the source of truth, the full closure can be exported hashed
-   (`uv export --all-extras`, verified 0 advisories). The open decision is the
-   **target platform**: a universal/markered export makes the pip-audit-generated
-   SBOM platform-dependent (CUDA/Windows packages appear or not by OS), so this
-   needs a maintainer call on which platform the SBOM should represent (e.g.
-   `uv export --python-platform linux` for an as-deployed Linux SBOM).
-2. Attest the SBOM (in-toto / Sigstore) for end-to-end provenance.
+1. **Auto-commit the regenerated SBOM** on Dependabot PRs (if the write-scoped
+   workflow trust surface is accepted) — turning the drift *gate* into drift
+   *repair*.
 
-> **Done:** `uv.lock` adopted as the dependency source of truth with a
-> `uv lock --check` CI gate; `requirements-dev.lock` exported from it and
-> installed under `--require-hashes`; Dependabot configured (`uv` + `npm` +
-> `github-actions`) so dependency-update PRs run the full supply-chain gate.
-
-> **Done in this change:** lockfile pinning (`requirements.lock`),
-> byte-reproducible generation, a CI gate that fails on newly introduced
-> advisories, and **hash-pinning of the `[dev]` toolchain**
-> (`requirements-dev.lock`, installed under `--require-hashes` in CI).
+> **Done:** `uv.lock` as the dependency source of truth (`uv lock --check` gate);
+> `requirements.lock` hash-pinned for the **Linux/3.12 deployment target** (SBOM
+> includes the CUDA stack); SBOM generated with `pip-audit --disable-pip`
+> (platform-independent, byte-reproducible); a CI gate that fails on newly
+> introduced advisories; **hash-pinned `[dev]` toolchain** under
+> `--require-hashes`; Dependabot (`uv` + `npm` + `github-actions`); **signed
+> Sigstore SBOM attestation**; and a **drift gate** keeping locks + SBOM in sync.

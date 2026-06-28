@@ -25,7 +25,7 @@ are NOT declared dependencies** of this project — chiefly an LLM/agent/RAG sta
 | Scope | Packages | Known vulns |
 |---|---|---|
 | Shared pyenv 3.12.4 (as found) | 277 | **168** |
-| **Declared closure, pinned lock** (`requirements.lock`) | **~117** | **0** |
+| **Declared closure, hash-pinned lock** (`requirements.lock`, Linux/3.12) | **138** | **0** |
 
 > **Method:** the table is reproduced facts, not inference — both rows were
 > produced by `pip-audit`. The canonical `sbom.cdx.json` is generated from the
