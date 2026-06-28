@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SENTINEL · Activity &amp; Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0a0d11;
+    --border:  rgba(255,255,255,.06);
+    --border2: rgba(255,255,255,.08);
+    --text-0:  #e6e9ee;
+    --text-1:  #c4cad3;
+    --text-2:  #aeb6c2;
+    --text-3:  #8b94a3;
+    --text-4:  #5b636f;
+    --green:   oklch(0.74 0.12 150);
+    --amber:   oklch(0.80 0.12 80);
+    --blue:    oklch(0.70 0.13 235);
+    --sans:    'IBM Plex Sans', sans-serif;
+    --mono:    'IBM Plex Mono', monospace;
+  }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text-0);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 32px;
+    min-width: 800px;
+  }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  @keyframes slideIn {
+    from { opacity:0; transform:translateY(6px); }
+    to   { opacity:1; transform:translateY(0); }
+  }
+
+  /* ── shell ── */
+  .shell {
+    background: var(--bg);
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: 12px;
+    overflow: hidden;
+    max-width: 1040px;
+    margin: 0 auto;
+  }
+
+  /* ── header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 22px 26px;
+    border-bottom: 1px solid var(--border);
+    gap: 16px;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .title {
+    font: 600 19px/1 var(--sans);
+    white-space: nowrap;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 6px;
+  }
+
+  .tab {
+    font: 500 12px/1 var(--sans);
+    padding: 0 8px 5px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    color: var(--text-4);
+    transition: color .2s ease, border-color .2s ease;
+    user-select: none;
+  }
+  .tab.active {
+    color: var(--text-0);
+    border-bottom-color: var(--blue);
+  }
+  .tab:hover:not(.active) { color: var(--text-2); }
+
+  .pending-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 13px;
+    border-radius: 999px;
+    background: oklch(0.80 0.12 80 / .12);
+    border: 1px solid oklch(0.80 0.12 80 / .3);
+    white-space: nowrap;
+  }
+  .pending-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--amber);
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  .pending-label {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: .1em;
+    color: oklch(0.85 0.10 80);
+  }
+
+  /* ── timeline body ── */
+  .body { padding: 24px 26px; }
+
+  /* timeline row */
+  .t-row {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    animation: slideIn .3s ease both;
+  }
+
+  .t-time {
+    width: 46px;
+    flex-shrink: 0;
+    text-align: right;
+    font: 500 11px/1.5 var(--mono);
+    color: var(--text-4);
+    padding-top: 3px;
+  }
+
+  /* connector column */
+  .t-spine {
+    position: relative;
+    width: 14px;
+    flex-shrink: 0;
+    align-self: stretch;
+    display: flex;
+    justify-content: center;
+  }
+  .t-line {
+    position: absolute;
+    top: 8px; bottom: -12px;
+    width: 2px;
+    background: rgba(255,255,255,.07);
+  }
+  .t-row:last-child .t-line { display: none; }
+
+  .t-dot {
+    position: relative;
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    margin-top: 3px;
+    box-shadow: 0 0 0 4px var(--bg);
+    flex-shrink: 0;
+  }
+
+  /* card */
+  .t-card-wrap {
+    flex: 1;
+    padding-bottom: 20px;
+  }
+
+  .t-card {
+    border: 1px solid var(--border2);
+    border-radius: 9px;
+    padding: 14px 15px;
+    background: rgba(255,255,255,.02);
+    cursor: pointer;
+    transition: all .25s cubic-bezier(.2,.6,.2,1);
+  }
+  .t-card:hover {
+    background: rgba(255,255,255,.06);
+    backdrop-filter: blur(8px);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px rgba(0,0,0,.26);
+  }
+
+  .card-top {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 8px;
+  }
+
+  .card-avatar {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid var(--border2);
+    display: flex; align-items: center; justify-content: center;
+    font: 600 9px/1 var(--mono);
+    color: var(--text-2);
+    flex-shrink: 0;
+  }
+
+  .card-agent {
+    font: 600 12px/1 var(--sans);
+    color: var(--text-0);
+  }
+
+  .card-tag {
+    font: 500 9px/1 var(--mono);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 5px;
+    border: 1px solid var(--border2);
+  }
+
+  .card-action {
+    font: 400 13px/1.5 var(--sans);
+    color: var(--text-1);
+  }
+
+  /* approval buttons */
+  .card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 13px;
+  }
+
+  .btn-approve {
+    padding: 7px 16px;
+    border-radius: 7px;
+    font: 600 11px/1 var(--sans);
+    background: var(--blue);
+    color: #06121c;
+    border: none;
+    cursor: pointer;
+    transition: opacity .2s ease;
+  }
+  .btn-approve:hover { opacity: .85; }
+
+  .btn-ghost {
+    padding: 7px 16px;
+    border-radius: 7px;
+    font: 500 11px/1 var(--sans);
+    background: rgba(255,255,255,.04);
+    border: 1px solid var(--border2);
+    color: var(--text-1);
+    cursor: pointer;
+    transition: all .2s ease;
+  }
+  .btn-ghost:hover {
+    background: rgba(255,255,255,.1);
+    border-color: rgba(255,255,255,.22);
+    color: #fff;
+  }
+
+  /* dismissed state */
+  .t-card.dismissed {
+    opacity: .4;
+    pointer-events: none;
+  }
+  .t-card.approved {
+    border-color: oklch(0.74 0.12 150 / .4);
+    background: oklch(0.74 0.12 150 / .04);
+  }
+
+  /* audit view */
+  .audit-table {
+    width: 100%;
+    border-collapse: collapse;
+    font: 500 12px/1.5 var(--mono);
+  }
+  .audit-table th {
+    text-align: left;
+    font: 600 10px/1 var(--mono);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    padding: 0 12px 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .audit-table td {
+    padding: 11px 12px 11px 0;
+    border-bottom: 1px solid rgba(255,255,255,.04);
+    color: var(--text-1);
+    vertical-align: top;
+  }
+  .audit-table tr:last-child td { border-bottom: none; }
+  .audit-hash {
+    font-size: 11px;
+    color: var(--text-4);
+    letter-spacing: .04em;
+  }
+  .audit-sealed {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 500 10px/1 var(--mono);
+    color: oklch(0.74 0.12 150);
+  }
+  .audit-sealed::before {
+    content: '';
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: oklch(0.74 0.12 150);
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="title">Activity</div>
+      <div class="tabs">
+        <div class="tab active" id="tab-stream" onclick="switchTab('stream')">Stream</div>
+        <div class="tab"       id="tab-audit"  onclick="switchTab('audit')">Audit</div>
+      </div>
+    </div>
+    <div class="pending-badge">
+      <div class="pending-dot"></div>
+      <span class="pending-label" id="pending-label">2 PENDING APPROVALS</span>
+    </div>
+  </div>
+
+  <!-- body -->
+  <div class="body">
+    <div id="view-stream"></div>
+    <div id="view-audit"  style="display:none"></div>
+  </div>
+
+</div>
+
+<script>
+const AMBER = 'oklch(0.80 0.12 80)';
+const GREEN = 'oklch(0.74 0.12 150)';
+const BLUE  = 'oklch(0.70 0.13 235)';
+const GREY  = '#8b94a3';
+
+const KINDS = {
+  approval: { dot: AMBER, cardBorder: 'oklch(0.80 0.12 80 / .35)', tag: 'approval', tagColor: AMBER, approval: true  },
+  audit:    { dot: BLUE,  cardBorder: 'oklch(0.70 0.13 235 / .35)', tag: 'policy',  tagColor: BLUE,  approval: false },
+  review:   { dot: AMBER, cardBorder: 'rgba(255,255,255,.08)',       tag: 'review',  tagColor: AMBER, approval: false },
+  info:     { dot: GREEN, cardBorder: 'rgba(255,255,255,.08)',       tag: 'info',    tagColor: GREY,  approval: false },
+};
+
+const EVENTS = [
+  { t: '2m',  agent: 'SOC Analyst',            ag: 'SA', action: 'Escalated ALERT-4821 — suspicious PowerShell on host WIN-03 — to Incident Report.', kind: 'approval' },
+  { t: '4m',  agent: 'Vulnerability Assessment',ag: 'VA', action: 'Flagged CVE-2026-1183 · CVSS 9.1 on prod-cluster ingress.',                        kind: 'approval' },
+  { t: '7m',  agent: 'Threat Intel',            ag: 'TI', action: 'Enriched 12 IOCs from OTX + internal feeds; 3 matched known APT infra.',            kind: 'info'     },
+  { t: '9m',  agent: 'Policy Gate',             ag: 'PG', action: 'Blocked outbound tool call: external-email — denied by charter §6.',                kind: 'audit'    },
+  { t: '14m', agent: 'MITRE Mapper',            ag: 'MM', action: 'Tagged technique T1071.001 — Application Layer Protocol: Web.',                     kind: 'info'     },
+  { t: '22m', agent: 'Legal / Compliance',      ag: 'LC', action: 'Flagged liability clause in vendor DPA for human review.',                          kind: 'review'   },
+];
+
+/* pending count */
+let pendingCount = EVENTS.filter(e => KINDS[e.kind].approval).length;
+function refreshPending() {
+  const el = document.getElementById('pending-label');
+  el.textContent = pendingCount === 0
+    ? 'ALL APPROVALS RESOLVED'
+    : `${pendingCount} PENDING APPROVAL${pendingCount > 1 ? 'S' : ''}`;
+}
+
+/* build stream */
+const streamWrap = document.getElementById('view-stream');
+
+EVENTS.forEach((e, i) => {
+  const k = KINDS[e.kind];
+
+  const row = document.createElement('div');
+  row.className = 't-row';
+  row.style.animationDelay = `${i * 60}ms`;
+
+  const approvalHTML = k.approval ? `
+    <div class="card-actions">
+      <button class="btn-approve" onclick="onApprove(this)">Approve</button>
+      <button class="btn-ghost"   onclick="onDismiss(this)">Dismiss</button>
+      <button class="btn-ghost"   onclick="onInspect(this, '${e.agent}')">Inspect</button>
+    </div>` : '';
+
+  row.innerHTML = `
+    <div class="t-time">${e.t} ago</div>
+    <div class="t-spine">
+      <div class="t-line"></div>
+      <div class="t-dot" style="background:${k.dot}"></div>
+    </div>
+    <div class="t-card-wrap">
+      <div class="t-card" style="border-color:${k.cardBorder}">
+        <div class="card-top">
+          <div class="card-avatar">${e.ag}</div>
+          <span class="card-agent">${e.agent}</span>
+          <span class="card-tag" style="color:${k.tagColor};border-color:${k.cardBorder}">${k.tag}</span>
+        </div>
+        <div class="card-action">${e.action}</div>
+        ${approvalHTML}
+      </div>
+    </div>
+  `;
+
+  streamWrap.appendChild(row);
+});
+
+function onApprove(btn) {
+  const card = btn.closest('.t-card');
+  card.classList.add('approved');
+  card.querySelector('.card-actions').innerHTML =
+    '<span style="font:500 11px/1 var(--mono);color:var(--green)">✓ Approved</span>';
+  pendingCount = Math.max(0, pendingCount - 1);
+  refreshPending();
+}
+
+function onDismiss(btn) {
+  const card = btn.closest('.t-card');
+  card.classList.add('dismissed');
+  pendingCount = Math.max(0, pendingCount - 1);
+  refreshPending();
+}
+
+function onInspect(btn, agentName) {
+  alert(`Inspect: ${agentName}\n\nFull event log and context would open here.`);
+}
+
+/* ── audit tab ── */
+const auditWrap = document.getElementById('view-audit');
+
+const AUDIT_LOG = [
+  { seq: '0041', ts: '14:22:07', agent: 'Policy Gate',             action: 'DENY outbound-email',                 hash: 'a3f9…c12e', sealed: true  },
+  { seq: '0040', ts: '14:20:01', agent: 'SOC Analyst',             action: 'ESCALATE ALERT-4821',                 hash: 'b72d…8af1', sealed: true  },
+  { seq: '0039', ts: '14:18:44', agent: 'Vulnerability Assessment', action: 'FLAG CVE-2026-1183',                 hash: 'c981…3b77', sealed: true  },
+  { seq: '0038', ts: '14:11:30', agent: 'Threat Intel',            action: 'ENRICH IOC batch #14',                hash: 'd034…ee52', sealed: true  },
+  { seq: '0037', ts: '14:05:12', agent: 'MITRE Mapper',            action: 'TAG T1071.001',                       hash: 'e119…9c3d', sealed: true  },
+  { seq: '0036', ts: '13:58:02', agent: 'Legal / Compliance',      action: 'FLAG vendor-dpa clause §4.2',         hash: 'f2a8…6b90', sealed: true  },
+  { seq: '0035', ts: '13:50:49', agent: 'Orchestrator',            action: 'ROUTE log batch to SOC Analyst',      hash: '010c…2f4a', sealed: true  },
+  { seq: '0034', ts: '13:44:17', agent: 'Knowledge Base',          action: 'INDEX 240 docs (incremental pass 5)', hash: '11bd…7de6', sealed: true  },
+];
+
+const table = document.createElement('table');
+table.className = 'audit-table';
+table.innerHTML = `
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Time (UTC)</th>
+      <th>Agent</th>
+      <th>Action</th>
+      <th>Hash</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody id="audit-body"></tbody>
+`;
+auditWrap.appendChild(table);
+
+const auditBody = table.querySelector('#audit-body');
+AUDIT_LOG.forEach(r => {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td class="audit-hash">${r.seq}</td>
+    <td>${r.ts}</td>
+    <td>${r.agent}</td>
+    <td>${r.action}</td>
+    <td class="audit-hash">${r.hash}</td>
+    <td><span class="audit-sealed">sealed</span></td>
+  `;
+  auditBody.appendChild(tr);
+});
+
+/* ── tab switch ── */
+function switchTab(name) {
+  document.getElementById('tab-stream').classList.toggle('active', name === 'stream');
+  document.getElementById('tab-audit').classList.toggle('active', name === 'audit');
+  document.getElementById('view-stream').style.display = name === 'stream' ? '' : 'none';
+  document.getElementById('view-audit').style.display  = name === 'audit'  ? '' : 'none';
+}
+</script>
+</body>
+</html>
