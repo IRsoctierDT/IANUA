@@ -1,0 +1,51 @@
+# pages.yml — GitHub Pages deployment (AGENTS.md §8)
+# Deploys docs/ to GitHub Pages on every push to main.
+# Requires Pages source set to "GitHub Actions" in repo Settings → Pages.
+#
+# Security posture (AGENTS.md §3):
+#   - Minimal permissions: contents:read + pages:write + id-token:write only.
+#   - No secrets needed — GITHUB_TOKEN is auto-provisioned.
+#   - Deploy job runs only on main; skipped for PRs (no external network from PRs).
+#   - Single concurrency group prevents overlapping deploys.
+
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
