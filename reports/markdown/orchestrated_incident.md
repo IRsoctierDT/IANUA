@@ -1,7 +1,7 @@
 # Incident Report
 
 ## Generated
-2026-06-16T00:27:54.881984+00:00
+2026-06-17T22:51:20.584941+00:00
 
 ## Summary
 Detected probable ids alert activity.
@@ -27,13 +27,25 @@ ids alert
 - Correlate with destination asset exposure.
 - Inspect packet capture if available.
 
+## Evidence
+
+| Field | Value | Significance |
+|-------|-------|--------------|
+| event_signal | suricata / alert keyword | IDS signature triggered — requires rule and packet review. |
+
+## Severity Score
+
+**45 / 100**
+
 ## Indicators
 - None detected
 
 ## Recommended Actions
 - Preserve the original log evidence.
 - Correlate with adjacent timestamps.
+- Review IDS signature metadata and packet capture.
+- Correlate with destination asset exposure.
 
 ## Assumptions
-- Analysis is based only on the supplied log text.
+- Analysis is based only on the supplied log input.
 - No external enrichment, threat intelligence, or packet inspection was performed.
