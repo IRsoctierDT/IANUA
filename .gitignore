@@ -26,3 +26,6 @@ htmlcov/
 *.pem
 data/
 !data/.gitkeep
+
+# OS junk
+.DS_Store
