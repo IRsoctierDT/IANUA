@@ -201,6 +201,11 @@ jobs:
         # push to main — PRs (incl. forks) lack the id-token to sign, and we
         # only attest artifacts that actually land.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # continue-on-error: GitHub Attestations API rejects private user-owned
+        # repos with "Feature not available for user-owned private repositories".
+        # This keeps the build green while the step is non-functional; remove
+        # this flag if the repo is made public or transferred to a GHAS org.
+        continue-on-error: true
         uses: actions/attest-sbom@v4
         with:
           subject-path: "dist/*"
