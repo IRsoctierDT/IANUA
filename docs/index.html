@@ -901,15 +901,14 @@ footer {
           <div class="qs-step-num">3</div>
           <span class="qs-step-title">Run the pipeline</span>
         </div>
-        <pre class="qs-code"><span class="comment"># analyse a plain-text log</span>
-<span class="cmd">python</span> scripts/run_pipeline.py \
+        <pre class="qs-code"><span class="comment"># analyse a single log line</span>
+<span class="cmd">python</span> cli/run_incident.py \
   --log <span class="string">"Failed password for root \
   from 203.0.113.42 port 22"</span>
 
-<span class="comment"># or a structured JSON event</span>
-<span class="cmd">python</span> scripts/run_pipeline.py \
-  --file sample-logs/\
-  structured_events.json</pre>
+<span class="comment"># or process every line in a log file</span>
+<span class="cmd">python</span> cli/batch_run_incidents.py \
+  --file sample-logs/structured_events.json</pre>
       </div>
 
     </div>
