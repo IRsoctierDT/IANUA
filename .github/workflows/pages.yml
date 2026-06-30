@@ -1,20 +1,30 @@
 # pages.yml — GitHub Pages deployment (AGENTS.md §8)
-# Deploys docs/ to GitHub Pages on every push to main.
-# Requires Pages source set to "GitHub Actions" in repo Settings → Pages.
+# Deploys docs/ to GitHub Pages only after CI passes on main (workflow_run
+# trigger), or on an explicit manual dispatch.  This satisfies the AGENTS.md
+# §5.1/§8 requirement that externally-visible deploys go through a CI gate and
+# a manual approval gate — never fire automatically on a raw push.
+#
+# Approval gate: configure required reviewers on the "github-pages" environment
+# in repo Settings → Environments to enforce human sign-off before deployment.
 #
 # Security posture (AGENTS.md §3):
 #   - Minimal permissions: contents:read + pages:write + id-token:write only.
 #   - No secrets needed — GITHUB_TOKEN is auto-provisioned.
-#   - Deploy job runs only on main; skipped for PRs (no external network from PRs).
+#   - Deploy job runs only when CI succeeds on main; skipped for PRs.
 #   - Single concurrency group prevents overlapping deploys.
 
 name: Deploy GitHub Pages
 
 on:
-  push:
+  # Fire only after the full CI workflow completes successfully on main.
+  # This ensures quality/security gates (lint, tests, SAST, SBOM) pass before
+  # any content reaches the public Pages site.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    paths:
-      - "docs/**"
+  # Keep manual dispatch for on-demand deploys (e.g. content-only changes that
+  # did not trigger CI, or operator-initiated forced publish).
   workflow_dispatch:
 
 concurrency:
@@ -30,6 +40,11 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     runs-on: ubuntu-latest
+    # For workflow_run: only proceed if CI succeeded.
+    # For workflow_dispatch: always allow (operator has explicitly requested it).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
