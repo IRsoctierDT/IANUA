@@ -1,37 +1,29 @@
 # pages.yml — GitHub Pages deployment (AGENTS.md §8)
 # Deploys docs/ to GitHub Pages only after CI passes on main (workflow_run
-# trigger), or on an explicit manual dispatch.  This satisfies the AGENTS.md
-# §5.1/§8 requirement that externally-visible deploys go through a CI gate and
-# a manual approval gate — never fire automatically on a raw push.
+# trigger) or on an explicit manual dispatch. Never fires on a raw push, per
+# AGENTS.md §5.1/§8 (CI gate + manual approval gate for external deploys).
 #
-# Approval gate: configure required reviewers on the "github-pages" environment
-# in repo Settings → Environments to enforce human sign-off before deployment.
-# Deploys docs/ to GitHub Pages on every push to main.
-# Requires Pages source set to "GitHub Actions" in repo Settings → Pages.
+# Approval gate: set required reviewers on the "github-pages" environment in
+# repo Settings → Environments to enforce human sign-off before deployment.
+#
+# Prerequisite (one-time): repo Settings → Pages → Source → "GitHub Actions".
 #
 # Security posture (AGENTS.md §3):
 #   - Minimal permissions: contents:read + pages:write + id-token:write only.
 #   - No secrets needed — GITHUB_TOKEN is auto-provisioned.
-#   - Deploy job runs only when CI succeeds on main; skipped for PRs.
-#   - Deploy job runs only on main; skipped for PRs (no external network from PRs).
 #   - Single concurrency group prevents overlapping deploys.
 
 name: Deploy GitHub Pages
 
 on:
-  # Fire only after the full CI workflow completes successfully on main.
-  # This ensures quality/security gates (lint, tests, SAST, SBOM) pass before
-  # any content reaches the public Pages site.
+  # Fire only after the full CI workflow completes successfully on main, so the
+  # quality/security gates (lint, tests, SAST, SBOM) pass before any content
+  # reaches the public Pages site.
   workflow_run:
     workflows: ["CI"]
     types: [completed]
     branches: [main]
-  # Keep manual dispatch for on-demand deploys (e.g. content-only changes that
-  # did not trigger CI, or operator-initiated forced publish).
-  push:
-    branches: [main]
-    paths:
-      - "docs/**"
+  # On-demand deploy (content-only changes, or operator-initiated publish).
   workflow_dispatch:
 
 concurrency:
@@ -47,8 +39,8 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     runs-on: ubuntu-latest
-    # For workflow_run: only proceed if CI succeeded.
-    # For workflow_dispatch: always allow (operator has explicitly requested it).
+    # workflow_run: only proceed if CI succeeded.
+    # workflow_dispatch: always allow (operator explicitly requested it).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
@@ -61,26 +53,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure Pages
-        # Prerequisite (one-time manual step): enable GitHub Pages in repo
-        # Settings → Pages → Source → "GitHub Actions" before this workflow
-        # can succeed.  The enablement: true option requires an admin-scoped
-        # token beyond what GITHUB_TOKEN provides, so we rely on the default
-        # GITHUB_TOKEN and require the Settings step to be done by an admin.
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
-        uses: actions/checkout@v7
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v6
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/
 
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-        uses: actions/deploy-pages@v5
