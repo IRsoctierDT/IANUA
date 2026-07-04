@@ -200,6 +200,17 @@ jobs:
         # keyless (OIDC) attestation in the GitHub attestations store. Only on
         # push to main — PRs (incl. forks) lack the id-token to sign, and we
         # only attest artifacts that actually land.
+        #
+        # Skip condition: the Attestations API returns "Feature not available
+        # for user-owned private repositories" for exactly this repo class.
+        # We skip (not continue-on-error) so that permission failures, wrong
+        # paths, or API errors still break the build in public repos and GHAS
+        # orgs where attestation is actually supported.
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          !(github.event.repository.private == true &&
+            github.event.repository.owner.type == 'User')
         # continue-on-error: GitHub Attestations API rejects private user-owned
         # repos with "Feature not available for user-owned private repositories".
         # This keeps the build green while the step is non-functional; remove
