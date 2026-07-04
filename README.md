@@ -68,6 +68,7 @@ Humans approve destructive, external, legal, financial, or security-sensitive ac
 | [`DESIGN.md`](./DESIGN.md) | Architecture, trust boundaries, decision log |
 | [`SECURITY.md`](./SECURITY.md) | Vulnerability reporting & security policy |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Human + agent contribution workflow |
+| [`docs/HARDENING_ROADMAP.md`](./docs/HARDENING_ROADMAP.md) | Planned defense-in-depth hardening workstreams |
 
 ---
 
