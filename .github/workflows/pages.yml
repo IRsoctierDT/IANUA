@@ -6,11 +6,14 @@
 #
 # Approval gate: configure required reviewers on the "github-pages" environment
 # in repo Settings → Environments to enforce human sign-off before deployment.
+# Deploys docs/ to GitHub Pages on every push to main.
+# Requires Pages source set to "GitHub Actions" in repo Settings → Pages.
 #
 # Security posture (AGENTS.md §3):
 #   - Minimal permissions: contents:read + pages:write + id-token:write only.
 #   - No secrets needed — GITHUB_TOKEN is auto-provisioned.
 #   - Deploy job runs only when CI succeeds on main; skipped for PRs.
+#   - Deploy job runs only on main; skipped for PRs (no external network from PRs).
 #   - Single concurrency group prevents overlapping deploys.
 
 name: Deploy GitHub Pages
@@ -25,6 +28,10 @@ on:
     branches: [main]
   # Keep manual dispatch for on-demand deploys (e.g. content-only changes that
   # did not trigger CI, or operator-initiated forced publish).
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
   workflow_dispatch:
 
 concurrency:
@@ -63,9 +70,17 @@ jobs:
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
+        uses: actions/checkout@v7
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/
 
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
