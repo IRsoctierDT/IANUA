@@ -8,6 +8,10 @@ raise :class:`ToolBlockedError`.
 
 Both the MCP tool surface (``mcp/server.py``) and in-process agent tool adapters
 route through :func:`enforce`, so enforcement is implemented and tested once.
+
+Staged rollout: pass ``report_only=True`` to record what *would* be blocked without
+raising — for observing a new policy in production before turning on enforcement.
+Report mode still audits every decision; it never downgrades a real ``allow``.
 """
 
 from __future__ import annotations
@@ -33,23 +37,28 @@ def enforce(
     engine: PolicyEngine,
     audit: AuditLogger | None = None,
     actor: str = "tool",
+    report_only: bool = False,
 ) -> PolicyDecision:
     """Evaluate and audit a capability invocation; raise if it is not allowed.
 
     Returns the :class:`PolicyDecision` on ``allow``. Records the decision (including
     blocked attempts) when an ``audit`` logger is supplied. Fails closed: any
     non-``allow`` decision raises :class:`ToolBlockedError`.
+
+    When ``report_only`` is ``True``, a non-``allow`` decision is recorded (with a
+    ``report-only`` marker in ``actor``) but does **not** raise, so a new policy can
+    be observed before it is enforced. Use only during a deliberate staged rollout.
     """
     decision = engine.decide(action_class=action_class, label=name)
     if audit is not None:
         audit.record(
-            actor=actor,
+            actor=f"{actor}[report-only]" if report_only else actor,
             action=f"tool:{name}",
             action_class=decision.action_class,
             decision=decision.decision,
             reason=decision.reason,
         )
-    if decision.decision != "allow":
+    if decision.decision != "allow" and not report_only:
         raise ToolBlockedError(
             f"tool {name!r} blocked by policy: {decision.decision} ({decision.reason})"
         )
