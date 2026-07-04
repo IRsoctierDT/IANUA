@@ -5,9 +5,9 @@ posture (least privilege, auditability, human-in-the-loop). Each item is scoped 
 independent, reviewable increment consistent with [`AGENTS.md`](../AGENTS.md) and
 [`DESIGN.md`](../DESIGN.md).
 
-> Status: mixed. Items 1 and 2 are **implemented** (see `agents/policies/`); items 3-5
-> are **planned**. Nothing here weakens an existing control; every item is additive
-> and fail-closed by design.
+> Status: mixed. Items 1, 2, and 3 are **implemented** (see `agents/policies/` and
+> `tests/security/`); items 4-5 are **planned**. Nothing here weakens an existing
+> control; every item is additive and fail-closed by design.
 
 ---
 
@@ -19,7 +19,7 @@ Ordered by security value per unit of effort, respecting dependencies.
 |---|---|---|---|---|---|---|
 | 1 | Policy-as-code allow/deny layer (`agents/policies/`) | High | M | Low | — | **Implemented** |
 | 2 | Tamper-evident audit logging + retention | High | M | Low | 1 (policy decisions are audit events) | **Implemented** (retention pending) |
-| 3 | Property-based fuzzing of tool input validators | Medium-High | S | Low | — | Planned |
+| 3 | Property-based fuzzing of tool input validators | Medium-High | S | Low | — | **Implemented** |
 | 4 | Signed SBOM + provenance attestation in CI | Medium | S–M | Low | existing SBOM gate | Planned |
 | 5 | Rootless seccomp/AppArmor sandbox for MCP tools | High | L | Medium | 1 (policy decides what runs sandboxed) | Planned |
 
@@ -77,7 +77,7 @@ tool attempt is recorded.
 
 ---
 
-## 3. Property-based fuzzing of tool input validators
+## 3. Property-based fuzzing of tool input validators — implemented
 
 **Objective.** Prove the input validators guarding every MCP tool and agent entry point hold
 under adversarial and malformed inputs, not just the hand-written examples.
@@ -85,24 +85,21 @@ under adversarial and malformed inputs, not just the hand-written examples.
 **Threat addressed.** Injection, path traversal, integer/format edge cases, and validator
 bypass reaching tool execution.
 
-**Approach.**
-- Use **Hypothesis** (Python property-based testing) in `tests/security/`.
-- For each validator, assert invariants over generated inputs: rejects paths escaping the
-  sandbox root, rejects oversized or control-character payloads, never raises unhandled
-  exceptions, and output always conforms to the declared schema/type.
-- Seed strategies from real tool schemas so generation stays relevant; add a regression corpus
-  for any failing case Hypothesis finds (`@example`).
+**Status — shipped:** `tests/security/test_fuzz_validators.py` uses **Hypothesis** to assert
+invariants over generated inputs, deterministically in CI (`derandomize=True`) with
+counterexamples pinned via `@example`:
+- `resolve_within` either returns a path confined to the base or raises `ValidationError` —
+  no other exception type may escape.
+- `classify_action` is total (returns a valid `ActionClass` for any string).
+- `PolicyEngine.evaluate` returns a valid structured decision for any non-blank action and
+  fails closed (raises) on blank input.
 
-**Acceptance criteria.**
-- Each tool input validator has at least one property test with explicit invariants.
-- CI runs the fuzz suite deterministically (fixed seed/`derandomize`) so failures reproduce.
-- A found counterexample becomes a pinned regression example.
-- Suite is part of `tests/security/` and counts toward coverage.
+The fuzzer surfaced a real leak — `resolve_within` let a raw `ValueError` escape on an
+embedded NUL byte — now hardened to reject NUL bytes and oversized candidates as
+`ValidationError`. Hypothesis is pinned in the `dev` extra.
 
-**Risks / trade-offs.** Flaky/slow generation if strategies are too broad — bound example counts
-and pin the seed in CI. Low risk to add; no runtime dependency.
-
-**Effort.** Small.
+**Remaining enhancements (optional).** Extend property coverage as new tool validators are
+added; seed strategies directly from each tool's declared argument schema.
 
 ---
 
@@ -175,5 +172,5 @@ support — document the supported matrix. Start in an audit/report mode before 
   runtime should refuse the action, never silently proceed.
 - **Everything is an audit event:** #1, #4, and #5 all emit into the #2 trail, giving one
   verifiable record of decisions, builds, and executions.
-- **Sequencing:** 1 → 2 are implemented; next are 3 and 4 (cheap, high-signal), then 5
-  (strongest isolation, heaviest lift).
+- **Sequencing:** 1 → 2 → 3 are implemented; next is 4 (cheap, high-signal), then 5 (strongest
+  isolation, heaviest lift).
