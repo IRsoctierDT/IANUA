@@ -141,7 +141,8 @@ bandit -c pyproject.toml -r agents scripts
 agents/       orchestration, roles, tools, policies   tests/        unit | integration | security
 rag/          ingestion → retrieval                    infra/        IaC / deploy (gated)
 mcp/          MCP servers exposed to agents            detections/   defensive, lab-scoped content
-scripts/      operational CLI entrypoints              data/         lab data only (gitignored)
+scripts/      operational & RAG tooling                data/         lab data only (gitignored)
+cli/          user-facing entry points — run_incident.py, batch_run_incidents.py
 ```
 
 ---
