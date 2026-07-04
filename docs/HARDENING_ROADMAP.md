@@ -5,7 +5,8 @@ posture (least privilege, auditability, human-in-the-loop). Each item is scoped 
 independent, reviewable increment consistent with [`AGENTS.md`](../AGENTS.md) and
 [`DESIGN.md`](../DESIGN.md).
 
-> Status: planned. Nothing here weakens an existing control; every item is additive
+> Status: mixed. Items 1 and 2 are **implemented** (see `agents/policies/`); items 3-5
+> are **planned**. Nothing here weakens an existing control; every item is additive
 > and fail-closed by design.
 
 ---
@@ -14,13 +15,13 @@ independent, reviewable increment consistent with [`AGENTS.md`](../AGENTS.md) an
 
 Ordered by security value per unit of effort, respecting dependencies.
 
-| # | Workstream | Security value | Effort | Risk to add | Depends on |
-|---|---|---|---|---|---|
-| 1 | Policy-as-code allow/deny layer (`agents/policies/`) | High | M | Low | — |
-| 2 | Tamper-evident audit logging + retention | High | M | Low | 1 (policy decisions are audit events) |
-| 3 | Property-based fuzzing of tool input validators | Medium-High | S | Low | — |
-| 4 | Signed SBOM + provenance attestation in CI | Medium | S–M | Low | existing SBOM gate |
-| 5 | Rootless seccomp/AppArmor sandbox for MCP tools | High | L | Medium | 1 (policy decides what runs sandboxed) |
+| # | Workstream | Security value | Effort | Risk to add | Depends on | Status |
+|---|---|---|---|---|---|---|
+| 1 | Policy-as-code allow/deny layer (`agents/policies/`) | High | M | Low | — | **Implemented** |
+| 2 | Tamper-evident audit logging + retention | High | M | Low | 1 (policy decisions are audit events) | **Implemented** (retention pending) |
+| 3 | Property-based fuzzing of tool input validators | Medium-High | S | Low | — | Planned |
+| 4 | Signed SBOM + provenance attestation in CI | Medium | S–M | Low | existing SBOM gate | Planned |
+| 5 | Rootless seccomp/AppArmor sandbox for MCP tools | High | L | Medium | 1 (policy decides what runs sandboxed) | Planned |
 
 Rationale: 1 and 2 are the backbone — a decision point (policy) and an evidence trail
 (audit log) that every other control reports through. 3 and 4 are low-effort, high-signal
@@ -30,7 +31,7 @@ CI matrix), so it lands last and builds on the policy layer.
 
 ---
 
-## 1. Policy-as-code allow/deny layer
+## 1. Policy-as-code allow/deny layer — implemented
 
 **Objective.** Move authorization decisions out of imperative `if` checks scattered across
 agents and MCP tools into a single declarative, testable policy set under
@@ -39,33 +40,24 @@ agents and MCP tools into a single declarative, testable policy set under
 **Threat addressed.** Inconsistent or missing authorization; privilege creep; an agent or
 tool invoking an action it was never meant to (confused-deputy, over-broad tool access).
 
-**Approach.**
-- Model policies as declarative rules (OPA **Rego**, or a pure-Python rules engine if
-  keeping the zero-external-binary constraint matters more than Rego's ecosystem).
-- Single choke point: a `PolicyDecision = evaluate(subject, action, resource, context)`
-  called by the orchestrator before any tool dispatch and by the MCP server before
-  `tools/call`. Default result is `deny`.
-- Inputs: acting agent, tool name, argument shape, target path/host, and whether the action
-  is irreversible/external (ties into the existing human-in-the-loop gate).
-- Ship a small, versioned bundle: `agents/policies/*.rego` (or `.yaml`) + a loader that
-  fails closed if the bundle is missing or unparseable.
+**Status — shipped.**
+- `agents/policies/approval.py` — `PolicyEngine` (default-deny, fail-closed), `ActionClass`
+  taxonomy, keyword classification, allow/deny overrides, non-negotiable §5 prohibitions.
+- `agents/tools/guarded.py` — `enforce()` choke point + `GuardedCapability`; **`report_only`
+  staged-rollout mode** records what would be blocked without raising.
+- `agents/policies/bundle.py` + `policy.json` — **declarative JSON policy bundle** with a
+  fail-closed loader (stdlib only, no new runtime dependency).
+- `mcp/server.py` — every `ToolRegistry.dispatch` routes through `enforce()`.
+- `tests/security/` — classification, deny-by-default, allow/deny overrides, prohibition
+  non-override, bundle loader (incl. every fail-closed path), report mode, and a
+  no-tool-bypass suite.
 
-**Acceptance criteria.**
-- Every tool dispatch and `tools/call` passes through `evaluate()`; no direct tool invocation
-  bypasses it (enforced by a test that greps for bypass patterns).
-- Deny-by-default proven: an unknown action returns `deny` with a reason string.
-- Policies are unit-tested with allow and deny fixtures; coverage counts toward the 85% gate.
-- Decisions are structured objects (allow/deny + rule id + reason) suitable for audit (feeds #2).
-
-**Risks / trade-offs.** OPA adds a binary/WASM dependency (mitigate with pinned version +
-checksum, or choose the pure-Python engine). Poorly-scoped rules can over-block — ship with
-a dry-run/report mode before enforce mode.
-
-**Effort.** Medium.
+**Remaining enhancements (optional).** Hot-reload of the bundle; a policy `lint`/schema
+command; richer context inputs (target path/host) surfaced into decisions.
 
 ---
 
-## 2. Tamper-evident audit logging with retention
+## 2. Tamper-evident audit logging with retention — implemented (retention pending)
 
 **Objective.** Make the audit trail append-only and verifiable, so any modification or
 deletion of past events is detectable, with an explicit retention/rotation policy.
@@ -73,27 +65,15 @@ deletion of past events is detectable, with an explicit retention/rotation polic
 **Threat addressed.** Log tampering to hide malicious or erroneous actions; silent gaps;
 unbounded or non-compliant retention.
 
-**Approach.**
-- **Hash chaining:** each record stores `hash = H(prev_hash || canonical(entry))`, forming a
-  Merkle-style chain; a broken link proves tampering. Verifiable offline with a `verify` command.
-- **Signing:** periodically (or per-entry) sign the head hash. Options, cheapest first:
-  HMAC with a protected key; asymmetric signature (Ed25519); or keyless **sigstore/cosign**
-  if you want transparency-log backing.
-- **Retention:** documented policy (e.g. hot 90 days, cold archive N months, then purge),
-  enforced by a rotation job; archived segments keep their terminal hash so the chain stays
-  verifiable across rotations. Write-once semantics where the FS/storage supports it.
+**Status — shipped:** `agents/policies/audit.py` — hash-chained, append-only JSONL with
+`verify()`; tests in `tests/security/test_audit_logger.py`. Every policy decision and blocked
+tool attempt is recorded.
 
-**Acceptance criteria.**
-- Append-only writer + `audit verify` that recomputes the chain and reports the first broken link.
-- Every policy decision (#1), gated human approval, and tool execution emits an audit event.
-- Retention/rotation policy documented in this file and implemented by a scheduled task; rotation
-  preserves verifiability.
-- Tests cover: valid chain verifies; a mutated middle entry fails at the right index.
-
-**Risks / trade-offs.** Key management for signing (store outside the repo; rotate). Hash chaining
-alone proves integrity, not confidentiality — pair with access controls on the log store.
-
-**Effort.** Medium.
+**Remaining (planned).**
+- **Signing:** sign the head hash periodically (HMAC / Ed25519 / keyless sigstore-cosign).
+- **Retention:** documented rotation policy (e.g. hot 90 days, cold archive, then purge)
+  enforced by a scheduled job; archived segments keep their terminal hash so the chain
+  stays verifiable across rotations.
 
 ---
 
@@ -195,5 +175,5 @@ support — document the supported matrix. Start in an audit/report mode before 
   runtime should refuse the action, never silently proceed.
 - **Everything is an audit event:** #1, #4, and #5 all emit into the #2 trail, giving one
   verifiable record of decisions, builds, and executions.
-- **Sequencing:** land 1 → 2 first (decision + evidence), then 3 and 4 (cheap, high-signal),
-  then 5 (strongest isolation, heaviest lift).
+- **Sequencing:** 1 → 2 are implemented; next are 3 and 4 (cheap, high-signal), then 5
+  (strongest isolation, heaviest lift).

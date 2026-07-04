@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "policy": {
+    "read_only": "allow",
+    "destructive": "require_approval",
+    "external_network": "require_approval",
+    "deployment": "require_approval",
+    "dependency": "require_approval",
+    "secret_handling": "require_approval",
+    "boundary_crossing": "deny",
+    "unknown": "require_approval"
+  },
+  "allow": [],
+  "deny": []
+}
