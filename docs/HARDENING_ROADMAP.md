@@ -48,7 +48,7 @@ tool invoking an action it was never meant to (confused-deputy, over-broad tool 
 - Inputs: acting agent, tool name, argument shape, target path/host, and whether the action
   is irreversible/external (ties into the existing human-in-the-loop gate).
 - Ship a small, versioned bundle: `agents/policies/*.rego` (or `.yaml`) + a loader that
-  fails closed if the bundle is missing or unparceable.
+  fails closed if the bundle is missing or unparseable.
 
 **Acceptance criteria.**
 - Every tool dispatch and `tools/call` passes through `evaluate()`; no direct tool invocation
@@ -108,7 +108,7 @@ bypass reaching tool execution.
 **Approach.**
 - Use **Hypothesis** (Python property-based testing) in `tests/security/`.
 - For each validator, assert invariants over generated inputs: rejects paths escaping the
-  sandbox root, rejects oversized/ços control-character payloads, never raises unhandled
+  sandbox root, rejects oversized or control-character payloads, never raises unhandled
   exceptions, and output always conforms to the declared schema/type.
 - Seed strategies from real tool schemas so generation stays relevant; add a regression corpus
   for any failing case Hypothesis finds (`@example`).
