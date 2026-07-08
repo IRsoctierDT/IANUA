@@ -101,8 +101,9 @@ See [`docs/HARDENING_ROADMAP.md`](./HARDENING_ROADMAP.md).
 
 ## Outstanding / Next
 
-- ✅ Signed audit-log head hash (HMAC, `AUDIT_HMAC_KEY`); optional next:
-  asymmetric/keyless signing and wiring retention to a scheduled job
+- ✅ Signed audit-log head hash (HMAC, `AUDIT_HMAC_KEY`);
+  ✅ scheduled retention job (`scripts/audit_maintenance.py`); optional next:
+  asymmetric/keyless (Ed25519) signing
 - Functional: ✅ PDF incident reports (`.[pdf]` extra, reportlab);
   ✅ multi-document ingestion (`rag/ingest.py`); ✅ verifiable passage-level
   source-citation engine (`rag/citations.py`, `KnowledgeBaseAgent.cite()`)

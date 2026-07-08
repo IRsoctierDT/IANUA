@@ -89,11 +89,16 @@ head — so an attacker who recomputes a self-consistent chain without the key i
 (`tests/security/test_audit_signing.py`). The key is read from the environment
 (`signing_key_from_env()`, `AUDIT_HMAC_KEY`), never the repo; unsigned loggers are unchanged.
 
+**Scheduled enforcement — shipped.** `AuditLogger.apply_retention()` applies the size/rotation +
+retention policy on demand (idempotent; appends no entry, so the head signature is unchanged),
+and `scripts/audit_maintenance.py` is a fail-closed CLI for a scheduler: it verifies the chain
+(and HMAC signature) first and **aborts without rotating** if verification fails, then applies the
+policy and prints a JSON summary. The script docstring carries crontab / systemd-timer examples.
+Covered by `tests/unit/test_audit_maintenance.py`.
+
 **Remaining (optional).**
 - **Asymmetric / keyless signing:** Ed25519 or sigstore-cosign so a verifier needs only a public
   key (HMAC verification currently needs the shared secret).
-- **Scheduled enforcement:** a cron/job to apply the size/retention policy to the deployed log
-  location (the mechanism is in place; wiring it to a schedule is deployment-specific).
 
 ---
 

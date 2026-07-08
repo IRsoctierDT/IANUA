@@ -220,6 +220,22 @@ class AuditLogger:
             and self.path.stat().st_size >= self.max_bytes
         )
 
+    def apply_retention(self) -> dict[str, int | bool]:
+        """Apply the size/retention policy on demand (for a scheduled job).
+
+        Rotates the active log if it has reached ``max_bytes``, then prunes
+        archived segments beyond ``retain_segments``. Idempotent and safe to run
+        repeatedly; it does **not** append an entry, so the chain head — and its
+        signature — are unchanged. Returns ``{"rotated": ..., "archives": ...}``.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        rotated = self._should_rotate()
+        if rotated:
+            self._rotate()  # archives the active log, then prunes
+        else:
+            self._prune()
+        return {"rotated": rotated, "archives": len(self._archive_paths())}
+
     # ---------------------------------------------------------------- append
     def record(
         self, *, actor: str, action: str, action_class: str, decision: str, reason: str
