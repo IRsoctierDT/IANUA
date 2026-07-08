@@ -33,7 +33,9 @@ Security notes:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -41,6 +43,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 _GENESIS_HASH = "0" * 64
+#: Default environment variable holding the audit-log HMAC signing key.
+_SIGNING_KEY_ENV = "AUDIT_HMAC_KEY"
+
+
+def signing_key_from_env(var: str = _SIGNING_KEY_ENV) -> bytes | None:
+    """Return the HMAC signing key from ``var``, or ``None`` if unset/empty.
+
+    Keys live only in the environment (AGENTS.md §5) — never in source or the
+    repo. Pass the result to :class:`AuditLogger(signing_key=...)`.
+    """
+    value = os.environ.get(var, "")
+    return value.encode("utf-8") if value else None
 
 
 def _utc_now() -> str:
@@ -106,16 +120,21 @@ class AuditLogger:
         clock: Callable[[], str] | None = None,
         max_bytes: int | None = None,
         retain_segments: int | None = None,
+        signing_key: bytes | None = None,
     ) -> None:
         if max_bytes is not None and max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
         if retain_segments is not None and retain_segments < 0:
             raise ValueError("retain_segments must be non-negative")
+        if signing_key is not None and not signing_key:
+            raise ValueError("signing_key must be non-empty")
         self.path = Path(path)
         self._clock = clock or _utc_now
         self.max_bytes = max_bytes
         self.retain_segments = retain_segments
+        self.signing_key = signing_key
         self._checkpoint_path = self.path.with_name(self.path.name + ".checkpoint")
+        self._sig_path = self.path.with_name(self.path.name + ".sig")
         self._archive_re = re.compile(rf"^{re.escape(self.path.name)}\.(\d+)$")
 
     # ---------------------------------------------------------------- segments
@@ -235,7 +254,65 @@ class AuditLogger:
         )
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(asdict(event)) + "\n")
+        if self.signing_key is not None:
+            self._sign_head(seq, entry_hash)
         return event
+
+    # ---------------------------------------------------------------- signing
+    def _mac(self, seq: int, head_hash: str) -> str:
+        """HMAC-SHA256 over the head ``seq|hash`` with the configured key."""
+        key = self.signing_key
+        if key is None:
+            raise ValueError("signing_key is not set")
+        message = f"{seq}|{head_hash}".encode()
+        return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+    def _sign_head(self, seq: int, head_hash: str) -> None:
+        """Write a detached signature over the current chain head.
+
+        The head hash chains over every prior entry, so one signature attests the
+        whole log. An attacker without the key can recompute a self-consistent
+        chain but cannot forge this signature, so tampering is detectable by any
+        holder of the key (offline, without trusting the file).
+        """
+        self._sig_path.write_text(
+            json.dumps(
+                {
+                    "seq": seq,
+                    "head_hash": head_hash,
+                    "algo": "hmac-sha256",
+                    "signature": self._mac(seq, head_hash),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def verify_signature(self) -> bool:
+        """True iff the detached head signature is present, valid, and current.
+
+        Requires ``signing_key``. Fails closed: a missing/garbled signature, a
+        signature that does not match the key, or one that covers a stale head
+        (i.e. the log changed after signing) all return ``False``.
+        """
+        if self.signing_key is None:
+            raise ValueError("verify_signature requires a signing_key")
+        last_seq, head_hash = self._last()
+        if last_seq < 0:
+            return True  # empty log: nothing to sign
+        if not self._sig_path.exists():
+            return False
+        try:
+            sig = json.loads(self._sig_path.read_text(encoding="utf-8"))
+            stored_seq = int(sig["seq"])
+            stored_hash = str(sig["head_hash"])
+            stored_signature = str(sig["signature"])
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+            return False
+        # The signature must be authentic AND cover the *current* head.
+        expected = self._mac(stored_seq, stored_hash)
+        if not hmac.compare_digest(expected, stored_signature):
+            return False
+        return stored_seq == last_seq and stored_hash == head_hash
 
     # ---------------------------------------------------------------- verify
     def verify(self) -> bool:
@@ -247,6 +324,10 @@ class AuditLogger:
         retained entry must continue from the ``.checkpoint`` (seq + hash of the
         last pruned entry); a missing checkpoint means the chain must start at
         genesis. Any gap, edit, reordering, or dropped segment breaks it.
+
+        When a ``signing_key`` is configured, the detached head signature must
+        also be present, valid, and current (see :meth:`verify_signature`) — so a
+        recomputed-but-unsigned chain is rejected.
         """
         segments = self._segments_in_order()
         if all(self._last_event(s) is None for s in segments):
@@ -280,4 +361,6 @@ class AuditLogger:
                     return False
                 expected_prev = record["entry_hash"]
                 expected_seq += 1
+        if self.signing_key is not None:
+            return self.verify_signature()
         return True

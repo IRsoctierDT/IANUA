@@ -20,7 +20,7 @@ from agents.policies.approval import (
     PolicyEngine,
     classify_action,
 )
-from agents.policies.audit import AuditEvent, AuditLogger
+from agents.policies.audit import AuditEvent, AuditLogger, signing_key_from_env
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle
 
 __all__ = [
@@ -35,6 +35,7 @@ __all__ = [
     "classify_action",
     "guard",
     "load_bundle",
+    "signing_key_from_env",
 ]
 
 
