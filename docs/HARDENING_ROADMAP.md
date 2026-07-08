@@ -81,9 +81,17 @@ reordering any retained segment is caught by `verify()`. Covered by
 of edited/dropped segments and a removed checkpoint). Defaults are unchanged (no rotation) so
 existing callers are unaffected.
 
+**Head-hash signing — shipped.** `AuditLogger(signing_key=...)` writes a detached HMAC-SHA256
+signature over the current chain head to an `<log>.sig` sidecar after every append; because the
+head hash chains over every prior entry, one signature attests the whole log. `verify()` (and
+`verify_signature()`) require the signature to be present, authentic, and cover the *current*
+head — so an attacker who recomputes a self-consistent chain without the key is still rejected
+(`tests/security/test_audit_signing.py`). The key is read from the environment
+(`signing_key_from_env()`, `AUDIT_HMAC_KEY`), never the repo; unsigned loggers are unchanged.
+
 **Remaining (optional).**
-- **Signing:** sign the head hash periodically (HMAC / Ed25519 / keyless sigstore-cosign) for
-  external, offline verifiability of the chain head.
+- **Asymmetric / keyless signing:** Ed25519 or sigstore-cosign so a verifier needs only a public
+  key (HMAC verification currently needs the shared secret).
 - **Scheduled enforcement:** a cron/job to apply the size/retention policy to the deployed log
   location (the mechanism is in place; wiring it to a schedule is deployment-specific).
 
