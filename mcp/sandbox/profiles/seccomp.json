@@ -1,0 +1,35 @@
+{
+  "__doc__": "Deny-by-default seccomp profile for MCP tool execution (Hardening Roadmap #5). defaultAction ERRNO: any syscall not on the allow-list below fails with EPERM instead of running. The list covers what a minimal, non-networked CLI tool needs (file I/O within /data:ro and /work tmpfs, memory, process/thread lifecycle, signals). Network syscalls (socket/connect/bind/listen/accept), ptrace, mount, bpf, keyctl, and module/kexec/reboot syscalls are intentionally omitted. Tune per tool; see profiles/../README.md.",
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    { "architecture": "SCMP_ARCH_X86_64", "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"] },
+    { "architecture": "SCMP_ARCH_AARCH64", "subArchitectures": ["SCMP_ARCH_ARM"] }
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "read", "write", "readv", "writev", "pread64", "pwrite64",
+        "open", "openat", "openat2", "close", "close_range",
+        "stat", "fstat", "lstat", "newfstatat", "statx",
+        "lseek", "dup", "dup2", "dup3", "fcntl", "flock",
+        "getdents64", "readlink", "readlinkat", "access", "faccessat", "faccessat2",
+        "getcwd", "chdir", "fchdir",
+        "pipe", "pipe2", "poll", "ppoll", "select", "pselect6",
+        "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait", "eventfd2",
+        "brk", "mmap", "mremap", "munmap", "mprotect", "madvise", "mlock", "munlock",
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "sigaltstack",
+        "nanosleep", "clock_nanosleep", "clock_gettime", "gettimeofday", "time",
+        "futex", "set_robust_list", "get_robust_list", "rseq", "membarrier",
+        "getpid", "gettid", "getppid", "getuid", "geteuid", "getgid", "getegid",
+        "getgroups", "getrandom", "getrlimit", "prlimit64", "getrusage",
+        "sched_getaffinity", "sched_yield", "sched_getparam", "sched_getscheduler",
+        "arch_prctl", "set_tid_address", "prctl", "uname", "sysinfo",
+        "clone", "clone3", "execve", "execveat", "exit", "exit_group",
+        "wait4", "waitid", "kill", "tgkill", "tkill", "restart_syscall",
+        "fadvise64", "ftruncate", "fsync", "fdatasync", "umask"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    }
+  ]
+}

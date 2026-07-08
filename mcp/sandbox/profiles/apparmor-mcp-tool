@@ -1,0 +1,58 @@
+# AppArmor profile: mcp-tool
+#
+# Confines MCP tool execution (Hardening Roadmap #5) in defense-in-depth with the
+# seccomp profile and the container runtime flags. Load on a Linux host before
+# enforce-mode runs:
+#
+#     sudo apparmor_parser -r -W mcp/sandbox/profiles/apparmor-mcp-tool
+#
+# then reference it via the runtime flag `--security-opt apparmor=mcp-tool`
+# (SandboxConfig.apparmor_profile). Not used on non-Linux hosts.
+
+#include <tunables/global>
+
+profile mcp-tool flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # --- Network: default-deny egress (matches --network=none). ---------------
+  deny network,
+
+  # --- Capabilities: none. The runtime already drops ALL; deny defensively. --
+  deny capability,
+
+  # --- Dangerous operations: never. -----------------------------------------
+  deny mount,
+  deny umount,
+  deny pivot_root,
+  deny ptrace,
+  audit deny @{PROC}/*/mem rwklx,
+  audit deny /sys/** wklx,
+  audit deny /boot/** rwklx,
+
+  # --- Data root: read-only. Only MCP_ROOT is mounted here (as /data:ro). ----
+  /data/ r,
+  /data/** r,
+
+  # --- Writable scratch: the tmpfs work dir only. ----------------------------
+  /work/ rw,
+  /work/** rwk,
+  owner /tmp/ rw,
+  owner /tmp/** rwk,
+
+  # --- Program + shared libraries from the read-only rootfs. -----------------
+  /usr/bin/** ix,
+  /usr/local/bin/** ix,
+  /bin/** ix,
+  /usr/lib/** mr,
+  /usr/local/lib/** mr,
+  /lib/** mr,
+  /lib64/** mr,
+  /etc/ld.so.cache r,
+  /etc/ld.so.preload r,
+
+  # --- Minimal proc/sys reads a runtime needs; nothing writable. -------------
+  @{PROC}/sys/kernel/ngroups_max r,
+  owner @{PROC}/*/status r,
+  owner @{PROC}/*/limits r,
+  /sys/kernel/mm/transparent_hugepage/enabled r,
+}

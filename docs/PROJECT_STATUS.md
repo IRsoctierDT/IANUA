@@ -95,12 +95,14 @@ See [`docs/HARDENING_ROADMAP.md`](./HARDENING_ROADMAP.md).
 - ✅ Tamper-evident audit logging (retention policy pending)
 - ✅ Property-based fuzzing of tool input validators
 - ✅ Signed SBOM + SLSA build-provenance attestation in CI
-- 🔲 Rootless seccomp/AppArmor sandbox for MCP tool execution (planned)
+- ✅ Rootless seccomp/AppArmor sandbox for MCP tool execution (report-mode
+  default; enforce mode on Linux hosts with a rootless runtime, fail-closed)
 
 ## Outstanding / Next
 
-- Rootless seccomp/AppArmor sandbox for MCP tool execution (hardening item 5)
 - Audit-log retention & rotation policy (completes hardening item 2)
+- Sandbox rollout: pin the tool image by digest, per-tool profiles, and enable
+  enforce mode in Linux CI
 - Functional enhancements: PDF incident reports; multi-document ingestion;
   stronger source-citation engine
 
