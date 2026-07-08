@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:70d011e3-0d5b-509c-849f-fdb75012b462",
+  "serialNumber": "urn:uuid:cb0429dd-9e34-5865-8c29-229ed7fe1192",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-07-08T03:29:10Z",
+    "timestamp": "2026-07-08T06:53:01Z",
     "tools": {
       "components": [
         {
@@ -754,6 +754,13 @@
       "type": "library",
       "version": "2026.5.9",
       "purl": "pkg:pypi/regex@2026.5.9"
+    },
+    {
+      "bom-ref": "pkg:pypi/reportlab@5.0.0",
+      "name": "reportlab",
+      "type": "library",
+      "version": "5.0.0",
+      "purl": "pkg:pypi/reportlab@5.0.0"
     },
     {
       "bom-ref": "pkg:pypi/requests@2.34.2",

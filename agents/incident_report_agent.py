@@ -70,6 +70,7 @@ class IncidentReportAgent:
         kb_references: list[dict] | None = None,
         detection_matches: list[dict] | None = None,
         generator: Generator | None = None,
+        pdf_path: str | None = None,
     ) -> Path:
         """Write a markdown incident report.
 
@@ -151,6 +152,13 @@ class IncidentReportAgent:
 """
 
         target.write_text(report, encoding="utf-8")
+
+        if pdf_path is not None:
+            # Optional PDF export (requires the '.[pdf]' extra). Imported lazily so
+            # the Markdown report never depends on reportlab being installed.
+            from agents.tools.pdf_report import render_markdown_to_pdf
+
+            render_markdown_to_pdf(report, pdf_path)
         return target
 
 
