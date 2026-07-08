@@ -92,7 +92,8 @@ Supporting agents:
 See [`docs/HARDENING_ROADMAP.md`](./HARDENING_ROADMAP.md).
 
 - ✅ Policy-as-code allow/deny layer
-- ✅ Tamper-evident audit logging (retention policy pending)
+- ✅ Tamper-evident audit logging (hash-chained; rotation + retention with a
+  checkpoint that keeps pruned history detectable)
 - ✅ Property-based fuzzing of tool input validators
 - ✅ Signed SBOM + SLSA build-provenance attestation in CI
 - ✅ Rootless seccomp/AppArmor sandbox for MCP tool execution (report-mode
@@ -100,7 +101,7 @@ See [`docs/HARDENING_ROADMAP.md`](./HARDENING_ROADMAP.md).
 
 ## Outstanding / Next
 
-- Audit-log retention & rotation policy (completes hardening item 2)
+- Optional: sign the audit-log head hash; wire retention to a scheduled job
 - Sandbox rollout: pin the tool image by digest, per-tool profiles, and enable
   enforce mode in Linux CI
 - Functional enhancements: PDF incident reports; multi-document ingestion;
