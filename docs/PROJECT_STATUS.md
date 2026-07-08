@@ -19,6 +19,8 @@ supporting agents). See [`docs/Changelog.md`](./Changelog.md) for the full histo
 - Sentence Transformers (local embeddings)
 - Qwen3:4B via Ollama (loopback-only, fail-closed)
 - Local RAG pipeline (ingest → chunk → embed → cited retrieval; offline mode)
+- Vector stores: in-memory (default) + persistent SQLite (`rag/vector_store.py`,
+  survives restarts) behind one `VectorStore` protocol
 
 ### Agents
 

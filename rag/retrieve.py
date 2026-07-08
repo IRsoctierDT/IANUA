@@ -1,7 +1,9 @@
 """In-memory cosine retrieval over embedded chunks.
 
-A dependency-free default so the pipeline is testable on day one. Swap for a
-real vector store (DESIGN.md §10) behind the same `VectorStore` protocol.
+A dependency-free default so the pipeline is testable on day one. For persistence
+across restarts and larger corpora, use :class:`rag.vector_store.SqliteVectorStore`
+behind the same `VectorStore` protocol; a real ANN vector DB (DESIGN.md §10) is
+the next step behind that same interface.
 """
 
 from __future__ import annotations
