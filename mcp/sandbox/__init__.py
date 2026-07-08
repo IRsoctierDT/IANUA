@@ -107,9 +107,11 @@ class SandboxConfig:
     timeout_s: float = 30.0
     #: Writable tmpfs work dir mounted at ``/work`` (the only writable path).
     tmpfs_size: str = "64m"
-    #: Path to the seccomp profile (deny-by-default).
-    seccomp_profile: Path = _SECCOMP_PROFILE
-    #: Loaded AppArmor profile name (``apparmor_parser``-loaded out of band).
+    #: Path to the seccomp profile (deny-by-default). ``None`` omits the flag
+    #: (e.g. a host/runtime where the profile cannot be applied).
+    seccomp_profile: Path | None = _SECCOMP_PROFILE
+    #: Loaded AppArmor profile name (``apparmor_parser``-loaded out of band). An
+    #: empty string omits the flag where AppArmor is unavailable.
     apparmor_profile: str = _APPARMOR_PROFILE_NAME
 
     def __post_init__(self) -> None:
@@ -196,10 +198,18 @@ class SandboxRunner:
             "ALL",  # no capabilities
             "--security-opt",
             "no-new-privileges",  # cannot regain privilege via setuid
-            "--security-opt",
-            f"seccomp={cfg.seccomp_profile}",  # deny-by-default syscalls
-            "--security-opt",
-            f"apparmor={cfg.apparmor_profile}",  # FS/network confinement
+        ]
+        # Profile flags are the secure default but are *optional*: an unset value
+        # omits the flag so the sandbox still runs (with its other controls) on a
+        # host where that profile cannot be applied — e.g. a rootless runtime or
+        # runner without a loaded AppArmor profile. The core confinement
+        # (no network, no capabilities, read-only rootfs, non-root, MCP_ROOT-only
+        # mount) never depends on these.
+        if cfg.seccomp_profile is not None:
+            cmd += ["--security-opt", f"seccomp={cfg.seccomp_profile}"]  # deny-by-default syscalls
+        if cfg.apparmor_profile:
+            cmd += ["--security-opt", f"apparmor={cfg.apparmor_profile}"]  # FS/network MAC
+        cmd += [
             "--read-only",  # immutable rootfs
             "--tmpfs",
             f"/work:rw,noexec,nosuid,nodev,size={cfg.tmpfs_size}",
