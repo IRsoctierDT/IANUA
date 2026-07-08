@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:cecab797-23eb-5410-b25a-580fd281f32c",
+  "serialNumber": "urn:uuid:70d011e3-0d5b-509c-849f-fdb75012b462",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-06-30T19:00:00Z",
+    "timestamp": "2026-07-08T03:29:10Z",
     "tools": {
       "components": [
         {
@@ -285,6 +285,13 @@
       "type": "library",
       "version": "6.1.0",
       "purl": "pkg:pypi/hyperframe@6.1.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/hypothesis@6.156.2",
+      "name": "hypothesis",
+      "type": "library",
+      "version": "6.156.2",
+      "purl": "pkg:pypi/hypothesis@6.156.2"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
