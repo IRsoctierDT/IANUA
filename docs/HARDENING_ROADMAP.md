@@ -92,13 +92,21 @@ head — so an attacker who recomputes a self-consistent chain without the key i
 **Scheduled enforcement — shipped.** `AuditLogger.apply_retention()` applies the size/rotation +
 retention policy on demand (idempotent; appends no entry, so the head signature is unchanged),
 and `scripts/audit_maintenance.py` is a fail-closed CLI for a scheduler: it verifies the chain
-(and HMAC signature) first and **aborts without rotating** if verification fails, then applies the
+(and signature) first and **aborts without rotating** if verification fails, then applies the
 policy and prints a JSON summary. The script docstring carries crontab / systemd-timer examples.
 Covered by `tests/unit/test_audit_maintenance.py`.
 
-**Remaining (optional).**
-- **Asymmetric / keyless signing:** Ed25519 or sigstore-cosign so a verifier needs only a public
-  key (HMAC verification currently needs the shared secret).
+**Asymmetric signing — shipped.** Signing is now pluggable (`agents/policies/signing.py`,
+`Signer` protocol): `HmacSigner` (symmetric, default) and **`Ed25519Signer` / `Ed25519Verifier`**
+(asymmetric). With Ed25519 a verifier confirms the head with only the **public** key — no shared
+secret to also forge with — via `AuditLogger(signer=Ed25519Verifier(public_key))`. Ed25519 uses
+the optional `[crypto]` extra (`cryptography`), lazy-imported so the core audit module keeps no
+hard crypto dependency; keys come from `AUDIT_ED25519_PRIVATE_KEY` / `AUDIT_ED25519_PUBLIC_KEY`.
+Covered by `tests/security/test_ed25519_signing.py`.
+
+**Remaining (optional).** Nothing outstanding — the audit trail is hash-chained, signed
+(HMAC or Ed25519), rotated, retained (checkpoint-anchored), and enforceable on a schedule.
+A sigstore-cosign / transparency-log backend is a possible future direction.
 
 ---
 

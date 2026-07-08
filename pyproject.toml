@@ -35,6 +35,7 @@ dev = [
   "pre-commit>=3.7",
   "pyyaml>=6.0",          # detections/ Sigma-rule validation tests
   "reportlab>=4.0",       # PDF incident reports (tests/unit/test_pdf_report.py)
+  "cryptography>=42.0",   # Ed25519 audit-log signing (tests/security/test_ed25519_signing.py)
 ]
 
 # Install with:  pip install -e ".[dashboard]"  (runs the Streamlit command center)
@@ -48,6 +49,11 @@ dashboard = [
 # Pure-Python (no system libraries) — CI-friendly, unlike HTML/CSS engines.
 pdf = [
   "reportlab>=4.0",
+]
+
+# Install with:  pip install -e ".[crypto]"  (Ed25519 asymmetric audit-log signing)
+crypto = [
+  "cryptography>=42.0",
 ]
 
 # ---------------------------------------------------------------------------
