@@ -26,8 +26,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from rag.citations import Citation, build_citations, verify_citation
 from rag.embeddings import OllamaEmbedder
-from rag.ingest import Chunk, Embedder, ingest
+from rag.ingest import Chunk, Embedder, ingest, read_documents
 from rag.retrieve import _cosine
 
 from agents.tools.validation import ValidationError
@@ -203,6 +204,78 @@ class KnowledgeBaseAgent:
 
         query = " ".join(parts)
         return [asdict(ref) for ref in self.retrieve(query, k=k)]
+
+    def cite(
+        self,
+        query: str,
+        k: int = 3,
+        *,
+        per_source: int = 1,
+        max_quote_chars: int = 240,
+    ) -> list[Citation]:
+        """Return passage-level, verifiable citations for ``query``.
+
+        Unlike :meth:`retrieve` (source + document-opening snippet), each
+        :class:`~rag.citations.Citation` quotes the *actual matching passage*
+        with an exact source char-offset locator, so the grounding can be shown
+        and checked. Respects the configured retrieval mode with the same
+        semantic→lexical fallback. Fails soft (``[]``) on a missing corpus.
+        """
+        if k <= 0:
+            raise ValidationError("k must be positive")
+        if not query.strip():
+            return []
+        try:
+            chunks = ingest(self.kb_root)
+        except ValidationError:
+            return []
+        if not chunks:
+            return []
+        return build_citations(
+            query,
+            self._chunk_scores(query, chunks),
+            per_source=per_source,
+            max_quote_chars=max_quote_chars,
+            k=k,
+        )
+
+    def verify_citations(self, citations: list[Citation]) -> bool:
+        """True iff every citation quotes verbatim text at its offset in the corpus.
+
+        Re-reads the corpus and checks each citation against its source — the
+        anti-hallucination guard for citations a caller (or a model narrative)
+        claims to have used.
+        """
+        try:
+            sources = read_documents(self.kb_root)
+        except ValidationError:
+            return False
+        return all(verify_citation(c, sources) for c in citations)
+
+    def _chunk_scores(self, query: str, chunks: list[Chunk]) -> list[tuple[Chunk, float]]:
+        """Per-chunk relevance scores (semantic with lexical fallback)."""
+        if self.mode == "semantic":
+            try:
+                embedder = self.embedder or OllamaEmbedder()
+                vectors = embedder.embed([query, *(c.text for c in chunks)])
+                query_vec = vectors[0]
+                return [
+                    (chunk, _cosine(query_vec, vec))
+                    for chunk, vec in zip(chunks, vectors[1:], strict=True)
+                ]
+            except ValidationError:
+                pass  # Ollama unreachable -> graceful lexical fallback
+        query_terms = _tokenize(query)
+        scored: list[tuple[Chunk, float]] = []
+        for chunk in chunks:
+            chunk_terms = _tokenize(chunk.text)
+            score = (
+                len(query_terms & chunk_terms) / len(query_terms)
+                if query_terms and chunk_terms
+                else 0.0
+            )
+            scored.append((chunk, score))
+        return scored
 
 
 if __name__ == "__main__":
