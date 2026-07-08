@@ -103,8 +103,9 @@ See [`docs/HARDENING_ROADMAP.md`](./HARDENING_ROADMAP.md).
 - Audit-log retention & rotation policy (completes hardening item 2)
 - Sandbox rollout: pin the tool image by digest, per-tool profiles, and enable
   enforce mode in Linux CI
-- Functional enhancements: PDF incident reports; multi-document ingestion;
-  stronger source-citation engine
+- Functional enhancements: ✅ PDF incident reports (`.[pdf]` extra, reportlab);
+  multi-document ingestion already shipped (`rag/ingest.py`); a stronger
+  source-citation engine remains
 
 ## Repository Status
 

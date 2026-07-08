@@ -34,6 +34,7 @@ dev = [
   "detect-secrets>=1.5",
   "pre-commit>=3.7",
   "pyyaml>=6.0",          # detections/ Sigma-rule validation tests
+  "reportlab>=4.0",       # PDF incident reports (tests/unit/test_pdf_report.py)
 ]
 
 # Install with:  pip install -e ".[dashboard]"  (runs the Streamlit command center)
@@ -41,6 +42,12 @@ dashboard = [
   "streamlit>=1.36",
   "qdrant-client>=1.9",
   "sentence-transformers>=3.0",
+]
+
+# Install with:  pip install -e ".[pdf]"  (PDF export for incident reports)
+# Pure-Python (no system libraries) — CI-friendly, unlike HTML/CSS engines.
+pdf = [
+  "reportlab>=4.0",
 ]
 
 # ---------------------------------------------------------------------------
@@ -109,6 +116,8 @@ module = [
   "weasyprint",
   "markdown",
   "yaml",
+  "reportlab",
+  "reportlab.*",
 ]
 ignore_missing_imports = true
 
