@@ -5,9 +5,11 @@ posture (least privilege, auditability, human-in-the-loop). Each item is scoped 
 independent, reviewable increment consistent with [`AGENTS.md`](../AGENTS.md) and
 [`DESIGN.md`](../DESIGN.md).
 
-> Status: mixed. Items 1, 2, 3, and 4 are **implemented** (see `agents/policies/`,
-> `tests/security/`, and `security/sbom/`); item 5 is **planned**. Nothing here weakens
-> an existing control; every item is additive and fail-closed by design.
+> Status: all five workstreams are **implemented** (see `agents/policies/`,
+> `tests/security/`, `security/sbom/`, and `mcp/sandbox/`). Item 5 ships in the safe
+> **report mode** by default; kernel enforcement (seccomp/AppArmor) applies on a Linux
+> host with a rootless runtime and otherwise fails closed. Nothing here weakens an
+> existing control; every item is additive and fail-closed by design.
 
 ---
 
@@ -21,7 +23,7 @@ Ordered by security value per unit of effort, respecting dependencies.
 | 2 | Tamper-evident audit logging + retention | High | M | Low | 1 (policy decisions are audit events) | **Implemented** (retention pending) |
 | 3 | Property-based fuzzing of tool input validators | Medium-High | S | Low | — | **Implemented** |
 | 4 | Signed SBOM + provenance attestation in CI | Medium | S–M | Low | existing SBOM gate | **Implemented** |
-| 5 | Rootless seccomp/AppArmor sandbox for MCP tools | High | L | Medium | 1 (policy decides what runs sandboxed) | Planned |
+| 5 | Rootless seccomp/AppArmor sandbox for MCP tools | High | L | Medium | 1 (policy decides what runs sandboxed) | **Implemented** (report-mode default) |
 
 Rationale: 1 and 2 are the backbone — a decision point (policy) and an evidence trail
 (audit log) that every other control reports through. 3 and 4 are low-effort, high-signal
@@ -139,7 +141,18 @@ attestation job only. Minimal new runtime surface — CI-side only.
 
 ---
 
-## 5. Rootless seccomp/AppArmor sandbox for MCP tool execution
+## 5. Rootless seccomp/AppArmor sandbox for MCP tool execution — implemented
+
+**Status.** Implemented in [`mcp/sandbox/`](../mcp/sandbox/README.md). `SandboxRunner` builds
+the hardened `podman`/`docker run` invocation (`--network=none`, `--cap-drop=ALL`,
+`no-new-privileges`, `--read-only`, tmpfs work dir, non-root user, `seccomp=` + `apparmor=`
+committed profiles, `MCP_ROOT` mounted read-only, memory/PID/CPU caps). `mcp.server.
+sandboxed_command_tool` wires it into `ToolRegistry.dispatch`, so a policy-allowed call is
+then confined. Ships in **report mode** by default (audits the intended run without executing);
+**enforce mode** runs on a Linux host with a rootless runtime and **fails closed** (refuses)
+where a tool cannot be confined. Covered by `tests/security/test_sandbox.py` (host-independent
+construction/fail-closed/report tests everywhere; real syscall/network negative tests gated to
+Linux + runtime). Sandbox decisions are recorded to the same tamper-evident audit log as #2.
 
 **Objective.** Execute MCP tools inside a locked-down, rootless container so a compromised or
 buggy tool cannot affect the host, the network, or data outside its lane.

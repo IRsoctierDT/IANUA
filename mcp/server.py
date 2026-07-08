@@ -13,7 +13,7 @@ MCP transport of choice (stdio/websocket) once the real SDK is added.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,8 @@ from typing import Any
 from agents.policies import ActionClass, AuditLogger, PolicyEngine
 from agents.tools.guarded import enforce
 from agents.tools.validation import ValidationError, resolve_within
+
+from mcp.sandbox import SandboxRunner
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -82,6 +84,42 @@ class ToolRegistry:
             actor=self.actor,
         )
         return tool.handler(arguments)
+
+
+def sandboxed_command_tool(
+    name: str,
+    description: str,
+    build_argv: Callable[[dict[str, Any]], Sequence[str]],
+    sandbox: SandboxRunner,
+    *,
+    action_class: ActionClass = "external_network",
+) -> Tool:
+    """Wrap an external-command tool so every call is confined by the sandbox.
+
+    This composes the two layers of the trust model (Hardening Roadmap #1 + #5):
+    the registry's policy gate in :meth:`ToolRegistry.dispatch` decides *whether*
+    the call may run, and this handler then confines *how* it runs — executing
+    ``build_argv(arguments)`` inside the rootless, seccomp/AppArmor-locked
+    :class:`~mcp.sandbox.SandboxRunner`.
+
+    Fail-closed by construction: in enforce mode a host with no container runtime
+    raises :class:`~mcp.sandbox.SandboxUnavailableError` rather than running the
+    command unsandboxed; in report mode the intended hardened command is audited
+    but never executed. ``build_argv`` is responsible for validating and shaping
+    the arguments into an argument vector (never a shell string).
+    """
+
+    def handler(arguments: dict[str, Any]) -> dict[str, Any]:
+        result = sandbox.run(build_argv(arguments), name=name)
+        return {
+            "executed": result.executed,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "reason": result.reason,
+        }
+
+    return Tool(name=name, description=description, handler=handler, action_class=action_class)
 
 
 def build_default_registry(

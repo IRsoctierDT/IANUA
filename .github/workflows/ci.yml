@@ -52,7 +52,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy agents scripts tests dashboard
+        run: mypy agents scripts tests dashboard mcp
 
   # ---------------------------------------------------------------- Stage 2
   security:
@@ -81,7 +81,7 @@ jobs:
         # requirements.lock; see security/sbom/requirements-dev.lock.
         run: pip install --require-hashes -r security/sbom/requirements-dev.lock
       - name: Bandit (SAST)
-        run: bandit -c pyproject.toml -r agents scripts
+        run: bandit -c pyproject.toml -r agents scripts mcp
       - name: pip-audit (SCA) — gate on the pinned closure
         # Audit the committed Linux/3.12 lock (declared [dev,dashboard] closure),
         # not the ephemeral CI environment. --disable-pip reads the fully-hashed
