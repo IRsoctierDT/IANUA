@@ -92,9 +92,26 @@ registry.register(
 
 | Host | seccomp | AppArmor | Behaviour |
 |---|---|---|---|
-| Linux + Podman/Docker | ✅ | ✅ (profile loaded) | full enforcement |
-| Linux + Podman/Docker, no AppArmor | ✅ | ⚠️ skip the flag | partial (seccomp + caps + net) |
+| Linux + Podman/Docker + loaded AppArmor profile | ✅ | ✅ | full enforcement |
+| Linux + Podman/Docker, no AppArmor | ✅ | ⚠️ omit the flag (`apparmor_profile=""`) | seccomp + caps + net + FS |
 | macOS / no runtime | — | — | **report mode audits; enforce mode refuses (fail-closed)** |
+
+`SandboxConfig.seccomp_profile=None` and `apparmor_profile=""` omit those flags so
+the sandbox still runs its **runtime-native** confinement (no network, no
+capabilities, `no-new-privileges`, read-only rootfs, non-root user, `MCP_ROOT`-only
+mount) on hosts where a profile can't be applied. The core confinement never
+depends on the profiles.
+
+## Verified in CI
+
+The `sandbox-enforce` CI job (`.github/workflows/ci.yml`) runs the real-container
+enforcement tests on Linux with `MCP_SANDBOX_ENFORCE_TESTS=1`: a **positive control**
+(the container must start and run) guards a set of negative tests proving egress is
+blocked, `/data` is read-only, and the process runs as a non-root user — so the
+negatives cannot pass vacuously. The generic test job leaves the flag unset, so those
+tests stay skipped there (they would otherwise pass vacuously where the container
+can't fully start). The seccomp profile's deny-by-default intent is asserted
+structurally by a host-independent test.
 
 ## Risks
 

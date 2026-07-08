@@ -13,6 +13,7 @@ Two tiers:
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,38 @@ def test_argv_is_not_shell_interpreted(root: Path) -> None:
     cmd = runner.build_command(["cat", "; rm -rf / #"], runtime="/usr/bin/podman")
     assert "; rm -rf / #" in cmd  # present verbatim as one element
     assert cmd.count("; rm -rf / #") == 1
+
+
+@pytest.mark.security
+def test_seccomp_profile_is_deny_by_default_and_denies_network() -> None:
+    import json
+
+    from mcp.sandbox import PROFILE_DIR
+
+    prof = json.loads((PROFILE_DIR / "seccomp.json").read_text(encoding="utf-8"))
+    assert prof["defaultAction"] == "SCMP_ACT_ERRNO"  # deny-by-default
+    allowed = {n for block in prof["syscalls"] for n in block["names"]}
+    # Network syscalls are intentionally absent (default-deny egress, in depth).
+    assert not ({"socket", "connect", "bind", "listen", "accept", "accept4"} & allowed)
+    # ...but the essentials a minimal tool needs are present.
+    assert {"read", "write", "execve", "exit_group"} <= allowed
+
+
+@pytest.mark.security
+def test_profiles_are_optional_but_core_confinement_is_not(root: Path) -> None:
+    # A host without a loadable AppArmor profile / seccomp still gets the core
+    # confinement; only the profile flags drop out.
+    cfg = SandboxConfig(root=root, mode="report", apparmor_profile="", seccomp_profile=None)
+    cmd = SandboxRunner(config=cfg).build_command(["echo", "hi"], runtime="podman")
+    joined = " ".join(cmd)
+    assert "apparmor=" not in joined
+    assert "seccomp=" not in joined
+    # Core controls remain, unconditionally.
+    assert "--network none" in joined
+    assert "--cap-drop ALL" in joined
+    assert "no-new-privileges" in joined
+    assert "--read-only" in joined
+    assert f"{root}:/data:ro" in joined
 
 
 # ------------------------------------------------------------------ fail-closed
@@ -228,31 +261,74 @@ def test_registry_blocks_sandboxed_tool_without_allowlist(root: Path) -> None:
         registry.dispatch("run_x", {})
 
 
-# ------------------------------------------- Linux + real runtime (integration)
+# --------------------------------------------- real-container enforcement (Linux)
+# These run only when explicitly enabled (MCP_SANDBOX_ENFORCE_TESTS=1) on a Linux
+# host with a runtime — i.e. the dedicated CI job, never the generic test job.
+# Gating them keeps them from *vacuously* passing where the container cannot
+# start (a failed `run` also yields a non-zero rc); the positive control below
+# fails loudly if the sandbox cannot execute at all. AppArmor is disabled here
+# (apparmor_profile="") because loading a profile is host-dependent; the network
+# and filesystem confinements proven here do not depend on it.
+_ENFORCE = os.environ.get("MCP_SANDBOX_ENFORCE_TESTS") == "1"
 _RUNTIME = shutil.which("podman") or shutil.which("docker")
-_needs_runtime = pytest.mark.skipif(
-    _RUNTIME is None or not sys.platform.startswith("linux"),
-    reason="requires a Linux host with podman/docker for real syscall/network confinement",
+_needs_enforce = pytest.mark.skipif(
+    not (_ENFORCE and _RUNTIME and sys.platform.startswith("linux")),
+    reason="set MCP_SANDBOX_ENFORCE_TESTS=1 on a Linux host with podman/docker",
 )
+_IMAGE = "docker.io/library/busybox:stable"
 
 
-@pytest.mark.security
-@_needs_runtime
-def test_real_sandbox_blocks_network_egress(root: Path) -> None:
-    cfg = SandboxConfig(root=root, mode="enforce", image="docker.io/library/busybox:stable")
-    runner = SandboxRunner(config=cfg)
-    # --network=none => any outbound connection attempt must fail.
-    result = runner.run(
-        ["sh", "-c", "wget -T2 -q -O- http://example.com; echo rc=$?"], name="egress"
+def _enforce_runner(root: Path) -> SandboxRunner:
+    # Disable AppArmor (host profile-load dependent) and seccomp (enforcing its
+    # allow-list against arbitrary busybox syscalls is arch-dependent; the
+    # profile's intent is validated structurally in
+    # test_seccomp_profile_is_deny_by_default). The network / filesystem / user /
+    # capability confinement proven below is runtime-native and reliable.
+    cfg = SandboxConfig(
+        root=root, mode="enforce", image=_IMAGE, apparmor_profile="", seccomp_profile=None
     )
-    assert result.returncode != 0 or "rc=0" not in result.stdout
+    return SandboxRunner(config=cfg)
 
 
 @pytest.mark.security
-@_needs_runtime
+@_needs_enforce
+def test_real_sandbox_positive_control(root: Path) -> None:
+    # Guards the negative tests below from vacuously passing: the container must
+    # actually start and run a command under all the confinement flags.
+    result = _enforce_runner(root).run(["sh", "-c", "echo ok"], name="control")
+    assert result.executed is True
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+@pytest.mark.security
+@_needs_enforce
+def test_real_sandbox_runs_as_non_root(root: Path) -> None:
+    result = _enforce_runner(root).run(["id", "-u"], name="whoami")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "65534"  # never uid 0 inside
+
+
+@pytest.mark.security
+@_needs_enforce
+def test_real_sandbox_blocks_network_egress(root: Path) -> None:
+    # --network=none => name resolution / connect must fail; the command reports
+    # a non-zero rc from inside the container (distinct from a failed run).
+    result = _enforce_runner(root).run(
+        ["sh", "-c", "wget -T3 -q -O- http://example.com >/dev/null 2>&1; echo rc=$?"],
+        name="egress",
+    )
+    assert result.returncode == 0, result.stderr  # the shell itself ran
+    assert "rc=0" not in result.stdout  # ...but the network call failed
+
+
+@pytest.mark.security
+@_needs_enforce
 def test_real_sandbox_data_is_read_only(root: Path) -> None:
-    cfg = SandboxConfig(root=root, mode="enforce", image="docker.io/library/busybox:stable")
-    runner = SandboxRunner(config=cfg)
-    # /data is mounted read-only; a write must fail.
-    result = runner.run(["sh", "-c", "echo x > /data/attack; echo rc=$?"], name="write-probe")
+    # /data is mounted read-only; a write must fail from inside the container.
+    result = _enforce_runner(root).run(
+        ["sh", "-c", "echo x > /data/attack 2>/dev/null; echo rc=$?"], name="write-probe"
+    )
+    assert result.returncode == 0, result.stderr
     assert "rc=0" not in result.stdout
+    assert not (root / "attack").exists()  # nothing leaked to the host
