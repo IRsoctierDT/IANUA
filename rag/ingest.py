@@ -22,11 +22,17 @@ MAX_FILE_BYTES: int = 5_000_000
 
 @dataclass(frozen=True)
 class Chunk:
-    """A retrievable unit of text with provenance."""
+    """A retrievable unit of text with provenance.
+
+    ``char_start`` is the chunk text's exact character offset in the source
+    document, so a citation can point back to the passage's location (and be
+    verified against the source). Defaults to ``0`` for hand-built chunks.
+    """
 
     source: str
     index: int
     text: str
+    char_start: int = 0
 
 
 class Embedder(Protocol):
@@ -67,9 +73,13 @@ def chunk_text(source: str, text: str, *, size: int = 800, overlap: int = 100) -
     chunks: list[Chunk] = []
     step = size - overlap
     for i, start in enumerate(range(0, len(text) or 1, step)):
-        window = text[start : start + size].strip()
+        raw = text[start : start + size]
+        lead = len(raw) - len(raw.lstrip())  # chars dropped by lstrip
+        window = raw.strip()
         if window:
-            chunks.append(Chunk(source=source, index=i, text=window))
+            # char_start is the exact offset of ``window`` in ``text``, so
+            # text[char_start : char_start + len(window)] == window.
+            chunks.append(Chunk(source=source, index=i, text=window, char_start=start + lead))
     return chunks
 
 
@@ -80,6 +90,20 @@ def ingest(corpus_root: Path) -> list[Chunk]:
         text = doc.read_text(encoding="utf-8", errors="strict")
         chunks.extend(chunk_text(doc.name, text))
     return chunks
+
+
+def read_documents(corpus_root: Path) -> dict[str, str]:
+    """Map each allow-listed document's ``source`` name to its full text.
+
+    Same trust boundary as :func:`ingest` (confined, allow-listed, no symlinks).
+    Used to *verify* that a citation's quote appears verbatim in its source. If
+    two documents share a basename the last read wins — matching the ``source``
+    naming used by :func:`ingest`.
+    """
+    return {
+        doc.name: doc.read_text(encoding="utf-8", errors="strict")
+        for doc in discover_documents(corpus_root)
+    }
 
 
 def embed_chunks(chunks: Iterable[Chunk], embedder: Embedder) -> list[tuple[Chunk, list[float]]]:
