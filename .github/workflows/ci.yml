@@ -211,12 +211,6 @@ jobs:
           github.ref == 'refs/heads/main' &&
           !(github.event.repository.private == true &&
             github.event.repository.owner.type == 'User')
-        # continue-on-error: GitHub Attestations API rejects private user-owned
-        # repos with "Feature not available for user-owned private repositories".
-        # This keeps the build green while the step is non-functional; remove
-        # this flag if the repo is made public or transferred to a GHAS org.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        continue-on-error: true
         uses: actions/attest-sbom@v4
         with:
           subject-path: "dist/*"
@@ -240,4 +234,3 @@ jobs:
         run: |
           echo "Human approval recorded via the 'production' environment gate (AGENTS.md §5.1)."
           echo "Wire the real deploy step here. Keep secrets in the env's secret store only."
-
