@@ -20,7 +20,7 @@ Ordered by security value per unit of effort, respecting dependencies.
 | # | Workstream | Security value | Effort | Risk to add | Depends on | Status |
 |---|---|---|---|---|---|---|
 | 1 | Policy-as-code allow/deny layer (`agents/policies/`) | High | M | Low | — | **Implemented** |
-| 2 | Tamper-evident audit logging + retention | High | M | Low | 1 (policy decisions are audit events) | **Implemented** (retention pending) |
+| 2 | Tamper-evident audit logging + retention | High | M | Low | 1 (policy decisions are audit events) | **Implemented** |
 | 3 | Property-based fuzzing of tool input validators | Medium-High | S | Low | — | **Implemented** |
 | 4 | Signed SBOM + provenance attestation in CI | Medium | S–M | Low | existing SBOM gate | **Implemented** |
 | 5 | Rootless seccomp/AppArmor sandbox for MCP tools | High | L | Medium | 1 (policy decides what runs sandboxed) | **Implemented** (report-mode default) |
@@ -59,7 +59,7 @@ command; richer context inputs (target path/host) surfaced into decisions.
 
 ---
 
-## 2. Tamper-evident audit logging with retention — implemented (retention pending)
+## 2. Tamper-evident audit logging with retention — implemented
 
 **Objective.** Make the audit trail append-only and verifiable, so any modification or
 deletion of past events is detectable, with an explicit retention/rotation policy.
@@ -71,11 +71,21 @@ unbounded or non-compliant retention.
 `verify()`; tests in `tests/security/test_audit_logger.py`. Every policy decision and blocked
 tool attempt is recorded.
 
-**Remaining (planned).**
-- **Signing:** sign the head hash periodically (HMAC / Ed25519 / keyless sigstore-cosign).
-- **Retention:** documented rotation policy (e.g. hot 90 days, cold archive, then purge)
-  enforced by a scheduled job; archived segments keep their terminal hash so the chain
-  stays verifiable across rotations.
+**Retention & rotation — shipped.** `AuditLogger(max_bytes=..., retain_segments=...)` rolls the
+active log into numbered archives at a size threshold and keeps the most recent *N*. The hash
+chain is **continuous across rotation** (a new segment's first entry carries the prior segment's
+last hash + next seq), and retention pruning writes a `.checkpoint` recording the last pruned
+`(seq, hash)` so the oldest *retained* entry stays anchored — dropping, truncating, editing, or
+reordering any retained segment is caught by `verify()`. Covered by
+`tests/security/test_audit_retention.py` (continuity, checkpoint-anchored pruning, and detection
+of edited/dropped segments and a removed checkpoint). Defaults are unchanged (no rotation) so
+existing callers are unaffected.
+
+**Remaining (optional).**
+- **Signing:** sign the head hash periodically (HMAC / Ed25519 / keyless sigstore-cosign) for
+  external, offline verifiability of the chain head.
+- **Scheduled enforcement:** a cron/job to apply the size/retention policy to the deployed log
+  location (the mechanism is in place; wiring it to a schedule is deployment-specific).
 
 ---
 
