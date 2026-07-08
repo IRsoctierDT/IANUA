@@ -137,10 +137,20 @@ already a required SCA gate; the npm path uses only the standard library.
 
 ## SBOM attestation & drift prevention
 
-- **Provenance:** on push to `main` the `build` job binds this SBOM to the built
-  distributions with a **signed, keyless (Sigstore/OIDC) attestation**
-  (`actions/attest-sbom`), recorded in the GitHub attestations store. Verify with
-  `gh attestation verify <artifact> --repo <owner>/<repo>`.
+- **Provenance:** on push to `main` the `build` job binds the built distributions
+  to **two** signed, keyless (Sigstore/OIDC) attestations recorded in the GitHub
+  attestations store — the **SBOM** (`actions/attest-sbom`) and **SLSA build
+  provenance** (`actions/attest-build-provenance`). Verify a downloaded artifact:
+
+  ```bash
+  # SBOM attestation — the SBOM predicate is CycloneDX, so pass its predicate type
+  # (the default looks for SLSA provenance and would 404 against the SBOM):
+  gh attestation verify <artifact> --repo <owner>/<repo> \
+    --predicate-type https://cyclonedx.org/bom
+
+  # Build-provenance attestation — verifies with the default predicate:
+  gh attestation verify <artifact> --repo <owner>/<repo>
+  ```
 - **Anti-drift:** the `sbom-sync` CI job fails closed if the derived pip locks
   disagree with `uv.lock` (`scripts/check_locks.py`) or if `sbom.cdx.json` is not
   regenerated from the committed lock. So a Dependabot bump that updates `uv.lock`

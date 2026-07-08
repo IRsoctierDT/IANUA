@@ -5,9 +5,9 @@ posture (least privilege, auditability, human-in-the-loop). Each item is scoped 
 independent, reviewable increment consistent with [`AGENTS.md`](../AGENTS.md) and
 [`DESIGN.md`](../DESIGN.md).
 
-> Status: mixed. Items 1, 2, and 3 are **implemented** (see `agents/policies/` and
-> `tests/security/`); items 4-5 are **planned**. Nothing here weakens an existing
-> control; every item is additive and fail-closed by design.
+> Status: mixed. Items 1, 2, 3, and 4 are **implemented** (see `agents/policies/`,
+> `tests/security/`, and `security/sbom/`); item 5 is **planned**. Nothing here weakens
+> an existing control; every item is additive and fail-closed by design.
 
 ---
 
@@ -20,7 +20,7 @@ Ordered by security value per unit of effort, respecting dependencies.
 | 1 | Policy-as-code allow/deny layer (`agents/policies/`) | High | M | Low | — | **Implemented** |
 | 2 | Tamper-evident audit logging + retention | High | M | Low | 1 (policy decisions are audit events) | **Implemented** (retention pending) |
 | 3 | Property-based fuzzing of tool input validators | Medium-High | S | Low | — | **Implemented** |
-| 4 | Signed SBOM + provenance attestation in CI | Medium | S–M | Low | existing SBOM gate | Planned |
+| 4 | Signed SBOM + provenance attestation in CI | Medium | S–M | Low | existing SBOM gate | **Implemented** |
 | 5 | Rootless seccomp/AppArmor sandbox for MCP tools | High | L | Medium | 1 (policy decides what runs sandboxed) | Planned |
 
 Rationale: 1 and 2 are the backbone — a decision point (policy) and an evidence trail
@@ -103,7 +103,15 @@ added; seed strategies directly from each tool's declared argument schema.
 
 ---
 
-## 4. Signed SBOM + dependency provenance attestation in CI
+## 4. Signed SBOM + dependency provenance attestation in CI — implemented
+
+**Status.** Implemented and verified on the public repo. On push to `main` the `build` job
+produces both a **signed SBOM attestation** (`actions/attest-sbom`, CycloneDX predicate) and a
+**SLSA build-provenance attestation** (`actions/attest-build-provenance`), keyless via GitHub
+OIDC. Verified end-to-end with `gh attestation verify` (SBOM predicate `https://cyclonedx.org/bom`;
+provenance via the default predicate) — see [`security/sbom/README.md`](../security/sbom/README.md).
+Both steps are guarded (push-to-`main`, non-private-user-repo) and fail closed, not
+`continue-on-error`.
 
 **Objective.** Extend the existing CycloneDX SBOM step into signed, verifiable build provenance,
 so consumers can confirm what was built, from which sources, by which workflow.

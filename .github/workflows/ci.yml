@@ -215,6 +215,22 @@ jobs:
         with:
           subject-path: "dist/*"
           sbom-path: "security/sbom/sbom.cdx.json"
+      - name: Attest build provenance for the artifacts (SLSA, main only)
+        # SLSA build-provenance attestation for the distributions: records the
+        # source commit, builder identity (GitHub Actions), and materials, so a
+        # consumer can confirm *what was built, from where, by which workflow*.
+        # Complements the SBOM attestation above. Same skip guard: keyless OIDC
+        # signing, push-to-main only, and skipped on user-owned private repos
+        # where the Attestations API is unavailable — a fail-closed guard, not
+        # continue-on-error, so real signing errors still break the build.
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          !(github.event.repository.private == true &&
+            github.event.repository.owner.type == 'User')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
 
   # ---------------------------------------------------------------- Stage 5
   deploy:
