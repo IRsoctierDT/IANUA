@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:cb0429dd-9e34-5865-8c29-229ed7fe1192",
+  "serialNumber": "urn:uuid:37e9c48f-6f40-556b-9896-086e5eb1e544",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-07-08T06:53:01Z",
+    "timestamp": "2026-07-08T08:32:25Z",
     "tools": {
       "components": [
         {
@@ -112,6 +112,13 @@
       "purl": "pkg:pypi/certifi@2026.6.17"
     },
     {
+      "bom-ref": "pkg:pypi/cffi@2.1.0",
+      "name": "cffi",
+      "type": "library",
+      "version": "2.1.0",
+      "purl": "pkg:pypi/cffi@2.1.0"
+    },
+    {
       "bom-ref": "pkg:pypi/cfgv@3.5.0",
       "name": "cfgv",
       "type": "library",
@@ -138,6 +145,13 @@
       "type": "library",
       "version": "7.14.3",
       "purl": "pkg:pypi/coverage@7.14.3"
+    },
+    {
+      "bom-ref": "pkg:pypi/cryptography@49.0.0",
+      "name": "cryptography",
+      "type": "library",
+      "version": "49.0.0",
+      "purl": "pkg:pypi/cryptography@49.0.0"
     },
     {
       "bom-ref": "pkg:pypi/cuda-bindings@13.3.1",
@@ -656,6 +670,13 @@
       "type": "library",
       "version": "24.0.0",
       "purl": "pkg:pypi/pyarrow@24.0.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/pycparser@3.0",
+      "name": "pycparser",
+      "type": "library",
+      "version": "3.0",
+      "purl": "pkg:pypi/pycparser@3.0"
     },
     {
       "bom-ref": "pkg:pypi/pydantic-core@2.46.4",

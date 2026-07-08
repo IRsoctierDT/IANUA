@@ -22,6 +22,15 @@ from agents.policies.approval import (
 )
 from agents.policies.audit import AuditEvent, AuditLogger, signing_key_from_env
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle
+from agents.policies.signing import (
+    Ed25519Signer,
+    Ed25519Verifier,
+    HmacSigner,
+    Signer,
+    ed25519_signer_from_env,
+    ed25519_verifier_from_env,
+    generate_ed25519_keypair,
+)
 
 __all__ = [
     "DEFAULT_BUNDLE_PATH",
@@ -29,10 +38,17 @@ __all__ = [
     "AuditEvent",
     "AuditLogger",
     "Decision",
+    "Ed25519Signer",
+    "Ed25519Verifier",
+    "HmacSigner",
     "PolicyBundleError",
     "PolicyDecision",
     "PolicyEngine",
+    "Signer",
     "classify_action",
+    "ed25519_signer_from_env",
+    "ed25519_verifier_from_env",
+    "generate_ed25519_keypair",
     "guard",
     "load_bundle",
     "signing_key_from_env",

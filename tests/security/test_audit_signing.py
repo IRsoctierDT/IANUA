@@ -96,7 +96,7 @@ def test_garbled_signature_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.security
 def test_verify_signature_requires_key(tmp_path: Path) -> None:
     log = _log(tmp_path / "audit.log")
-    with pytest.raises(ValueError, match="requires a signing_key"):
+    with pytest.raises(ValueError, match="requires a signer"):
         log.verify_signature()
 
 
