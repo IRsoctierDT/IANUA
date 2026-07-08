@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+#: Upper bound on an untrusted path candidate (defends against oversized input).
+_MAX_CANDIDATE_LEN = 4096
+
 
 class ValidationError(ValueError):
     """Raised when untrusted input fails a security/validation check."""
@@ -17,7 +20,10 @@ class ValidationError(ValueError):
 def resolve_within(base: Path, candidate: str) -> Path:
     """Resolve ``candidate`` and guarantee it stays inside ``base``.
 
-    Defends against path-traversal (``../``) from untrusted input.
+    Defends against path-traversal (``../``) from untrusted input, and rejects two
+    classes of hostile input up front so they surface as :class:`ValidationError`
+    rather than a lower-level ``ValueError``/``OSError``: embedded NUL bytes and
+    oversized candidates.
 
     Args:
         base: Trusted root directory the result must remain within.
@@ -27,8 +33,13 @@ def resolve_within(base: Path, candidate: str) -> Path:
         The resolved absolute path, guaranteed to be inside ``base``.
 
     Raises:
-        ValidationError: If the resolved path escapes ``base``.
+        ValidationError: If the candidate contains a NUL byte, exceeds the length
+            limit, or resolves to a path that escapes ``base``.
     """
+    if "\x00" in candidate:
+        raise ValidationError("path contains a NUL byte")
+    if len(candidate) > _MAX_CANDIDATE_LEN:
+        raise ValidationError(f"path exceeds {_MAX_CANDIDATE_LEN}-character limit")
     base_resolved = base.resolve()
     target = (base_resolved / candidate).resolve()
     if base_resolved != target and base_resolved not in target.parents:
