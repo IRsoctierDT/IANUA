@@ -2,29 +2,52 @@
 
 ## Current Version
 
-v0.3.0
+v1.8.0 — **agent suite complete** (all eight core agent blueprints built, plus
+supporting agents). See [`docs/Changelog.md`](./Changelog.md) for the full history.
 
 ## Operational Components
 
 ### Infrastructure
 
-- GitHub Repository
-- Python Virtual Environment
-- VS Code Development Environment
-- Docker
-- Ollama
-- Qdrant
+- GitHub Repository (public) with branch protection + full CI/CD
+- Python virtual environment (`uv.lock` as the dependency source of truth)
+- Docker / Ollama / Qdrant local stack
+- VS Code development environment
 
 ### AI Components
 
-- Sentence Transformers
-- Qwen3:4B
-- Local RAG Pipeline
+- Sentence Transformers (local embeddings)
+- Qwen3:4B via Ollama (loopback-only, fail-closed)
+- Local RAG pipeline (ingest → chunk → embed → cited retrieval; offline mode)
 
 ### Agents
 
+Core blueprints:
+
 - SOC Analyst Agent
+- MITRE ATT&CK Mapper Agent
+- Threat Intelligence Agent
+- Vulnerability Assessment Agent
+- Knowledge Base Agent
 - Incident Report Agent
+- Detection Matcher Agent
+- Orchestrator Agent
+
+Supporting agents:
+
+- Legal / Compliance Research Agent
+- Business Proposal Agent
+- Knowledge Curator Agent
+- Portfolio Documentation Agent
+- Executive Assistant Agent
+
+### Interfaces & Governance
+
+- Streamlit command-center dashboard (SOC workflow, batch, KB search, health, reports)
+- Policy-gated MCP tool surface (allow-listed, path-confined, self-validating)
+- Policy engine (default-deny policy-as-code) + tamper-evident, hash-chained audit log
+- CI/CD: ruff, mypy, bandit, pip-audit, gitleaks, coverage gate, CycloneDX SBOM
+- Signed **SBOM + SLSA build-provenance** attestations (Sigstore/OIDC, verified on `main`)
 
 ### Qdrant Collections
 
@@ -36,51 +59,50 @@ v0.3.0
 
 ### v0.1.0
 
-- Local AI stack operational
-- SOC Analyst Agent
-- Qdrant integration
+- Local AI stack operational; SOC Analyst Agent; Qdrant integration
 
 ### v0.2.0
 
-- Chunked RAG ingestion
-- Citation-aware retrieval
-- Ollama integration
+- Chunked RAG ingestion; citation-aware retrieval; Ollama integration
 
 ### v0.3.0
 
-- Incident Report Agent
-- Markdown report generation
+- Incident Report Agent; Markdown report generation
+
+### v1.x — agent suite build-out
+
+- MITRE mapper, threat intel, vulnerability assessment, knowledge base,
+  detection matcher, and orchestrator agents
+- Supporting agents (legal/compliance, business proposal, knowledge curator,
+  portfolio documentation, executive assistant)
+
+### v1.8.0 — agent suite complete
+
+- All eight core agent blueprints built
+- Source-cited cybersecurity knowledge base (OWASP Top 10:2025, MITRE ATT&CK,
+  NIST CSF 2.0, CIS Controls v8.1, Security+ SY0-701)
+- Portfolio-grade case studies for every component (`docs/case-studies/`)
 
 ## Current Model Inventory
 
 - qwen3:4b
 
-## Outstanding Tasks
+## Hardening Status
 
-- MITRE ATT&CK Mapping Agent
-- Threat Intelligence Agent
-- PDF Incident Reports
-- Multi-document ingestion
-- Source citation engine
-- SOC dashboard
+See [`docs/HARDENING_ROADMAP.md`](./HARDENING_ROADMAP.md).
 
-## Future Versions
+- ✅ Policy-as-code allow/deny layer
+- ✅ Tamper-evident audit logging (retention policy pending)
+- ✅ Property-based fuzzing of tool input validators
+- ✅ Signed SBOM + SLSA build-provenance attestation in CI
+- 🔲 Rootless seccomp/AppArmor sandbox for MCP tool execution (planned)
 
-### v0.4.0
+## Outstanding / Next
 
-MITRE ATT&CK Mapping Agent
-
-### v0.5.0
-
-Threat Intelligence Agent
-
-### v0.6.0
-
-PDF Reporting System
-
-### v0.7.0
-
-SOC Dashboard
+- Rootless seccomp/AppArmor sandbox for MCP tool execution (hardening item 5)
+- Audit-log retention & rotation policy (completes hardening item 2)
+- Functional enhancements: PDF incident reports; multi-document ingestion;
+  stronger source-citation engine
 
 ## Repository Status
 
