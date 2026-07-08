@@ -38,14 +38,27 @@ shell-injected regardless of content.
 
 from __future__ import annotations
 
+import enum
+import re
 import shutil
 import subprocess  # nosec B404 - the whole point of this module is to confine subprocess use
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from agents.policies import AuditLogger
+
+
+class _Keep(enum.Enum):
+    """Sentinel: 'leave this profile unchanged' in :meth:`SandboxRunner.with_profiles`."""
+
+    TOKEN = enum.auto()
+
+
+#: Passed as a ``with_profiles`` default to distinguish "not provided" from an
+#: explicit ``None`` / ``""`` (which *disable* a profile).
+_KEEP: Final = _Keep.TOKEN
 
 __all__ = [
     "PROFILE_DIR",
@@ -89,7 +102,9 @@ class SandboxConfig:
     #: Host directory exposed to the tool (read-only) at ``/data``. Ties to
     #: ``MCP_ROOT``; must be an existing directory.
     root: Path
-    #: Minimal, pinned OCI image the tool runs in. Pin by digest in production.
+    #: Minimal OCI image the tool runs in. Pin by digest (``name@sha256:...``) in
+    #: production so a mutable tag cannot be swapped under you; see
+    #: ``require_pinned_image``.
     image: str = "docker.io/library/python:3.12-slim"
     #: ``"enforce"`` (run confined) or ``"report"`` (audit-only, no execution).
     mode: SandboxMode = "report"
@@ -113,6 +128,10 @@ class SandboxConfig:
     #: Loaded AppArmor profile name (``apparmor_parser``-loaded out of band). An
     #: empty string omits the flag where AppArmor is unavailable.
     apparmor_profile: str = _APPARMOR_PROFILE_NAME
+    #: When ``True``, reject an ``image`` that is not pinned by digest
+    #: (``…@sha256:<64 hex>``) — a supply-chain guard for production so a mutable
+    #: tag cannot be repointed to a different image between builds.
+    require_pinned_image: bool = False
 
     def __post_init__(self) -> None:
         if not self.root.is_dir():
@@ -121,6 +140,14 @@ class SandboxConfig:
             raise ValueError("timeout_s must be positive")
         if self.pids_limit <= 0:
             raise ValueError("pids_limit must be positive")
+        if self.require_pinned_image and not self.is_pinned_image:
+            raise ValueError(f"image must be pinned by digest (name@sha256:...): {self.image!r}")
+
+    @property
+    def is_pinned_image(self) -> bool:
+        """True if ``image`` carries an explicit ``@sha256:<64 hex>`` digest."""
+        _, _, digest = self.image.partition("@")
+        return bool(re.fullmatch(r"sha256:[0-9a-f]{64}", digest))
 
 
 @dataclass(frozen=True)
@@ -177,6 +204,35 @@ class SandboxRunner:
             "no rootless container runtime found (looked for "
             f"{', '.join(candidates)}); refusing to run tool unsandboxed"
         )
+
+    def with_profiles(
+        self,
+        *,
+        seccomp_profile: Path | None | _Keep = _KEEP,
+        apparmor_profile: str | _Keep = _KEEP,
+    ) -> SandboxRunner:
+        """Return a copy of this runner with per-tool seccomp/AppArmor profiles.
+
+        Lets one base runner confine different tools under different profiles
+        (least privilege per capability). Only the profiles given are changed —
+        every other setting (image, limits, audit sink, runtime lookup) is
+        preserved. Pass ``seccomp_profile=None`` / ``apparmor_profile=""`` to
+        *disable* a profile for that tool; omit an argument to keep the base's.
+        """
+        cfg = replace(
+            self.config,
+            seccomp_profile=(
+                self.config.seccomp_profile
+                if isinstance(seccomp_profile, _Keep)
+                else seccomp_profile
+            ),
+            apparmor_profile=(
+                self.config.apparmor_profile
+                if isinstance(apparmor_profile, _Keep)
+                else apparmor_profile
+            ),
+        )
+        return replace(self, config=cfg)
 
     def build_command(self, argv: Sequence[str], *, runtime: str) -> tuple[str, ...]:
         """Materialise the full hardened ``<runtime> run ...`` argument vector.

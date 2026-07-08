@@ -229,6 +229,57 @@ def test_explicit_runtime_is_honored(root: Path) -> None:
     assert runner.resolve_runtime() == "/usr/bin/docker"
 
 
+# ------------------------------------------------- digest pinning (supply chain)
+_PINNED = "docker.io/library/python:3.12-slim@sha256:" + ("a" * 64)
+
+
+@pytest.mark.security
+def test_is_pinned_image_detects_digest(root: Path) -> None:
+    assert SandboxConfig(root=root, image=_PINNED).is_pinned_image is True
+    assert SandboxConfig(root=root, image="python:3.12-slim").is_pinned_image is False
+
+
+@pytest.mark.security
+def test_require_pinned_image_rejects_mutable_tag(root: Path) -> None:
+    with pytest.raises(ValueError, match="pinned by digest"):
+        SandboxConfig(root=root, image="python:3.12-slim", require_pinned_image=True)
+    # A digest-pinned image is accepted.
+    cfg = SandboxConfig(root=root, image=_PINNED, require_pinned_image=True)
+    assert cfg.is_pinned_image is True
+
+
+# --------------------------------------------------------- per-tool profiles
+@pytest.mark.security
+def test_with_profiles_overrides_only_named_profiles(root: Path) -> None:
+    base = _runner(root)  # default seccomp + apparmor=mcp-tool
+    derived = base.with_profiles(apparmor_profile="tool-x")
+    base_cmd = " ".join(base.build_command(["echo"], runtime="podman"))
+    derived_cmd = " ".join(derived.build_command(["echo"], runtime="podman"))
+    assert "apparmor=mcp-tool" in base_cmd  # base is untouched (immutable copy)
+    assert "apparmor=tool-x" in derived_cmd  # derived uses the per-tool profile
+    assert "seccomp=" in derived_cmd  # other profile preserved
+
+
+@pytest.mark.security
+def test_with_profiles_can_disable_a_profile_per_tool(root: Path) -> None:
+    derived = _runner(root).with_profiles(seccomp_profile=None, apparmor_profile="")
+    cmd = " ".join(derived.build_command(["echo"], runtime="podman"))
+    assert "seccomp=" not in cmd
+    assert "apparmor=" not in cmd
+    assert "--network none" in cmd  # core confinement still applied
+
+
+@pytest.mark.security
+def test_per_tool_runners_are_independent(root: Path) -> None:
+    base = _runner(root)
+    a = base.with_profiles(apparmor_profile="prof-a")
+    b = base.with_profiles(apparmor_profile="prof-b")
+    assert "apparmor=prof-a" in " ".join(a.build_command(["x"], runtime="podman"))
+    assert "apparmor=prof-b" in " ".join(b.build_command(["x"], runtime="podman"))
+    # The shared audit sink / actor carry over unchanged.
+    assert a.actor == base.actor
+
+
 # ----------------------------------------------- registry wiring (policy + sandbox)
 @pytest.mark.security
 def test_registry_dispatch_routes_command_tool_through_sandbox(root: Path, tmp_path: Path) -> None:
