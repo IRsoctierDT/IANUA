@@ -36,7 +36,22 @@ security operation.
 
 ### Case studies
 
-- [SOC Analyst Agent v0.2](./docs/case-studies/soc-analyst-v0.2.md) — raw log line → triaged, MITRE-mapped, human-reviewable incident report, fully local.
+Ten portfolio-grade write-ups — one per component — each following the [AGENTS.md](./AGENTS.md)
+§9 standard with a worked example (real command output) and a reproduce-it-yourself section.
+Full index: [`docs/case-studies/`](./docs/case-studies/README.md).
+
+| Case study | Layer |
+|---|---|
+| [SOC Analyst Agent v0.2](./docs/case-studies/soc-analyst-v0.2.md) — raw log line → triaged, MITRE-mapped, human-reviewable incident, fully local | Agent |
+| [MITRE ATT&CK Mapper Agent](./docs/case-studies/mitre-mapper-agent.md) — deterministic event → tactic/technique with confidence & evidence | Agent |
+| [Threat Intelligence Agent](./docs/case-studies/threat-intel-agent.md) — indicator triage that returns `unknown` + "enrich first" instead of guessing | Agent |
+| [Vulnerability Assessment Agent](./docs/case-studies/vulnerability-assessment-agent.md) — ranks authorized scan findings into a defensible remediation order | Agent |
+| [Knowledge Base Agent](./docs/case-studies/knowledge-base-agent.md) — cited corpus grounding; deterministic lexical default, safe semantic fallback | Agent/RAG |
+| [Incident Report Agent](./docs/case-studies/incident-report-agent.md) — composes a safe Markdown report with an opt-in, fail-soft AI narrative | Agent |
+| [Detection Matcher & Orchestrator](./docs/case-studies/detection-matcher-and-orchestrator.md) — triage→Sigma detection loop + full multi-agent pipeline in one call | Agent |
+| [Local RAG Pipeline](./docs/case-studies/rag-pipeline.md) — confined ingest → chunk → embed → cited retrieval; fully offline mode | RAG |
+| [Policy-Gated MCP Tool Surface](./docs/case-studies/mcp-server.md) — allow-listed, self-validating, path-confined, policy-gated tool calls | MCP |
+| [Policy Engine & Tamper-Evident Audit Log](./docs/case-studies/policy-and-audit.md) — default-deny policy-as-code + hash-chained, verifiable audit trail | Governance |
 
 ---
 
