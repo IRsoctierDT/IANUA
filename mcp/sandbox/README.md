@@ -128,8 +128,36 @@ structurally by a host-independent test.
 No new Python dependency. Runtime cost is one container spawn per external-command tool
 call; in-process read-only tools are unaffected. Podman is open-source and rootless.
 
+## Supply chain: pin the image by digest
+
+Set `require_pinned_image=True` to refuse any `image` that is not pinned by digest
+(`name@sha256:<64 hex>`), so a mutable tag cannot be repointed to a different image
+between builds:
+
+```python
+SandboxConfig(
+    root=root,
+    image="docker.io/library/python@sha256:<digest>",
+    require_pinned_image=True,   # rejects bare tags — supply-chain guard
+)
+```
+
+`SandboxConfig.is_pinned_image` reports whether the current image is digest-pinned.
+
+## Per-tool profiles
+
+Derive a per-tool runner from one base runner so different tools run under different
+seccomp/AppArmor profiles (least privilege per capability); everything else (image,
+limits, audit sink) is preserved:
+
+```python
+grep_runner = base_runner.with_profiles(apparmor_profile="mcp-tool-grep")
+net_runner  = base_runner.with_profiles(apparmor_profile="mcp-tool-net")
+# pass None / "" to disable a profile for a specific tool; omit to keep the base's.
+```
+
 ## Future Enhancements
 
-1. Pin the base image by digest and build a distroless tool image.
-2. Per-tool seccomp/AppArmor profile selection driven by the policy bundle.
+1. Build a distroless tool image and publish its digest for `require_pinned_image`.
+2. Drive per-tool profile selection from the policy bundle (declarative mapping).
 3. Optional user-namespace remapping and `--userns=keep-id` guidance for Podman.
