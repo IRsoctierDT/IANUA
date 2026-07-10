@@ -54,10 +54,12 @@ jobs:
   build:
     name: Build Pages artifact
     runs-on: ubuntu-latest
-    # workflow_run: only proceed if CI succeeded.
-    # workflow_dispatch: always allow (operator explicitly requested it).
+    # workflow_run: only proceed if CI succeeded (already filtered to main).
+    # workflow_dispatch: only from main — a manual run must never publish docs/
+    # from an untested branch, which would bypass the CI-success gate. Mirrors
+    # the CI deploy job's guard.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout
