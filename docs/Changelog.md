@@ -2,6 +2,26 @@
 
 All notable changes to this project. Versions correspond to git tags.
 
+## Unreleased
+
+### Added
+- **Command Center status page** (`scripts/build_status_page.py`) — a
+  deterministic, offline generator that renders `docs/status.html` and
+  `docs/status.json` from one committed source of truth (`docs/status.data.json`).
+  Input is schema-validated and fails closed on unknown status tokens; every
+  dynamic field is HTML-escaped as defense in depth (covered by
+  `tests/security/test_status_page_escaping.py`). Linked from the site nav.
+- **CI drift gate** (`status-page-sync`) — fails the build if the committed
+  status page drifts from its source data, mirroring the SBOM/lock sync gates.
+
+### Fixed
+- **GitHub Pages auto-publish deadlock** — the Pages deploy is split into
+  isolated build/deploy jobs and now uses `cancel-in-progress: true`, so a run
+  left `waiting` on an environment approval can no longer hold the concurrency
+  slot and jam every later deploy. Documented that the `github-pages`
+  environment must not require a per-publish manual approval (CI success is the
+  §7-§8 gate for already-public docs).
+
 ## v1.8.0 — Agent suite complete
 
 **Milestone: all eight agent blueprints from `03_Agent_Blueprints.md` are built.**
