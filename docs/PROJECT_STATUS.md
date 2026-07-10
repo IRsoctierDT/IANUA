@@ -46,6 +46,8 @@ Supporting agents:
 ### Interfaces & Governance
 
 - Streamlit command-center dashboard (SOC workflow, batch, KB search, health, reports)
+- Published **status page** (`docs/status.html`) — deterministically generated from
+  `docs/status.data.json`, drift-gated in CI, served via GitHub Pages
 - Policy-gated MCP tool surface (allow-listed, path-confined, self-validating)
 - Policy engine (default-deny policy-as-code) + tamper-evident, hash-chained audit log
 - CI/CD: ruff, mypy, bandit, pip-audit, gitleaks, coverage gate, CycloneDX SBOM

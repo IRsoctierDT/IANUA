@@ -1,0 +1,112 @@
+{
+  "title": "AI Operator Cyber Command Center",
+  "tagline": "Live component status for the SENTINEL platform — SOC automation, RAG, and agentic workflows.",
+  "as_of": "2026-07-10",
+  "sections": [
+    {
+      "title": "Infrastructure",
+      "components": [
+        {
+          "name": "CI/CD pipeline",
+          "status": "operational",
+          "detail": "ruff, mypy, bandit, pip-audit, gitleaks, coverage gate, and CycloneDX SBOM — green on main."
+        },
+        {
+          "name": "Signed provenance",
+          "status": "operational",
+          "detail": "SBOM + SLSA build-provenance attestations (Sigstore/OIDC), verified on main."
+        },
+        {
+          "name": "GitHub Pages deploy",
+          "status": "degraded",
+          "detail": "Concurrency deadlock fixed and manual publishes restricted to main; full auto-publish resumes once the github-pages environment reviewer gate is removed."
+        },
+        {
+          "name": "Local AI stack",
+          "status": "operational",
+          "detail": "Docker / Ollama / Qdrant, loopback-only and fail-closed."
+        }
+      ]
+    },
+    {
+      "title": "AI Components",
+      "components": [
+        {
+          "name": "RAG pipeline",
+          "status": "operational",
+          "detail": "Ingest, chunk, embed, and cited retrieval with an offline mode."
+        },
+        {
+          "name": "Vector stores",
+          "status": "operational",
+          "detail": "In-memory default plus persistent SQLite behind one VectorStore protocol."
+        },
+        {
+          "name": "Source-citation engine",
+          "status": "operational",
+          "detail": "Verifiable passage-level citations (rag/citations.py)."
+        },
+        {
+          "name": "Local embeddings + Qwen3:4B",
+          "status": "operational",
+          "detail": "Sentence-Transformers embeddings; Qwen3:4B via Ollama."
+        }
+      ]
+    },
+    {
+      "title": "Agents",
+      "components": [
+        {
+          "name": "Core agent suite",
+          "status": "operational",
+          "detail": "All eight core blueprints: SOC, MITRE mapper, threat-intel, vuln, KB, incident report, detection matcher, orchestrator."
+        },
+        {
+          "name": "Supporting agents",
+          "status": "operational",
+          "detail": "Legal/compliance, business proposal, knowledge curator, portfolio docs, executive assistant."
+        }
+      ]
+    },
+    {
+      "title": "Governance & Security",
+      "components": [
+        {
+          "name": "Policy engine",
+          "status": "operational",
+          "detail": "Default-deny policy-as-code gating the MCP tool surface."
+        },
+        {
+          "name": "Tamper-evident audit log",
+          "status": "operational",
+          "detail": "Hash-chained log with HMAC or Ed25519 head-hash signing; rotation + retention."
+        },
+        {
+          "name": "Tool-execution sandbox",
+          "status": "operational",
+          "detail": "Rootless seccomp/AppArmor sandbox (report-mode default; enforce mode on Linux)."
+        }
+      ]
+    },
+    {
+      "title": "Interfaces",
+      "components": [
+        {
+          "name": "Streamlit command center",
+          "status": "operational",
+          "detail": "SOC workflow, batch, KB search, health, and report views."
+        },
+        {
+          "name": "PDF incident reports",
+          "status": "operational",
+          "detail": "reportlab export via the .[pdf] extra."
+        },
+        {
+          "name": "Hosted multi-agent console",
+          "status": "planned",
+          "detail": "Web console for orchestrated runs — on the hardening roadmap."
+        }
+      ]
+    }
+  ]
+}

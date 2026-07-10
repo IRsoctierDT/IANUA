@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Operator Cyber Command Center · Status</title>
+<meta name="description" content="Live component status for the SENTINEL platform — SOC automation, RAG, and agentic workflows.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0d11;--surface:rgba(255,255,255,.03);--border:rgba(255,255,255,.08);
+  --text-0:#e6e9ee;--text-1:#aeb6c2;--text-2:#8b94a3;--text-3:#5b636f;
+  --green:oklch(.74 .12 150);--amber:oklch(.80 .12 80);
+  --blue:oklch(.70 .13 235);--red:oklch(.64 .17 25);
+  --sans:'IBM Plex Sans',system-ui,sans-serif;--mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+body{background:var(--bg);color:var(--text-0);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;line-height:1.5;padding:48px 20px}
+.wrap{max-width:900px;margin:0 auto}
+.eyebrow{font:600 12px/1 var(--mono);letter-spacing:.14em;color:var(--blue);
+  text-transform:uppercase}
+h1{font-size:30px;font-weight:700;margin:12px 0 6px}
+.tagline{color:var(--text-1);font-size:15px}
+.meta{margin-top:10px;font:500 12px/1.6 var(--mono);color:var(--text-3)}
+.meta a{color:var(--text-2)}
+.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:28px 0}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:16px;text-align:center}
+.stat-num{display:block;font:700 26px/1 var(--mono)}
+.stat-label{display:block;margin-top:6px;font-size:12px;color:var(--text-2)}
+.stat--operational .stat-num{color:var(--green)}
+.stat--degraded .stat-num{color:var(--amber)}
+.stat--planned .stat-num{color:var(--blue)}
+.stat--offline .stat-num{color:var(--red)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  padding:20px 22px;margin-bottom:16px}
+.card-title{font:600 13px/1 var(--mono);letter-spacing:.08em;color:var(--text-1);
+  text-transform:uppercase;margin-bottom:14px}
+.rows{list-style:none}
+.row{display:grid;grid-template-columns:14px minmax(0,1fr) auto;align-items:center;
+  gap:10px 12px;padding:11px 0;border-top:1px solid var(--border)}
+.row:first-child{border-top:0}
+.row-name{font-weight:600;font-size:14px}
+.row-detail{grid-column:2/4;color:var(--text-2);font-size:13px}
+.dot{width:9px;height:9px;border-radius:50%}
+.pill{justify-self:end;font:600 11px/1 var(--mono);letter-spacing:.04em;
+  padding:5px 9px;border-radius:999px;white-space:nowrap}
+.dot--operational{background:var(--green)}
+.dot--degraded{background:var(--amber)}
+.dot--planned{background:var(--blue)}
+.dot--offline{background:var(--red)}
+.pill--operational{color:var(--green);background:oklch(.74 .12 150/.13)}
+.pill--degraded{color:var(--amber);background:oklch(.80 .12 80/.13)}
+.pill--planned{color:var(--blue);background:oklch(.70 .13 235/.13)}
+.pill--offline{color:var(--red);background:oklch(.64 .17 25/.13)}
+.foot{margin-top:24px;color:var(--text-3);font-size:12px;text-align:center}
+.foot a{color:var(--text-2)}
+@media(max-width:560px){.summary{grid-template-columns:repeat(2,1fr)}
+  .pill{justify-self:start}}</style>
+</head>
+<body>
+<main class="wrap">
+<p class="eyebrow">System Status</p>
+<h1>AI Operator Cyber Command Center</h1>
+<p class="tagline">Live component status for the SENTINEL platform — SOC automation, RAG, and agentic workflows.</p>
+<p class="meta">Version 1.8.0 · as of 2026-07-10 · <a href="./index.html">← command center</a></p>
+<div class="summary"><div class="stat stat--operational"><span class="stat-num">14</span><span class="stat-label">Operational</span></div><div class="stat stat--degraded"><span class="stat-num">1</span><span class="stat-label">Degraded</span></div><div class="stat stat--planned"><span class="stat-num">1</span><span class="stat-label">Planned</span></div><div class="stat stat--offline"><span class="stat-num">0</span><span class="stat-label">Offline</span></div></div>
+<section class="card"><h2 class="card-title">Infrastructure</h2><ul class="rows"><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">CI/CD pipeline</span><span class="pill pill--operational">Operational</span><span class="row-detail">ruff, mypy, bandit, pip-audit, gitleaks, coverage gate, and CycloneDX SBOM — green on main.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Signed provenance</span><span class="pill pill--operational">Operational</span><span class="row-detail">SBOM + SLSA build-provenance attestations (Sigstore/OIDC), verified on main.</span></li><li class="row"><span class="dot dot--degraded" aria-hidden="true"></span><span class="row-name">GitHub Pages deploy</span><span class="pill pill--degraded">Degraded</span><span class="row-detail">Concurrency deadlock fixed and manual publishes restricted to main; full auto-publish resumes once the github-pages environment reviewer gate is removed.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Local AI stack</span><span class="pill pill--operational">Operational</span><span class="row-detail">Docker / Ollama / Qdrant, loopback-only and fail-closed.</span></li></ul></section><section class="card"><h2 class="card-title">AI Components</h2><ul class="rows"><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">RAG pipeline</span><span class="pill pill--operational">Operational</span><span class="row-detail">Ingest, chunk, embed, and cited retrieval with an offline mode.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Vector stores</span><span class="pill pill--operational">Operational</span><span class="row-detail">In-memory default plus persistent SQLite behind one VectorStore protocol.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Source-citation engine</span><span class="pill pill--operational">Operational</span><span class="row-detail">Verifiable passage-level citations (rag/citations.py).</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Local embeddings + Qwen3:4B</span><span class="pill pill--operational">Operational</span><span class="row-detail">Sentence-Transformers embeddings; Qwen3:4B via Ollama.</span></li></ul></section><section class="card"><h2 class="card-title">Agents</h2><ul class="rows"><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Core agent suite</span><span class="pill pill--operational">Operational</span><span class="row-detail">All eight core blueprints: SOC, MITRE mapper, threat-intel, vuln, KB, incident report, detection matcher, orchestrator.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Supporting agents</span><span class="pill pill--operational">Operational</span><span class="row-detail">Legal/compliance, business proposal, knowledge curator, portfolio docs, executive assistant.</span></li></ul></section><section class="card"><h2 class="card-title">Governance &amp; Security</h2><ul class="rows"><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Policy engine</span><span class="pill pill--operational">Operational</span><span class="row-detail">Default-deny policy-as-code gating the MCP tool surface.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Tamper-evident audit log</span><span class="pill pill--operational">Operational</span><span class="row-detail">Hash-chained log with HMAC or Ed25519 head-hash signing; rotation + retention.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Tool-execution sandbox</span><span class="pill pill--operational">Operational</span><span class="row-detail">Rootless seccomp/AppArmor sandbox (report-mode default; enforce mode on Linux).</span></li></ul></section><section class="card"><h2 class="card-title">Interfaces</h2><ul class="rows"><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">Streamlit command center</span><span class="pill pill--operational">Operational</span><span class="row-detail">SOC workflow, batch, KB search, health, and report views.</span></li><li class="row"><span class="dot dot--operational" aria-hidden="true"></span><span class="row-name">PDF incident reports</span><span class="pill pill--operational">Operational</span><span class="row-detail">reportlab export via the .[pdf] extra.</span></li><li class="row"><span class="dot dot--planned" aria-hidden="true"></span><span class="row-name">Hosted multi-agent console</span><span class="pill pill--planned">Planned</span><span class="row-detail">Web console for orchestrated runs — on the hardening roadmap.</span></li></ul></section>
+<p class="foot">Generated deterministically from <code>docs/status.data.json</code> · no wall-clock, reproducible build.</p>
+</main>
+</body>
+</html>
