@@ -10,19 +10,19 @@
 #   - Split build/deploy: the build job holds no environment scope; only the
 #     deploy job touches the github-pages environment.
 #
-# Auto-publish gate (why this used to get stuck):
-#   The single gate for publishing PUBLIC documentation is a green CI run on
-#   main (lint, tests, SAST, SCA, SBOM, secret scan — AGENTS.md §7-§8). The
-#   github-pages environment must therefore NOT carry a *required-reviewer*
-#   protection rule: a per-publish manual approval adds no security value for
-#   already-public docs, and a run left sitting in `waiting` for an approval
-#   that never comes will hold the concurrency slot and jam every later deploy.
-#   If an operator deliberately wants a human gate, keep cancel-in-progress:true
-#   (below) so a stale waiting run is always superseded by the newest one and
-#   the queue can never deadlock.
+# Publish gates (defense in depth, AGENTS.md §5.1/§7-§8):
+#   1. CI success — a green CI run on main (lint, tests, SAST, SCA, SBOM, secret
+#      scan) is required before this workflow runs at all.
+#   2. Human approval — the github-pages environment keeps a *required-reviewer*
+#      protection rule, so a deploy waits for an operator to approve it (§5.1:
+#      external/deploy actions stay human-in-the-loop). This is intentional.
+#   The bug this workflow fixes was NOT the approval gate but the concurrency:
+#   with cancel-in-progress:false a run left `waiting` for approval held the slot
+#   and jammed every later deploy. cancel-in-progress:true (below) keeps the
+#   approval gate while ensuring a superseded run can never deadlock the queue.
 #
 # Prerequisite (one-time): repo Settings → Pages → Source → "GitHub Actions",
-# and confirm the github-pages environment has no required reviewers.
+# and set the operator(s) as required reviewers on the github-pages environment.
 
 name: Deploy GitHub Pages
 

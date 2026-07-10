@@ -15,12 +15,14 @@ All notable changes to this project. Versions correspond to git tags.
   status page drifts from its source data, mirroring the SBOM/lock sync gates.
 
 ### Fixed
-- **GitHub Pages auto-publish deadlock** — the Pages deploy is split into
-  isolated build/deploy jobs and now uses `cancel-in-progress: true`, so a run
-  left `waiting` on an environment approval can no longer hold the concurrency
-  slot and jam every later deploy. Documented that the `github-pages`
-  environment must not require a per-publish manual approval (CI success is the
-  §7-§8 gate for already-public docs).
+- **GitHub Pages deploy deadlock** — the Pages deploy is split into isolated
+  build/deploy jobs and now uses `cancel-in-progress: true`, so a run left
+  `waiting` on the `github-pages` environment approval can no longer hold the
+  concurrency slot and jam every later deploy. The required-reviewer approval
+  gate is kept intentionally (human-in-the-loop for deploys, AGENTS.md §5.1);
+  only the concurrency defect was fixed. Manual `workflow_dispatch` publishes
+  are restricted to `refs/heads/main` so a run can't publish `docs/` from an
+  untested branch.
 
 ## v1.8.0 — Agent suite complete
 
