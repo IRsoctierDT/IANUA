@@ -14,9 +14,9 @@
           "status": "operational"
         },
         {
-          "detail": "Concurrency deadlock fixed and manual publishes restricted to main; full auto-publish resumes once the github-pages environment reviewer gate is removed.",
+          "detail": "Publishes docs/ after CI passes on main and an operator approves the github-pages environment gate (human-in-the-loop, AGENTS.md \u00a75.1); deadlock-proof concurrency.",
           "name": "GitHub Pages deploy",
-          "status": "degraded"
+          "status": "operational"
         },
         {
           "detail": "Docker / Ollama / Qdrant, loopback-only and fail-closed.",
@@ -108,9 +108,9 @@
     }
   ],
   "summary": {
-    "degraded": 1,
+    "degraded": 0,
     "offline": 0,
-    "operational": 14,
+    "operational": 15,
     "planned": 1
   },
   "tagline": "Live component status for the SENTINEL platform \u2014 SOC automation, RAG, and agentic workflows.",

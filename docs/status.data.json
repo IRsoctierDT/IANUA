@@ -18,8 +18,8 @@
         },
         {
           "name": "GitHub Pages deploy",
-          "status": "degraded",
-          "detail": "Concurrency deadlock fixed and manual publishes restricted to main; full auto-publish resumes once the github-pages environment reviewer gate is removed."
+          "status": "operational",
+          "detail": "Publishes docs/ after CI passes on main and an operator approves the github-pages environment gate (human-in-the-loop, AGENTS.md §5.1); deadlock-proof concurrency."
         },
         {
           "name": "Local AI stack",
