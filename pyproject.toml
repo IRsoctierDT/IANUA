@@ -33,6 +33,7 @@ dev = [
   "pip-audit>=2.7",
   "detect-secrets>=1.5",
   "pre-commit>=3.7",
+  "packaging>=24.0",      # PEP 508 marker evaluation (scripts/refresh_locks.py)
   "pyyaml>=6.0",          # detections/ Sigma-rule validation tests
   "reportlab>=4.0",       # PDF incident reports (tests/unit/test_pdf_report.py)
   "cryptography>=42.0",   # Ed25519 audit-log signing (tests/security/test_ed25519_signing.py)

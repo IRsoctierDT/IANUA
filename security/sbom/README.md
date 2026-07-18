@@ -13,7 +13,7 @@
 
 This directory holds a [CycloneDX](https://cyclonedx.org/) SBOM covering the
 repository's **two package ecosystems** — Python and npm. The merged document
-(`sbom.cdx.json`) inventories **281 components** (138 Python + 143 npm) and, at
+(`sbom.cdx.json`) inventories **235 components** (143 Python + 92 npm) and, at
 generation time, **0 known vulnerabilities** per the public PyPI/OSV advisory
 databases.
 
@@ -24,7 +24,7 @@ NVIDIA CUDA runtime stack that `torch` pulls in on Linux (`nvidia-*`, `triton`) 
 real, shipped, security-relevant components a macOS resolution would omit. The
 SBOM is generated with `pip-audit --disable-pip`, which reads the pinned file
 directly (no resolver), so generation is **deterministic and platform-independent**
-and byte-for-byte reproducible for a fixed timestamp. All 143 npm components are
+and byte-for-byte reproducible for a fixed timestamp. All 92 npm components are
 `dev` build tooling (none ship at runtime); declared Python *runtime* deps are empty.
 
 > A `pip-audit` run against the maintainer's **shared** pyenv environment
@@ -41,12 +41,12 @@ and byte-for-byte reproducible for a fixed timestamp. All 143 npm components are
 
 | File | Format | Scope | Source |
 |---|---|---|---|
-| `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (144 pkgs) | `uv lock` from `pyproject.toml` |
-| `requirements.lock` | pip requirements (hashed) | 138 Linux/3.12 deps (full `[dev,dashboard]`, incl. CUDA) | `uv pip compile --python-platform linux` |
-| `requirements-dev.lock` | pip requirements (hashed) | 52 SHA-256 hash-pinned `[dev]` tools | `uv export --extra dev` (from `uv.lock`) |
-| `python.cdx.json` | CycloneDX 1.4 | 138 Python components | `pip-audit --disable-pip -r requirements.lock` |
-| `npm.cdx.json` | CycloneDX 1.5 | 143 npm components | `package-lock.json` (offline) |
-| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 281 components | both, via `generate_sbom.py` |
+| `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (149 pkgs) | `uv lock` from `pyproject.toml` |
+| `requirements.lock` | pip requirements (hashed) | 143 Linux/3.12 deps (full `[dev,dashboard]`, incl. CUDA) | `scripts/refresh_locks.py` (constrained `uv pip compile`) |
+| `requirements-dev.lock` | pip requirements (hashed) | 58 SHA-256 hash-pinned `[dev]` tools | `scripts/refresh_locks.py` (`uv export --extra dev`) |
+| `python.cdx.json` | CycloneDX 1.4 | 143 Python components | `pip-audit --disable-pip -r requirements.lock` |
+| `npm.cdx.json` | CycloneDX 1.5 | 92 npm components | `package-lock.json` (offline) |
+| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 235 components | both, via `generate_sbom.py` |
 
 **`uv.lock` (repo root) is the dependency source of truth.** It is the universal,
 hashed resolution of `pyproject.toml`; CI fails closed via `uv lock --check` if
@@ -89,11 +89,7 @@ Run from the repository root, using the project interpreter (pyenv 3.12.4):
 ```bash
 # 0. (Only if dependencies changed) refresh uv.lock and the exported pip locks:
 uv lock                                                    # source of truth
-uv pip compile pyproject.toml --all-extras --generate-hashes \
-  --python-platform x86_64-unknown-linux-gnu --python-version 3.12 \
-  --no-header --no-annotate -o security/sbom/requirements.lock   # re-add header
-uv export --extra dev --no-emit-project --no-annotate --no-header \
-  -o security/sbom/requirements-dev.lock                  # re-add header
+python scripts/refresh_locks.py   # regenerates + verifies both derived locks
 
 # 1. Emit the Python SBOM from the pinned lock. --disable-pip reads the hashed
 #    file directly (no resolver), so this is platform-independent — the Linux
@@ -109,6 +105,13 @@ python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 > and does **not** indicate SBOM generation failure — `python.cdx.json` is still
 > written. CI uses the same lock as a **gate** (see `.github/workflows/ci.yml`):
 > a non-zero exit there blocks the merge.
+
+> **Why `refresh_locks.py` and not raw `uv pip compile`:** an unconstrained
+> compile resolves fresh from PyPI and can pick versions *newer* than
+> `uv.lock`'s pins, so the result immediately fails the drift gate. The script
+> constrains the resolution to `uv.lock`'s exact pins (selecting the correct
+> platform fork for the Linux/3.12 target via PEP 508 marker evaluation),
+> preserves each lock's header, and runs `check_locks.py` before returning.
 
 ## Risks
 

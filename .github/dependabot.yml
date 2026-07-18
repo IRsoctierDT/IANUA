@@ -5,7 +5,10 @@
 # a test is blocked before merge.
 #
 # Updates are grouped to reduce PR noise; security updates are never grouped so
-# they surface and merge on their own. A human reviews every PR (no auto-merge).
+# they surface and merge on their own. Runtime (production) bumps always get a
+# human review. Low-risk groups — dev-toolchain and actions-all — auto-merge on
+# patch/minor once every required check is green (see
+# .github/workflows/dependabot-automerge.yml); majors still wait for a human.
 version: 2
 
 updates:
@@ -43,11 +46,12 @@ updates:
         patterns: ["*"]
 
   # --- GitHub Actions: keep CI action versions current & patched -------------
+  # Daily: actions run with repository access, so a patched tag should be
+  # picked up within a day, not up to a week later.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "daily"
     open-pull-requests-limit: 5
     labels: ["dependencies", "ci"]
     commit-message:

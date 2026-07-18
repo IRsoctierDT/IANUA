@@ -1,0 +1,40 @@
+# Scheduled SCA scan of the committed dependency closure on main.
+#
+# Why this exists: the pinned locks (uv.lock -> security/sbom/requirements.lock)
+# only get audited when a push or PR triggers CI. Between pushes, newly
+# published advisories against the pinned versions accrue silently — the lock
+# "decays" with no signal until the next PR arrives pre-broken. This workflow
+# runs the same pip-audit gate on a daily clock so decay is detected within a
+# day and surfaces as a failed run (and a notification to the maintainer),
+# independent of any development activity.
+#
+# Read-only by design: it never bumps or commits anything. Remediation is the
+# maintainer's (or the lock-repair routine's) job via scripts/refresh_locks.py.
+name: Scheduled security scan
+
+on:
+  schedule:
+    - cron: "23 6 * * *" # daily 06:23 UTC (off the hour to avoid load spikes)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sca:
+    name: pip-audit (committed lock, daily)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install hash-pinned dev toolchain
+        run: pip install --require-hashes -r security/sbom/requirements-dev.lock
+      - name: Audit the committed Linux/3.12 lock against current advisories
+        # Same command and lock as the PR-gating Security job: --disable-pip
+        # reads the fully hash-pinned file directly (no resolver, platform-
+        # independent). A non-zero exit here means an advisory was published
+        # against a version we currently pin on main.
+        run: pip-audit --disable-pip -r security/sbom/requirements.lock
