@@ -273,7 +273,7 @@ jobs:
           github.ref == 'refs/heads/main' &&
           !(github.event.repository.private == true &&
             github.event.repository.owner.type == 'User')
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/*"
 
