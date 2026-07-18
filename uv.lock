@@ -21,7 +21,7 @@ resolution-markers = [
 
 [[package]]
 name = "ai-operator-cyber-command-center"
-version = "1.8.0"
+version = "1.9.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
