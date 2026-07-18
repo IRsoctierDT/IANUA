@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:37e9c48f-6f40-556b-9896-086e5eb1e544",
+  "serialNumber": "urn:uuid:bdf8a984-2963-557b-b53c-dfe4e80e685b",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-07-08T08:32:25Z",
+    "timestamp": "2026-07-18T06:30:37Z",
     "tools": {
       "components": [
         {
@@ -56,11 +56,11 @@
       "purl": "pkg:pypi/anyio@4.14.0"
     },
     {
-      "bom-ref": "pkg:pypi/ast-serialize@0.5.0",
+      "bom-ref": "pkg:pypi/ast-serialize@0.6.0",
       "name": "ast-serialize",
       "type": "library",
-      "version": "0.5.0",
-      "purl": "pkg:pypi/ast-serialize@0.5.0"
+      "version": "0.6.0",
+      "purl": "pkg:pypi/ast-serialize@0.6.0"
     },
     {
       "bom-ref": "pkg:pypi/attrs@26.1.0",
@@ -168,11 +168,11 @@
       "purl": "pkg:pypi/cuda-pathfinder@1.5.5"
     },
     {
-      "bom-ref": "pkg:pypi/cuda-toolkit@13.0.2",
+      "bom-ref": "pkg:pypi/cuda-toolkit@13.0.3.0",
       "name": "cuda-toolkit",
       "type": "library",
-      "version": "13.0.2",
-      "purl": "pkg:pypi/cuda-toolkit@13.0.2"
+      "version": "13.0.3.0",
+      "purl": "pkg:pypi/cuda-toolkit@13.0.3.0"
     },
     {
       "bom-ref": "pkg:pypi/cyclonedx-python-lib@11.11.0",
@@ -301,11 +301,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.156.2",
+      "bom-ref": "pkg:pypi/hypothesis@6.156.6",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.156.2",
-      "purl": "pkg:pypi/hypothesis@6.156.2"
+      "version": "6.156.6",
+      "purl": "pkg:pypi/hypothesis@6.156.6"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -364,11 +364,11 @@
       "purl": "pkg:pypi/jsonschema@4.26.0"
     },
     {
-      "bom-ref": "pkg:pypi/librt@0.11.0",
+      "bom-ref": "pkg:pypi/librt@0.13.0",
       "name": "librt",
       "type": "library",
-      "version": "0.11.0",
-      "purl": "pkg:pypi/librt@0.11.0"
+      "version": "0.13.0",
+      "purl": "pkg:pypi/librt@0.13.0"
     },
     {
       "bom-ref": "pkg:pypi/license-expression@30.4.4",
@@ -420,11 +420,11 @@
       "purl": "pkg:pypi/mypy-extensions@1.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/mypy@2.1.0",
+      "bom-ref": "pkg:pypi/mypy@2.2.0",
       "name": "mypy",
       "type": "library",
-      "version": "2.1.0",
-      "purl": "pkg:pypi/mypy@2.1.0"
+      "version": "2.2.0",
+      "purl": "pkg:pypi/mypy@2.2.0"
     },
     {
       "bom-ref": "pkg:pypi/narwhals@2.22.1",
@@ -588,11 +588,11 @@
       "purl": "pkg:pypi/pathspec@1.1.1"
     },
     {
-      "bom-ref": "pkg:pypi/pillow@12.2.0",
+      "bom-ref": "pkg:pypi/pillow@12.3.0",
       "name": "pillow",
       "type": "library",
-      "version": "12.2.0",
-      "purl": "pkg:pypi/pillow@12.2.0"
+      "version": "12.3.0",
+      "purl": "pkg:pypi/pillow@12.3.0"
     },
     {
       "bom-ref": "pkg:pypi/pip-api@0.0.34",
@@ -805,11 +805,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.15.20",
+      "bom-ref": "pkg:pypi/ruff@0.15.21",
       "name": "ruff",
       "type": "library",
-      "version": "0.15.20",
-      "purl": "pkg:pypi/ruff@0.15.20"
+      "version": "0.15.21",
+      "purl": "pkg:pypi/ruff@0.15.21"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -840,11 +840,11 @@
       "purl": "pkg:pypi/sentence-transformers@5.6.0"
     },
     {
-      "bom-ref": "pkg:pypi/setuptools@81.0.0",
+      "bom-ref": "pkg:pypi/setuptools@83.0.0",
       "name": "setuptools",
       "type": "library",
-      "version": "81.0.0",
-      "purl": "pkg:pypi/setuptools@81.0.0"
+      "version": "83.0.0",
+      "purl": "pkg:pypi/setuptools@83.0.0"
     },
     {
       "bom-ref": "pkg:pypi/shellingham@1.5.4",
@@ -889,11 +889,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.58.0",
+      "bom-ref": "pkg:pypi/streamlit@1.59.1",
       "name": "streamlit",
       "type": "library",
-      "version": "1.58.0",
-      "purl": "pkg:pypi/streamlit@1.58.0"
+      "version": "1.59.1",
+      "purl": "pkg:pypi/streamlit@1.59.1"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
@@ -945,11 +945,11 @@
       "purl": "pkg:pypi/tomli@2.4.1"
     },
     {
-      "bom-ref": "pkg:pypi/torch@2.12.1",
+      "bom-ref": "pkg:pypi/torch@2.13.0",
       "name": "torch",
       "type": "library",
-      "version": "2.12.1",
-      "purl": "pkg:pypi/torch@2.12.1"
+      "version": "2.13.0",
+      "purl": "pkg:pypi/torch@2.13.0"
     },
     {
       "bom-ref": "pkg:pypi/tqdm@4.68.3",
