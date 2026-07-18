@@ -2,9 +2,55 @@
 
 All notable changes to this project. Versions correspond to git tags.
 
-## Unreleased
+## v1.9.0 — Hardening #2: tamper-evident audit, sandboxed tools, verifiable RAG
 
-### Added
+**Milestone: the policy/audit layer is enforced at the tool surface, tool
+execution is containerized, the supply chain is attested end-to-end, and RAG
+answers carry verifiable citations.**
+
+### Added — policy & audit
+- **Policy engine + tamper-evident audit log** — default-deny action
+  classification (AGENTS.md §5.1 approval gates codified), enforced at the MCP
+  tool surface via a shared policy-guard primitive; declarative policy bundle
+  loader with a staged report mode; the AGENTS.md §6 operating roles codified.
+- **Audit-log hardening series**: tamper-evident rotation & retention;
+  HMAC head-hash signing; asymmetric **Ed25519 signing** via a pluggable
+  `Signer`; on-demand retention plus a scheduled maintenance CLI.
+
+### Added — sandboxed tool execution
+- **Rootless seccomp/AppArmor container sandbox** for MCP tool execution, with
+  digest-pinned image guard and per-tool profiles.
+- **Real-container CI enforcement job** (`Sandbox enforcement (Linux
+  container)`) with non-vacuous tests.
+
+### Added — RAG & reporting
+- **Verifiable passage-level source-citation engine** — every retrieved claim
+  cites the passage it came from.
+- **Persistent SQLite vector store** (`rag/` now in the mypy gate).
+- **Local-LLM narrative generation** (opt-in → on-by-default): Ollama and
+  llama.cpp backends, **GBNF grammar-constrained** structured output.
+- **PDF export** for incident reports (reportlab, pure-Python).
+- Sigma **detection rules, correlations, and structural validation** wired into
+  the SOC pipeline (detection coverage in reports).
+
+### Added — supply chain & CI
+- **CycloneDX SBOM** (Python + npm, merged, purl-complete) with vulnerability
+  triage; **Sigstore-signed SBOM** and **SLSA build-provenance attestations**
+  on every main build.
+- **`uv.lock` as dependency source of truth**; hash-pinned dev toolchain
+  installed under `--require-hashes` in CI; lock/SBOM **drift gate**
+  (`sbom-sync`) fails closed.
+- **Deterministic lock regeneration** (`scripts/refresh_locks.py`) — constrains
+  resolution to `uv.lock`'s exact pins with PEP 508 marker evaluation.
+- **Daily scheduled SCA scan** of the committed lock on main
+  (`security-scan.yml`) so advisory decay is detected within a day.
+- **Dependabot**: daily GitHub Actions cadence; grouped uv/npm updates;
+  **auto-merge for low-risk groups only** (dev-toolchain, actions — patch/minor,
+  gated on required status checks). Branch ruleset requires the 7 core CI
+  checks before merge.
+- **Property-based fuzzing** of tool input validators (`tests/security`).
+
+### Added — site & docs
 - **Command Center status page** (`scripts/build_status_page.py`) — a
   deterministic, offline generator that renders `docs/status.html` and
   `docs/status.json` from one committed source of truth (`docs/status.data.json`).
@@ -13,6 +59,10 @@ All notable changes to this project. Versions correspond to git tags.
   `tests/security/test_status_page_escaping.py`). Linked from the site nav.
 - **CI drift gate** (`status-page-sync`) — fails the build if the committed
   status page drifts from its source data, mirroring the SBOM/lock sync gates.
+- **GitHub Pages landing site** with automated (human-approved) deploy;
+  dashboard **Command Center UI** (Mission Control, Agent Roster, Activity
+  Timeline); **nine component case studies** + hardening roadmap; local lab
+  `docker-compose` stack.
 
 ### Fixed
 - **GitHub Pages deploy deadlock** — the Pages deploy is split into isolated
@@ -23,6 +73,16 @@ All notable changes to this project. Versions correspond to git tags.
   only the concurrency defect was fixed. Manual `workflow_dispatch` publishes
   are restricted to `refs/heads/main` so a run can't publish `docs/` from an
   untested branch.
+- **Advisory clean-up**: pillow 12.3.0 (PYSEC-2026-2254/-2256/-2257),
+  setuptools 83.0.0 (PYSEC-2026-3447), torch 2.13.0 (PYSEC-2025-194) — the
+  committed closure audits to **0 known vulnerabilities** at release time.
+- SBOM made attestable (CycloneDX `serialNumber`); CI restored on main after an
+  invalid workflow file + `uv.lock` drift.
+
+### Quality
+- Test suite expanded to **390 passing** (4 environment-gated skips); ruff +
+  mypy + bandit green across `agents`, `scripts`, `tests`, `dashboard`, `mcp`,
+  and `rag`; coverage gate ≥85% enforced in CI.
 
 ## v1.8.0 — Agent suite complete
 
