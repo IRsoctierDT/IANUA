@@ -4,6 +4,17 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **SOC Analyst Agent: multi-event sequence correlation**
+  (`SocAnalystAgent.analyze_sequence`) — correlates an ordered batch of log
+  events into findings a single-line analysis cannot see: **brute force**
+  (≥3 authentication failures from one source; `critical` when a privileged
+  account is targeted) and **possible credential compromise** (failure
+  followed by a successful login from the same source; always `critical`).
+  Deterministic, fail-closed input validation, no network activity —
+  an enhancement of the existing agent, no new surface. Duplicated
+  privileged-account logic consolidated into one helper.
+
 ### Changed
 - **Agent versions now track the platform automatically** — `agents.__version__`
   resolves from `pyproject.toml` (the release source of truth; falls back to

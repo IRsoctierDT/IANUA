@@ -2,8 +2,11 @@
 
 ## Current Version
 
-v1.8.0 — **agent suite complete** (all eight core agent blueprints built, plus
-supporting agents). See [`docs/Changelog.md`](./Changelog.md) for the full history.
+v1.9.0 — **agent suite complete; hardening #2 landed** (all eight core agent
+blueprints built, plus supporting agents; policy/audit enforced at the tool
+surface, sandboxed execution, attested supply chain). Further work is
+enhancement of existing components, not new surface. See
+[`docs/Changelog.md`](./Changelog.md) for the full history.
 
 ## Operational Components
 

@@ -165,3 +165,121 @@ def test_root_successful_login_is_high_severity() -> None:
     agent = SocAnalystAgent()
     result = agent.analyze_log("Accepted password for root from 10.0.0.5 port 22 ssh2")
     assert result["severity"] == "high"
+
+
+# ------------------------------------------------------------------ v1.9: sequence correlation
+_FAIL_BOB = "Failed password for invalid user bob from 203.0.113.7 port 22 ssh2"
+_FAIL_ROOT = "Failed password for root from 203.0.113.7 port 22 ssh2"
+_OK_BOB = "Accepted password for bob from 203.0.113.7 port 22 ssh2"
+
+
+@pytest.mark.unit
+def test_sequence_detects_brute_force() -> None:
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence([_FAIL_BOB, _FAIL_BOB, _FAIL_BOB])
+    patterns = {f["pattern"] for f in result["findings"]}
+    assert "brute_force" in patterns
+    assert result["severity"] == "high"
+    assert result["event_count"] == 3
+
+
+@pytest.mark.unit
+def test_sequence_brute_force_privileged_is_critical() -> None:
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence([_FAIL_ROOT, _FAIL_ROOT, _FAIL_ROOT])
+    brute = next(f for f in result["findings"] if f["pattern"] == "brute_force")
+    assert brute["severity"] == "critical"
+    assert result["severity"] == "critical"
+    assert result["severity_score"] == 100
+
+
+@pytest.mark.unit
+def test_sequence_failure_then_success_is_credential_compromise() -> None:
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence([_FAIL_BOB, _FAIL_BOB, _OK_BOB])
+    compromise = next(f for f in result["findings"] if f["pattern"] == "auth_failure_then_success")
+    assert compromise["severity"] == "critical"
+    assert compromise["source"] == "203.0.113.7"
+    assert compromise["event_indices"] == [0, 1, 2]
+    assert any("credential rotation" in a for a in result["recommended_actions"])
+
+
+@pytest.mark.unit
+def test_sequence_success_before_failures_not_compromise() -> None:
+    # A success that precedes the first failure is not a failure->success chain.
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence([_OK_BOB, _FAIL_BOB, _FAIL_BOB])
+    patterns = {f["pattern"] for f in result["findings"]}
+    assert "auth_failure_then_success" not in patterns
+
+
+@pytest.mark.unit
+def test_sequence_below_threshold_no_findings() -> None:
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence([_FAIL_BOB, _FAIL_BOB])
+    assert result["findings"] == []
+    # Falls back to the worst single event (auth failure, non-privileged).
+    assert result["severity"] == "medium"
+
+
+@pytest.mark.unit
+def test_sequence_different_sources_not_correlated() -> None:
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence(
+        [
+            "Failed password for invalid user bob from 198.51.100.1 port 22 ssh2",
+            "Failed password for invalid user bob from 198.51.100.2 port 22 ssh2",
+            "Failed password for invalid user bob from 198.51.100.3 port 22 ssh2",
+        ]
+    )
+    assert all(f["pattern"] != "brute_force" for f in result["findings"])
+
+
+@pytest.mark.unit
+def test_sequence_accepts_mixed_str_and_dict_events() -> None:
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence(
+        [
+            _FAIL_BOB,
+            {"src_ip": "203.0.113.7", "message": "Failed password for invalid user bob"},
+            _FAIL_BOB,
+        ]
+    )
+    assert any(f["pattern"] == "brute_force" for f in result["findings"])
+
+
+@pytest.mark.unit
+def test_sequence_rejects_empty_list() -> None:
+    agent = SocAnalystAgent()
+    with pytest.raises(ValueError):
+        agent.analyze_sequence([])
+
+
+@pytest.mark.unit
+def test_sequence_rejects_non_list() -> None:
+    agent = SocAnalystAgent()
+    with pytest.raises(ValueError):
+        agent.analyze_sequence("not a list")  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_sequence_rejects_empty_event_inside_list() -> None:
+    agent = SocAnalystAgent()
+    with pytest.raises(ValueError):
+        agent.analyze_sequence([_FAIL_BOB, "   "])
+
+
+@pytest.mark.unit
+def test_sequence_is_deterministic() -> None:
+    agent = SocAnalystAgent()
+    events: list[str | dict[str, object]] = [_FAIL_ROOT, _FAIL_ROOT, _FAIL_ROOT, _OK_BOB]
+    assert agent.analyze_sequence(events) == agent.analyze_sequence(events)
+
+
+@pytest.mark.unit
+def test_sequence_reports_versioned_agent_name() -> None:
+    from agents import __version__
+
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence([_FAIL_BOB])
+    assert result["agent"] == f"SOC Analyst Agent v{__version__}"
