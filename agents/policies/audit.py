@@ -77,6 +77,28 @@ class AuditEvent:
     entry_hash: str
 
 
+@dataclass(frozen=True)
+class VerificationReport:
+    """Structured outcome of a full chain verification (see ``verify_report``).
+
+    ``intact`` is the overall verdict. On failure, ``failure`` pinpoints the
+    first break — segment file, line number, sequence, and kind — so an
+    operator can go straight to the tampered/corrupted region instead of
+    learning only "False". ``signature`` is one of ``valid`` / ``invalid`` /
+    ``stale`` / ``missing`` / ``malformed`` (signer configured) or
+    ``unsigned`` (no signer) / ``empty`` (nothing to sign).
+    """
+
+    intact: bool
+    entries: int
+    segments: int
+    head_seq: int
+    head_hash: str
+    checkpoint_seq: int | None
+    signature: str
+    failure: str | None
+
+
 def _compute_hash(
     *,
     seq: int,
@@ -164,6 +186,16 @@ class AuditLogger:
         if self.path.exists():
             segments.append(self.path)
         return segments
+
+    def exists(self) -> bool:
+        """True iff any trace of the log exists on disk.
+
+        Checks the active file, archived segments, and the retention
+        checkpoint. Lets a verifier distinguish a wrong/missing path (nothing
+        was ever logged here — a monitor must fail closed) from a legitimately
+        empty existing log.
+        """
+        return bool(self._segments_in_order()) or self._checkpoint_path.exists()
 
     def _last_event(self, segment: Path) -> AuditEvent | None:
         if not segment.exists():
@@ -322,70 +354,157 @@ class AuditLogger:
         if self._signer is None:
             raise ValueError("verify_signature requires a signer")
         last_seq, head_hash = self._last()
-        if last_seq < 0:
-            return True  # empty log: nothing to sign
+        return self._signature_status(last_seq, head_hash) in {"valid", "empty"}
+
+    def _signature_status(self, head_seq: int, head_hash: str) -> str:
+        """Granular status of the detached head signature against a known head.
+
+        Returns ``unsigned`` (no signer configured), ``empty`` (nothing to
+        sign), ``missing``, ``malformed``, ``invalid`` (does not verify),
+        ``stale`` (verifies but covers an older head), or ``valid``.
+        """
+        if self._signer is None:
+            return "unsigned"
+        if head_seq < 0:
+            return "empty"
         if not self._sig_path.exists():
-            return False
+            return "missing"
         try:
             sig = json.loads(self._sig_path.read_text(encoding="utf-8"))
             stored_seq = int(sig["seq"])
             stored_hash = str(sig["head_hash"])
             stored_signature = str(sig["signature"])
         except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            return False
+            return "malformed"
         # The signature must verify AND cover the *current* head.
         message = self._head_message(stored_seq, stored_hash)
         if not self._signer.verify(message, stored_signature):
-            return False
-        return stored_seq == last_seq and stored_hash == head_hash
+            return "invalid"
+        if stored_seq != head_seq or stored_hash != head_hash:
+            return "stale"
+        return "valid"
 
     # ---------------------------------------------------------------- verify
     def verify(self) -> bool:
         """Recompute the chain across all retained segments; True iff intact.
+
+        Thin wrapper over :meth:`verify_report` — identical semantics, boolean
+        result. See the report for what "intact" covers (chain continuity,
+        checkpoint anchoring, per-entry hashes, and — when a signer is
+        configured — a present, valid, current head signature).
+        """
+        return self.verify_report().intact
+
+    def verify_report(self) -> VerificationReport:
+        """Recompute the chain and return a structured diagnosis.
 
         Verification spans the archived segments (oldest first) and the active
         log as one continuous chain. Without any rotation this is exactly the
         original single-file, genesis-anchored check. With retention, the oldest
         retained entry must continue from the ``.checkpoint`` (seq + hash of the
         last pruned entry); a missing checkpoint means the chain must start at
-        genesis. Any gap, edit, reordering, or dropped segment breaks it.
+        genesis. Any gap, edit, reordering, dropped segment, or malformed line
+        breaks it — malformed/corrupted entries are a *verdict* (fail-closed
+        with a located failure), never an exception.
 
-        When a signer (``signing_key`` or ``signer``) is configured, the detached
-        head signature must also be present, valid, and current (see
-        :meth:`verify_signature`) — so a recomputed-but-unsigned chain is rejected.
+        When a signer (``signing_key`` or ``signer``) is configured, the
+        detached head signature must also be ``valid`` (present, verifying, and
+        covering the current head) for the report to be ``intact`` — so a
+        recomputed-but-unsigned chain is rejected. On failure, ``failure``
+        names the first broken segment, line, and kind of break.
         """
         segments = self._segments_in_order()
-        if all(self._last_event(s) is None for s in segments):
-            return True  # empty log is trivially intact
-
-        checkpoint = self._read_checkpoint()
+        try:
+            checkpoint = self._read_checkpoint()
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+            # A truncated/garbled checkpoint sidecar is diagnosed exactly like a
+            # malformed entry: a located fail-closed verdict, never an exception.
+            return VerificationReport(
+                intact=False,
+                entries=0,
+                segments=len(segments),
+                head_seq=-1,
+                head_hash=_GENESIS_HASH,
+                checkpoint_seq=None,
+                signature="unchecked",
+                failure=f"malformed checkpoint sidecar at {self._checkpoint_path.name}",
+            )
         if checkpoint is None:
             expected_seq, expected_prev = 0, _GENESIS_HASH
+            checkpoint_seq: int | None = None
         else:
-            prev_seq, prev_hash = checkpoint
-            expected_seq, expected_prev = prev_seq + 1, prev_hash
+            checkpoint_seq, prev_hash = checkpoint
+            expected_seq, expected_prev = checkpoint_seq + 1, prev_hash
+
+        entries = 0
+        head_seq, head_hash = -1, _GENESIS_HASH
+
+        def _report(failure: str | None, signature: str) -> VerificationReport:
+            return VerificationReport(
+                intact=failure is None and signature in {"valid", "unsigned", "empty"},
+                entries=entries,
+                segments=len(segments),
+                head_seq=head_seq,
+                head_hash=head_hash,
+                checkpoint_seq=checkpoint_seq,
+                signature=signature,
+                failure=failure,
+            )
 
         for segment in segments:
-            for line in segment.read_text(encoding="utf-8").splitlines():
+            try:
+                text = segment.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                # Non-UTF-8 corruption (or an unreadable file) is a located
+                # fail-closed verdict, not an exception out of verification.
+                return _report(
+                    f"unreadable segment {segment.name} (undecodable or inaccessible)",
+                    "unchecked",
+                )
+            for line_no, line in enumerate(text.splitlines(), start=1):
                 if not line.strip():
                     continue
-                record = json.loads(line)
-                if int(record["seq"]) != expected_seq or record["prev_hash"] != expected_prev:
-                    return False
-                recomputed = _compute_hash(
-                    seq=int(record["seq"]),
-                    timestamp=record["timestamp"],
-                    actor=record["actor"],
-                    action=record["action"],
-                    action_class=record["action_class"],
-                    decision=record["decision"],
-                    reason=record["reason"],
-                    prev_hash=record["prev_hash"],
-                )
-                if recomputed != record["entry_hash"]:
-                    return False
-                expected_prev = record["entry_hash"]
+                where = f"{segment.name}:{line_no}"
+                try:
+                    record = json.loads(line)
+                    seq = int(record["seq"])
+                    prev = str(record["prev_hash"])
+                    recomputed = _compute_hash(
+                        seq=seq,
+                        timestamp=record["timestamp"],
+                        actor=record["actor"],
+                        action=record["action"],
+                        action_class=record["action_class"],
+                        decision=record["decision"],
+                        reason=record["reason"],
+                        prev_hash=prev,
+                    )
+                    stored_hash = str(record["entry_hash"])
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                    # Corruption is tampering until proven otherwise: locate it,
+                    # fail closed, never raise out of verification. The head
+                    # signature is not consulted past a break ("unchecked").
+                    return _report(f"malformed entry at {where}", "unchecked")
+                if seq != expected_seq or prev != expected_prev:
+                    return _report(
+                        f"chain break at {where}: expected seq {expected_seq} "
+                        f"continuing from {expected_prev[:12]}…, found seq {seq} "
+                        f"with prev {prev[:12]}…",
+                        "unchecked",
+                    )
+                if recomputed != stored_hash:
+                    return _report(f"entry hash mismatch at {where} (seq {seq})", "unchecked")
+                entries += 1
+                head_seq, head_hash = seq, stored_hash
+                expected_prev = stored_hash
                 expected_seq += 1
-        if self._signer is not None:
-            return self.verify_signature()
-        return True
+
+        if entries == 0:
+            # Empty (or fully pruned) log: trivially intact; nothing to sign.
+            signature = "empty" if self._signer is not None else "unsigned"
+            return _report(None, signature)
+
+        signature = self._signature_status(head_seq, head_hash)
+        if self._signer is not None and signature != "valid":
+            return _report(f"head signature {signature}", signature)
+        return _report(None, signature)

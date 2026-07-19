@@ -5,6 +5,17 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Deepened audit-verification tooling** — `AuditLogger.verify_report()`
+  returns a structured diagnosis instead of a bare bool: entry/segment counts,
+  chain head, checkpoint anchor, granular head-signature status
+  (`valid`/`invalid`/`stale`/`missing`/`malformed`/`unsigned`/`empty`), and —
+  on failure — the first broken segment, line, and kind of break. Malformed or
+  corrupted entries are now a located fail-closed *verdict* (previously the
+  verifier raised on garbage lines). `verify()` is unchanged in behaviour (thin
+  wrapper). New standalone `scripts/audit_verify.py` CLI: read-only chain +
+  signature verification for cron/CI/auditors, auto-detecting `AUDIT_HMAC_KEY`
+  or the Ed25519 **public-key-only** `AUDIT_ED25519_PUBLIC_KEY` scheme, with
+  `--require-signature` to refuse chain-only verification (exit codes 0/2/3).
 - **Report enrichment: sequence findings + verified passage citations** —
   incident reports gain a "Sequence Correlation" section (multi-event findings
   from `SocAnalystAgent.analyze_sequence`: pattern, source, severity,
