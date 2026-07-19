@@ -21,6 +21,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from agents import versioned_agent_name
+
 DocType = Literal["readme", "case_study"]
 
 # Case-study section order per AGENTS.md §9 documentation standard.
@@ -66,10 +68,15 @@ class DocumentationDraft:
     assumptions: list[str]
 
 
+# Display name tracks the platform version — never hard-code a version here
+# (drift-gated by tests/unit/test_agent_versioning.py).
+_DEFAULT_NAME = versioned_agent_name("Portfolio Documentation Agent")
+
+
 class PortfolioDocumentationAgent:
     """Draft portfolio-ready README or case-study documents from a description."""
 
-    def __init__(self, name: str = "Portfolio Documentation Agent") -> None:
+    def __init__(self, name: str = _DEFAULT_NAME) -> None:
         self.name = name
 
     def document(
@@ -175,7 +182,7 @@ class PortfolioDocumentationAgent:
 if __name__ == "__main__":
     agent = PortfolioDocumentationAgent()
     draft = agent.document(
-        "SOC Analyst Agent v0.2",
+        "SOC Analyst Agent",
         "Triages security logs, scores severity, maps to MITRE ATT&CK, and writes "
         "incident reports. Fully local and deterministic.",
         doc_type="case_study",

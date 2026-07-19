@@ -1,8 +1,11 @@
-"""SOC Analyst Agent v0.2.
+"""SOC Analyst Agent.
 
-Accepts plain-text or structured JSON log input. Returns a richer result
-that includes a numeric severity score, an evidence table, and all v0.1
-fields. Does not perform network activity, scanning, or external actions.
+Accepts plain-text or structured JSON log input. Returns a structured result
+with a numeric severity score, an evidence table, indicators, and recommended
+actions. Does not perform network activity, scanning, or external actions.
+
+The agent's display name carries the platform version automatically (see
+``agents.versioned_agent_name``), so it stays current with every release.
 """
 
 from __future__ import annotations
@@ -10,6 +13,8 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
+
+from agents import versioned_agent_name
 
 Severity = Literal["low", "medium", "high", "critical", "unknown"]
 
@@ -47,10 +52,15 @@ class SocAnalysisResult:
     assumptions: list[str]
 
 
+# Display name tracks the platform version — never hard-code a version here
+# (drift-gated by tests/unit/test_agent_versioning.py).
+_DEFAULT_NAME = versioned_agent_name("SOC Analyst Agent")
+
+
 class SocAnalystAgent:
     """Analyze a log entry (plain text or JSON) and return structured findings."""
 
-    def __init__(self, name: str = "SOC Analyst Agent v0.2") -> None:
+    def __init__(self, name: str = _DEFAULT_NAME) -> None:
         self.name = name
 
     def analyze_log(self, log_input: str | dict[str, Any]) -> dict[str, Any]:

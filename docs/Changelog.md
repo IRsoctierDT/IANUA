@@ -4,6 +4,17 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Changed
+- **Agent versions now track the platform automatically** — `agents.__version__`
+  resolves from `pyproject.toml` (the release source of truth; falls back to
+  installed package metadata, then a conspicuous `0.0.0` sentinel), and every
+  named agent derives its display name via `agents.versioned_agent_name()`.
+  The SOC Analyst Agent — stuck announcing `v0.2` since the platform hit
+  `v1.9.0` — and all six other named agents now report
+  `"<Agent> v<platform version>"` and update on every release without manual
+  edits. A drift-gate test (`tests/unit/test_agent_versioning.py`) fails the
+  build if any agent hard-codes a version again.
+
 ### Fixed
 - **GitHub Pages deploy failing with "No artifacts named github-pages were
   found"** — the split build/deploy design uploaded the site artifact in the

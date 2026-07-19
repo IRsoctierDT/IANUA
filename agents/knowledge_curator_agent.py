@@ -22,6 +22,8 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from agents import versioned_agent_name
+
 # Map salient keywords -> knowledge-base category (mirrors knowledge-base/ folders).
 _CATEGORY_RULES: list[tuple[str, frozenset[str]]] = [
     ("mitre", frozenset({"mitre", "att&ck", "attack", "tactic", "technique", "adversary"})),
@@ -108,10 +110,15 @@ class CuratedEntry:
     assumptions: list[str]
 
 
+# Display name tracks the platform version — never hard-code a version here
+# (drift-gated by tests/unit/test_agent_versioning.py).
+_DEFAULT_NAME = versioned_agent_name("Knowledge Curator Agent")
+
+
 class KnowledgeCuratorAgent:
     """Turn raw text into a structured, retrieval-ready knowledge entry."""
 
-    def __init__(self, name: str = "Knowledge Curator Agent") -> None:
+    def __init__(self, name: str = _DEFAULT_NAME) -> None:
         self.name = name
 
     def curate(

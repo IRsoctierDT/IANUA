@@ -19,6 +19,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from agents import versioned_agent_name
+
 # Detect capability areas in the needs text -> tailored scope items.
 # Each area contributes concrete, reviewable scope lines (no pricing/commitments).
 _SCOPE_RULES: list[tuple[str, frozenset[str], tuple[str, ...]]] = [
@@ -98,10 +100,15 @@ class ProposalDraft:
     disclaimer: str
 
 
+# Display name tracks the platform version — never hard-code a version here
+# (drift-gated by tests/unit/test_agent_versioning.py).
+_DEFAULT_NAME = versioned_agent_name("Business Proposal Agent")
+
+
 class BusinessProposalAgent:
     """Turn client needs into a structured, reviewable proposal draft."""
 
-    def __init__(self, name: str = "Business Proposal Agent") -> None:
+    def __init__(self, name: str = _DEFAULT_NAME) -> None:
         self.name = name
 
     def draft_proposal(self, needs: str, *, client: str | None = None) -> dict[str, Any]:

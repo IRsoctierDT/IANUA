@@ -22,6 +22,8 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from agents import versioned_agent_name
+
 # Mandatory, non-removable disclaimer attached to every assessment.
 DISCLAIMER = (
     "This is an automated, non-authoritative drafting and triage aid. It does not "
@@ -127,10 +129,15 @@ class LegalAssessment:
     assumptions: list[str]
 
 
+# Display name tracks the platform version — never hard-code a version here
+# (drift-gated by tests/unit/test_agent_versioning.py).
+_DEFAULT_NAME = versioned_agent_name("Legal/Compliance Research Agent")
+
+
 class LegalComplianceAgent:
     """Classify and structure a legal/compliance inquiry for attorney review."""
 
-    def __init__(self, name: str = "Legal/Compliance Research Agent") -> None:
+    def __init__(self, name: str = _DEFAULT_NAME) -> None:
         self.name = name
 
     def assess_inquiry(self, text: str, *, jurisdiction: str | None = None) -> dict[str, Any]:

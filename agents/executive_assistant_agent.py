@@ -20,6 +20,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from agents import versioned_agent_name
+
 Priority = Literal["high", "medium", "low"]
 
 # Urgency signals -> priority. Checked high-first.
@@ -59,10 +61,15 @@ class ExecutivePlan:
     assumptions: list[str]
 
 
+# Display name tracks the platform version — never hard-code a version here
+# (drift-gated by tests/unit/test_agent_versioning.py).
+_DEFAULT_NAME = versioned_agent_name("Executive Assistant Agent")
+
+
 class ExecutiveAssistantAgent:
     """Prioritize tasks/notes into a reviewable plan (no external actions)."""
 
-    def __init__(self, name: str = "Executive Assistant Agent") -> None:
+    def __init__(self, name: str = _DEFAULT_NAME) -> None:
         self.name = name
 
     def plan(self, items: str | list[str], *, focus_count: int = 3) -> dict[str, Any]:
