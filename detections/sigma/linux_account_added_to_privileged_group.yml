@@ -1,0 +1,50 @@
+title: Linux Account Added to Privileged Group
+name: account_added_to_privileged_group
+id: 17fdf74c-1cd8-4ba9-b361-8231658e5044
+status: experimental
+description: >-
+  An account was added to a privileged group (sudo/wheel/admin) via usermod or
+  gpasswd. Matches the shadow-utils audit wordings for an *addition* ("add
+  '<user>' to group '<group>'", "user <user> added ... to group <group>")
+  anchored to an explicit privileged group-name context — membership removals
+  and commands that merely mention a privileged token (e.g. a user named
+  "admin") do not match. Legitimate but rare in steady state; combined with a
+  fresh account creation it is a strong persistence / privilege-escalation
+  signal (see the account_created_then_privileged correlation).
+references:
+  - https://attack.mitre.org/techniques/T1098/
+author: AI Operator Cyber Command Center
+date: 2026-07-19
+tags:
+  - attack.persistence
+  - attack.privilege-escalation
+  - attack.t1098
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection_usermod_add:
+    message|contains|all:
+      - "usermod"
+      - "add"
+  selection_gpasswd_add:
+    message|contains|all:
+      - "gpasswd"
+      - "added"
+  privileged_group:
+    message|contains:
+      - "group 'sudo'"
+      - "group 'wheel'"
+      - "group 'admin'"
+      - "group sudo"
+      - "group wheel"
+      - "group admin"
+  condition: (1 of selection_*) and privileged_group
+fields:
+  - user
+  - host
+falsepositives:
+  - Planned onboarding of administrators (correlate with change tickets)
+  - Distributions whose shadow-utils wording differs (validate in the lab and
+    extend the add-action selections)
+level: high

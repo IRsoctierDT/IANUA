@@ -5,6 +5,16 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Detection content: five new Sigma rules** (`detections/sigma/`) covering
+  gaps in the agent vocabulary — `firewall_block` (base) +
+  `firewall_block_burst` (≥20 blocks/source/5m — port-scan correlation, the
+  SOC agent's `firewall block` event type finally has content),
+  `linux_account_added_to_privileged_group` (T1098) +
+  `account_created_then_privileged` (create-then-privilege chain correlation,
+  critical), and `linux_command_history_cleared` (T1070.003 defense evasion).
+  The existing account-creation rule gained a `name:` so chains can reference
+  it. All structurally validated by `tests/test_detections.py`; the Detection
+  Matcher Agent picks them up automatically via ATT&CK tags.
 - **SOC Analyst Agent: multi-event sequence correlation**
   (`SocAnalystAgent.analyze_sequence`) — correlates an ordered batch of log
   events into findings a single-line analysis cannot see: **brute force**
