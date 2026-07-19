@@ -228,3 +228,66 @@ def test_cli_ed25519_public_key_only(
     monkeypatch.setenv("AUDIT_ED25519_PUBLIC_KEY", public_raw.hex())
     assert verify_main(["--log", str(logger.path), "--require-signature"]) == 0
     assert json.loads(capsys.readouterr().out)["signature"] == "valid"
+
+
+# ------------------------------------------------------------------ review hardening
+@pytest.mark.security
+def test_report_malformed_checkpoint_fails_closed_not_raises(tmp_path: Path) -> None:
+    logger = _log_with(tmp_path, n=6, max_bytes=1, retain_segments=1)
+    assert logger.verify_report().intact is True
+    logger._checkpoint_path.write_text("{ truncated", encoding="utf-8")
+    report = logger.verify_report()
+    assert report.intact is False
+    assert report.failure is not None
+    assert "malformed checkpoint" in report.failure
+    assert logger.verify() is False
+
+
+@pytest.mark.security
+def test_report_undecodable_segment_fails_closed_not_raises(tmp_path: Path) -> None:
+    logger = _log_with(tmp_path)
+    with logger.path.open("ab") as fh:
+        fh.write(b"\xff\xfe\x00garbage bytes\n")
+    report = logger.verify_report()
+    assert report.intact is False
+    assert report.failure is not None
+    assert "unreadable segment" in report.failure
+    assert "audit.log" in report.failure
+    assert logger.verify() is False
+
+
+@pytest.mark.security
+def test_logger_exists_distinguishes_missing_from_empty(tmp_path: Path) -> None:
+    missing = AuditLogger(tmp_path / "nope" / "audit.log")
+    assert missing.exists() is False
+    empty = AuditLogger(tmp_path / "audit.log")
+    empty.path.touch()
+    assert empty.exists() is True
+
+
+@pytest.mark.security
+def test_cli_nonexistent_log_exits_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A monitor watching a wrong or vanished path must not stay green — even
+    # with a signing key set and --require-signature (the reviewer's scenario).
+    monkeypatch.setenv("AUDIT_HMAC_KEY", _KEY.decode())
+    monkeypatch.delenv("AUDIT_ED25519_PUBLIC_KEY", raising=False)
+    missing = tmp_path / "does-not-exist" / "audit.log"
+    assert verify_main(["--log", str(missing), "--require-signature"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["intact"] is False
+    assert payload["failure"] == "audit log not found"
+
+
+@pytest.mark.security
+def test_cli_empty_existing_log_is_intact(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An intentionally empty but existing log is the legitimate counterpart.
+    monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
+    monkeypatch.delenv("AUDIT_ED25519_PUBLIC_KEY", raising=False)
+    log = tmp_path / "audit.log"
+    log.touch()
+    assert verify_main(["--log", str(log)]) == 0
+    assert json.loads(capsys.readouterr().out)["intact"] is True

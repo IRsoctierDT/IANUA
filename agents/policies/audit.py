@@ -187,6 +187,16 @@ class AuditLogger:
             segments.append(self.path)
         return segments
 
+    def exists(self) -> bool:
+        """True iff any trace of the log exists on disk.
+
+        Checks the active file, archived segments, and the retention
+        checkpoint. Lets a verifier distinguish a wrong/missing path (nothing
+        was ever logged here — a monitor must fail closed) from a legitimately
+        empty existing log.
+        """
+        return bool(self._segments_in_order()) or self._checkpoint_path.exists()
+
     def _last_event(self, segment: Path) -> AuditEvent | None:
         if not segment.exists():
             return None
@@ -404,7 +414,21 @@ class AuditLogger:
         names the first broken segment, line, and kind of break.
         """
         segments = self._segments_in_order()
-        checkpoint = self._read_checkpoint()
+        try:
+            checkpoint = self._read_checkpoint()
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+            # A truncated/garbled checkpoint sidecar is diagnosed exactly like a
+            # malformed entry: a located fail-closed verdict, never an exception.
+            return VerificationReport(
+                intact=False,
+                entries=0,
+                segments=len(segments),
+                head_seq=-1,
+                head_hash=_GENESIS_HASH,
+                checkpoint_seq=None,
+                signature="unchecked",
+                failure=f"malformed checkpoint sidecar at {self._checkpoint_path.name}",
+            )
         if checkpoint is None:
             expected_seq, expected_prev = 0, _GENESIS_HASH
             checkpoint_seq: int | None = None
@@ -428,9 +452,16 @@ class AuditLogger:
             )
 
         for segment in segments:
-            for line_no, line in enumerate(
-                segment.read_text(encoding="utf-8").splitlines(), start=1
-            ):
+            try:
+                text = segment.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                # Non-UTF-8 corruption (or an unreadable file) is a located
+                # fail-closed verdict, not an exception out of verification.
+                return _report(
+                    f"unreadable segment {segment.name} (undecodable or inaccessible)",
+                    "unchecked",
+                )
+            for line_no, line in enumerate(text.splitlines(), start=1):
                 if not line.strip():
                     continue
                 where = f"{segment.name}:{line_no}"

@@ -25,8 +25,11 @@ Usage::
 
     # CI/cron: JSON report on stdout; non-zero exit on any failure.
 
-Exit codes: ``0`` intact · ``2`` verification failed · ``3`` bad arguments /
-configuration (e.g. ``--require-signature`` with no key material available).
+Exit codes: ``0`` intact · ``2`` verification failed — including a
+**nonexistent log** (no active file, archives, or checkpoint at the given
+path), so a monitor watching a wrong or vanished file cannot stay green ·
+``3`` bad arguments / configuration (e.g. ``--require-signature`` with no key
+material available).
 """
 
 from __future__ import annotations
@@ -86,7 +89,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 3
 
-    report = AuditLogger(args.log, signer=signer).verify_report()
+    logger = AuditLogger(args.log, signer=signer)
+    if not logger.exists():
+        # A monitor pointed at a missing/wrong path must not stay green: a
+        # nonexistent log (no active file, no archives, no checkpoint) is a
+        # verification failure, distinct from an intentionally empty existing
+        # log, which verifies as intact.
+        print(json.dumps({"log": str(args.log), "intact": False, "failure": "audit log not found"}))
+        return 2
+
+    report = logger.verify_report()
     print(json.dumps({"log": str(args.log), **asdict(report)}))
     return 0 if report.intact else 2
 
