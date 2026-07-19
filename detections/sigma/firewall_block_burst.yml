@@ -4,7 +4,9 @@ status: experimental
 description: >-
   Twenty or more blocked/denied inbound connections from a single source address
   within five minutes — consistent with port scanning or a service sweep against
-  lab assets. Modeled as a Sigma correlation over the firewall_block base rule.
+  lab assets. Modeled as a Sigma correlation over the firewall_block base rule,
+  which filters explicitly-outbound blocks so local egress failures cannot be
+  reported as an inbound scan.
 references:
   - https://attack.mitre.org/techniques/T1595/
   - https://attack.mitre.org/techniques/T1046/

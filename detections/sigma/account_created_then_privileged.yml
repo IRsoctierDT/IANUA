@@ -2,9 +2,12 @@ title: New Account Created Then Added to Privileged Group
 id: 2759202a-15b6-4347-af8d-ed500bd41892
 status: experimental
 description: >-
-  A local account creation followed within ten minutes by an addition to a
-  privileged group (sudo/wheel/admin) on the same host — the classic
-  create-account-for-persistence chain. High-confidence persistence /
+  A local account creation followed within ten minutes by that same account
+  being added to a privileged group (sudo/wheel/admin) on the same host — the
+  classic create-account-for-persistence chain. Correlation keys on both host
+  and the normalized target-account field (user), so an unrelated existing
+  account gaining privilege during routine concurrent administration does not
+  chain with someone else's account creation. High-confidence persistence /
   privilege-escalation signal; far stronger than either event alone.
 references:
   - https://attack.mitre.org/techniques/T1136/001/
@@ -18,6 +21,7 @@ correlation:
     - account_added_to_privileged_group
   group-by:
     - host
+    - user
   timespan: 10m
 tags:
   - attack.persistence

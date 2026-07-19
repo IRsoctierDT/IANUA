@@ -24,6 +24,7 @@ detection:
   condition: selection
 fields:
   - user
+  - host
 falsepositives:
   - Legitimate onboarding or provisioning automation
 level: medium

@@ -4,9 +4,11 @@ id: ff78ef94-f98f-477a-9d07-144a8322b532
 status: experimental
 description: >-
   A single inbound connection blocked/denied by the host or perimeter firewall.
-  Low-signal on its own; it is the building block for the firewall-block-burst
-  (port scan / sweep) correlation, and maps to the SOC Analyst Agent's
-  "firewall block" event type.
+  Explicitly-outbound blocks are filtered out so local egress failures cannot
+  masquerade as inbound reconnaissance; direction-unlabeled telemetry is kept
+  (verify your firewall's log wording in the lab). Low-signal on its own; it is
+  the building block for the firewall-block-burst (port scan / sweep)
+  correlation, and maps to the SOC Analyst Agent's "firewall block" event type.
 references:
   - https://attack.mitre.org/techniques/T1595/
 author: AI Operator Cyber Command Center
@@ -17,15 +19,22 @@ tags:
 logsource:
   category: firewall
 detection:
-  selection_block:
-    message|contains: "blocked"
-  selection_deny:
-    message|contains: "deny"
-  condition: 1 of selection_*
+  selection_action:
+    message|contains:
+      - "blocked"
+      - "denied"
+      - "deny"
+  filter_outbound:
+    message|contains:
+      - "outbound"
+      - "egress"
+  condition: selection_action and not filter_outbound
 fields:
   - src_ip
   - dst_port
 falsepositives:
   - Misconfigured internal services retrying closed ports
   - Broadcast/multicast noise on flat lab networks
+  - Direction-unlabeled outbound blocks (add your firewall's egress wording to
+    the filter)
 level: low
