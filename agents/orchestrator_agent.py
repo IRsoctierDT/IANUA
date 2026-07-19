@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from dataclasses import asdict
 from typing import Any
 
@@ -105,7 +106,7 @@ class OrchestratorAgent:
 
     def process_sequence(
         self,
-        events: list[str | dict[str, Any]],
+        events: Sequence[str | dict[str, Any]],
         report_path: str = "reports/markdown/orchestrated_sequence_incident.md",
     ) -> dict[str, Any]:
         """Run the pipeline over an ordered batch of log events.
@@ -120,7 +121,8 @@ class OrchestratorAgent:
         Deterministic and network-free like ``process_log``; input validation is
         fail-closed (delegated to ``analyze_sequence``).
         """
-        sequence_result = self.soc.analyze_sequence(events)
+        event_list: list[str | dict[str, Any]] = list(events)
+        sequence_result = self.soc.analyze_sequence(event_list)
 
         # Anchor the standard report sections on the most severe event
         # (highest severity score; earliest event wins ties — deterministic).
@@ -128,7 +130,7 @@ class OrchestratorAgent:
             sequence_result["events"],
             key=lambda e: (e["severity_score"], -e["index"]),
         )
-        top_event = events[top_summary["index"]]
+        top_event = event_list[top_summary["index"]]
         log_text = (
             top_event if isinstance(top_event, str) else json.dumps(top_event, sort_keys=True)
         )
