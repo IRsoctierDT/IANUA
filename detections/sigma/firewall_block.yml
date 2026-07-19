@@ -1,0 +1,31 @@
+title: Firewall Block - Inbound Connection Denied
+name: firewall_block
+id: ff78ef94-f98f-477a-9d07-144a8322b532
+status: experimental
+description: >-
+  A single inbound connection blocked/denied by the host or perimeter firewall.
+  Low-signal on its own; it is the building block for the firewall-block-burst
+  (port scan / sweep) correlation, and maps to the SOC Analyst Agent's
+  "firewall block" event type.
+references:
+  - https://attack.mitre.org/techniques/T1595/
+author: AI Operator Cyber Command Center
+date: 2026-07-19
+tags:
+  - attack.reconnaissance
+  - attack.t1595
+logsource:
+  category: firewall
+detection:
+  selection_block:
+    message|contains: "blocked"
+  selection_deny:
+    message|contains: "deny"
+  condition: 1 of selection_*
+fields:
+  - src_ip
+  - dst_port
+falsepositives:
+  - Misconfigured internal services retrying closed ports
+  - Broadcast/multicast noise on flat lab networks
+level: low

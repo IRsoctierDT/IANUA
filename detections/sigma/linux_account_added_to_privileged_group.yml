@@ -1,0 +1,37 @@
+title: Linux Account Added to Privileged Group
+name: account_added_to_privileged_group
+id: 17fdf74c-1cd8-4ba9-b361-8231658e5044
+status: experimental
+description: >-
+  An account was added to a privileged group (sudo/wheel/admin) via usermod or
+  gpasswd. Legitimate but rare in steady state; combined with a fresh account
+  creation it is a strong persistence / privilege-escalation signal (see the
+  account_created_then_privileged correlation).
+references:
+  - https://attack.mitre.org/techniques/T1098/
+author: AI Operator Cyber Command Center
+date: 2026-07-19
+tags:
+  - attack.persistence
+  - attack.privilege-escalation
+  - attack.t1098
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection_usermod:
+    message|contains: "usermod"
+  selection_gpasswd:
+    message|contains: "gpasswd"
+  privileged_group:
+    message|contains:
+      - "sudo"
+      - "wheel"
+      - "admin"
+  condition: (selection_usermod or selection_gpasswd) and privileged_group
+fields:
+  - user
+  - host
+falsepositives:
+  - Planned onboarding of administrators (correlate with change tickets)
+level: high

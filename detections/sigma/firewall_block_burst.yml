@@ -1,0 +1,30 @@
+title: Port Scan Indicated by Repeated Firewall Blocks
+id: 637f1404-fc5e-4633-b219-ff1f8075398d
+status: experimental
+description: >-
+  Twenty or more blocked/denied inbound connections from a single source address
+  within five minutes — consistent with port scanning or a service sweep against
+  lab assets. Modeled as a Sigma correlation over the firewall_block base rule.
+references:
+  - https://attack.mitre.org/techniques/T1595/
+  - https://attack.mitre.org/techniques/T1046/
+author: AI Operator Cyber Command Center
+date: 2026-07-19
+correlation:
+  type: event_count
+  rules:
+    - firewall_block
+  group-by:
+    - src_ip
+  timespan: 5m
+  condition:
+    gte: 20
+tags:
+  - attack.reconnaissance
+  - attack.t1595
+  - attack.discovery
+  - attack.t1046
+falsepositives:
+  - Vulnerability scanners you operate in the lab (allow-list their sources)
+  - Monitoring/health-check systems probing many ports
+level: medium
