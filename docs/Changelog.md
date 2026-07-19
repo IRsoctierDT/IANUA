@@ -2,6 +2,19 @@
 
 All notable changes to this project. Versions correspond to git tags.
 
+## Unreleased
+
+### Fixed
+- **GitHub Pages deploy failing with "No artifacts named github-pages were
+  found"** — the split build/deploy design uploaded the site artifact in the
+  build job, then the deploy job waited on the `github-pages` required-reviewer
+  gate. When approval came later than the Pages artifact's ~1-day retention, the
+  artifact had expired and the deploy failed. Combined build + deploy into a
+  single environment-gated job so approval holds the whole job and, once
+  approved, the artifact is built, uploaded, and deployed fresh in one shot. The
+  human approval gate is unchanged; only the structure that made an approved
+  deploy fail was fixed.
+
 ## v1.9.0 — Hardening #2: tamper-evident audit, sandboxed tools, verifiable RAG
 
 **Milestone: the policy/audit layer is enforced at the tool surface, tool

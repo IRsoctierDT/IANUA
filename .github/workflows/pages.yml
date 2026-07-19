@@ -4,22 +4,30 @@
 # §5.1/§8 (CI is the security/quality gate before anything reaches the public
 # site).
 #
-# Security posture (AGENTS.md §3):
-#   - Minimal permissions: contents:read + pages:write + id-token:write only.
-#   - No secrets needed — GITHUB_TOKEN is auto-provisioned.
-#   - Split build/deploy: the build job holds no environment scope; only the
-#     deploy job touches the github-pages environment.
-#
 # Publish gates (defense in depth, AGENTS.md §5.1/§7-§8):
 #   1. CI success — a green CI run on main (lint, tests, SAST, SCA, SBOM, secret
 #      scan) is required before this workflow runs at all.
 #   2. Human approval — the github-pages environment keeps a *required-reviewer*
-#      protection rule, so a deploy waits for an operator to approve it (§5.1:
+#      protection rule, so the deploy waits for an operator to approve it (§5.1:
 #      external/deploy actions stay human-in-the-loop). This is intentional.
-#   The bug this workflow fixes was NOT the approval gate but the concurrency:
-#   with cancel-in-progress:false a run left `waiting` for approval held the slot
-#   and jammed every later deploy. cancel-in-progress:true (below) keeps the
-#   approval gate while ensuring a superseded run can never deadlock the queue.
+#
+# Why ONE job (not the canonical build/deploy split):
+#   The two-job pattern uploads the site artifact in `build` and consumes it in
+#   `deploy`. That is safe only when approval is instant. With the human gate in
+#   place (gate #2), the deploy can wait hours or days — longer than the Pages
+#   artifact's ~1-day retention — so by the time it is approved the artifact has
+#   expired and deploy fails with "No artifacts named github-pages were found".
+#   Combining build + deploy into a single environment-gated job fixes that: the
+#   approval holds the whole job, and once approved the artifact is built,
+#   uploaded, and deployed in one shot, so it is always fresh. The approval gate
+#   itself is unchanged.
+#
+# Security posture (AGENTS.md §3):
+#   - Minimal permissions: contents:read + pages:write + id-token:write only.
+#   - No secrets needed — GITHUB_TOKEN is auto-provisioned.
+#   - The pre-deploy steps (checkout, drift check) run trusted, local repo files
+#     only — no untrusted or external input — so sharing the job's environment
+#     scope with them carries no meaningful additional risk.
 #
 # Prerequisite (one-time): repo Settings → Pages → Source → "GitHub Actions",
 # and set the operator(s) as required reviewers on the github-pages environment.
@@ -39,7 +47,7 @@ on:
 # Latest-content-wins. Unlike GitHub's default (cancel-in-progress:false), we
 # DO cancel a superseded run: publishing docs is idempotent, the newest commit
 # should always win, and — critically — this guarantees a run stuck in `waiting`
-# can never permanently block the queue (the incident this workflow fixes).
+# for approval can never permanently block the queue.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -50,17 +58,20 @@ permissions:
   id-token: write
 
 jobs:
-  # Build the static artifact. No environment scope here (least privilege).
-  build:
-    name: Build Pages artifact
+  # Single environment-gated job: approval holds the whole job, then build +
+  # upload + deploy all run fresh in one shot (see header for why not split).
+  deploy:
+    name: Build & deploy to GitHub Pages
     runs-on: ubuntu-latest
     # workflow_run: only proceed if CI succeeded (already filtered to main).
     # workflow_dispatch: only from main — a manual run must never publish docs/
-    # from an untested branch, which would bypass the CI-success gate. Mirrors
-    # the CI deploy job's guard.
+    # from an untested branch, which would bypass the CI-success gate.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       github.event.workflow_run.conclusion == 'success'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -79,15 +90,6 @@ jobs:
         with:
           path: docs/
 
-  # Deploy the artifact. Only this job binds the github-pages environment.
-  deploy:
-    name: Deploy to GitHub Pages
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
