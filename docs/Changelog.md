@@ -8,8 +8,11 @@ All notable changes to this project. Versions correspond to git tags.
 - **Report enrichment: sequence findings + verified passage citations** —
   incident reports gain a "Sequence Correlation" section (multi-event findings
   from `SocAnalystAgent.analyze_sequence`: pattern, source, severity,
-  contributing events) and a "Cited Passages (verified)" section quoting the
-  exact grounding passages with char-offset locators. The orchestrator now
+  contributing events) and a "Cited Passages" section quoting the exact
+  grounding passages with char-offset locators — labelled "(verified)" only
+  when the caller attests that `verify_citations` passed
+  (`citations_verified=True`; the report agent never mislabels unchecked
+  citations). The orchestrator now
   attaches passage-level citations to `process_log` **only after they pass the
   anti-hallucination check** (`verify_citations`; unverifiable citations are
   dropped, fail-closed), and gains `process_sequence(events)` — the full

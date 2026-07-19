@@ -92,6 +92,7 @@ class OrchestratorAgent:
             kb_references=kb_references,
             detection_matches=detection_matches,
             citations=citations,
+            citations_verified=True,
             generator=self.generator,
         )
 
@@ -157,6 +158,7 @@ class OrchestratorAgent:
             detection_matches=detection_matches,
             sequence_result=sequence_result,
             citations=citations,
+            citations_verified=True,
             generator=self.generator,
         )
 

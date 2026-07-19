@@ -107,6 +107,7 @@ class IncidentReportAgent:
         detection_matches: list[dict] | None = None,
         sequence_result: dict | None = None,
         citations: list[dict] | None = None,
+        citations_verified: bool = False,
         generator: Generator | None = None,
         pdf_path: str | None = None,
     ) -> Path:
@@ -118,10 +119,17 @@ class IncidentReportAgent:
         context; ``detection_matches`` (from the Detection Matcher Agent) lists
         the Sigma rules that cover the event's technique; ``sequence_result``
         (from ``SocAnalystAgent.analyze_sequence``) surfaces multi-event
-        correlated findings; ``citations`` (verified passage-level citations
-        from ``KnowledgeBaseAgent.cite``) quote the exact grounding passages
-        with char-offset locators. When any is omitted, the report notes that
-        none were attached.
+        correlated findings; ``citations`` (passage-level citations from
+        ``KnowledgeBaseAgent.cite``) quote the exact grounding passages with
+        char-offset locators. When any is omitted, the report notes that none
+        were attached.
+
+        Security consideration: the section heading claims "(verified)" only
+        when ``citations_verified=True`` — set it solely after
+        ``KnowledgeBaseAgent.verify_citations`` has passed (as the orchestrator
+        does). This report agent does not re-verify; the default (``False``)
+        renders a neutral heading so a direct caller cannot mislabel
+        unchecked citations as verified.
         """
         if soc_result is None:
             soc_result = self.soc_agent.analyze_log(log_text)
@@ -189,7 +197,7 @@ class IncidentReportAgent:
 ## Knowledge Base References
 {chr(10).join(f"- **{_md_cell(r['source'])}** (relevance {r['score']:.2f}) — {_md_cell(r['snippet'])}" for r in kb_references) if kb_references else "- None captured"}
 
-## Cited Passages (verified)
+## Cited Passages{" (verified)" if citations_verified else ""}
 {_render_citations(citations)}
 
 ## Detection Coverage

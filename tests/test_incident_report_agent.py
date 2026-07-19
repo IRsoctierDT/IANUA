@@ -297,7 +297,8 @@ def test_citations_render_with_quote_and_locator(tmp_path: Path) -> None:
         citations=citations,
     )
     content = output.read_text(encoding="utf-8")
-    assert "## Cited Passages (verified)" in content
+    assert "## Cited Passages" in content
+    assert "(verified)" not in content  # caller did not attest verification
     assert "mitre.md" in content
     assert "chars 120-170" in content
     assert "Brute force uses repeated guessing" in content
@@ -309,5 +310,21 @@ def test_citations_absent_shows_none_captured(tmp_path: Path) -> None:
     output = tmp_path / "report.md"
     agent.generate_report("Failed password for root from 10.0.0.5 port 22 ssh2", str(output))
     content = output.read_text(encoding="utf-8")
-    assert "## Cited Passages (verified)" in content
+    assert "## Cited Passages" in content
     assert "None captured" in content
+
+
+@pytest.mark.unit
+def test_citations_verified_label_requires_attestation(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    citations = [
+        {"source": "kb.md", "score": 0.5, "quote": "Quoted text.", "char_start": 0, "char_end": 12}
+    ]
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        citations=citations,
+        citations_verified=True,
+    )
+    assert "## Cited Passages (verified)" in output.read_text(encoding="utf-8")
