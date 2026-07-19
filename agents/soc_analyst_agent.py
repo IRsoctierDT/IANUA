@@ -66,6 +66,7 @@ class EventSummary:
     severity: Severity
     severity_score: int
     indicators: list[str]
+    source: str | None
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,7 @@ class SocAnalystAgent:
                     severity=severity,
                     severity_score=score,
                     indicators=self._extract_indicators(log_text, structured),
+                    source=self._extract_source(log_text, structured),
                 )
             )
             if self._is_privileged(log_text, structured):
@@ -191,22 +193,28 @@ class SocAnalystAgent:
 
         findings = self._correlate(summaries, privileged_indices)
 
+        # Overall severity is the strongest of (a) any correlated finding and
+        # (b) the strongest individual event — a lower-severity correlation
+        # must never downgrade a sequence containing a worse single event.
+        # Events rank by severity label first, score second, so a bonus-boosted
+        # lower-severity event cannot outrank a genuinely higher one.
+        top_event = max(summaries, key=lambda s: (_SEVERITY_SCORES[s.severity], s.severity_score))
+        overall: Severity
         if findings:
             top = max(findings, key=lambda f: _SEVERITY_SCORES[f.severity])
-            overall: Severity = top.severity
             # Correlated multi-event activity is worse than its worst single
             # event — same bonus style as the single-event scorer, capped.
-            overall_score = min(_SEVERITY_SCORES[overall] + 10, 100)
+            finding_score = min(_SEVERITY_SCORES[top.severity] + 10, 100)
+            if _SEVERITY_SCORES[top.severity] >= _SEVERITY_SCORES[top_event.severity]:
+                overall = top.severity
+            else:
+                overall = top_event.severity
+            overall_score = max(finding_score, top_event.severity_score)
             summary = (
                 f"Correlated {len(findings)} multi-event pattern(s) across "
                 f"{len(events)} events; most severe: {top.pattern} from {top.source}."
             )
         else:
-            # Rank by severity label first, score second, so a bonus-boosted
-            # lower-severity event cannot outrank a genuinely higher one.
-            top_event = max(
-                summaries, key=lambda s: (_SEVERITY_SCORES[s.severity], s.severity_score)
-            )
             overall = top_event.severity
             overall_score = top_event.severity_score
             summary = (
@@ -236,18 +244,21 @@ class SocAnalystAgent:
         summaries: list[EventSummary],
         privileged_indices: set[int],
     ) -> list[CorrelatedFinding]:
-        """Detect cross-event patterns; deterministic (sources scanned sorted)."""
+        """Detect cross-event patterns; deterministic (sources scanned sorted).
+
+        Correlation keys on each event's validated **source** (see
+        ``_extract_source``) — never on the general indicator list, which can
+        contain destination addresses shared by unrelated clients.
+        """
         failures: dict[str, list[int]] = {}
         successes: dict[str, list[int]] = {}
         for entry in summaries:
-            if entry.event_type == "authentication failure":
-                bucket = failures
-            elif entry.event_type == "successful login":
-                bucket = successes
-            else:
+            if entry.source is None:
                 continue
-            for source in entry.indicators:
-                bucket.setdefault(source, []).append(entry.index)
+            if entry.event_type == "authentication failure":
+                failures.setdefault(entry.source, []).append(entry.index)
+            elif entry.event_type == "successful login":
+                successes.setdefault(entry.source, []).append(entry.index)
 
         findings: list[CorrelatedFinding] = []
         for source, fail_indices in sorted(failures.items()):
@@ -267,15 +278,19 @@ class SocAnalystAgent:
                 )
             success_after = [i for i in successes.get(source, []) if i > fail_indices[0]]
             if success_after:
+                # Only failures that precede the first correlated success are
+                # evidence of the compromise chain; later failures are not.
+                first_success = min(success_after)
+                prior_failures = [i for i in fail_indices if i < first_success]
                 findings.append(
                     CorrelatedFinding(
                         pattern="auth_failure_then_success",
                         source=source,
-                        event_indices=sorted([*fail_indices, *success_after]),
+                        event_indices=sorted([*prior_failures, first_success]),
                         severity="critical",
                         description=(
                             f"Successful login from {source} after "
-                            f"{len(fail_indices)} failed attempt(s) — possible "
+                            f"{len(prior_failures)} failed attempt(s) — possible "
                             "credential compromise."
                         ),
                     )
@@ -323,8 +338,10 @@ class SocAnalystAgent:
             if not log_input:
                 raise ValueError("log_input dict cannot be empty.")
             structured = {k: str(v) for k, v in log_input.items()}
-            log_text = structured.get("message", " ".join(structured.values()))
-            return log_text.strip(), structured
+            log_text = structured.get("message", " ".join(structured.values())).strip()
+            if not log_text:
+                raise ValueError("log_input contains no usable text.")
+            return log_text, structured
 
         if not isinstance(log_input, str):
             raise ValueError("log_input must be a string or dict.")
@@ -339,8 +356,10 @@ class SocAnalystAgent:
                 parsed = json.loads(text)
                 if isinstance(parsed, dict):
                     structured = {k: str(v) for k, v in parsed.items()}
-                    log_text = structured.get("message", " ".join(structured.values()))
-                    return log_text.strip(), structured
+                    log_text = structured.get("message", " ".join(structured.values())).strip()
+                    if not log_text:
+                        raise ValueError("log_input contains no usable text.")
+                    return log_text, structured
             except json.JSONDecodeError:
                 pass
 
@@ -433,6 +452,33 @@ class SocAnalystAgent:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _is_ipv4(token: str) -> bool:
+        """True for a dotted-quad IPv4 address with in-range octets."""
+        parts = token.split(".")
+        return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+    @staticmethod
+    def _extract_source(log_text: str, structured: dict[str, Any]) -> str | None:
+        """Return the validated *source* address for correlation, or ``None``.
+
+        Uses an explicit structured source field when present, else the IPv4
+        address that directly follows ``from`` in plain text. Never falls back
+        to the general indicator list — that list may contain destination
+        addresses, and correlating on them would fabricate patterns (e.g.
+        brute force "from" a destination shared by unrelated clients).
+        """
+        for key in ("src_ip", "source_ip", "ip", "remote_addr"):
+            if key in structured:
+                return str(structured[key])
+        tokens = log_text.replace(",", " ").split()
+        for pos, token in enumerate(tokens[:-1]):
+            if token.lower() == "from":
+                candidate = tokens[pos + 1].strip("[]():;")
+                if SocAnalystAgent._is_ipv4(candidate):
+                    return candidate
+        return None
+
+    @staticmethod
     def _extract_indicators(log_text: str, structured: dict[str, Any]) -> list[str]:
         indicators: list[str] = []
 
@@ -446,8 +492,7 @@ class SocAnalystAgent:
             tokens = log_text.replace(",", " ").split()
             for token in tokens:
                 stripped = token.strip("[]():;")
-                parts = stripped.split(".")
-                if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+                if SocAnalystAgent._is_ipv4(stripped):
                     indicators.append(stripped)
 
         return sorted(set(indicators))

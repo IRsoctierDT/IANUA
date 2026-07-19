@@ -283,3 +283,86 @@ def test_sequence_reports_versioned_agent_name() -> None:
     agent = SocAnalystAgent()
     result = agent.analyze_sequence([_FAIL_BOB])
     assert result["agent"] == f"SOC Analyst Agent v{__version__}"
+
+
+# ------------------------------------------------------------------ v1.9: review hardening
+@pytest.mark.unit
+def test_sequence_shared_destination_not_brute_force() -> None:
+    # Three failures from DIFFERENT clients that all mention the same
+    # destination IP must not correlate into brute force on the destination.
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence(
+        [
+            "Failed password for bob from 198.51.100.1 to host 192.0.2.10 port 22",
+            "Failed password for bob from 198.51.100.2 to host 192.0.2.10 port 22",
+            "Failed password for bob from 198.51.100.3 to host 192.0.2.10 port 22",
+        ]
+    )
+    assert all(f["pattern"] != "brute_force" for f in result["findings"])
+
+
+@pytest.mark.unit
+def test_sequence_no_source_no_correlation() -> None:
+    # Auth failures with no identifiable source must not correlate at all.
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence(
+        [
+            "Failed password for invalid user bob",
+            "Failed password for invalid user bob",
+            "Failed password for invalid user bob",
+        ]
+    )
+    assert result["findings"] == []
+
+
+@pytest.mark.unit
+def test_sequence_failure_after_success_excluded_from_compromise() -> None:
+    # failure -> success -> failure: the trailing failure is not evidence of
+    # the compromise chain and must not be counted or listed.
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence([_FAIL_BOB, _OK_BOB, _FAIL_BOB])
+    compromise = next(f for f in result["findings"] if f["pattern"] == "auth_failure_then_success")
+    assert compromise["event_indices"] == [0, 1]
+    assert "1 failed attempt" in compromise["description"]
+
+
+@pytest.mark.unit
+def test_sequence_critical_event_not_downgraded_by_lesser_finding() -> None:
+    # A brute-force (high) finding must not mask an unrelated critical event.
+    agent = SocAnalystAgent()
+    result = agent.analyze_sequence(
+        [
+            _FAIL_BOB,
+            _FAIL_BOB,
+            _FAIL_BOB,
+            {
+                "severity": "critical",
+                "src_ip": "198.51.100.9",
+                "message": "Suricata alert: exploit kit payload detected",
+            },
+        ]
+    )
+    assert any(f["pattern"] == "brute_force" for f in result["findings"])
+    assert result["severity"] == "critical"
+    assert result["severity_score"] >= 90
+
+
+@pytest.mark.unit
+def test_sequence_rejects_blank_message_dict() -> None:
+    agent = SocAnalystAgent()
+    with pytest.raises(ValueError):
+        agent.analyze_sequence([{"message": "   "}])
+
+
+@pytest.mark.unit
+def test_analyze_log_rejects_blank_message_dict() -> None:
+    agent = SocAnalystAgent()
+    with pytest.raises(ValueError):
+        agent.analyze_log({"message": "   "})
+
+
+@pytest.mark.unit
+def test_analyze_log_rejects_blank_message_json_string() -> None:
+    agent = SocAnalystAgent()
+    with pytest.raises(ValueError):
+        agent.analyze_log('{"message": "   "}')
