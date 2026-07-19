@@ -221,3 +221,110 @@ def test_ai_narrative_fails_soft_on_generator_error(tmp_path: Path) -> None:
     )
     content = output.read_text(encoding="utf-8")
     assert "AI narrative unavailable" in content
+
+
+# ------------------------------------------------------------------ v1.9: sequence + citations
+@pytest.mark.unit
+def test_sequence_section_renders_findings(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    sequence = {
+        "event_count": 4,
+        "severity": "critical",
+        "severity_score": 100,
+        "findings": [
+            {
+                "pattern": "brute_force",
+                "source": "203.0.113.7",
+                "severity": "critical",
+                "description": "3 authentication failures from 203.0.113.7 targeting a privileged account.",
+                "event_indices": [0, 1, 2],
+            }
+        ],
+    }
+    agent.generate_report(
+        "Failed password for root from 203.0.113.7 port 22 ssh2",
+        str(output),
+        sequence_result=sequence,
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "## Sequence Correlation" in content
+    assert "**Events analyzed:** 4" in content
+    assert "brute_force" in content
+    assert "203.0.113.7" in content
+
+
+@pytest.mark.unit
+def test_sequence_section_absent_notes_single_event(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    agent.generate_report("Failed password for root from 10.0.0.5 port 22 ssh2", str(output))
+    content = output.read_text(encoding="utf-8")
+    assert "## Sequence Correlation" in content
+    assert "Single-event analysis (no sequence context)" in content
+
+
+@pytest.mark.unit
+def test_sequence_with_no_findings_notes_none(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    sequence = {"event_count": 2, "severity": "medium", "severity_score": 45, "findings": []}
+    agent.generate_report(
+        "Failed password for bob from 10.0.0.5 port 22 ssh2",
+        str(output),
+        sequence_result=sequence,
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "No multi-event patterns detected" in content
+
+
+@pytest.mark.unit
+def test_citations_render_with_quote_and_locator(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    citations = [
+        {
+            "source": "mitre.md",
+            "score": 0.72,
+            "quote": "Brute force uses repeated guessing of credentials.",
+            "char_start": 120,
+            "char_end": 170,
+        }
+    ]
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        citations=citations,
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "## Cited Passages" in content
+    assert "(verified)" not in content  # caller did not attest verification
+    assert "mitre.md" in content
+    assert "chars 120-170" in content
+    assert "Brute force uses repeated guessing" in content
+
+
+@pytest.mark.unit
+def test_citations_absent_shows_none_captured(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    agent.generate_report("Failed password for root from 10.0.0.5 port 22 ssh2", str(output))
+    content = output.read_text(encoding="utf-8")
+    assert "## Cited Passages" in content
+    assert "None captured" in content
+
+
+@pytest.mark.unit
+def test_citations_verified_label_requires_attestation(tmp_path: Path) -> None:
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    citations = [
+        {"source": "kb.md", "score": 0.5, "quote": "Quoted text.", "char_start": 0, "char_end": 12}
+    ]
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        citations=citations,
+        citations_verified=True,
+    )
+    assert "## Cited Passages (verified)" in output.read_text(encoding="utf-8")
