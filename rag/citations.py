@@ -11,12 +11,13 @@ built on it are only trustworthy if every cited claim points at real text a
 reader (or an automated check) can confirm. :func:`verify_citation` is that check
 — an anti-hallucination guard usable on citations a model *claims* to have used.
 
-Deterministic and dependency-free (term-overlap scoring), so it is reproducible
-and CI-safe; it performs no network access.
+Deterministic and dependency-free (rarity-weighted term-overlap scoring), so it
+is reproducible and CI-safe; it performs no network access.
 """
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -47,7 +48,13 @@ class Citation:
 
 
 def best_passage(query: str, text: str, *, max_chars: int = 240) -> str:
-    """Return the sentence in ``text`` that best matches ``query`` by term overlap.
+    """Return the sentence in ``text`` best matching ``query``, rarity-weighted.
+
+    Query terms are weighted by their inverse sentence frequency within
+    ``text`` (``log1p(N / (1 + df))``), so a sentence containing a term that is
+    rare in the document outranks one containing only terms that appear
+    throughout it — instead of tying and falling back to document order. With
+    uniform frequencies this reduces exactly to plain term-overlap.
 
     The result is a verbatim substring of ``text`` (stripped, and trimmed to
     ``max_chars`` at a word boundary), so callers can locate it with
@@ -58,13 +65,21 @@ def best_passage(query: str, text: str, *, max_chars: int = 240) -> str:
     if not sentences:
         return ""
 
-    def overlap(sentence: str) -> float:
-        terms = _tokens(sentence)
-        if not query_terms or not terms:
-            return 0.0
-        return len(query_terms & terms) / len(query_terms)
+    sentence_terms = [_tokens(s) for s in sentences]
+    n = len(sentences)
+    weights = {
+        term: math.log1p(n / (1 + sum(1 for terms in sentence_terms if term in terms)))
+        for term in query_terms
+    }
+    total = sum(weights.values())
 
-    best = max(sentences, key=overlap)
+    def overlap(index: int) -> float:
+        terms = sentence_terms[index]
+        if not total or not terms:
+            return 0.0
+        return sum(weights[t] for t in query_terms & terms) / total
+
+    best = sentences[max(range(n), key=overlap)]
     quote = best.strip()
     if len(quote) > max_chars:
         trimmed = quote[:max_chars].rsplit(" ", 1)[0].rstrip()

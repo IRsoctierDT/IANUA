@@ -5,8 +5,11 @@ references from the local ``knowledge-base/`` corpus so incident reports can cit
 authoritative framework context (MITRE ATT&CK, OWASP, NIST CSF, CIS, etc.).
 
 Two retrieval modes (DESIGN.md §5):
-- **lexical** (default) — a deterministic, dependency-free term-overlap score. No
-  network, fully reproducible, CI-safe. This is what the agent pipeline uses.
+- **lexical** (default) — a deterministic, dependency-free, rarity-weighted (IDF)
+  term-overlap score: query terms are weighted by how rare they are across the
+  corpus, so discriminative terms ("kerberoasting") outrank ubiquitous ones
+  ("security") instead of tying with them. No network, fully reproducible,
+  CI-safe. This is what the agent pipeline uses.
 - **semantic** — embeds the query and corpus chunks via the local ``OllamaEmbedder``
   (loopback-only, fail-closed) and ranks by cosine similarity. If Ollama is
   unreachable it **falls back to lexical**, so callers never break.
@@ -21,6 +24,7 @@ Other guarantees:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -140,17 +144,50 @@ class KnowledgeBaseAgent:
         }
 
     @staticmethod
+    def _idf_weights(query_terms: set[str], chunk_term_sets: list[set[str]]) -> dict[str, float]:
+        """Corpus-derived inverse-document-frequency weight per query term.
+
+        ``log1p(N / (1 + df))`` over the chunk corpus: a term appearing in few
+        chunks weighs more than one appearing everywhere. Deterministic and
+        dependency-free. A query term absent from the corpus keeps its (high)
+        weight in the denominator — it deflates every score equally, exactly as
+        it did under plain fraction-of-query-terms scoring, so ranking is
+        unaffected by unmatched terms.
+        """
+        n = len(chunk_term_sets)
+        return {
+            term: math.log1p(n / (1 + sum(1 for terms in chunk_term_sets if term in terms)))
+            for term in query_terms
+        }
+
+    @staticmethod
+    def _weighted_overlap(
+        query_terms: set[str],
+        chunk_terms: set[str],
+        weights: dict[str, float],
+    ) -> float:
+        """IDF-weighted overlap in [0, 1]; 1.0 iff every query term is present.
+
+        With uniform document frequencies this reduces exactly to the previous
+        plain fraction-of-query-terms score — the change only sharpens ranking
+        where term rarity differs.
+        """
+        total = sum(weights.values())
+        if not total or not chunk_terms:
+            return 0.0
+        return sum(weights[t] for t in query_terms & chunk_terms) / total
+
+    @staticmethod
     def _lexical_scores(query: str, chunks: list[Chunk]) -> dict[str, float]:
-        """Best per-source term-overlap score (fraction of query terms present)."""
+        """Best per-source rarity-weighted (IDF) term-overlap score."""
         query_terms = _tokenize(query)
         if not query_terms:
             return {}
+        chunk_term_sets = [_tokenize(chunk.text) for chunk in chunks]
+        weights = KnowledgeBaseAgent._idf_weights(query_terms, chunk_term_sets)
         best: dict[str, float] = {}
-        for chunk in chunks:
-            chunk_terms = _tokenize(chunk.text)
-            if not chunk_terms:
-                continue
-            score = len(query_terms & chunk_terms) / len(query_terms)
+        for chunk, chunk_terms in zip(chunks, chunk_term_sets, strict=True):
+            score = KnowledgeBaseAgent._weighted_overlap(query_terms, chunk_terms, weights)
             if score > best.get(chunk.source, 0.0):
                 best[chunk.source] = score
         return best
@@ -266,16 +303,14 @@ class KnowledgeBaseAgent:
             except ValidationError:
                 pass  # Ollama unreachable -> graceful lexical fallback
         query_terms = _tokenize(query)
-        scored: list[tuple[Chunk, float]] = []
-        for chunk in chunks:
-            chunk_terms = _tokenize(chunk.text)
-            score = (
-                len(query_terms & chunk_terms) / len(query_terms)
-                if query_terms and chunk_terms
-                else 0.0
-            )
-            scored.append((chunk, score))
-        return scored
+        if not query_terms:
+            return [(chunk, 0.0) for chunk in chunks]
+        chunk_term_sets = [_tokenize(chunk.text) for chunk in chunks]
+        weights = self._idf_weights(query_terms, chunk_term_sets)
+        return [
+            (chunk, self._weighted_overlap(query_terms, chunk_terms, weights))
+            for chunk, chunk_terms in zip(chunks, chunk_term_sets, strict=True)
+        ]
 
 
 if __name__ == "__main__":

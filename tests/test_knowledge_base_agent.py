@@ -141,3 +141,48 @@ def test_semantic_falls_back_to_lexical_when_embedder_fails(tmp_path: Path) -> N
 def test_semantic_empty_query_returns_empty(tmp_path: Path) -> None:
     kb = KnowledgeBaseAgent(_make_kb(tmp_path / "kb"), mode="semantic", embedder=_FakeEmbedder())
     assert kb.retrieve("   ", k=3) == []
+
+
+# ------------------------------------------------------------------ v1.9: IDF-weighted precision
+@pytest.mark.unit
+def test_rare_term_outranks_common_term(tmp_path: Path) -> None:
+    # Old unweighted scoring ties all three docs at 1/2 and falls back to
+    # alphabetical order (aaa.md first — wrong). IDF weighting must rank the
+    # doc matching the rare term ("kerberoasting", df=1) above docs matching
+    # only the common term ("logging", df=2).
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / "aaa.md").write_text("logging configuration guidance", encoding="utf-8")
+    (root / "mmm.md").write_text("general logging overview", encoding="utf-8")
+    (root / "zzz.md").write_text("kerberoasting against service accounts", encoding="utf-8")
+    kb = KnowledgeBaseAgent(root)
+    refs = kb.retrieve("kerberoasting logging", k=3)
+    assert refs[0].source == "zzz.md"
+    assert refs[0].score > refs[1].score
+
+
+@pytest.mark.unit
+def test_all_query_terms_present_scores_one(tmp_path: Path) -> None:
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / "full.md").write_text("kerberoasting logging together here", encoding="utf-8")
+    (root / "partial.md").write_text("logging only here", encoding="utf-8")
+    kb = KnowledgeBaseAgent(root)
+    refs = kb.retrieve("kerberoasting logging", k=2)
+    assert refs[0].source == "full.md"
+    assert refs[0].score == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_uniform_rarity_reduces_to_plain_fraction(tmp_path: Path) -> None:
+    # Equal document frequencies -> identical to the previous plain
+    # fraction-of-query-terms score (each doc matches 1 of 2 terms -> 0.5).
+    root = tmp_path / "kb"
+    root.mkdir()
+    (root / "one.md").write_text("alphaterm content", encoding="utf-8")
+    (root / "two.md").write_text("betaterm content", encoding="utf-8")
+    kb = KnowledgeBaseAgent(root)
+    refs = kb.retrieve("alphaterm betaterm", k=2)
+    assert len(refs) == 2
+    assert refs[0].score == pytest.approx(refs[1].score)
+    assert refs[0].score == pytest.approx(0.5)
