@@ -4,6 +4,17 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Changed
+- **RAG retrieval precision: rarity-weighted (IDF) lexical scoring** — the
+  Knowledge Base Agent's lexical mode and the citation engine's passage
+  selection now weight query terms by corpus/document rarity
+  (`log1p(N/(1+df))`) instead of counting every term equally. Discriminative
+  terms ("kerberoasting") outrank ubiquitous ones ("security") rather than
+  tying and falling back to alphabetical/document order. Deterministic,
+  dependency-free, same [0, 1] semantics (all-terms match still scores 1.0;
+  uniform rarity reduces exactly to the previous fraction). Applies to
+  `retrieve()`, `cite()`, and `best_passage()`.
+
 ### Added
 - **Detection content: five new Sigma rules** (`detections/sigma/`) covering
   gaps in the agent vocabulary — `firewall_block` (base) +

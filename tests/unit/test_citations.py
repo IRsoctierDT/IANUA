@@ -138,3 +138,17 @@ def test_agent_cite_fails_soft_on_missing_corpus(tmp_path: Path) -> None:
 def test_agent_cite_rejects_nonpositive_k(tmp_path: Path, bad_k: int) -> None:
     with pytest.raises(ValueError):
         KnowledgeBaseAgent(_corpus(tmp_path)).cite("q", k=bad_k)
+
+
+@pytest.mark.unit
+def test_best_passage_prefers_rare_term_sentence() -> None:
+    # Old unweighted overlap ties sentence 1 ({security}) with sentence 2
+    # ({kerberoasting}) at 1/2 and picks document order (sentence 1 — wrong).
+    # Rarity weighting must pick the sentence with the document-rare term.
+    text = (
+        "Security policy overview with general security guidance. "
+        "Kerberoasting attacks target service accounts. "
+        "Additional security hardening notes follow."
+    )
+    quote = best_passage("security kerberoasting", text)
+    assert quote.startswith("Kerberoasting")
