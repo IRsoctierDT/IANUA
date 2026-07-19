@@ -1,3 +1,5 @@
+import json
+from dataclasses import asdict
 from typing import Any
 
 from agents.detection_matcher_agent import DetectionMatcherAgent
@@ -22,6 +24,31 @@ class OrchestratorAgent:
         # an explicit generator to override, or set LLM_NARRATIVE=off to disable.
         self.generator = generator if generator is not None else resolve_generator()
 
+    def _verified_citations(
+        self, soc_result: dict[str, Any], mitre_result: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Passage-level citations for the event, attached only if they verify.
+
+        Builds the same query the knowledge-base references use, cites the exact
+        matching passages, then runs the anti-hallucination check
+        (``verify_citations``). Fail-closed: citations that do not verify
+        verbatim at their recorded offsets are dropped rather than reported.
+        """
+        parts = [
+            value
+            for key in ("event_type", "summary")
+            if isinstance(value := soc_result.get(key), str)
+        ]
+        parts += [
+            value
+            for key in ("tactic", "technique")
+            if isinstance(value := mitre_result.get(key), str)
+        ]
+        citations = self.knowledge_base.cite(" ".join(parts), k=3)
+        if not citations or not self.knowledge_base.verify_citations(citations):
+            return []
+        return [asdict(c) for c in citations]
+
     def process_log(
         self,
         log_text: str,
@@ -36,8 +63,8 @@ class OrchestratorAgent:
                 override this to a temporary path to avoid mutating the working
                 tree.
 
-        Returns a dict with the SOC, MITRE, threat-intel, and knowledge-base
-        results for the event.
+        Returns a dict with the SOC, MITRE, threat-intel, knowledge-base,
+        detection, and verified-citation results for the event.
         """
         soc_result = self.soc.analyze_log(log_text)
 
@@ -54,6 +81,8 @@ class OrchestratorAgent:
 
         detection_matches = self.detections.match_for_event(mitre_result)
 
+        citations = self._verified_citations(soc_result, mitre_result)
+
         self.report.generate_report(
             log_text,
             report_path,
@@ -61,6 +90,7 @@ class OrchestratorAgent:
             mitre_result=mitre_result,
             kb_references=kb_references,
             detection_matches=detection_matches,
+            citations=citations,
             generator=self.generator,
         )
 
@@ -70,6 +100,72 @@ class OrchestratorAgent:
             "threat_intel": intel_results,
             "knowledge_base": kb_references,
             "detections": detection_matches,
+            "citations": citations,
+        }
+
+    def process_sequence(
+        self,
+        events: list[str | dict[str, Any]],
+        report_path: str = "reports/markdown/orchestrated_sequence_incident.md",
+    ) -> dict[str, Any]:
+        """Run the pipeline over an ordered batch of log events.
+
+        The SOC agent correlates the sequence (brute force, failure-then-success
+        credential compromise — see ``analyze_sequence``); the standard
+        single-event pipeline then runs on the batch's most severe event so the
+        report keeps its familiar sections, with the sequence findings surfaced
+        in a dedicated "Sequence Correlation" section. Threat intel covers the
+        union of indicators across the whole sequence.
+
+        Deterministic and network-free like ``process_log``; input validation is
+        fail-closed (delegated to ``analyze_sequence``).
+        """
+        sequence_result = self.soc.analyze_sequence(events)
+
+        # Anchor the standard report sections on the most severe event
+        # (highest severity score; earliest event wins ties — deterministic).
+        top_summary = max(
+            sequence_result["events"],
+            key=lambda e: (e["severity_score"], -e["index"]),
+        )
+        top_event = events[top_summary["index"]]
+        log_text = (
+            top_event if isinstance(top_event, str) else json.dumps(top_event, sort_keys=True)
+        )
+
+        soc_result = self.soc.analyze_log(top_event)
+        mitre_result = self.mitre.map_event(soc_result["event_type"], log_text)
+
+        # Union of indicators across the sequence, deterministic order.
+        all_indicators = sorted(
+            {ind for entry in sequence_result["events"] for ind in entry["indicators"]}
+        )
+        intel_results = [self.threat.analyze_indicator(ind) for ind in all_indicators]
+
+        kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
+        detection_matches = self.detections.match_for_event(mitre_result)
+        citations = self._verified_citations(soc_result, mitre_result)
+
+        self.report.generate_report(
+            log_text,
+            report_path,
+            soc_result=soc_result,
+            mitre_result=mitre_result,
+            kb_references=kb_references,
+            detection_matches=detection_matches,
+            sequence_result=sequence_result,
+            citations=citations,
+            generator=self.generator,
+        )
+
+        return {
+            "soc": soc_result,
+            "sequence": sequence_result,
+            "mitre": mitre_result,
+            "threat_intel": intel_results,
+            "knowledge_base": kb_references,
+            "detections": detection_matches,
+            "citations": citations,
         }
 
 

@@ -4,6 +4,19 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **Report enrichment: sequence findings + verified passage citations** —
+  incident reports gain a "Sequence Correlation" section (multi-event findings
+  from `SocAnalystAgent.analyze_sequence`: pattern, source, severity,
+  contributing events) and a "Cited Passages (verified)" section quoting the
+  exact grounding passages with char-offset locators. The orchestrator now
+  attaches passage-level citations to `process_log` **only after they pass the
+  anti-hallucination check** (`verify_citations`; unverifiable citations are
+  dropped, fail-closed), and gains `process_sequence(events)` — the full
+  pipeline over an ordered batch: sequence correlation, standard sections
+  anchored on the most severe event, threat intel over the sequence-wide
+  indicator union. PDF export inherits both sections automatically.
+
 ### Changed
 - **RAG retrieval precision: rarity-weighted (IDF) lexical scoring** — the
   Knowledge Base Agent's lexical mode and the citation engine's passage

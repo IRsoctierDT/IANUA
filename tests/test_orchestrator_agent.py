@@ -87,3 +87,46 @@ def test_process_log_writes_report(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     agent.process_log("Failed password for root from 10.0.0.5 port 22 ssh2")
 
     assert (tmp_path / "reports" / "markdown" / "orchestrated_incident.md").exists()
+
+
+# ------------------------------------------------------------------ v1.9: sequence + citations
+@pytest.mark.unit
+def test_process_log_includes_citations_key(tmp_path: Path) -> None:
+    agent = OrchestratorAgent()
+    result = agent.process_log(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        report_path=str(tmp_path / "report.md"),
+    )
+    assert "citations" in result
+    assert isinstance(result["citations"], list)
+    for citation in result["citations"]:
+        assert set(citation) == {"source", "score", "quote", "char_start", "char_end"}
+
+
+@pytest.mark.unit
+def test_process_sequence_returns_sequence_and_report(tmp_path: Path) -> None:
+    agent = OrchestratorAgent()
+    report_path = tmp_path / "sequence_report.md"
+    events = [
+        "Failed password for root from 203.0.113.7 port 22 ssh2",
+        "Failed password for root from 203.0.113.7 port 22 ssh2",
+        "Failed password for root from 203.0.113.7 port 22 ssh2",
+        "Accepted password for root from 203.0.113.7 port 22 ssh2",
+    ]
+    result = agent.process_sequence(events, report_path=str(report_path))
+    assert result["sequence"]["event_count"] == 4
+    patterns = {f["pattern"] for f in result["sequence"]["findings"]}
+    assert "brute_force" in patterns
+    assert "auth_failure_then_success" in patterns
+    content = report_path.read_text(encoding="utf-8")
+    assert "## Sequence Correlation" in content
+    assert "brute_force" in content
+    # Threat intel covers the sequence-wide indicator union.
+    assert len(result["threat_intel"]) == 1
+
+
+@pytest.mark.unit
+def test_process_sequence_rejects_empty(tmp_path: Path) -> None:
+    agent = OrchestratorAgent()
+    with pytest.raises(ValueError):
+        agent.process_sequence([], report_path=str(tmp_path / "r.md"))

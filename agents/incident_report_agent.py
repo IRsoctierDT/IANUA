@@ -55,6 +55,42 @@ def _render_structured(data: dict) -> str:
     return "\n".join(lines) or "_AI narrative returned no content._"
 
 
+def _render_sequence(sequence_result: dict | None) -> str:
+    """Render the multi-event correlation section (from ``analyze_sequence``)."""
+    if sequence_result is None:
+        return "- Single-event analysis (no sequence context)"
+    findings = sequence_result.get("findings", [])
+    lines = [
+        f"- **Events analyzed:** {sequence_result.get('event_count', 'N/A')}",
+        f"- **Overall severity:** {sequence_result.get('severity', 'N/A')} "
+        f"({sequence_result.get('severity_score', 'N/A')}/100)",
+        "",
+        "### Correlated Findings",
+    ]
+    if findings:
+        lines.extend(
+            f"- **{_md_cell(str(f.get('pattern', '')))}** from `{_md_cell(str(f.get('source', '')))}` "
+            f"[{f.get('severity', 'N/A')}] — {_md_cell(str(f.get('description', '')))} "
+            f"(events {f.get('event_indices', [])})"
+            for f in findings
+        )
+    else:
+        lines.append("- No multi-event patterns detected")
+    return "\n".join(lines)
+
+
+def _render_citations(citations: list[dict] | None) -> str:
+    """Render verified passage-level citations with char-offset locators."""
+    if not citations:
+        return "- None captured"
+    return "\n".join(
+        f"{i}. **{_md_cell(str(c.get('source', '')))}** "
+        f"(chars {c.get('char_start', '?')}-{c.get('char_end', '?')}, "
+        f'relevance {c.get("score", 0.0):.2f}): "{_md_cell(str(c.get("quote", "")))}"'
+        for i, c in enumerate(citations, 1)
+    )
+
+
 class IncidentReportAgent:
     def __init__(self) -> None:
         self.soc_agent = SocAnalystAgent()
@@ -69,6 +105,8 @@ class IncidentReportAgent:
         mitre_result: dict | None = None,
         kb_references: list[dict] | None = None,
         detection_matches: list[dict] | None = None,
+        sequence_result: dict | None = None,
+        citations: list[dict] | None = None,
         generator: Generator | None = None,
         pdf_path: str | None = None,
     ) -> Path:
@@ -78,8 +116,12 @@ class IncidentReportAgent:
         re-running analysis when the orchestrator has already done it.
         ``kb_references`` (from the Knowledge Base Agent) adds cited framework
         context; ``detection_matches`` (from the Detection Matcher Agent) lists
-        the Sigma rules that cover the event's technique. When either is omitted,
-        the report notes that none were attached.
+        the Sigma rules that cover the event's technique; ``sequence_result``
+        (from ``SocAnalystAgent.analyze_sequence``) surfaces multi-event
+        correlated findings; ``citations`` (verified passage-level citations
+        from ``KnowledgeBaseAgent.cite``) quote the exact grounding passages
+        with char-offset locators. When any is omitted, the report notes that
+        none were attached.
         """
         if soc_result is None:
             soc_result = self.soc_agent.analyze_log(log_text)
@@ -141,8 +183,14 @@ class IncidentReportAgent:
 ## Recommended Actions
 {chr(10).join(f"- {a}" for a in soc_result["recommended_actions"])}
 
+## Sequence Correlation
+{_render_sequence(sequence_result)}
+
 ## Knowledge Base References
 {chr(10).join(f"- **{_md_cell(r['source'])}** (relevance {r['score']:.2f}) — {_md_cell(r['snippet'])}" for r in kb_references) if kb_references else "- None captured"}
+
+## Cited Passages (verified)
+{_render_citations(citations)}
 
 ## Detection Coverage
 {chr(10).join(f"- **{_md_cell(d['title'])}** [{d['level']}] — `{d['file']}` ({d['technique']})" for d in detection_matches) if detection_matches else "- No Sigma rule covers this technique yet"}
