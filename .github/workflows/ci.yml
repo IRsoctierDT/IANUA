@@ -42,7 +42,7 @@ jobs:
         # uv.lock is the dependency source of truth; fail closed if pyproject
         # changed without re-locking (and the exported pip locks would drift).
         run: uv lock --check
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0          # gitleaks needs full history
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           # 3.12, not the global 3.11: requirements.lock pins the declared
           # [dev,dashboard] closure as resolved on Python 3.12 (e.g. numpy 2.5.0,
@@ -123,7 +123,7 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -147,7 +147,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -177,7 +177,7 @@ jobs:
       contents: read   # read-only: a drift gate, never auto-commits
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -212,7 +212,7 @@ jobs:
       contents: read   # read-only: a drift gate, never auto-commits
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: docs/status.html and status.json match docs/status.data.json
@@ -230,7 +230,7 @@ jobs:
       attestations: write   # write the signed SBOM attestation
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
