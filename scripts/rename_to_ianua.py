@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXCLUDED_PARTS = {".git", ".venv", "node_modules", "build", "dist", "sample-logs"}
 TEXT_SUFFIXES = {
-    ".cjs", ".css", ".env", ".html", ".ini", ".js", ".json", ".md", ".mjs",
+    ".cjs", ".css", ".env", ".html", ".ini", ".js", ".json", ".lock", ".md", ".mjs",
     ".py", ".sh", ".toml", ".txt", ".yaml", ".yml",
 }
 
