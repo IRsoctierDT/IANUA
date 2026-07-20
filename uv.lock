@@ -20,62 +20,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "ai-operator-cyber-command-center"
-version = "1.9.0"
-source = { editable = "." }
-
-[package.optional-dependencies]
-crypto = [
-    { name = "cryptography" },
-]
-dashboard = [
-    { name = "qdrant-client" },
-    { name = "sentence-transformers" },
-    { name = "streamlit" },
-]
-dev = [
-    { name = "bandit" },
-    { name = "cryptography" },
-    { name = "detect-secrets" },
-    { name = "hypothesis" },
-    { name = "mypy" },
-    { name = "packaging" },
-    { name = "pip-audit" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pyyaml" },
-    { name = "reportlab" },
-    { name = "ruff" },
-]
-pdf = [
-    { name = "reportlab" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.7" },
-    { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=42.0" },
-    { name = "cryptography", marker = "extra == 'dev'", specifier = ">=42.0" },
-    { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.5" },
-    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.156.6" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.0" },
-    { name = "packaging", marker = "extra == 'dev'", specifier = ">=24.0" },
-    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
-    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "qdrant-client", marker = "extra == 'dashboard'", specifier = ">=1.9" },
-    { name = "reportlab", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "reportlab", marker = "extra == 'pdf'", specifier = ">=4.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.22" },
-    { name = "sentence-transformers", marker = "extra == 'dashboard'", specifier = ">=3.0" },
-    { name = "streamlit", marker = "extra == 'dashboard'", specifier = ">=1.59.2" },
-]
-provides-extras = ["dev", "dashboard", "pdf", "crypto"]
-
-[[package]]
 name = "altair"
 version = "6.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1049,6 +993,62 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ba/af/5ed42117a69221ea118caaff933d8212039a0ac0bc15afa915635f13984c/hypothesis-6.156.6-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5ad94e28aabf4db0d479297d43b8a2a01e7caaa9bdfccfdac7a4a3717e05b993", size = 1122625, upload-time = "2026-07-10T20:56:14.758Z" },
     { url = "https://files.pythonhosted.org/packages/3b/d3/02499badc6e3f3e980941021edf5fd780c895d8d08c9015e78516340ed83/hypothesis-6.156.6-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:983a5cfd955994bffc7eb02976241f7a1f3c2d94dbc3389430c45858fa5c1ae0", size = 640823, upload-time = "2026-07-10T20:55:45.461Z" },
 ]
+
+[[package]]
+name = "ianua"
+version = "1.9.0"
+source = { editable = "." }
+
+[package.optional-dependencies]
+crypto = [
+    { name = "cryptography" },
+]
+dashboard = [
+    { name = "qdrant-client" },
+    { name = "sentence-transformers" },
+    { name = "streamlit" },
+]
+dev = [
+    { name = "bandit" },
+    { name = "cryptography" },
+    { name = "detect-secrets" },
+    { name = "hypothesis" },
+    { name = "mypy" },
+    { name = "packaging" },
+    { name = "pip-audit" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pyyaml" },
+    { name = "reportlab" },
+    { name = "ruff" },
+]
+pdf = [
+    { name = "reportlab" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.7" },
+    { name = "cryptography", marker = "extra == 'crypto'", specifier = ">=42.0" },
+    { name = "cryptography", marker = "extra == 'dev'", specifier = ">=42.0" },
+    { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.5" },
+    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.156.6" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.0" },
+    { name = "packaging", marker = "extra == 'dev'", specifier = ">=24.0" },
+    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "qdrant-client", marker = "extra == 'dashboard'", specifier = ">=1.9" },
+    { name = "reportlab", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "reportlab", marker = "extra == 'pdf'", specifier = ">=4.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.22" },
+    { name = "sentence-transformers", marker = "extra == 'dashboard'", specifier = ">=3.0" },
+    { name = "streamlit", marker = "extra == 'dashboard'", specifier = ">=1.59.2" },
+]
+provides-extras = ["dev", "dashboard", "pdf", "crypto"]
 
 [[package]]
 name = "identify"
