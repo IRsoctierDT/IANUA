@@ -4,9 +4,10 @@ on:
   push:
     branches:
       - chore/rename-ai-command-center-to-ianua
-    paths:
-      - scripts/rename_to_ianua.py
-      - .github/workflows/rename-to-ianua.yml
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -33,6 +34,7 @@ jobs:
         run: python -m compileall agents scripts rag mcp dashboard
 
       - name: Commit rename results
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           if git diff --quiet; then
             echo "No rename changes remain."
