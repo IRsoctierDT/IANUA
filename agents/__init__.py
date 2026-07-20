@@ -29,7 +29,7 @@ import tomllib
 from importlib import metadata
 from pathlib import Path
 
-_DIST_NAME = "ai-operator-cyber-command-center"
+_DIST_NAME = "ianua"
 _PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
 

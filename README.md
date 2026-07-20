@@ -1,4 +1,4 @@
-# AI Operator Cyber Command Center
+# IANUA
 
 A **portfolio-grade, local-first command center** for AI operations, cybersecurity
 automation, RAG knowledge systems, and agentic workflows — built secure-by-default

@@ -1,0 +1,56 @@
+name: Complete IANUA rename
+
+on:
+  push:
+    branches:
+      - chore/rename-ai-command-center-to-ianua
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out rename branch
+        uses: actions/checkout@v4
+        with:
+          ref: chore/rename-ai-command-center-to-ianua
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Run controlled rename
+        run: python scripts/rename_to_ianua.py --apply
+
+      - name: Regenerate uv lockfile
+        run: uv lock
+
+      - name: Verify uv lockfile
+        run: uv lock --check
+
+      - name: Verify migration script
+        run: python scripts/rename_to_ianua.py --check
+
+      - name: Compile Python
+        run: python -m compileall agents scripts rag mcp dashboard
+
+      - name: Commit rename results
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if git diff --quiet; then
+            echo "No rename changes remain."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git commit -m "chore: regenerate uv.lock for IANUA rename"
+          git push origin HEAD:chore/rename-ai-command-center-to-ianua
