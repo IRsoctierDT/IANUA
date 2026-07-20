@@ -9,6 +9,7 @@
 # human review. Low-risk groups — dev-toolchain and actions-all — auto-merge on
 # patch/minor once every required check is green (see
 # .github/workflows/dependabot-automerge.yml); majors still wait for a human.
+# proceed
 version: 2
 
 updates:
