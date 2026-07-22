@@ -1,7 +1,6 @@
 # Detections
 
-Lab-scoped, **defensive** detection-engineering content for the AI Operator Cyber
-Command Center. Rules here describe *adversary behavior to alert on* — they do not
+Lab-scoped, **defensive** detection-engineering content for IANUA. Rules here describe *adversary behavior to alert on* — they do not
 attack anything (AGENTS.md §5).
 
 ## Format

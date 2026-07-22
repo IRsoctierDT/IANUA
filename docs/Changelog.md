@@ -12,6 +12,19 @@ All notable changes to this project. Versions correspond to git tags.
   were regenerated (`pip-audit` now reports no known vulnerabilities; lock and
   SBOM drift gates verified in sync).
 
+### Changed
+- **Dashboard batch flow upgraded to the correlated sequence pipeline** — the
+  Streamlit "Batch Processing" tab now runs `OrchestratorAgent.process_sequence`
+  once over the uploaded log (one deterministic pipeline run) instead of N
+  independent per-line `process_log` calls that could not see multi-event
+  patterns. The tab surfaces the sequence verdict (severity, score, event
+  count, summary), the **Correlated Findings** (pattern, source, severity,
+  contributing event numbers), a per-event breakdown table (now including the
+  extracted source), sequence-wide threat intelligence, the **verified cited
+  passages** with char offsets, and the generated sequence incident report.
+  Empty uploads get a friendly warning instead of the pipeline's fail-closed
+  exception surfacing as a traceback.
+
 ### Fixed
 - **IANUA rename completed; rename tooling repaired** — `scripts/rename_to_ianua.py`
   no longer rewrites or scans its own source (its `REPLACEMENTS` table contains
@@ -25,6 +38,15 @@ All notable changes to this project. Versions correspond to git tags.
   page, and SBOM metadata were migrated with the fixed script (deterministic,
   idempotent; `--check` is clean and drift gates — status page, SBOM, locks —
   stay green).
+- **Canonical repository identity across the Pages site and dashboard** —
+  the GitHub Pages landing (`docs/index.html`) now links to the renamed
+  repository with its canonical casing (`github.com/IRsoctierDT/IANUA`,
+  including the clone/`cd` quick-start snippet); two identity strings that the
+  line-based migration missed because they were **wrapped across lines**
+  (`detections/README.md`, the AGENTS.md closing charter) are fixed by hand;
+  the status page tagline and the Streamlit dashboard caption now describe the
+  IANUA platform (SENTINEL remains the landing page's design wordmark only).
+  Status page regenerated in sync.
 - **Rename workflow converted to a least-privilege guard** — the
   `Complete IANUA rename` workflow no longer checks out a fixed side branch
   with `contents: write` and auto-pushes; it now runs a read-only

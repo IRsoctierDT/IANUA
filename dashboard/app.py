@@ -24,7 +24,10 @@ st.set_page_config(
 )
 
 st.title("IANUA")
-st.caption("Local AI-assisted SOC workflow")
+st.caption(
+    "AI operations platform — SOC automation, RAG pipelines, "
+    "MITRE ATT&CK mapping, and agentic workflows for defensive cybersecurity."
+)
 
 st.sidebar.header("System Status")
 st.sidebar.write("Model:", os.environ.get("LLM_MODEL", "qwen3.5:9b"))
@@ -123,33 +126,82 @@ with tab_batch:
 
         st.write(f"Loaded {len(lines)} log entries.")
 
-        if st.button("Run Batch SOC Workflow"):
-            results = []
+        # analyze_sequence validates fail-closed (an empty batch raises);
+        # surface that as a friendly message instead of a traceback.
+        if not lines:
+            st.warning("The uploaded file contains no non-empty log lines.")
+        elif st.button("Run Batch SOC Workflow"):
+            # One correlated pipeline run over the ordered batch (sequence
+            # correlation + report anchored on the most severe event), instead
+            # of N independent single-line analyses that can't see patterns.
+            result = agent.process_sequence(lines)
+            sequence = result["sequence"]
 
-            for index, line in enumerate(lines, start=1):
-                res = agent.process_log(line)
-                results.append(
-                    {
-                        "event": index,
-                        "log": line,
-                        "event_type": res["soc"]["event_type"],
-                        "severity": res["soc"]["severity"],
-                        "severity_score": res["soc"].get("severity_score"),
-                        "mitre_technique": res["mitre"]["technique_id"],
-                        "mitre_name": res["mitre"]["technique"],
-                        "indicators": ", ".join(res["soc"]["indicators"]),
-                    }
-                )
+            col_sev, col_score, col_events = st.columns(3)
+            col_sev.metric("Sequence severity", str(sequence["severity"]).upper())
+            col_score.metric("Severity score", f"{sequence['severity_score']} / 100")
+            col_events.metric("Events analyzed", sequence["event_count"])
+            st.caption(sequence["summary"])
 
-            st.subheader("Batch Results")
-            st.dataframe(results, use_container_width=True)
+            st.subheader("Correlated Findings")
+            findings = sequence["findings"]
+            if findings:
+                for finding in findings:
+                    event_numbers = ", ".join(str(i + 1) for i in finding["event_indices"])
+                    st.markdown(
+                        f"- **{finding['pattern']}** from `{finding['source']}` — "
+                        f"severity **{str(finding['severity']).upper()}** "
+                        f"(events {event_numbers}): {finding['description']}"
+                    )
+            else:
+                st.caption("No multi-event patterns detected in this batch.")
+
+            st.subheader("Per-Event Breakdown")
+            per_event = [
+                {
+                    "event": entry["index"] + 1,
+                    "log": lines[entry["index"]],
+                    "event_type": entry["event_type"],
+                    "severity": entry["severity"],
+                    "severity_score": entry["severity_score"],
+                    "source": entry["source"] or "—",
+                    "indicators": ", ".join(entry["indicators"]),
+                }
+                for entry in sequence["events"]
+            ]
+            st.dataframe(per_event, use_container_width=True)
+
+            st.subheader("Recommended Actions")
+            for action in sequence["recommended_actions"]:
+                st.markdown(f"- {action}")
+
+            st.subheader("Threat Intelligence (sequence-wide)")
+            st.json(result["threat_intel"])
+
+            citations = result.get("citations", [])
+            st.subheader("Cited Passages (verified)")
+            if citations:
+                for citation in citations:
+                    st.markdown(
+                        f"- **{citation['source']}** "
+                        f"[chars {citation['char_start']}-{citation['char_end']}, "
+                        f"relevance {citation['score']:.2f}]: "
+                        f'"{citation["quote"]}"'
+                    )
+            else:
+                st.caption("No knowledge-base passages passed citation verification.")
 
             st.download_button(
                 "Download Batch Results (JSON)",
-                data=json.dumps(results, indent=2),
+                data=json.dumps(result, indent=2, default=str),
                 file_name="batch_soc_results.json",
                 mime="application/json",
             )
+
+            sequence_report = Path("reports/markdown/orchestrated_sequence_incident.md")
+            if sequence_report.exists():
+                with st.expander("Sequence Incident Report (Markdown)"):
+                    st.markdown(sequence_report.read_text(encoding="utf-8"))
 
 with tab_kb:
     category = st.selectbox(

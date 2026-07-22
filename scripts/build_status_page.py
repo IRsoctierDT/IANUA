@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the Command Center status page for GitHub Pages.
+"""Render the IANUA status page for GitHub Pages.
 
 The status page is a single, self-contained observability surface for the
 platform: which components are operational, degraded, planned, or offline. It is
