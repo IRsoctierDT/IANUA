@@ -90,3 +90,60 @@ def test_matches_ranked_by_severity(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_missing_corpus_fails_soft(tmp_path: Path) -> None:
     assert DetectionMatcherAgent(tmp_path / "nope").match_for_technique("T1110") == []
+
+
+# ------------------------------------------------- sequence-level matching
+@pytest.mark.unit
+def test_finding_matches_only_correlation_rules() -> None:
+    # Real corpus: brute_force covers T1110; the base single-event rule
+    # (ssh_failed_password, also tagged t1110 but with no correlation block)
+    # must never be presented as covering a multi-event pattern.
+    matches = DetectionMatcherAgent().match_for_finding({"pattern": "brute_force"})
+    files = [m["file"] for m in matches]
+    assert "ssh_brute_force.yml" in files
+    assert "ssh_bruteforce_then_success.yml" in files
+    assert "ssh_failed_password.yml" not in files
+    assert all(m["pattern"] == "brute_force" for m in matches)
+    # critical correlation rule ranks above the high one
+    assert files.index("ssh_bruteforce_then_success.yml") < files.index("ssh_brute_force.yml")
+
+
+@pytest.mark.unit
+def test_failure_then_success_covers_both_chain_techniques() -> None:
+    matches = DetectionMatcherAgent().match_for_finding({"pattern": "auth_failure_then_success"})
+    files = {m["file"] for m in matches}
+    assert "ssh_bruteforce_then_success.yml" in files
+    # unrelated correlation rules (firewall burst, account chain) stay out
+    assert "firewall_block_burst.yml" not in files
+    assert "account_created_then_privileged.yml" not in files
+
+
+@pytest.mark.unit
+def test_unknown_pattern_fails_soft() -> None:
+    assert DetectionMatcherAgent().match_for_finding({"pattern": "cosmic_rays"}) == []
+    assert DetectionMatcherAgent().match_for_finding({}) == []
+
+
+@pytest.mark.unit
+def test_sequence_matching_deduplicates_across_findings() -> None:
+    sequence_result = {
+        "findings": [
+            {"pattern": "brute_force"},
+            {"pattern": "auth_failure_then_success"},
+        ]
+    }
+    matches = DetectionMatcherAgent().match_for_sequence(sequence_result)
+    files = [m["file"] for m in matches]
+    assert files.count("ssh_bruteforce_then_success.yml") == 1
+    assert files.count("ssh_brute_force.yml") == 1
+    # ranked most severe first overall
+    levels = [m["level"] for m in matches]
+    assert levels == sorted(levels, key=lambda v: {"critical": 0, "high": 1}.get(v, 99))
+
+
+@pytest.mark.unit
+def test_sequence_matching_empty_and_malformed_findings() -> None:
+    agent = DetectionMatcherAgent()
+    assert agent.match_for_sequence({"findings": []}) == []
+    assert agent.match_for_sequence({}) == []
+    assert agent.match_for_sequence({"findings": ["not-a-dict", 42]}) == []

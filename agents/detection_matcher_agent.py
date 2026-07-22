@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 try:  # PyYAML ships with the dev/dashboard extras; core stays import-safe without it.
     import yaml
@@ -107,6 +107,74 @@ class DetectionMatcherAgent:
         if not isinstance(technique_id, str):
             return []
         return self.match_for_technique(technique_id)
+
+    # ------------------------------------------------- sequence-level matching
+    # A multi-event finding is covered by multi-event detection content: only
+    # Sigma *correlation* rules are eligible here, so a base rule that merely
+    # shares the technique tag (e.g. a single failed-password rule for a
+    # brute-force finding) is never presented as covering a sequence pattern.
+    _SEQUENCE_PATTERN_TECHNIQUES: ClassVar[dict[str, tuple[str, ...]]] = {
+        "brute_force": ("T1110",),
+        "auth_failure_then_success": ("T1110", "T1078"),
+    }
+
+    def match_for_finding(self, finding: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return Sigma **correlation** rules covering a correlated finding.
+
+        ``finding`` is one entry of ``SequenceAnalysisResult.findings`` (from
+        ``SocAnalystAgent.analyze_sequence``). Its ``pattern`` maps to the
+        ATT&CK techniques that describe the behavior, and only rules with a
+        ``correlation`` block whose tags include one of those techniques
+        match. Unknown patterns yield no matches (fail soft, like the rest of
+        this agent). Each match dict carries the ``pattern`` it covers.
+        """
+        pattern = finding.get("pattern")
+        techniques = self._SEQUENCE_PATTERN_TECHNIQUES.get(str(pattern), ())
+        if not techniques:
+            return []
+        wanted = {f"attack.{self._normalize(t)}" for t in techniques}
+
+        matches: list[DetectionMatch] = []
+        for rule in self._load_rules():
+            if "correlation" not in rule:
+                continue
+            tags = {str(t).lower() for t in rule.get("tags", [])}
+            hit = sorted(wanted & tags)
+            if hit:
+                matches.append(
+                    DetectionMatch(
+                        rule_id=str(rule.get("id", "")),
+                        title=str(rule.get("title", "")),
+                        level=str(rule.get("level", "unknown")),
+                        technique=hit[0].removeprefix("attack.").upper(),
+                        file=str(rule.get("__file__", "")),
+                    )
+                )
+        matches.sort(key=lambda m: (_LEVEL_RANK.get(m.level, 99), m.title))
+        return [{**asdict(m), "pattern": str(pattern)} for m in matches]
+
+    def match_for_sequence(self, sequence_result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Match every correlated finding of a sequence analysis, deduplicated.
+
+        Aggregates ``match_for_finding`` across ``sequence_result["findings"]``;
+        a rule covering several findings appears once (first pattern wins —
+        findings arrive in the analyzer's deterministic order). The overall
+        list is ranked most-severe first, then by title, so callers can render
+        it directly.
+        """
+        seen: set[str] = set()
+        combined: list[dict[str, Any]] = []
+        for finding in sequence_result.get("findings", []):
+            if not isinstance(finding, dict):
+                continue
+            for match in self.match_for_finding(finding):
+                key = match["rule_id"] or f"{match['file']}|{match['title']}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                combined.append(match)
+        combined.sort(key=lambda m: (_LEVEL_RANK.get(m["level"], 99), m["title"]))
+        return combined
 
 
 if __name__ == "__main__":

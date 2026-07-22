@@ -207,6 +207,18 @@ with tab_batch:
             ]
             st.dataframe(per_event, use_container_width=True)
 
+            st.subheader("Matching Detections")
+            sequence_detections = result.get("sequence_detections", [])
+            if sequence_detections:
+                for detection in sequence_detections:
+                    st.markdown(
+                        f"- **{detection['title']}** [{detection['level']}] — "
+                        f"`{detection['file']}` ({detection['technique']}, "
+                        f"covers {detection['pattern']})"
+                    )
+            else:
+                st.caption("No Sigma correlation rule covers these patterns yet.")
+
             st.subheader("Recommended Actions")
             for action in sequence["recommended_actions"]:
                 st.markdown(f"- {action}")

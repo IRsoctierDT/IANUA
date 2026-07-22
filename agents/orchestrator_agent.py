@@ -147,6 +147,7 @@ class OrchestratorAgent:
 
         kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
         detection_matches = self.detections.match_for_event(mitre_result)
+        sequence_detections = self.detections.match_for_sequence(sequence_result)
         citations = self._verified_citations(soc_result, mitre_result)
 
         self.report.generate_report(
@@ -157,6 +158,7 @@ class OrchestratorAgent:
             kb_references=kb_references,
             detection_matches=detection_matches,
             sequence_result=sequence_result,
+            sequence_detections=sequence_detections,
             citations=citations,
             citations_verified=True,
             generator=self.generator,
@@ -169,6 +171,7 @@ class OrchestratorAgent:
             "threat_intel": intel_results,
             "knowledge_base": kb_references,
             "detections": detection_matches,
+            "sequence_detections": sequence_detections,
             "citations": citations,
         }
 
