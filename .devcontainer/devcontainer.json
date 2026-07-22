@@ -1,0 +1,34 @@
+// One-click interactive test environment (GitHub Codespaces / Dev Containers).
+//
+// From the repository page on github.com: Code → Codespaces → "Create codespace
+// on main". The container installs the project with the dashboard extra and
+// launches the Streamlit dashboard; Codespaces forwards port 8501 and offers
+// an "Open in Browser" prompt, so every feature is testable from the browser
+// with zero local setup.
+//
+// Deliberate properties (least privilege, local-first):
+//   * No secrets, tokens, or environment values are baked in — configuration
+//     stays in the developer's own Codespaces secrets if ever needed.
+//   * Forwarded ports default to private (visible only to the Codespace owner).
+//   * The dashboard degrades gracefully in here: Ollama/Qdrant are absent, so
+//     the health panel reports them unavailable and knowledge-base search
+//     fails soft to the offline lexical corpus — the agent pipeline itself is
+//     deterministic and network-free, so SOC/batch/report features fully work.
+{
+  "name": "IANUA — interactive test environment",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "postCreateCommand": "pip install -e \".[dev,dashboard]\"",
+  "postAttachCommand": "streamlit run dashboard/app.py --server.headless true --server.port 8501",
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": {
+      "label": "IANUA dashboard (Streamlit)",
+      "onAutoForward": "openBrowserOnce"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff"]
+    }
+  }
+}

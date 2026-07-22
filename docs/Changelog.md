@@ -12,6 +12,25 @@ All notable changes to this project. Versions correspond to git tags.
   were regenerated (`pip-audit` now reports no known vulnerabilities; lock and
   SBOM drift gates verified in sync).
 
+### Added
+- **One-click interactive test environment (GitHub Codespaces)** — new
+  `.devcontainer/devcontainer.json`: from the repository page (Code →
+  Codespaces → Create) the container installs `.[dev,dashboard]`, auto-starts
+  the Streamlit dashboard, and forwards port 8501 (private to the owner), so
+  every feature is testable in the browser with zero local setup. GitHub Pages
+  is static and cannot run the app; this is the supported "test it from
+  github.com" path (documented in the README Quickstart).
+- **Bundled sample scenarios in the Batch tab** — a fixed allow-list of
+  deterministic fixtures from `sample-logs/` (SSH brute force,
+  failures-then-success) loadable without preparing an upload, so sequence
+  correlation, verified citations, and the incident report are one click away.
+- **Knowledge-base search fails soft** — `search_kb_resilient()` tries the
+  Qdrant semantic backend and degrades to the offline lexical
+  `KnowledgeBaseAgent` corpus when Qdrant/embeddings are unavailable, with the
+  serving backend labelled in the UI (degraded results are never passed off as
+  the primary path). Heavy imports are now lazy, so the dashboard starts on a
+  minimal install. Covered by `tests/unit/test_kb_search.py`.
+
 ### Changed
 - **Dashboard batch flow upgraded to the correlated sequence pipeline** — the
   Streamlit "Batch Processing" tab now runs `OrchestratorAgent.process_sequence`

@@ -137,6 +137,22 @@ streamlit run dashboard/app.py
 # KB search and health panels degrade gracefully if Qdrant/Ollama aren't running.
 ```
 
+**Try the dashboard in your browser — no local setup (GitHub Codespaces):**
+
+GitHub Pages can only serve static files, so the live dashboard can't run
+there — but Codespaces runs it in your browser straight from the repository
+page:
+
+1. On github.com: **Code → Codespaces → Create codespace on main**.
+2. Wait for the container build; the dashboard launches automatically and
+   Codespaces offers **Open in Browser** for port 8501.
+3. Every feature is exercisable out of the box: the Batch Processing tab has
+   **bundled sample scenarios** (SSH brute force, failure-then-success) so
+   sequence correlation, verified citations, and incident reports work in one
+   click, and Knowledge Base Search fails soft to the offline lexical corpus
+   when Qdrant isn't running (the results are labelled with the backend that
+   served them). Forwarded ports are private to you by default.
+
 ---
 
 ## Quality gates (must be green — [`AGENTS.md`](./AGENTS.md) §7)
