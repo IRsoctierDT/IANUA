@@ -19,11 +19,11 @@ from dashboard.system_health import (
 )
 
 st.set_page_config(
-    page_title="AI Operator Cyber Command Center",
+    page_title="IANUA",
     layout="wide",
 )
 
-st.title("AI Operator Cyber Command Center")
+st.title("IANUA")
 st.caption("Local AI-assisted SOC workflow")
 
 st.sidebar.header("System Status")

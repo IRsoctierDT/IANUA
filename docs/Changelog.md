@@ -4,6 +4,26 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Fixed
+- **IANUA rename completed; rename tooling repaired** — `scripts/rename_to_ianua.py`
+  no longer rewrites or scans its own source (its `REPLACEMENTS` table contains
+  the legacy identifiers by design, so `--apply` used to collapse the table to
+  identity mappings and `--check` then flagged every occurrence of the *new*
+  name — the workflow could never pass). The script now excludes itself and
+  local cache directories (`.mypy_cache`, `.pytest_cache`, `.ruff_cache`,
+  `__pycache__`, `htmlcov`), and is `ruff format`-clean (the unformatted file
+  was failing CI static analysis for every PR). The remaining legacy
+  pre-IANUA project identifiers across docs, detection content, dashboard, scripts, the status
+  page, and SBOM metadata were migrated with the fixed script (deterministic,
+  idempotent; `--check` is clean and drift gates — status page, SBOM, locks —
+  stay green).
+- **Rename workflow converted to a least-privilege guard** — the
+  `Complete IANUA rename` workflow no longer checks out a fixed side branch
+  with `contents: write` and auto-pushes; it now runs a read-only
+  `rename_to_ianua.py --check` against the ref under test on every PR (same
+  check name, so branch protection is unaffected), failing only if a legacy
+  identifier is reintroduced.
+
 ### Added
 - **Deepened audit-verification tooling** — `AuditLogger.verify_report()`
   returns a structured diagnosis instead of a bare bool: entry/segment counts,

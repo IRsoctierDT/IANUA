@@ -1,4 +1,4 @@
-# ci.yml — AI Operator Cyber Command Center
+# ci.yml — IANUA
 # Place at:  .github/workflows/ci.yml
 # Mirrors the fail-fast pipeline in AGENTS.md §8. Local pre-commit == this CI.
 #

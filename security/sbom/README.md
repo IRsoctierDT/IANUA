@@ -1,7 +1,7 @@
 # Software Bill of Materials (SBOM)
 
 > **Purpose:** Machine-readable inventory of every third-party component shipped
-> or built into the AI Operator Cyber Command Center, with provenance and known
+> or built into IANUA, with provenance and known
 > vulnerability data — for supply-chain transparency, audit, and SCA gating.
 > **Risk level:** Low (read-only inventory; contains no secrets or PII).
 > **Skill level required:** Intermediate (CycloneDX / SCA familiarity).

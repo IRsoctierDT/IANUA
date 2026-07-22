@@ -1,4 +1,4 @@
-# DESIGN.md — AI Operator Cyber Command Center
+# DESIGN.md — IANUA
 
 > Architecture, trust boundaries, and decision record for this repository.
 > Read this **before** any change (see [`AGENTS.md`](./AGENTS.md) §2). Update it whenever the
@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-The AI Operator Cyber Command Center is a **local-first, security-hardened platform** for
+IANUA is a **local-first, security-hardened platform** for
 running AI/agent workloads, RAG pipelines, and defensive cybersecurity automation. It is
 built so that the **safe configuration is the default configuration**: least privilege,
 auditable actions, layered validation, and human approval for anything irreversible or

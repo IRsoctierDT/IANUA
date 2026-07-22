@@ -29,7 +29,7 @@ to scope and prioritize adoption.
 
 ## How this knowledge base uses it
 
-The AI Operator Cyber Command Center structures its incident response, evidence
+IANUA structures its incident response, evidence
 handling, and governance documentation around CSF functions:
 
 - **Detect / Respond** — the SOC Analyst and Orchestrator agents map directly to

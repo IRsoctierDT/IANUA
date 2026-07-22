@@ -1,4 +1,4 @@
-# .pre-commit-config.yaml — AI Operator Cyber Command Center
+# .pre-commit-config.yaml — IANUA
 # Rename to ".pre-commit-config.yaml" at the repo root.
 # Fast local quality gates that mirror the CI pipeline (AGENTS.md §7-§8).
 # Setup:

@@ -276,5 +276,5 @@ python -m pytest
 
 ---
 
-*Part of the [AI Operator Cyber Command Center](../../README.md). Security tooling here is
+*Part of the [IANUA](../../README.md). Security tooling here is
 for defensive, authorized-lab use only — see [AGENTS.md](../../AGENTS.md) §5.*

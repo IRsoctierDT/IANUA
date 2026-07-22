@@ -10,7 +10,7 @@ description: >-
 references:
   - https://attack.mitre.org/techniques/T1595/
   - https://attack.mitre.org/techniques/T1046/
-author: AI Operator Cyber Command Center
+author: IANUA
 date: 2026-07-19
 correlation:
   type: event_count

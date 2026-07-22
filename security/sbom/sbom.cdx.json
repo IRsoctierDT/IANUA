@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:b4a61d12-0f2b-5b0c-bf4f-e74b6c4a14f5",
+  "serialNumber": "urn:uuid:9dc09808-ae7a-5c41-8401-a8783ee66e19",
   "version": 1,
   "metadata": {
     "timestamp": "2026-07-18T07:28:04Z",
@@ -22,7 +22,7 @@
     "component": {
       "type": "application",
       "bom-ref": "root-component",
-      "name": "ai-operator-cyber-command-center-master-v1-stiches",
+      "name": "ianua",
       "version": "1.0.0"
     }
   },

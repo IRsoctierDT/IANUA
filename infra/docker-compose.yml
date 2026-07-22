@@ -1,4 +1,4 @@
-# Local lab stack for the AI Operator Cyber Command Center.
+# Local lab stack for IANUA.
 # Secure-by-default (AGENTS.md §3/§5):
 #   * Every port binds to 127.0.0.1 only — no external exposure (default-deny egress).
 #   * Image tags are pinned — never :latest.
