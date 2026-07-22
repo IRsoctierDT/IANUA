@@ -14,6 +14,22 @@ All notable changes to this project. Versions correspond to git tags.
   mirrors CI more faithfully: bandit gains the `mcp` scope, mypy covers the
   full CI scope, and the stdlib-fast drift gates (rename guard, status-page
   sync) run locally before commits reach CI.
+- **Repo hygiene: generated third-party content untracked** —
+  `node_modules/` (45 MB, 6,750 files) and `qdrant_storage/` (Qdrant server
+  state) removed from git and gitignored; the dependency set remains fully
+  captured by `package-lock.json` + the attested npm SBOM, and vector
+  collections regenerate from `knowledge-base/` via the ingest scripts.
+- **Qdrant embedded-by-default** — new `rag/qdrant.py::make_client()`
+  consolidates ten hardcoded `localhost:6333` client sites; with
+  `QDRANT_URL` unset the client runs **in-process** (vectors under
+  `QDRANT_PATH`, default `./data/qdrant`) with **zero listening ports** —
+  no service, container, or daemon. Setting `QDRANT_URL` opts in to a
+  server (compose lab stack). Semantic KB search now works in Codespaces
+  and minimal installs; keys documented in `.env.example`.
+- **Secret-scanning baseline committed** — `.secrets.baseline`
+  (detect-secrets 1.5.0) makes the pre-commit hook enforce; the two
+  baselined findings were human-reviewed and are false positives (the
+  policy engine's `secret_handling` action-class labels, not credentials).
 
 ## v2.0.0 — Master v2 STICHES Edition: the IANUA identity era
 
