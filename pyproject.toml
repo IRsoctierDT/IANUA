@@ -12,7 +12,7 @@ exclude = ["tests*"]
 
 [project]
 name = "ianua"
-version = "1.9.0"
+version = "2.0.0"
 description = "Portfolio-grade environment for AI ops, cybersecurity automation, RAG, and agentic workflows."
 readme = "README.md"
 requires-python = ">=3.11"

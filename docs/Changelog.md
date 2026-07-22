@@ -4,6 +4,18 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+_Nothing yet._
+
+## v2.0.0 — Master v2 STICHES Edition: the IANUA identity era
+
+**Milestone: the platform is IANUA everywhere (repo, docs, Pages, dashboard,
+SBOM), the SOC pipeline correlates sequences end-to-end from agents through
+reports to the dashboard, retrieval is rarity-weighted with verified passage
+citations, audit verification produces located forensics, and the whole
+platform is testable from a browser in one click. Edition identity advances
+to Master v2 STICHES; every agent reports v2.0.0 automatically via the
+pyproject-derived version.**
+
 ### Security
 - **gitpython bumped 3.1.50 → 3.1.54** (transitive, via streamlit) — clears
   GHSA-2f96-g7mh-g2hx, GHSA-v396-v7q4-x2qj and GHSA-956x-8gvw-wg5v (all fixed

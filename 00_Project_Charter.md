@@ -2,7 +2,7 @@
 
 ## Project Name
 
-IANUA™ — Master v1 STICHES Edition
+IANUA™ — Master v2 STICHES Edition
 
 ## Purpose
 
