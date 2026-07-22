@@ -49,9 +49,9 @@ def _get_model() -> SentenceTransformer:
 def _get_client() -> QdrantClient:
     global _client
     if _client is None:
-        from qdrant_client import QdrantClient
+        from rag.qdrant import make_client
 
-        _client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
+        _client = make_client()
     return _client
 
 

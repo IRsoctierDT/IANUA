@@ -1,12 +1,12 @@
 import requests
-from qdrant_client import QdrantClient
+from rag.qdrant import make_client
 from sentence_transformers import SentenceTransformer
 
 MODEL = "qwen3:4b"
 COLLECTION = "cybersecurity_kb"
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
-client = QdrantClient(url="http://localhost:6333")
+client = make_client()
 
 question = input("Ask cybersecurity knowledge base: ")
 

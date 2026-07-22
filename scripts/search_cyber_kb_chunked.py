@@ -1,13 +1,13 @@
 import argparse
 
-from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
+from rag.qdrant import make_client
 from sentence_transformers import SentenceTransformer
 
 COLLECTION = "cybersecurity_kb_chunks"
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
-client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
+client = make_client()
 
 
 def main():
