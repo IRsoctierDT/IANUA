@@ -31,8 +31,18 @@ def make_client() -> QdrantClient:
     ``QDRANT_URL`` set → remote/server client (explicit opt-in to a network
     service). Otherwise → embedded local client at ``QDRANT_PATH`` (default
     ``./data/qdrant``), which listens on nothing.
+
+    Raises ``RuntimeError`` with an actionable message when the optional
+    ``qdrant-client`` dependency is absent (minimal installs), instead of a
+    bare ``ModuleNotFoundError`` traceback.
     """
-    from qdrant_client import QdrantClient
+    try:
+        from qdrant_client import QdrantClient
+    except ModuleNotFoundError as exc:  # pragma: no cover - exercised via stub tests
+        raise RuntimeError(
+            "qdrant-client is not installed - semantic vector search needs the "
+            "dashboard extra: pip install -e '.[dashboard]'"
+        ) from exc
 
     url = os.environ.get("QDRANT_URL")
     if url:
