@@ -4,6 +4,14 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Security
+- **gitpython bumped 3.1.50 → 3.1.54** (transitive, via streamlit) — clears
+  GHSA-2f96-g7mh-g2hx, GHSA-v396-v7q4-x2qj and GHSA-956x-8gvw-wg5v (all fixed
+  in 3.1.51), which were failing the CI `pip-audit` SCA gate. `uv.lock` is the
+  source of truth; derived pip locks, `python.cdx.json` and the merged SBOM
+  were regenerated (`pip-audit` now reports no known vulnerabilities; lock and
+  SBOM drift gates verified in sync).
+
 ### Fixed
 - **IANUA rename completed; rename tooling repaired** — `scripts/rename_to_ianua.py`
   no longer rewrites or scans its own source (its `REPLACEMENTS` table contains
