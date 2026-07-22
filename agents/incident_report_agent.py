@@ -55,8 +55,16 @@ def _render_structured(data: dict) -> str:
     return "\n".join(lines) or "_AI narrative returned no content._"
 
 
-def _render_sequence(sequence_result: dict | None) -> str:
-    """Render the multi-event correlation section (from ``analyze_sequence``)."""
+def _render_sequence(
+    sequence_result: dict | None,
+    sequence_detections: list[dict] | None = None,
+) -> str:
+    """Render the multi-event correlation section (from ``analyze_sequence``).
+
+    ``sequence_detections`` (from ``DetectionMatcherAgent.match_for_sequence``)
+    lists the Sigma correlation rules covering the findings, closing the loop
+    between sequence triage and detection content.
+    """
     if sequence_result is None:
         return "- Single-event analysis (no sequence context)"
     findings = sequence_result.get("findings", [])
@@ -76,6 +84,17 @@ def _render_sequence(sequence_result: dict | None) -> str:
         )
     else:
         lines.append("- No multi-event patterns detected")
+    if findings:
+        lines.extend(["", "### Matching Detections"])
+        if sequence_detections:
+            lines.extend(
+                f"- **{_md_cell(str(d.get('title', '')))}** [{d.get('level', 'unknown')}] — "
+                f"`{_md_cell(str(d.get('file', '')))}` "
+                f"({d.get('technique', '')}, covers {_md_cell(str(d.get('pattern', '')))})"
+                for d in sequence_detections
+            )
+        else:
+            lines.append("- No correlation rule covers these patterns yet")
     return "\n".join(lines)
 
 
@@ -106,6 +125,7 @@ class IncidentReportAgent:
         kb_references: list[dict] | None = None,
         detection_matches: list[dict] | None = None,
         sequence_result: dict | None = None,
+        sequence_detections: list[dict] | None = None,
         citations: list[dict] | None = None,
         citations_verified: bool = False,
         generator: Generator | None = None,
@@ -192,7 +212,7 @@ class IncidentReportAgent:
 {chr(10).join(f"- {a}" for a in soc_result["recommended_actions"])}
 
 ## Sequence Correlation
-{_render_sequence(sequence_result)}
+{_render_sequence(sequence_result, sequence_detections)}
 
 ## Knowledge Base References
 {chr(10).join(f"- **{_md_cell(r['source'])}** (relevance {r['score']:.2f}) — {_md_cell(r['snippet'])}" for r in kb_references) if kb_references else "- None captured"}

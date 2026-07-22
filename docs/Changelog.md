@@ -4,6 +4,22 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **Sequence findings now cross-reference Sigma correlation rules end-to-end**
+  — `DetectionMatcherAgent.match_for_finding` / `match_for_sequence` map a
+  correlated finding's pattern (`brute_force`, `auth_failure_then_success`) to
+  the ATT&CK techniques describing it and return only Sigma **correlation**
+  rules covering those techniques — a base single-event rule that merely
+  shares the tag is never presented as covering a multi-event pattern.
+  Matches carry the pattern they cover, deduplicate across findings, and rank
+  most-severe first. The orchestrator's `process_sequence` attaches them
+  (`sequence_detections`), the incident report gains a "Matching Detections"
+  subsection under Sequence Correlation, and the dashboard batch tab renders
+  them — closing the loop between sequence triage and detection engineering,
+  the way single events already close it via `match_for_event`. Deterministic,
+  read-only, fail-soft (unknown patterns and malformed findings yield no
+  matches); pinned by five new tests against the real corpus.
+
 ### Changed
 - **Generated docs 00-09 refreshed to v2 reality** — the numbered root docs
   (architecture, roadmap, agent blueprints, environment setup, governance
