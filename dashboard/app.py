@@ -24,7 +24,10 @@ st.set_page_config(
 )
 
 st.title("IANUA")
-st.caption("Local AI-assisted SOC workflow")
+st.caption(
+    "AI operations platform — SOC automation, RAG pipelines, "
+    "MITRE ATT&CK mapping, and agentic workflows for defensive cybersecurity."
+)
 
 st.sidebar.header("System Status")
 st.sidebar.write("Model:", os.environ.get("LLM_MODEL", "qwen3.5:9b"))

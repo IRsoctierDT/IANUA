@@ -356,5 +356,4 @@ WHEN UNSURE:       stop and ask the human — fail closed, never guess
 ---
 
 *This charter is intentionally strict. Its purpose is to make the safe path the default
-path, so that every contribution — human or agent — leaves the AI Operator Cyber Command
-Center more secure, more maintainable, and more credible than it was before.*
+path, so that every contribution — human or agent — leaves IANUA more secure, more maintainable, and more credible than it was before.*
