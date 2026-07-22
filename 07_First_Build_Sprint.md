@@ -1,27 +1,25 @@
-# First Build Sprint
+# First Build Sprint (historical record — completed)
+
+This sprint is **done**; it bootstrapped the repository that became
+IANUA v2.0.0. Kept as a record of the founding definition-of-done.
 
 ## Goal
 
-Make the project executable, testable, reviewable, and design-system governed.
+Make the project executable, testable, reviewable, and design-system
+governed.
 
-## Tasks
+## Definition of Done (all met)
 
-1. Open project in VS Code or Cursor.
-2. Create Python virtual environment.
-3. Install development dependencies.
-4. Run SOC Analyst Agent.
-5. Run pytest.
-6. Run Ruff, MyPy, and Bandit.
-7. Validate DESIGN.md.
-8. Regenerate docs from DESIGN.md.
-9. Commit baseline.
-10. Push to GitHub.
+- `python agents/soc_analyst_agent.py` runs. ✅
+- `pytest` passes. ✅
+- `DESIGN.md` exists. ✅
+- `AGENTS.md` exists. ✅
+- GitHub CI exists. ✅
+- Documentation regeneration script exists. ✅
 
-## Definition of Done
+## Current cadence
 
-- `python agents/soc_analyst_agent.py` runs.
-- `pytest` passes.
-- `DESIGN.md` exists.
-- `AGENTS.md` exists.
-- GitHub CI exists.
-- Documentation regeneration script exists.
+Work now lands as reviewed pull requests gated by the full CI pipeline
+(AGENTS.md §7-§8), tracked in `docs/PROJECT_STATUS.md`, logged in
+`docs/ENGINEERING_LOG.md`, and released via tagged versions in
+`docs/Changelog.md`.
