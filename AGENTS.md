@@ -97,25 +97,32 @@ rationale.
 ```
 ianua/
 ├── AGENTS.md                  # This charter (source of truth for agents)
-├── CLAUDE.md                  # Symlink/copy of AGENTS.md for Claude-based agents
+├── CLAUDE.md                  # Symlink to AGENTS.md for Claude-based agents
 ├── DESIGN.md                  # Architecture, data flows, trust boundaries, decisions
 ├── SECURITY.md                # Vulnerability reporting & security policy
 ├── CONTRIBUTING.md            # Human + agent contribution workflow
 ├── README.md                  # Project overview & quickstart
-├── pyproject.toml             # Tooling config: ruff, mypy, pytest, coverage, bandit
+├── pyproject.toml             # Version source of truth + ruff/mypy/pytest/bandit config
+├── uv.lock                    # Dependency source of truth (locks/SBOM derive from it)
 ├── .pre-commit-config.yaml    # Local quality gates (mirror of CI)
 ├── .env.example               # Documented config keys — NEVER real secrets
-├── agents/                    # Agent definitions, orchestration, tool wiring
-│   ├── __init__.py
+├── .devcontainer/             # One-click Codespaces test environment (dashboard)
+├── .github/                   # CI pipeline, drift gates, Pages deploy (human-gated)
+├── agents/                    # Agent implementations, orchestration, versioning
 │   ├── roles/                 # Role specs (planner, builder, reviewer, security)
 │   ├── tools/                 # Tool adapters; each validates its own input
-│   └── policies/              # Guardrails, allow/deny lists, approval logic
-├── scripts/                   # Operational & maintenance scripts (CLI entrypoints)
-├── rag/                       # Ingestion, chunking, embedding, retrieval
-├── mcp/                       # MCP servers exposed to agents
+│   └── policies/              # Policy engine, audit chain, signing, approval logic
+├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
+├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
+├── mcp/                       # MCP server + sandboxed tool execution
+├── dashboard/                 # Streamlit command center (SOC, batch, KB, health)
 ├── detections/                # Detection-engineering content (lab-scoped only)
-├── infra/                     # IaC, container/compose, deployment manifests
-├── docs/                      # Long-form documentation & runbooks
+├── knowledge-base/            # Local retrieval corpus (NIST/MITRE/OWASP notes)
+├── security/sbom/             # CycloneDX SBOMs + exported dependency locks
+├── infra/                     # Container/compose manifests for the local lab stack
+├── docs/                      # Runbooks, changelog, engineering log, status page, case studies
+├── portfolio/                 # Portfolio-facing overviews and roadmaps
+├── sample-logs/               # Captured historical fixtures (excluded from migrations)
 ├── tests/                     # pytest suite (unit, integration, security)
 │   ├── unit/
 │   ├── integration/
@@ -257,17 +264,22 @@ the minimum bar — green is required, not optional.
 # 1. Everything compiles
 python -m compileall .
 
-# 2. Full test suite (unit, integration, security)
+# 2. Full test suite (unit, integration, security) — CI adds an 85% coverage gate
 python -m pytest
 
-# 3. Lint & style
+# 3. Lint & style (formatting is CI-enforced too: ruff format --check .)
 ruff check .
 
-# 4. Static type checking
-mypy agents scripts tests
+# 4. Static type checking (full CI scope)
+mypy agents scripts tests dashboard mcp rag
 
-# 5. Security static analysis (SAST)
-bandit -r agents scripts
+# 5. Security static analysis (SAST) — same config and scope as CI
+bandit -c pyproject.toml -r agents scripts mcp
+
+# 6. Drift gates — derived artifacts must match their sources
+python scripts/check_locks.py           # exported pip locks ↔ uv.lock
+python scripts/build_status_page.py --check   # status page ↔ status.data.json
+python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)
@@ -303,14 +315,19 @@ in the pipeline."
 **Pipeline stages (fail-fast, ordered):**
 
 1. **Setup** — pinned toolchain, cached deps, reproducible install.
-2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy`.
-3. **Security** — `bandit` (SAST), `pip-audit` (SCA), secret scan (`gitleaks` /
-   `detect-secrets`). Any finding above the agreed severity threshold **blocks merge**.
-4. **Tests** — `pytest` with coverage gate (`--cov-fail-under=85`); `tests/security` must
-   be green.
-5. **Build / package** — only on a fully green pipeline.
-6. **Deploy** — **manual approval gate**; never automatic to any environment that touches
-   real systems or data.
+2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy` (full scope:
+   `agents scripts tests dashboard mcp rag`).
+3. **Security** — `bandit` (SAST), `pip-audit` (SCA), `gitleaks` (secrets), CodeQL.
+   Any finding above the agreed severity threshold **blocks merge**.
+4. **Tests** — `pytest` on 3.11 and 3.12 with coverage gate (`--cov-fail-under=85`);
+   `tests/security` must be green; sandbox enforcement runs in a Linux container.
+5. **Drift gates** — derived artifacts are regenerated and diffed read-only, never
+   auto-committed: SBOM + exported pip locks ↔ `uv.lock`; status page ↔ its source
+   data; the IANUA-rename guard checks the ref under test.
+6. **Build / package** — only on a fully green pipeline.
+7. **Deploy (GitHub Pages)** — **human approval gate on the `github-pages`
+   environment, kept by design**; deploys are never automatic, and the gate is
+   never to be weakened or bypassed.
 
 **Branch protection (recommended):**
 

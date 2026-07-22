@@ -84,7 +84,10 @@ hard-coded secrets or unaudited external network access (see `AGENTS.md` §5).
 | `agents/tools/` | Adapters from agent intent → real capability | Each adapter validates input and enforces least privilege |
 | `agents/policies/` | Guardrails, allow/deny lists, approval logic | Default deny; gates fail closed |
 | `rag/` | Document ingestion and retrieval | Only trusted local sources; no PII/client data |
-| `mcp/` | MCP servers exposed to agents | Minimal, typed, validated tool surface |
+| `mcp/` | MCP servers exposed to agents | Minimal, typed, validated tool surface; sandboxed execution |
+| `dashboard/` | Streamlit command center over the agent pipeline | Local-only backends; fails soft with honest degradation labels |
+| `knowledge-base/` | Local retrieval corpus (NIST/MITRE/OWASP notes) | Trusted local content only; grounds citations |
+| `security/sbom/` | CycloneDX SBOMs + exported hash-pinned locks | Derived from `uv.lock`; CI drift gates verify, never auto-commit |
 | `detections/` | Defensive detection content | Lab-scoped; no offensive payloads |
 | `scripts/` | Operational CLI entrypoints | Idempotent; dry-run for destructive ops |
 | `infra/` | IaC / containers / deploy manifests | No real secrets; deploy behind approval gate |

@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from qdrant_client import QdrantClient
+from rag.qdrant import make_client
 
 
 def get_python_info() -> str:
@@ -39,7 +39,7 @@ def get_ollama_models() -> str:
 def get_qdrant_collections() -> list[str]:
     """Return Qdrant collection names, or a single 'unavailable' entry."""
     try:
-        client = QdrantClient(url="http://localhost:6333", check_compatibility=False)
+        client = make_client()
         return [collection.name for collection in client.get_collections().collections]
     except Exception as exc:
         return [f"Qdrant unavailable: {exc}"]

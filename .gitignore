@@ -29,3 +29,7 @@ data/
 
 # OS junk
 .DS_Store
+
+# Generated / third-party — never tracked (locks + SBOM capture the dependency set)
+node_modules/
+qdrant_storage/

@@ -9,7 +9,7 @@ from pathlib import Path
 import streamlit as st
 from agents.orchestrator_agent import OrchestratorAgent
 
-from dashboard.kb_search import search_kb
+from dashboard.kb_search import search_kb_resilient
 from dashboard.ollama_service import ensure_ollama_running
 from dashboard.system_health import (
     get_git_tag,
@@ -114,14 +114,40 @@ with tab_soc:
         except Exception as exc:
             st.warning(f"PDF generation skipped: {exc}")
 
+# Bundled, deterministic test scenarios (fixed allow-list — the selectbox value
+# is never treated as a free-form path, so no traversal is possible).
+SAMPLE_SCENARIOS = {
+    "SSH brute force (5 events)": "ssh_brute_force.log",
+    "Auth batch — failures then success (3 events)": "auth_batch.log",
+}
+
 with tab_batch:
     uploaded_file = st.file_uploader(
         "Upload a log file",
         type=["log", "txt"],
     )
 
+    sample_choice = st.selectbox(
+        "…or load a bundled sample scenario (no upload needed)",
+        ["None", *SAMPLE_SCENARIOS],
+        help=(
+            "Deterministic fixtures from sample-logs/ so every batch feature — "
+            "sequence correlation, verified citations, the incident report — "
+            "is testable in one click."
+        ),
+    )
+
+    raw_text = None
     if uploaded_file is not None:
         raw_text = uploaded_file.read().decode("utf-8", errors="ignore")
+    elif sample_choice != "None":
+        sample_path = Path("sample-logs") / SAMPLE_SCENARIOS[sample_choice]
+        if sample_path.exists():
+            raw_text = sample_path.read_text(encoding="utf-8")
+        else:
+            st.warning(f"Sample file not found: {sample_path}")
+
+    if raw_text is not None:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
 
         st.write(f"Loaded {len(lines)} log entries.")
@@ -215,7 +241,14 @@ with tab_kb:
     )
 
     if st.button("Search Knowledge Base"):
-        points = search_kb(query=query, category=category)
+        # Fails soft: semantic search against local Qdrant when available,
+        # otherwise the offline lexical corpus — labelled so degraded results
+        # are never passed off as the primary backend.
+        points, backend = search_kb_resilient(query=query, category=category)
+        st.caption(f"Backend: {backend}")
+
+        if not points:
+            st.info("No knowledge-base results matched this query.")
 
         for index, point in enumerate(points, start=1):
             st.subheader(f"Result {index}")

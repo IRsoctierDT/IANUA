@@ -1,9 +1,9 @@
-from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
+from rag.qdrant import make_client
 
 COLLECTION = "cybersecurity_kb"
 
-client = QdrantClient(url="http://localhost:6333")
+client = make_client()
 
 existing = [collection.name for collection in client.get_collections().collections]
 

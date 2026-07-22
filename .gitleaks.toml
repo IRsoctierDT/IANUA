@@ -1,0 +1,22 @@
+# .gitleaks.toml — IANUA
+#
+# Extends gitleaks' default ruleset; adds a single, narrow allowlist entry.
+#
+# Why: .secrets.baseline is the detect-secrets baseline. It stores SHA-1
+# *digests* of strings that were human-reviewed and classified as false
+# positives (the policy engine's "secret_handling" action-class labels). Those
+# high-entropy hex digests trip gitleaks' generic-api-key rule, so the two
+# secret scanners fight each other: the allowlist file of one is a "leak" to
+# the other. The digests are one-way hashes of non-secrets — nothing
+# recoverable, nothing sensitive.
+#
+# Scope is deliberately the single file path, not a rule or fingerprint
+# exemption: real secrets anywhere else — including in this config — are
+# still caught, and baseline edits don't need fingerprint churn.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "detect-secrets baseline stores SHA-1 digests of reviewed false positives, not secrets"
+paths = ['''^\.secrets\.baseline$''']

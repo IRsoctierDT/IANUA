@@ -44,7 +44,7 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
-        files: ^(agents|scripts|tests)/
+        files: ^(agents|scripts|tests|dashboard|mcp|rag)/
         additional_dependencies: []   # add typed stub packages here as deps grow
 
   # --- Security static analysis (bandit) ---------------------------------
@@ -52,8 +52,23 @@ repos:
     rev: 1.7.10
     hooks:
       - id: bandit
-        args: ["-c", "pyproject.toml", "-r", "agents", "scripts"]
+        args: ["-c", "pyproject.toml", "-r", "agents", "scripts", "mcp"]
         additional_dependencies: ["bandit[toml]"]
+
+  # --- Drift gates (stdlib-only, fast; mirror the read-only CI gates) -----
+  - repo: local
+    hooks:
+      - id: rename-guard
+        name: no legacy pre-IANUA identifiers
+        entry: python scripts/rename_to_ianua.py --check
+        language: system
+        pass_filenames: false
+      - id: status-page-sync
+        name: status page in sync with status.data.json
+        entry: python scripts/build_status_page.py --check
+        language: system
+        files: ^(docs/status\.(data\.json|html|json)|scripts/build_status_page\.py|pyproject\.toml)$
+        pass_filenames: false
 
   # --- Secret scanning (detect-secrets) ----------------------------------
   - repo: https://github.com/Yelp/detect-secrets

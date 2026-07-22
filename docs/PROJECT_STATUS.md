@@ -2,10 +2,12 @@
 
 ## Current Version
 
-v1.9.0 — **agent suite complete; hardening #2 landed** (all eight core agent
-blueprints built, plus supporting agents; policy/audit enforced at the tool
-surface, sandboxed execution, attested supply chain). Further work is
-enhancement of existing components, not new surface. See
+v2.0.0 — **Master v2 STICHES Edition** — the IANUA identity era (renamed
+repo-wide, canonical everywhere), sequence-correlating SOC pipeline surfaced
+end-to-end (agents → reports → dashboard), verified passage citations,
+IDF-weighted retrieval, deepened audit forensics, and a one-click Codespaces
+test environment. All eight core agent blueprints remain built; work continues
+as enhancement of existing components, not new surface. See
 [`docs/Changelog.md`](./Changelog.md) for the full history.
 
 ## Operational Components

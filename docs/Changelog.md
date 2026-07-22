@@ -5,12 +5,93 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Security
+- **CI supply-chain hardening** — every GitHub Action across all five
+  workflows (31 references, 12 distinct actions) is now pinned to a full
+  commit SHA with a human-readable version comment (immune to tag-rewrite
+  attacks; Dependabot keeps updating the pins). Every `actions/checkout` sets
+  `persist-credentials: false` — no job in this repo pushes with checkout
+  credentials, so none keeps a write-capable token on disk. Pre-commit now
+  mirrors CI more faithfully: bandit gains the `mcp` scope, mypy covers the
+  full CI scope, and the stdlib-fast drift gates (rename guard, status-page
+  sync) run locally before commits reach CI.
+- **Repo hygiene: generated third-party content untracked** —
+  `node_modules/` (45 MB, 6,750 files) and `qdrant_storage/` (Qdrant server
+  state) removed from git and gitignored; the dependency set remains fully
+  captured by `package-lock.json` + the attested npm SBOM, and vector
+  collections regenerate from `knowledge-base/` via the ingest scripts.
+- **Qdrant embedded-by-default** — new `rag/qdrant.py::make_client()`
+  consolidates ten hardcoded `localhost:6333` client sites; with
+  `QDRANT_URL` unset the client runs **in-process** (vectors under
+  `QDRANT_PATH`, default `./data/qdrant`) with **zero listening ports** —
+  no service, container, or daemon. Setting `QDRANT_URL` opts in to a
+  server (compose lab stack). Semantic KB search now works in Codespaces
+  and minimal installs; keys documented in `.env.example`.
+- **Secret-scanning baseline committed** — `.secrets.baseline`
+  (detect-secrets 1.5.0) makes the pre-commit hook enforce; the two
+  baselined findings were human-reviewed and are false positives (the
+  policy engine's `secret_handling` action-class labels, not credentials).
+  A repo-root `.gitleaks.toml` (default rules extended) allowlists the
+  baseline file by path: its SHA-1 digests of the reviewed strings trip
+  gitleaks' generic-api-key rule, so without it the two secret scanners
+  fight — one's allowlist is the other's "leak". Digests of non-secrets
+  are unrecoverable; real secrets anywhere else are still caught.
+
+## v2.0.0 — Master v2 STICHES Edition: the IANUA identity era
+
+**Milestone: the platform is IANUA everywhere (repo, docs, Pages, dashboard,
+SBOM), the SOC pipeline correlates sequences end-to-end from agents through
+reports to the dashboard, retrieval is rarity-weighted with verified passage
+citations, audit verification produces located forensics, and the whole
+platform is testable from a browser in one click. Edition identity advances
+to Master v2 STICHES; every agent reports v2.0.0 automatically via the
+pyproject-derived version.**
+
+### Changed — foundations refreshed for v2
+- **Charter (`AGENTS.md`) brought current** — the §4 layout tree now maps the
+  real repository (dashboard, knowledge-base, security/sbom, devcontainer,
+  portfolio, sample-logs…); §7 gate commands match CI's exact scopes
+  (`mypy agents scripts tests dashboard mcp rag`,
+  `bandit -c pyproject.toml -r agents scripts mcp`, plus the drift-gate
+  checks); §8 documents the pipeline as it exists (CodeQL, dual-Python tests,
+  sandbox enforcement, read-only drift gates, and the **human-gated Pages
+  deploy, kept by design**). `CLAUDE.md` follows via symlink.
+- **Security policy consolidated and updated for v2** — root `SECURITY.md` is
+  the canonical policy (supported versions 2.0.x; components-in-scope table
+  covering the policy/audit layer, sandbox, dashboard, detections, and
+  verification CLIs; the full current control set: SAST+CodeQL, SCA+SBOM
+  drift gates, secret scanning, tamper-evident audit with signing, sandboxed
+  tool execution, least-privilege CI, human-gated deploys).
+  `.github/SECURITY.md` is now a pointer with the private-reporting
+  essentials, so the two copies can never diverge again.
+- **`DESIGN.md` module map completed** — dashboard, knowledge-base, and
+  security/sbom rows added with their invariants.
+
+### Security
 - **gitpython bumped 3.1.50 → 3.1.54** (transitive, via streamlit) — clears
   GHSA-2f96-g7mh-g2hx, GHSA-v396-v7q4-x2qj and GHSA-956x-8gvw-wg5v (all fixed
   in 3.1.51), which were failing the CI `pip-audit` SCA gate. `uv.lock` is the
   source of truth; derived pip locks, `python.cdx.json` and the merged SBOM
   were regenerated (`pip-audit` now reports no known vulnerabilities; lock and
   SBOM drift gates verified in sync).
+
+### Added
+- **One-click interactive test environment (GitHub Codespaces)** — new
+  `.devcontainer/devcontainer.json`: from the repository page (Code →
+  Codespaces → Create) the container installs `.[dev,dashboard]`, auto-starts
+  the Streamlit dashboard, and forwards port 8501 (private to the owner), so
+  every feature is testable in the browser with zero local setup. GitHub Pages
+  is static and cannot run the app; this is the supported "test it from
+  github.com" path (documented in the README Quickstart).
+- **Bundled sample scenarios in the Batch tab** — a fixed allow-list of
+  deterministic fixtures from `sample-logs/` (SSH brute force,
+  failures-then-success) loadable without preparing an upload, so sequence
+  correlation, verified citations, and the incident report are one click away.
+- **Knowledge-base search fails soft** — `search_kb_resilient()` tries the
+  Qdrant semantic backend and degrades to the offline lexical
+  `KnowledgeBaseAgent` corpus when Qdrant/embeddings are unavailable, with the
+  serving backend labelled in the UI (degraded results are never passed off as
+  the primary path). Heavy imports are now lazy, so the dashboard starts on a
+  minimal install. Covered by `tests/unit/test_kb_search.py`.
 
 ### Changed
 - **Dashboard batch flow upgraded to the correlated sequence pipeline** — the
