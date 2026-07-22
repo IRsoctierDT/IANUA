@@ -12,6 +12,19 @@ All notable changes to this project. Versions correspond to git tags.
   were regenerated (`pip-audit` now reports no known vulnerabilities; lock and
   SBOM drift gates verified in sync).
 
+### Changed
+- **Dashboard batch flow upgraded to the correlated sequence pipeline** — the
+  Streamlit "Batch Processing" tab now runs `OrchestratorAgent.process_sequence`
+  once over the uploaded log (one deterministic pipeline run) instead of N
+  independent per-line `process_log` calls that could not see multi-event
+  patterns. The tab surfaces the sequence verdict (severity, score, event
+  count, summary), the **Correlated Findings** (pattern, source, severity,
+  contributing event numbers), a per-event breakdown table (now including the
+  extracted source), sequence-wide threat intelligence, the **verified cited
+  passages** with char offsets, and the generated sequence incident report.
+  Empty uploads get a friendly warning instead of the pipeline's fail-closed
+  exception surfacing as a traceback.
+
 ### Fixed
 - **IANUA rename completed; rename tooling repaired** — `scripts/rename_to_ianua.py`
   no longer rewrites or scans its own source (its `REPLACEMENTS` table contains
