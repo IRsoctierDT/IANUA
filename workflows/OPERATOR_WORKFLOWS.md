@@ -4,6 +4,12 @@
 
 Classify event, estimate severity, extract indicators, and generate a report.
 
+## Log Batch to Correlated Incident
+
+Upload or select an ordered event batch; the sequence pipeline correlates
+multi-event patterns (brute force, failure-then-success), anchors the report
+on the most severe event, and attaches verified citations.
+
 ## Document to Knowledge Base
 
 Ingest, summarize, tag, chunk, and store for retrieval.

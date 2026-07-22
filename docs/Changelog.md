@@ -4,6 +4,23 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Changed
+- **Generated docs 00-09 refreshed to v2 reality** — the numbered root docs
+  (architecture, roadmap, agent blueprints, environment setup, governance
+  rules, portfolio tracker, first-build sprint, Codex review workflow,
+  master blueprint) plus the adjacent generated docs (dashboard concept,
+  12-month roadmap, operator workflows) had been untouched since the initial
+  Master v1 scaffold. Their templates in `generate_docs_from_design.py` now
+  describe the shipped v2.0.0 platform: all eight blueprints built (with the
+  supporting agents), sequence correlation, verified citations,
+  embedded-by-default Qdrant, policy/audit enforcement, Codespaces setup
+  path, and the enhancement-not-new-surface build stance. Roadmaps mark
+  completed cycles honestly instead of presenting finished work as plans.
+- **Doc generator no longer overwrites the curated README** — `README.md`
+  removed from the generator's outputs; regenerating docs can no longer
+  destroy the hand-maintained project README (this bit once — the exclusion
+  is the permanent fix, documented in the generator's docstring).
+
 ### Security
 - **PDF report pipeline hardened against injection and SSRF** — incident
   reports interpolate untrusted log content, and the Markdown → HTML →
