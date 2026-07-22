@@ -10,16 +10,19 @@ or have written authorization to test. See [AGENTS.md](./AGENTS.md) §5.
 
 | Version | Status |
 |---------|--------|
-| 0.1.x (current) | Supported — security fixes applied |
-| < 0.1.0 | Not supported |
+| 2.0.x (current — Master v2 STICHES Edition) | Supported — security fixes applied |
+| 1.x | Critical security fixes only, upgrade recommended |
+| < 1.0 | Not supported |
 
 ## Reporting a vulnerability
 
 **Do not open a public GitHub issue for security defects.**
 
-Report privately by emailing **irozenblad@icloud.com** with:
+Preferred: open a **private GitHub Security Advisory** on the repository
+(Security → Advisories → Report a vulnerability). Alternatively, report
+privately by emailing **irozenblad@icloud.com** with:
 
-- Affected component (e.g. `agents/soc_analyst_agent.py`, `mcp/server.py`, CI workflow)
+- Affected component (e.g. `agents/policies/audit.py`, `mcp/server.py`, CI workflow)
 - Steps to reproduce
 - Impact assessment (data exposure, privilege escalation, denial of service, etc.)
 - Suggested remediation, if any
@@ -32,30 +35,42 @@ Critical findings (CVSS ≥ 9.0) will be prioritized for an expedited patch.
 
 | Component | Path | Notes |
 |-----------|------|-------|
-| SOC Analyst Agent | `agents/soc_analyst_agent.py` | Log classification and severity scoring |
-| Incident Report Agent | `agents/incident_report_agent.py` | Markdown report generation |
-| MITRE Mapper Agent | `agents/mitre_mapper_agent.py` | ATT&CK technique mapping |
-| Threat Intel Agent | `agents/threat_intel_agent.py` | IOC enrichment |
-| Orchestrator Agent | `agents/orchestrator_agent.py` | Multi-agent workflow coordination |
-| MCP Server | `mcp/server.py`, `mcp/transport.py` | Local model context protocol |
-| RAG pipeline | `rag/` | Ingestion, embedding, retrieval |
-| CI/CD workflows | `.github/workflows/` | Pipeline integrity |
+| Agent suite | `agents/` | SOC (incl. sequence correlation), MITRE mapper, threat intel, incident reports, knowledge base, orchestrator, and supporting agents |
+| Policy & audit layer | `agents/policies/` | Default-deny policy engine; tamper-evident hash-chained audit log with HMAC/Ed25519 head signing |
+| MCP server + sandbox | `mcp/` | Local model-context-protocol server; containerized tool execution |
+| RAG pipeline | `rag/` | Ingestion, embedding, retrieval, verified passage citations |
+| Dashboard | `dashboard/` | Streamlit command center (local-only backends, fail-soft) |
+| Detection content | `detections/` | Lab-scoped Sigma rules and correlations |
+| Verification CLIs | `scripts/` | `audit_verify`, `audit_maintenance`, SBOM/locks/status drift checks |
+| CI/CD workflows | `.github/workflows/` | Pipeline integrity, drift gates, human-gated Pages deploy |
 | Tool validation | `agents/tools/validation.py` | Input sanitisation boundary |
 
 ## Out of scope
 
-- Issues in upstream dependencies (report to the relevant upstream project)
+- Issues in upstream dependencies (report to the relevant upstream project;
+  our `pip-audit` gate picks up published advisories)
 - Vulnerabilities requiring physical access to the host machine
 - Social engineering of maintainers
 - Denial-of-service against GitHub Actions runners
 
 ## Security controls in place
 
-- **SAST**: `bandit` runs on every CI push and pull request
-- **SCA**: `pip-audit` scans dependencies for known CVEs on every CI run
-- **Secret scanning**: `gitleaks` scans every pull request; `detect-secrets` in pre-commit
-- **Static typing**: `mypy` enforces type safety on all agent and script code
-- **Least-privilege CI**: each workflow job declares only the permissions it needs
+- **SAST**: `bandit` on every push/PR; **CodeQL** analysis on the repository
+- **SCA**: `pip-audit` scans the pinned dependency closure on every CI run;
+  Dependabot proposes updates (security updates are never grouped)
+- **Supply chain**: CycloneDX **SBOM** + exported hash-pinned locks derived from
+  `uv.lock`, verified in-sync by read-only CI drift gates
+- **Secret scanning**: `gitleaks` on every PR; `detect-secrets` in pre-commit
+- **Tamper-evident audit**: hash-chained JSONL audit log with rotation,
+  checkpoint anchoring, and HMAC or Ed25519 head signing; standalone
+  read-only verifier (`scripts/audit_verify.py`) with fail-closed exit codes
+- **Sandboxed tool execution**: MCP tool calls run in a Linux container;
+  enforcement is tested in CI
+- **Static typing**: `mypy` across agents, scripts, tests, dashboard, mcp, rag
+- **Least-privilege CI**: each workflow job declares only the permissions it
+  needs; drift gates are read-only and never auto-commit
+- **Human-gated deploys**: the `github-pages` environment requires human
+  approval **by design**; deploys are never automatic
 - **No secrets in source**: all configuration keys documented in `.env.example`;
   real values live only in environment/secret stores
 
@@ -63,4 +78,5 @@ Critical findings (CVSS ≥ 9.0) will be prioritized for an expedited patch.
 
 Logs, legal documents, client information, credentials, and PII are sensitive by default.
 They are never committed to source, never logged in plaintext, and never transmitted to
-external endpoints. The `data/` directory is gitignored.
+external endpoints. The `data/` directory is gitignored. Public demo environments
+(e.g. Codespaces) must only ever process the bundled lab fixtures in `sample-logs/`.

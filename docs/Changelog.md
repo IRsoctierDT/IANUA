@@ -16,6 +16,26 @@ platform is testable from a browser in one click. Edition identity advances
 to Master v2 STICHES; every agent reports v2.0.0 automatically via the
 pyproject-derived version.**
 
+### Changed — foundations refreshed for v2
+- **Charter (`AGENTS.md`) brought current** — the §4 layout tree now maps the
+  real repository (dashboard, knowledge-base, security/sbom, devcontainer,
+  portfolio, sample-logs…); §7 gate commands match CI's exact scopes
+  (`mypy agents scripts tests dashboard mcp rag`,
+  `bandit -c pyproject.toml -r agents scripts mcp`, plus the drift-gate
+  checks); §8 documents the pipeline as it exists (CodeQL, dual-Python tests,
+  sandbox enforcement, read-only drift gates, and the **human-gated Pages
+  deploy, kept by design**). `CLAUDE.md` follows via symlink.
+- **Security policy consolidated and updated for v2** — root `SECURITY.md` is
+  the canonical policy (supported versions 2.0.x; components-in-scope table
+  covering the policy/audit layer, sandbox, dashboard, detections, and
+  verification CLIs; the full current control set: SAST+CodeQL, SCA+SBOM
+  drift gates, secret scanning, tamper-evident audit with signing, sandboxed
+  tool execution, least-privilege CI, human-gated deploys).
+  `.github/SECURITY.md` is now a pointer with the private-reporting
+  essentials, so the two copies can never diverge again.
+- **`DESIGN.md` module map completed** — dashboard, knowledge-base, and
+  security/sbom rows added with their invariants.
+
 ### Security
 - **gitpython bumped 3.1.50 → 3.1.54** (transitive, via streamlit) — clears
   GHSA-2f96-g7mh-g2hx, GHSA-v396-v7q4-x2qj and GHSA-956x-8gvw-wg5v (all fixed
