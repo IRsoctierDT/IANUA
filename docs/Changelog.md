@@ -5,6 +5,30 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Business Proposal + Legal/Compliance agents advanced to active status** —
+  the two "business cell" agents the landing page still carried as idle/review
+  are now active-grade:
+  - *Legal/Compliance*: **multi-topic classification** fixes a real
+    correctness gap — first-match-wins silently dropped checklists when an
+    inquiry crossed areas (the agent's own canonical example, a subpoena for
+    customer data, lost the litigation checklist with its preservation and
+    response-deadline items; it now gets both regimes' checklists, merged and
+    deduplicated). Adds fail-soft **local knowledge-base grounding**
+    (framework notes as supporting context, never authority) and a
+    **counsel-ready intake memo** renderer that separates facts, assumptions,
+    and unknowns per the governance rules, leads with the mandatory
+    disclaimer, and collapses untrusted text so it cannot inject Markdown
+    structure. `topic_area` stays as the primary area for backward
+    compatibility.
+  - *Business Proposal*: **charter-structured SOW renderer** following the
+    AGENTS.md §9 deliverable format (Executive Summary · Objectives ·
+    Architecture/Process · Implementation Steps · Risks · Cost Considerations
+    · Future Enhancements) with cost cells as explicit human-estimation
+    placeholders — the agent still never invents pricing, timelines, or
+    commitments — and the same injection-resistant line collapsing.
+  - Landing-page agent grid flips both to `active` with updated capability
+    descriptions. Ten new tests pin the multi-topic merge, memo/SOW structure
+    and ordering, placeholder-only costs, and injection resistance.
 - **Sequence findings now cross-reference Sigma correlation rules end-to-end**
   — `DetectionMatcherAgent.match_for_finding` / `match_for_sequence` map a
   correlated finding's pattern (`brute_force`, `auth_failure_then_success`) to

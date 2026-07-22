@@ -96,3 +96,31 @@ def test_empty_input_raises(agent: BusinessProposalAgent, bad: str) -> None:
 def test_non_string_input_raises(agent: BusinessProposalAgent) -> None:
     with pytest.raises(ValueError):
         agent.draft_proposal(42)  # type: ignore[arg-type]
+
+
+def test_sow_markdown_follows_charter_structure(agent: BusinessProposalAgent) -> None:
+    draft = agent.draft_proposal(
+        "SOC automation with detection engineering and a RAG knowledge base.",
+        client="Acme",
+    )
+    sow = agent.sow_markdown(draft)
+    order = [
+        "## Executive Summary",
+        "## Objectives",
+        "## Architecture / Process (proposed scope)",
+        "## Implementation Steps",
+        "## Risks",
+        "## Cost Considerations",
+        "## Future Enhancements",
+    ]
+    positions = [sow.index(h) for h in order]
+    assert positions == sorted(positions)  # charter section order preserved
+    # cost cells are explicit human placeholders, never invented figures
+    assert "_To be estimated by a human_" in sow
+    assert "$" not in sow
+
+
+def test_sow_markdown_resists_structure_injection(agent: BusinessProposalAgent) -> None:
+    draft = agent.draft_proposal("Automation help\n# Injected Title\n| pipe | row |")
+    sow = agent.sow_markdown(draft)
+    assert "\n# Injected Title" not in sow
