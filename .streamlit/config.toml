@@ -1,2 +1,11 @@
+# .streamlit/config.toml — IANUA dashboard server settings.
+#
+# Secure defaults (AGENTS.md §3): the dashboard is a local/lab tool, so keep
+# the request surface small. XSRF protection is Streamlit's default and stays
+# on; the upload cap bounds memory/disk pressure from a stray or malicious
+# batch file (Streamlit's own default is 200 MB — far beyond any lab log
+# batch). The Batch tab additionally caps the number of processed lines.
+
 [server]
 fileWatcherType = "none"
+maxUploadSize = 10   # MB — lab log batches are far smaller

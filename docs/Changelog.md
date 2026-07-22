@@ -5,6 +5,29 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Security
+- **PDF report pipeline hardened against injection and SSRF** — incident
+  reports interpolate untrusted log content, and the Markdown → HTML →
+  WeasyPrint path passed raw HTML through and fetched external resources
+  during rendering. `scripts/convert_report_to_pdf.py` now (1) escapes
+  `&`/`<` *before* Markdown rendering, so embedded markup (`<script>`,
+  `<img src=…>`) becomes inert visible text while every report construct
+  (headings, tables, fences, inline code) renders unchanged, and (2) renders
+  with a **deny-all URL fetcher** (`base_url=None`), so report content can
+  never trigger network requests (blocks metadata-endpoint SSRF, exfil
+  beacons, `file://` reads). Renderer imports are lazy; the controls are
+  pinned by `tests/security/test_report_pdf_hardening.py`.
+- **Audit artifacts created owner-only** — the tamper-evident audit log's
+  active file, rotated segments, `.checkpoint` sidecar, and head signature
+  are now created `0o600` (directory `0o700`) regardless of the process
+  umask; permissions of pre-existing files are deliberately never rewritten
+  (operator-chosen schemes are respected). Pinned by
+  `tests/security/test_audit_file_permissions.py`.
+- **Dashboard input bounds** — server-level upload cap
+  (`.streamlit/config.toml`: `maxUploadSize = 10` MB, down from Streamlit's
+  200 MB default) plus a 2,000-line batch cap with a visible truncation
+  notice — defense in depth against oversized or malicious batch uploads.
+
+### Security
 - **CI supply-chain hardening** — every GitHub Action across all five
   workflows (31 references, 12 distinct actions) is now pinned to a full
   commit SHA with a human-readable version comment (immune to tag-rewrite

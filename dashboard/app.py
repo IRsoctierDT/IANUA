@@ -150,6 +150,16 @@ with tab_batch:
     if raw_text is not None:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
 
+        # Bound the work a single upload can trigger (defense in depth on top
+        # of the server-level maxUploadSize cap in .streamlit/config.toml).
+        MAX_BATCH_LINES = 2000
+        if len(lines) > MAX_BATCH_LINES:
+            st.warning(
+                f"Batch truncated to the first {MAX_BATCH_LINES} of "
+                f"{len(lines)} lines — split larger logs into multiple runs."
+            )
+            lines = lines[:MAX_BATCH_LINES]
+
         st.write(f"Loaded {len(lines)} log entries.")
 
         # analyze_sequence validates fail-closed (an empty batch raises);
