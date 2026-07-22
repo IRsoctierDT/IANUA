@@ -99,6 +99,25 @@ class VerificationReport:
     failure: str | None
 
 
+# Audit artifacts are sensitive by default (AGENTS.md §5): create them
+# owner-only. 0o600 files / 0o700 directories apply at *creation*; permissions
+# of pre-existing files are deliberately left untouched (an operator may have
+# chosen a group-readable scheme — we never silently widen OR narrow it).
+_FILE_MODE = 0o600
+_DIR_MODE = 0o700
+
+
+def _opener_owner_only(path: str, flags: int) -> int:
+    """``open()`` opener creating files 0o600 (no-op for existing files)."""
+    return os.open(path, flags, _FILE_MODE)
+
+
+def _write_text_owner_only(path: Path, text: str) -> None:
+    """Write ``text`` to ``path``, creating it owner-read/write only."""
+    with open(path, "w", encoding="utf-8", opener=_opener_owner_only) as fh:
+        fh.write(text)
+
+
 def _compute_hash(
     *,
     seq: int,
@@ -225,9 +244,9 @@ class AuditLogger:
         return int(data["pruned_through_seq"]), str(data["pruned_through_hash"])
 
     def _write_checkpoint(self, seq: int, entry_hash: str) -> None:
-        self._checkpoint_path.write_text(
+        _write_text_owner_only(
+            self._checkpoint_path,
             json.dumps({"pruned_through_seq": seq, "pruned_through_hash": entry_hash}),
-            encoding="utf-8",
         )
 
     # ---------------------------------------------------------------- rotation
@@ -268,7 +287,7 @@ class AuditLogger:
         repeatedly; it does **not** append an entry, so the chain head — and its
         signature — are unchanged. Returns ``{"rotated": ..., "archives": ...}``.
         """
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         rotated = self._should_rotate()
         if rotated:
             self._rotate()  # archives the active log, then prunes
@@ -281,7 +300,7 @@ class AuditLogger:
         self, *, actor: str, action: str, action_class: str, decision: str, reason: str
     ) -> AuditEvent:
         """Append one audit event and return it. Rotates first if configured."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         if self._should_rotate():
             self._rotate()
         last_seq, prev_hash = self._last()
@@ -308,7 +327,7 @@ class AuditLogger:
             prev_hash=prev_hash,
             entry_hash=entry_hash,
         )
-        with self.path.open("a", encoding="utf-8") as fh:
+        with open(self.path, "a", encoding="utf-8", opener=_opener_owner_only) as fh:
             fh.write(json.dumps(asdict(event)) + "\n")
         if self._signer is not None:
             self._sign_head(seq, entry_hash)
@@ -331,7 +350,8 @@ class AuditLogger:
         """
         if self._signer is None:
             raise ValueError("no signer configured")
-        self._sig_path.write_text(
+        _write_text_owner_only(
+            self._sig_path,
             json.dumps(
                 {
                     "seq": seq,
@@ -340,7 +360,6 @@ class AuditLogger:
                     "signature": self._signer.sign(self._head_message(seq, head_hash)),
                 }
             ),
-            encoding="utf-8",
         )
 
     def verify_signature(self) -> bool:
