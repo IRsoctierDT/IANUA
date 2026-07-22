@@ -4,7 +4,16 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
-_Nothing yet._
+### Security
+- **CI supply-chain hardening** — every GitHub Action across all five
+  workflows (31 references, 12 distinct actions) is now pinned to a full
+  commit SHA with a human-readable version comment (immune to tag-rewrite
+  attacks; Dependabot keeps updating the pins). Every `actions/checkout` sets
+  `persist-credentials: false` — no job in this repo pushes with checkout
+  credentials, so none keeps a write-capable token on disk. Pre-commit now
+  mirrors CI more faithfully: bandit gains the `mcp` scope, mypy covers the
+  full CI scope, and the stdlib-fast drift gates (rename guard, status-page
+  sync) run locally before commits reach CI.
 
 ## v2.0.0 — Master v2 STICHES Edition: the IANUA identity era
 
