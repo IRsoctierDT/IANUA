@@ -30,6 +30,11 @@ All notable changes to this project. Versions correspond to git tags.
   (detect-secrets 1.5.0) makes the pre-commit hook enforce; the two
   baselined findings were human-reviewed and are false positives (the
   policy engine's `secret_handling` action-class labels, not credentials).
+  A repo-root `.gitleaks.toml` (default rules extended) allowlists the
+  baseline file by path: its SHA-1 digests of the reviewed strings trip
+  gitleaks' generic-api-key rule, so without it the two secret scanners
+  fight — one's allowlist is the other's "leak". Digests of non-secrets
+  are unrecoverable; real secrets anywhere else are still caught.
 
 ## v2.0.0 — Master v2 STICHES Edition: the IANUA identity era
 
