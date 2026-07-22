@@ -2,7 +2,7 @@
 
 ## Project Name
 
-AI Operator Cyber Command Center™ — Master v1 STICHES Edition
+IANUA™ — Master v1 STICHES Edition
 
 ## Purpose
 

@@ -11,7 +11,7 @@ The following versions currently receive security updates:
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in the AI Operator Cyber Command Center, please report it responsibly.
+If you discover a security vulnerability in IANUA, please report it responsibly.
 
 ### Preferred Reporting Method
 

@@ -12,7 +12,7 @@ description: >-
 references:
   - https://attack.mitre.org/techniques/T1136/001/
   - https://attack.mitre.org/techniques/T1098/
-author: AI Operator Cyber Command Center
+author: IANUA
 date: 2026-07-19
 correlation:
   type: temporal_ordered

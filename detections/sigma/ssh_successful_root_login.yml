@@ -8,7 +8,7 @@ description: >-
   especially following failed-login activity from the same source.
 references:
   - https://attack.mitre.org/techniques/T1078/
-author: AI Operator Cyber Command Center
+author: IANUA
 date: 2026-06-19
 tags:
   - attack.initial-access

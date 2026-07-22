@@ -1,4 +1,4 @@
-# AGENTS.md — AI Operator Cyber Command Center
+# AGENTS.md — IANUA
 
 > **Platform-neutral agent operating charter.** This file is the single source of truth for
 > any autonomous or semi-autonomous coding agent operating in this repository — Codex,
@@ -18,7 +18,7 @@
 
 ## 1. Repository Mission
 
-This repository is the **AI Operator Cyber Command Center**: a portfolio-grade environment
+This repository is the **IANUA**: a portfolio-grade environment
 for **AI operations, cybersecurity automation, retrieval-augmented generation (RAG)
 systems, and agentic workflows**.
 
@@ -95,7 +95,7 @@ responsibility quickly. Treat this as the canonical map; `DESIGN.md` holds the d
 rationale.
 
 ```
-ai-operator-cyber-command-center/
+ianua/
 ├── AGENTS.md                  # This charter (source of truth for agents)
 ├── CLAUDE.md                  # Symlink/copy of AGENTS.md for Claude-based agents
 ├── DESIGN.md                  # Architecture, data flows, trust boundaries, decisions

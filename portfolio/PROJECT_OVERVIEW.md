@@ -1,4 +1,4 @@
-# AI Operator Cyber Command Center
+# IANUA
 
 A local-first AI-powered cybersecurity operations platform.
 

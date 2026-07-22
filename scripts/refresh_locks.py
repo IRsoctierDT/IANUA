@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sbom-dir", type=Path, default=SBOM_DIR)
     parser.add_argument(
         "--project-name",
-        default="ai-operator-cyber-command-center",
+        default="ianua",
         help="The project's own package name (excluded from constraints).",
     )
     args = parser.parse_args(argv)

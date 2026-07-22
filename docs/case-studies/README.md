@@ -1,7 +1,7 @@
 # Case Studies
 
 Portfolio-grade write-ups of each component in the
-[AI Operator Cyber Command Center](../../README.md). Every case study follows the
+[IANUA](../../README.md). Every case study follows the
 [AGENTS.md](../../AGENTS.md) §9 documentation standard — Executive Summary, Objectives,
 Architecture/Process, Implementation Steps, Risks, Cost Considerations, Future Enhancements —
 plus a **Worked Example** using real command output and a **Reproduce It Yourself** section.

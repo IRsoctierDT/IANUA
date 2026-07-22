@@ -7,7 +7,7 @@ description: >-
   Sigma correlation over the ssh_failed_password base rule.
 references:
   - https://attack.mitre.org/techniques/T1110/
-author: AI Operator Cyber Command Center
+author: IANUA
 date: 2026-06-19
 correlation:
   type: event_count

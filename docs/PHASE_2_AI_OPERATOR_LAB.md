@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Expand the AI Operator Cyber Command Center from a working cybersecurity AI platform into a structured AI operator training and experimentation lab.
+Expand IANUA from a working cybersecurity AI platform into a structured AI operator training and experimentation lab.
 
 ## Tracks
 

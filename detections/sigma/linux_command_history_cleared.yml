@@ -7,7 +7,7 @@ description: >-
   with almost no legitimate day-to-day use. Investigate what preceded it.
 references:
   - https://attack.mitre.org/techniques/T1070/003/
-author: AI Operator Cyber Command Center
+author: IANUA
 date: 2026-07-19
 tags:
   - attack.defense-evasion

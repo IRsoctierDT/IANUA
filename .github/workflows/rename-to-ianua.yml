@@ -1,56 +1,37 @@
+# Complete IANUA rename — read-only guard.
+#
+# The repository-wide rename to IANUA is completed in-tree (every active text
+# file was migrated with scripts/rename_to_ianua.py --apply, which is
+# deterministic and idempotent). This workflow now only *verifies* that state:
+# it runs the migration script in --check mode against the code under test and
+# fails if any legacy identifier has been reintroduced.
+#
+# Deliberate properties (least privilege, fail closed):
+#   * contents: read only — no auto-commits, no pushes, no write token.
+#   * Checks out the ref under test (the PR's merge ref), never another branch,
+#     so the verdict always applies to the change being reviewed.
+#   * The earlier apply-and-push automation was removed once the rename landed;
+#     re-running the migration is a maintainer action, not a CI side effect.
 name: Complete IANUA rename
 
 on:
-  push:
-    branches:
-      - chore/rename-ai-command-center-to-ianua
   pull_request:
     branches:
       - main
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   rename:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out rename branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
         with:
-          ref: chore/rename-ai-command-center-to-ianua
-          fetch-depth: 0
+          python-version: "3.12"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Run controlled rename
-        run: python scripts/rename_to_ianua.py --apply
-
-      - name: Regenerate uv lockfile
-        run: uv lock
-
-      - name: Verify uv lockfile
-        run: uv lock --check
-
-      - name: Verify migration script
+      - name: No legacy pre-IANUA identifiers remain
         run: python scripts/rename_to_ianua.py --check
-
-      - name: Compile Python
-        run: python -m compileall agents scripts rag mcp dashboard
-
-      - name: Commit rename results
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if git diff --quiet; then
-            echo "No rename changes remain."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add --all
-          git commit -m "chore: regenerate uv.lock for IANUA rename"
-          git push origin HEAD:chore/rename-ai-command-center-to-ianua

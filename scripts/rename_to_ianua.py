@@ -4,6 +4,13 @@
 The migration updates active text files while preserving captured historical
 GitHub Actions logs under ``sample-logs/``. It is deterministic and safe to run
 more than once.
+
+Security considerations: paths are constrained to the repository root, the
+scan is read-only unless ``--apply`` is passed, and this file excludes itself
+from rewriting — its ``REPLACEMENTS`` table intentionally contains the legacy
+identifiers, so rewriting or scanning it would corrupt the migration (the
+table would collapse to identity mappings and ``--check`` would then flag
+every occurrence of the *new* name as a leftover).
 """
 
 from __future__ import annotations
@@ -12,10 +19,37 @@ import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXCLUDED_PARTS = {".git", ".venv", "node_modules", "build", "dist", "sample-logs"}
+SELF = Path(__file__).resolve()
+EXCLUDED_PARTS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "htmlcov",
+    "node_modules",
+    "sample-logs",
+}
 TEXT_SUFFIXES = {
-    ".cjs", ".css", ".env", ".html", ".ini", ".js", ".json", ".lock", ".md", ".mjs",
-    ".py", ".sh", ".toml", ".txt", ".yaml", ".yml",
+    ".cjs",
+    ".css",
+    ".env",
+    ".html",
+    ".ini",
+    ".js",
+    ".json",
+    ".lock",
+    ".md",
+    ".mjs",
+    ".py",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
 }
 
 REPLACEMENTS: tuple[tuple[str, str], ...] = (
@@ -34,8 +68,13 @@ def eligible(path: Path) -> bool:
     """Return whether a repository file may be safely rewritten."""
     if not path.is_file() or any(part in EXCLUDED_PARTS for part in path.parts):
         return False
+    if path.resolve() == SELF:
+        return False
     return path.suffix.lower() in TEXT_SUFFIXES or path.name in {
-        "Dockerfile", "Makefile", "Procfile", ".pre-commit-config.yaml"
+        "Dockerfile",
+        "Makefile",
+        "Procfile",
+        ".pre-commit-config.yaml",
     }
 
 

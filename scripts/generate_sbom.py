@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 # Stable namespace for deriving deterministic CycloneDX serial numbers.
-_SBOM_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "ai-operator-cyber-command-center/sbom")
+_SBOM_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "ianua/sbom")
 
 # PEP 503 name normalisation for PyPI Package URLs.
 _PYPI_NAME_RE = re.compile(r"[-_.]+")
@@ -214,7 +214,7 @@ def _root_component() -> dict[str, Any]:
     return {
         "type": "application",
         "bom-ref": "root-component",
-        "name": pkg.get("name", "ai-operator-cyber-command-center"),
+        "name": pkg.get("name", "ianua"),
         "version": str(pkg.get("version", "0.0.0")),
     }
 

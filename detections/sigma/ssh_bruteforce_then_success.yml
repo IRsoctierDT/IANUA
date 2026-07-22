@@ -8,7 +8,7 @@ description: >-
 references:
   - https://attack.mitre.org/techniques/T1110/
   - https://attack.mitre.org/techniques/T1078/
-author: AI Operator Cyber Command Center
+author: IANUA
 date: 2026-06-19
 correlation:
   type: temporal_ordered

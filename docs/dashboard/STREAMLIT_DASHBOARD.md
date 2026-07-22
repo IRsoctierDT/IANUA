@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Streamlit dashboard provides a local web interface for the AI Operator Cyber Command Center.
+The Streamlit dashboard provides a local web interface for IANUA.
 
 ## Capabilities
 

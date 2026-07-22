@@ -13,7 +13,7 @@ description: >-
   signal (see the account_created_then_privileged correlation).
 references:
   - https://attack.mitre.org/techniques/T1098/
-author: AI Operator Cyber Command Center
+author: IANUA
 date: 2026-07-19
 tags:
   - attack.persistence
