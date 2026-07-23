@@ -289,7 +289,7 @@ const SEC_AGENTS = [
   agent('MITRE Mapper',            'MM', 'mitre_mapper_agent',           'Mapping T1059 → T1071.001',                'active', 33),
   agent('Vulnerability Assessment','VA', 'vulnerability_assessment_agent','Scanning prod-cluster',                    'active', 58),
   agent('Incident Report',         'IR', 'incident_report_agent',        'Drafting IR-2271 narrative',               'active', 21),
-  agent('Detection Matcher',       'DM', 'detection_matcher_agent',      'Idle · queue empty',                       'idle',    4),
+  agent('Detection Matcher',       'DM', 'detection_matcher_agent',      'Matching triage stream → Sigma rules',     'active', 12),
 ];
 
 const BIZ_AGENTS = [
@@ -298,7 +298,7 @@ const BIZ_AGENTS = [
   agent('Knowledge Base',          'KB', 'knowledge_base_agent',         'Indexing 1,240 docs (RAG)',                'active', 46),
   agent('Knowledge Curator',       'KC', 'knowledge_curator_agent',      'Dedupe pass · 88% complete',               'active', 30),
   agent('Legal / Compliance',      'LC', 'legal_compliance_agent',       'Reviewing vendor DPA',                     'review', 12),
-  agent('Portfolio Documentation', 'PD', 'portfolio_documentation_agent','Idle · awaiting trigger',                  'idle',    0),
+  agent('Portfolio Documentation', 'PD', 'portfolio_documentation_agent','Publishing case study #11 (ATB gate)',     'active',  8),
 ];
 
 function buildCard(a, cell) {
