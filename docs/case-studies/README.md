@@ -23,6 +23,7 @@ Security tooling documented here is for **defensive, authorized-lab use only** â
 | 8 | [Local RAG Pipeline](./rag-pipeline.md) | RAG | Confined ingest â†’ chunk â†’ embed â†’ cited retrieval; fully offline mode |
 | 9 | [Policy-Gated MCP Tool Surface](./mcp-server.md) | MCP | Allow-listed, self-validating, path-confined, policy-gated tool calls |
 | 10 | [Policy Engine & Tamper-Evident Audit Log](./policy-and-audit.md) | Governance | Default-deny policy-as-code + hash-chained, verifiable audit trail |
+| 11 | [Agent Trust Broker Gate](./agent-trust-broker-gate.md) | MCP/Governance | Zero-Trust caller identity + per-action scope authorization layered on tool dispatch |
 
 ## Reading order
 
@@ -30,7 +31,8 @@ Security tooling documented here is for **defensive, authorized-lab use only** â
   [Detection Matcher & Orchestrator](./detection-matcher-and-orchestrator.md) capstone to see how
   the agents compose.
 - **Interested in the security posture?** Read the
-  [MCP Tool Surface](./mcp-server.md) and the
-  [Policy & Audit layer](./policy-and-audit.md).
+  [MCP Tool Surface](./mcp-server.md), the
+  [Policy & Audit layer](./policy-and-audit.md), and the
+  [Agent Trust Broker Gate](./agent-trust-broker-gate.md).
 - **Interested in the knowledge systems?** Read the
   [RAG Pipeline](./rag-pipeline.md) and the [Knowledge Base Agent](./knowledge-base-agent.md).
