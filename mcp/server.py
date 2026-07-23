@@ -22,6 +22,7 @@ from agents.policies import ActionClass, AuditLogger, PolicyEngine
 from agents.tools.guarded import enforce
 from agents.tools.validation import ValidationError, resolve_within
 
+from mcp.broker import BrokerBinding, TrustBroker, authorize_or_raise
 from mcp.sandbox import SandboxRunner
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -39,6 +40,7 @@ class Tool:
     description: str
     handler: ToolHandler
     action_class: ActionClass = "read_only"
+    broker_binding: BrokerBinding | None = None
 
 
 @dataclass
@@ -56,6 +58,7 @@ class ToolRegistry:
     policy: PolicyEngine = field(default_factory=PolicyEngine)
     audit: AuditLogger | None = None
     actor: str = "mcp"
+    broker: TrustBroker | None = None
     _tools: dict[str, Tool] = field(default_factory=dict)
 
     def register(self, tool: Tool) -> None:
@@ -66,13 +69,24 @@ class ToolRegistry:
     def list_tools(self) -> list[dict[str, str]]:
         return [{"name": t.name, "description": t.description} for t in self._tools.values()]
 
-    def dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Route a tool call. Unknown tool / blocked policy -> fail closed (§3, §5.1)."""
+    def dispatch(
+        self, name: str, arguments: dict[str, Any], *, token: str | None = None
+    ) -> dict[str, Any]:
+        """Route a tool call. Unknown tool / blocked policy -> fail closed (§3, §5.1).
+
+        When a ``broker`` is configured, caller identity is enforced first:
+        ``token`` must verify and the tool's broker binding must authorize the
+        specific (scope, resource) request. The action-class gate below still
+        runs on every call — the broker adds a layer, it never replaces one.
+        """
         tool = self._tools.get(name)
         if tool is None:
             raise ValidationError(f"tool not in allow-list: {name!r}")
         if not isinstance(arguments, dict):
             raise ValidationError("arguments must be an object")
+
+        if self.broker is not None:
+            authorize_or_raise(self.broker, token, tool.broker_binding, tool.name, arguments)
 
         # Single, shared enforcement path (agents/tools/guarded.py): evaluate +
         # audit + fail closed. Raises ToolBlockedError (a ValidationError) if gated.
