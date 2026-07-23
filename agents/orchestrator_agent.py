@@ -1,3 +1,14 @@
+"""Orchestrator Agent — runs the full multi-agent pipeline over log input.
+
+Coordinates the SOC Analyst, MITRE Mapper, Threat Intel, Knowledge Base,
+Detection Matcher, and Incident Report agents for single events
+(``process_log``) and ordered sequences (``process_sequence``), returning the
+combined structured results. Input validation is fail-closed and delegated to
+the boundary agents: ``SocAnalystAgent`` validates the raw log input and
+``IncidentReportAgent`` validates the report path — malformed input raises
+before any partial work is done.
+"""
+
 import json
 from collections.abc import Sequence
 from dataclasses import asdict

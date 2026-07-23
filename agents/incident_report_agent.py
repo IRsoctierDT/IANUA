@@ -1,3 +1,13 @@
+"""Incident Report Agent — composes the pipeline's results into Markdown.
+
+Renders SOC, MITRE, threat-intel, knowledge-base, detection, and citation
+results into a reviewable Markdown incident report (optional PDF export).
+Deterministic and network-free; the only write is the report file itself.
+Cell content is escaped so untrusted log text cannot break table structure,
+and the "(verified)" citations heading renders only when the caller attests
+verification (see ``generate_report``).
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -151,6 +161,10 @@ class IncidentReportAgent:
         renders a neutral heading so a direct caller cannot mislabel
         unchecked citations as verified.
         """
+        if not isinstance(log_text, str):
+            raise ValueError("log_text must be a string.")
+        if not isinstance(output_path, str) or not output_path.strip():
+            raise ValueError("output_path must be a non-empty string.")
         if soc_result is None:
             soc_result = self.soc_agent.analyze_log(log_text)
         if mitre_result is None:
