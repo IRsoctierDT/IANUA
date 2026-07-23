@@ -1,3 +1,15 @@
+"""MITRE ATT&CK Mapper Agent — deterministic event-to-technique mapping.
+
+Maps a classified event (from the SOC Analyst Agent) to a MITRE ATT&CK
+tactic/technique with a confidence rating, supporting evidence, and
+recommended investigation steps. Read-only, network-free, and deterministic:
+unmatched events map to an explicit ``UNKNOWN`` result rather than a guess.
+
+Security consideration: ``map_event`` validates both inputs are strings and
+``event_type`` is non-empty (fail closed on malformed input) — callers may
+pass untrusted, LLM-derived text safely.
+"""
+
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
@@ -17,6 +29,15 @@ class MitreMappingResult:
 
 class MitreMapperAgent:
     def map_event(self, event_type: str, log_text: str = "") -> dict[str, Any]:
+        """Map ``event_type`` (+ optional raw ``log_text``) to an ATT&CK result dict.
+
+        Validates its own inputs (AGENTS.md §4): both must be strings and
+        ``event_type`` must be non-empty; raises ``ValueError`` otherwise.
+        """
+        if not isinstance(event_type, str) or not event_type.strip():
+            raise ValueError("event_type must be a non-empty string.")
+        if not isinstance(log_text, str):
+            raise ValueError("log_text must be a string.")
         normalized_event = event_type.lower()
         normalized_log = log_text.lower()
 
