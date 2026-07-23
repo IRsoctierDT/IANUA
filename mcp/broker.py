@@ -83,6 +83,4 @@ def authorize_or_raise(
     effect_value = getattr(effect, "value", effect)
     if effect_value != "allow":
         reason = getattr(decision, "reason", "no reason supplied")
-        raise BrokerBlockedError(
-            f"tool {tool_name!r}: broker returned {effect_value!r} ({reason})"
-        )
+        raise BrokerBlockedError(f"tool {tool_name!r}: broker returned {effect_value!r} ({reason})")
