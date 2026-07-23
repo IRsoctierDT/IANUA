@@ -9,6 +9,7 @@ from pathlib import Path
 import streamlit as st
 from agents.orchestrator_agent import OrchestratorAgent
 
+from dashboard.escalations import AuditChainError, load_chain_view
 from dashboard.kb_search import search_kb_resilient
 from dashboard.ollama_service import ensure_ollama_running
 from dashboard.system_health import (
@@ -45,15 +46,55 @@ with st.sidebar.expander("Ollama Models"):
 
 agent = OrchestratorAgent()
 
-tab_soc, tab_batch, tab_kb, tab_health, tab_reports = st.tabs(
+tab_soc, tab_batch, tab_kb, tab_health, tab_reports, tab_approvals = st.tabs(
     [
         "SOC Workflow",
         "Batch Processing",
         "Knowledge Base Search",
         "System Health",
         "Reports",
+        "Pending Approvals",
     ]
 )
+
+with tab_approvals:
+    st.subheader("Agent Trust Broker — Pending Approvals")
+    st.caption(
+        "Escalations awaiting a human decision, read from the broker's "
+        "hash-chained audit file (read-only; resolve via the broker's own tooling)."
+    )
+    chain_path = os.environ.get("ATB_AUDIT_CHAIN", "")
+    if not chain_path:
+        st.info("Set ATB_AUDIT_CHAIN in the environment to the broker's audit JSONL file.")
+    else:
+        try:
+            view = load_chain_view(Path(chain_path))
+        except FileNotFoundError:
+            st.info(f"No audit chain found at `{chain_path}` — the broker has not run yet.")
+        except AuditChainError as exc:
+            # A broken chain is a security event, not a display glitch (THR-0003).
+            st.error(f"Audit chain FAILED verification — treat as a security event: {exc}")
+        else:
+            col_pend, col_rec, col_res, col_used = st.columns(4)
+            col_pend.metric("Pending", len(view.pending))
+            col_rec.metric("Chain records", view.records)
+            col_res.metric("Resolved", view.resolved)
+            col_used.metric("Approvals consumed", view.consumed)
+            if view.pending:
+                st.table(
+                    [
+                        {
+                            "Ref": p.ref,
+                            "Agent": p.subject,
+                            "Action": p.action,
+                            "Resource": p.resource,
+                            "Reason": p.reason,
+                        }
+                        for p in view.pending
+                    ]
+                )
+            else:
+                st.success("No escalations awaiting approval — chain verified.")
 
 with tab_soc:
     log_text = st.text_area(
