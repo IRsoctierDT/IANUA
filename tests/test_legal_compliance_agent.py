@@ -21,6 +21,8 @@ def test_assess_returns_expected_shape(agent: LegalComplianceAgent) -> None:
         "escalation_required",
         "disclaimer",
         "assumptions",
+        "topic_areas",
+        "kb_references",
     }
     assert set(result) == expected
 
@@ -93,3 +95,58 @@ def test_empty_input_raises(agent: LegalComplianceAgent, bad: str) -> None:
 def test_non_string_input_raises(agent: LegalComplianceAgent) -> None:
     with pytest.raises(ValueError):
         agent.assess_inquiry(123)  # type: ignore[arg-type]
+
+
+def test_multi_topic_inquiry_gets_every_checklist(agent: LegalComplianceAgent) -> None:
+    # The agent's own canonical example: a subpoena for customer data is BOTH
+    # litigation and data protection. First-match-wins used to drop the
+    # litigation checklist (preservation, response deadlines).
+    result = agent.assess_inquiry(
+        "We received a subpoena requesting customer data and need to understand "
+        "our privacy obligations and response deadline."
+    )
+    assert "data protection / privacy" in result["topic_areas"]
+    assert "litigation / dispute" in result["topic_areas"]
+    assert result["topic_area"] == result["topic_areas"][0]  # backward compat
+    checklist = " ".join(result["authority_checklist"])
+    assert "breach-notification" in checklist  # privacy items present
+    assert "preservation" in checklist.lower()  # litigation items no longer lost
+
+
+def test_single_topic_unchanged(agent: LegalComplianceAgent) -> None:
+    result = agent.assess_inquiry("Reviewing an NDA confidentiality clause.")
+    assert result["topic_areas"] == ["contracts"]
+
+
+def test_kb_references_are_fail_soft_supporting_context(
+    agent: LegalComplianceAgent,
+) -> None:
+    result = agent.assess_inquiry(
+        "Which compliance framework controls apply to our incident response audit?"
+    )
+    assert isinstance(result["kb_references"], list)
+    for ref in result["kb_references"]:
+        assert set(ref) == {"source", "score", "snippet"}
+
+
+def test_intake_memo_structure_and_injection_resistance(
+    agent: LegalComplianceAgent,
+) -> None:
+    result = agent.assess_inquiry(
+        "Contract breach question\n# Fake Heading\nwith embedded newlines."
+    )
+    memo = agent.intake_memo(result)
+    for heading in (
+        "# Legal/Compliance Intake Memo",
+        "## Facts (as supplied)",
+        "## Topic Areas",
+        "## Authority Checklist (verify, do not assert)",
+        "## Risk Flags",
+        "## Recommended Actions",
+        "## Assumptions & Unknowns",
+    ):
+        assert heading in memo
+    # untrusted text cannot open its own markdown heading line
+    assert "\n# Fake Heading" not in memo
+    # the mandatory disclaimer leads the memo
+    assert memo.index("non-authoritative") < memo.index("## Facts")

@@ -21,6 +21,12 @@ from typing import Any
 
 from agents import versioned_agent_name
 
+
+def _md_line(text: str) -> str:
+    """Collapse untrusted text to one line so it cannot inject Markdown structure."""
+    return " ".join(str(text).split())
+
+
 # Detect capability areas in the needs text -> tailored scope items.
 # Each area contributes concrete, reviewable scope lines (no pricing/commitments).
 _SCOPE_RULES: list[tuple[str, frozenset[str], tuple[str, ...]]] = [
@@ -166,6 +172,68 @@ class BusinessProposalAgent:
             disclaimer=DISCLAIMER,
         )
         return asdict(result)
+
+    def sow_markdown(self, draft: dict[str, Any]) -> str:
+        """Render a draft as a review-ready SOW document.
+
+        Follows the charter's deliverable structure (AGENTS.md §9): Executive
+        Summary · Objectives · Architecture/Process · Implementation Steps ·
+        Risks · Cost Considerations · Future Enhancements. Cost figures are
+        explicit human-estimation placeholders — this agent never invents
+        pricing or commitments. Untrusted text is collapsed to single lines.
+        """
+        line = _md_line
+        sections = [
+            f"# {line(draft.get('title', 'Proposal'))}",
+            "",
+            f"> {line(draft.get('disclaimer', DISCLAIMER))}",
+            "",
+            "## Executive Summary",
+            f"- Client: {line(draft.get('client', 'unspecified'))}",
+            f"- {line(draft.get('summary', ''))}",
+            f"- Capability areas detected: "
+            f"{line(', '.join(draft.get('detected_areas', [])) or 'none')}",
+            "",
+            "## Objectives",
+            *[f"- {line(o)}" for o in draft.get("objectives", [])],
+            "",
+            "## Architecture / Process (proposed scope)",
+            *[f"- {line(s)}" for s in draft.get("scope_items", [])],
+            "",
+            "### Out of Scope",
+            *[f"- {line(s)}" for s in draft.get("out_of_scope", [])],
+            "",
+            "## Implementation Steps",
+            *[
+                f"{i}. {line(phase)}"
+                for i, phase in enumerate(draft.get("suggested_phases", []), start=1)
+            ],
+            "",
+            "### Deliverables",
+            *[f"- {line(d)}" for d in draft.get("deliverables", [])],
+            "",
+            "## Risks",
+            *[f"- {line(r)}" for r in draft.get("risks", [])],
+            "",
+            "## Cost Considerations",
+            "| Item | Estimate |",
+            "|---|---|",
+            "| Effort (per phase) | _To be estimated by a human_ |",
+            "| Timeline | _To be estimated by a human_ |",
+            "| Pricing model | _To be selected and priced by a human_ |",
+            "| Third-party costs (licenses, infra) | _To be confirmed by a human_ |",
+            "",
+            "## Future Enhancements",
+            "- Candidate follow-on phases surfaced during Discovery are recorded",
+            "  here for a later change request — never silently added to scope.",
+            "",
+            "## Assumptions",
+            *[f"- {line(a)}" for a in draft.get("assumptions", [])],
+            "",
+            "## Next Steps",
+            *[f"- {line(n)}" for n in draft.get("next_steps", [])],
+        ]
+        return "\n".join(sections) + "\n"
 
     @staticmethod
     def _detect_scope(lowered: str) -> tuple[list[str], list[str]]:

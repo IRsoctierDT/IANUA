@@ -24,6 +24,12 @@ from typing import Any
 
 from agents import versioned_agent_name
 
+
+def _md_line(text: str) -> str:
+    """Collapse untrusted text to one line so it cannot inject Markdown structure."""
+    return " ".join(str(text).split())
+
+
 # Mandatory, non-removable disclaimer attached to every assessment.
 DISCLAIMER = (
     "This is an automated, non-authoritative drafting and triage aid. It does not "
@@ -115,11 +121,19 @@ _ESCALATION_TERMS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class LegalAssessment:
-    """Structured, non-authoritative legal/compliance intake."""
+    """Structured, non-authoritative legal/compliance intake.
+
+    ``topic_area`` remains the primary (first-matched) area for backward
+    compatibility; ``topic_areas`` lists **every** matched area — an inquiry
+    that implicates several regimes (a subpoena for customer data is both
+    litigation *and* data protection) gets every applicable checklist, not
+    just the first rule that happened to match.
+    """
 
     agent: str
     inquiry_summary: str
     topic_area: str
+    topic_areas: list[str]
     jurisdiction: str
     authority_checklist: list[str]
     risk_flags: list[str]
@@ -127,6 +141,7 @@ class LegalAssessment:
     escalation_required: bool
     disclaimer: str
     assumptions: list[str]
+    kb_references: list[dict[str, Any]]
 
 
 # Display name tracks the platform version — never hard-code a version here
@@ -155,20 +170,21 @@ class LegalComplianceAgent:
             raise ValueError("text cannot be empty.")
 
         lowered = cleaned.lower()
-        topic_area, checklist = self._classify_topic(lowered)
+        topic_areas, checklist = self._classify_topics(lowered)
         risk_flags = self._risk_flags(lowered)
         escalation_required = bool(risk_flags)
 
         result = LegalAssessment(
             agent=self.name,
             inquiry_summary=self._summarize(cleaned),
-            topic_area=topic_area,
+            topic_area=topic_areas[0],
+            topic_areas=topic_areas,
             jurisdiction=jurisdiction.strip()
             if jurisdiction and jurisdiction.strip()
             else "unspecified — confirm before relying on any authority",
             authority_checklist=list(checklist),
             risk_flags=risk_flags,
-            recommended_actions=self._recommend_actions(topic_area, escalation_required),
+            recommended_actions=self._recommend_actions(topic_areas[0], escalation_required),
             escalation_required=escalation_required,
             disclaimer=DISCLAIMER,
             assumptions=[
@@ -176,22 +192,58 @@ class LegalComplianceAgent:
                 "No primary legal sources were retrieved, verified, or cited.",
                 "Topic classification is heuristic and may be incomplete.",
             ],
+            kb_references=self._kb_references(cleaned, topic_areas),
         )
         return asdict(result)
 
     @staticmethod
-    def _classify_topic(lowered: str) -> tuple[str, tuple[str, ...]]:
+    def _classify_topics(lowered: str) -> tuple[list[str], tuple[str, ...]]:
+        """Match **all** applicable topic rules; merge their checklists in order.
+
+        First-match-wins classification silently dropped checklists when an
+        inquiry crossed areas — e.g. a subpoena for customer data matched
+        "data protection" and lost the litigation checklist with its
+        preservation and response-deadline items. Every matched area now
+        contributes; duplicates are removed preserving rule order.
+        """
+        areas: list[str] = []
+        merged: list[str] = []
+        seen: set[str] = set()
         for topic_area, keywords, checklist in _TOPIC_RULES:
             if any(kw in lowered for kw in keywords):
-                return topic_area, checklist
+                areas.append(topic_area)
+                for item in checklist:
+                    if item not in seen:
+                        seen.add(item)
+                        merged.append(item)
+        if areas:
+            return areas, tuple(merged)
         return (
-            "general / unclassified",
+            ["general / unclassified"],
             (
                 "Verify which area(s) of law the facts implicate.",
                 "Verify the relevant jurisdiction(s) and governing authorities.",
                 "Verify any applicable deadlines before taking action.",
             ),
         )
+
+    @staticmethod
+    def _kb_references(text: str, topic_areas: list[str]) -> list[dict[str, Any]]:
+        """Ground compliance-adjacent inquiries in the local knowledge base.
+
+        Uses the offline lexical retriever over the in-repo corpus (framework
+        notes: NIST, MITRE, OWASP…) — local-only, deterministic, and fail-soft:
+        retrieval problems yield an empty list, never an error. References are
+        supporting context for the human researcher, not legal authority.
+        """
+        try:
+            from agents.knowledge_base_agent import KnowledgeBaseAgent
+
+            query = " ".join([text, *topic_areas])
+            refs = KnowledgeBaseAgent().retrieve(query, k=3)
+            return [asdict(r) for r in refs]
+        except Exception:
+            return []
 
     @staticmethod
     def _risk_flags(lowered: str) -> list[str]:
@@ -202,6 +254,56 @@ class LegalComplianceAgent:
     def _summarize(text: str, *, limit: int = 200) -> str:
         collapsed = " ".join(text.split())
         return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
+
+    def intake_memo(self, assessment: dict[str, Any]) -> str:
+        """Render an assessment as a counsel-ready Markdown intake memo.
+
+        Follows the governance rule that high-stakes outputs separate facts,
+        assumptions, analysis, recommendations, and unknowns — and keeps the
+        mandatory disclaimer at the top where it cannot be missed. Untrusted
+        text is collapsed to single lines so it cannot inject structure.
+        """
+        line = _md_line
+        sections = [
+            "# Legal/Compliance Intake Memo",
+            "",
+            f"> {line(assessment.get('disclaimer', DISCLAIMER))}",
+            "",
+            "## Facts (as supplied)",
+            f"- {line(assessment.get('inquiry_summary', ''))}",
+            f"- Jurisdiction: {line(assessment.get('jurisdiction', 'unspecified'))}",
+            "",
+            "## Topic Areas",
+            *[f"- {line(a)}" for a in assessment.get("topic_areas", [])],
+            "",
+            "## Authority Checklist (verify, do not assert)",
+            *[f"- [ ] {line(i)}" for i in assessment.get("authority_checklist", [])],
+            "",
+            "## Risk Flags",
+            *(
+                [f"- {line(f)}" for f in assessment.get("risk_flags", [])]
+                or ["- None detected in the supplied text"]
+            ),
+            "",
+            "## Recommended Actions",
+            *[f"- {line(a)}" for a in assessment.get("recommended_actions", [])],
+            "",
+            "## Assumptions & Unknowns",
+            *[f"- {line(a)}" for a in assessment.get("assumptions", [])],
+        ]
+        refs = assessment.get("kb_references", [])
+        if refs:
+            sections += [
+                "",
+                "## Local Knowledge-Base Context (supporting, not authority)",
+                *[
+                    f"- **{line(str(r.get('source', '')))}** "
+                    f"(relevance {float(r.get('score', 0)):.2f}) — "
+                    f"{line(str(r.get('snippet', '')))}"
+                    for r in refs
+                ],
+            ]
+        return "\n".join(sections) + "\n"
 
     @staticmethod
     def _recommend_actions(topic_area: str, escalation_required: bool) -> list[str]:
