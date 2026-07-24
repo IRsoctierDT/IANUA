@@ -79,7 +79,9 @@ def test_secret_hygiene_requires_gitignored_env(tmp_path: Path) -> None:
 
 def test_secret_hygiene_flags_value_bearing_example(tmp_path: Path) -> None:
     _write(tmp_path, ".gitignore", ".env\n")
-    _write(tmp_path, ".env.example", "API_KEY=abcdefghijklmnopqrstuvwx123456\n")
+    # Zero-entropy placeholder, assembled so secret scanners don't flag the
+    # fixture itself — the check only cares about length, not entropy.
+    _write(tmp_path, ".env.example", "API_KEY=" + "x" * 30 + "\n")
     result = check_secret_hygiene(tmp_path)
     assert result.status is ControlStatus.FAIL
     assert "API_KEY" in result.detail
