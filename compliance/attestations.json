@@ -1,0 +1,12 @@
+{
+  "attestations": [
+    {
+      "attested_by": "Claude Code agent (GitHub API verification, on maintainer request)",
+      "control_id": "MAN-01",
+      "date": "2026-07-24",
+      "expires": "2026-10-22",
+      "note": "Verified via GitHub API on 2026-07-24: main requires a pull request before merging, force pushes disabled, linear history required. Gap noted (not required by this control): no required status checks and 0 required approving reviews."
+    }
+  ],
+  "version": 1
+}
