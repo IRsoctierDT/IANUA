@@ -35,6 +35,7 @@ class ControlStatus(Enum):
     FAIL = "fail"
     ERROR = "error"  # check crashed — treated as non-passing (fail closed)
     MANUAL = "manual"  # requires human attestation; cannot be auto-verified
+    ATTESTED = "attested"  # manual control with a current human attestation
 
 
 class Category(Enum):

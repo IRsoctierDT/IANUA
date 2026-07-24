@@ -12,12 +12,16 @@ so stack contents cannot leak file contents into evidence.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from compliance.controls import CheckResult, Control, ControlStatus, registry
 from compliance.frameworks import FrameworkRollup, rollup
+
+if TYPE_CHECKING:  # import cycle guard: attestations imports controls only
+    from compliance.attestations import Attestation
 
 
 @dataclass(frozen=True)
@@ -30,7 +34,8 @@ class ControlResult:
 
     @property
     def passed(self) -> bool:
-        return self.status is ControlStatus.PASS
+        """Passing means a green automated check or a current human attestation."""
+        return self.status in (ControlStatus.PASS, ControlStatus.ATTESTED)
 
 
 @dataclass(frozen=True)
@@ -76,22 +81,40 @@ def run_controls(
     *,
     clock: Callable[[], str] | None = None,
     controls: tuple[Control, ...] | None = None,
+    attestations: Mapping[str, Attestation] | None = None,
 ) -> ComplianceReport:
     """Evaluate every control against ``root`` and return the report.
 
     ``clock`` is injectable for deterministic tests; it must return an ISO-8601
-    UTC timestamp string.
+    UTC timestamp string. ``attestations`` (keyed by control id) upgrades a
+    manual control to ``ATTESTED`` while the attestation is current; expired or
+    absent attestations leave it ``MANUAL`` (never a silent pass).
     """
     if not root.is_dir():
         raise ValueError(f"repository root does not exist: {root}")
     stamp = clock() if clock is not None else _utc_now()
+    today = stamp[:10]
     results = []
     for control in controls if controls is not None else registry():
         if control.check is None:
-            outcome = CheckResult(
-                ControlStatus.MANUAL,
-                control.attestation_hint or "requires human attestation",
-            )
+            attestation = (attestations or {}).get(control.id)
+            if attestation is not None and attestation.valid_on(today):
+                outcome = CheckResult(
+                    ControlStatus.ATTESTED,
+                    f"attested by {attestation.attested_by} on {attestation.date}; "
+                    f"expires {attestation.expires}",
+                )
+            elif attestation is not None:
+                outcome = CheckResult(
+                    ControlStatus.MANUAL,
+                    f"attestation expired {attestation.expires} — re-attest. "
+                    + (control.attestation_hint or ""),
+                )
+            else:
+                outcome = CheckResult(
+                    ControlStatus.MANUAL,
+                    control.attestation_hint or "requires human attestation",
+                )
         else:
             try:
                 outcome = control.check(root)

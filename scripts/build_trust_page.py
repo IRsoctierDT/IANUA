@@ -53,8 +53,14 @@ DEFAULT_DATA = REPO_ROOT / "docs" / "trust.data.json"
 DEFAULT_HTML = REPO_ROOT / "docs" / "trust.html"
 DEFAULT_JSON = REPO_ROOT / "docs" / "trust.json"
 
-_STATUSES = ("pass", "fail", "error", "manual")
-_STATUS_LABELS = {"pass": "Passing", "fail": "Failing", "error": "Error", "manual": "Attestation"}
+_STATUSES = ("pass", "attested", "fail", "error", "manual")
+_STATUS_LABELS = {
+    "pass": "Passing",
+    "attested": "Attested",
+    "fail": "Failing",
+    "error": "Error",
+    "manual": "Attestation due",
+}
 _DISCLAIMER = "Framework mappings are indicative — not an audit, certification, or legal advice."
 
 
@@ -188,9 +194,10 @@ def snapshot(data_path: Path = DEFAULT_DATA, *, root: Path = REPO_ROOT) -> Trust
     """
     if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
         sys.path.insert(0, str(REPO_ROOT))
+    from compliance.attestations import load, store_path
     from compliance.engine import run_controls
 
-    report = run_controls(root)
+    report = run_controls(root, attestations=load(store_path(root)))
     payload = {
         "as_of": report.generated_at[:10],
         "score": report.score,
@@ -250,12 +257,13 @@ h1{font-size:30px;font-weight:700;margin:12px 0 6px}
 .tagline{color:var(--text-1);font-size:15px}
 .meta{margin-top:10px;font:500 12px/1.6 var(--mono);color:var(--text-3)}
 .meta a{color:var(--text-2)}
-.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:28px 0}
+.summary{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:28px 0}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:12px;
   padding:16px;text-align:center}
 .stat-num{display:block;font:700 26px/1 var(--mono)}
 .stat-label{display:block;margin-top:6px;font-size:12px;color:var(--text-2)}
 .stat--pass .stat-num{color:var(--green)}
+.stat--attested .stat-num{color:var(--green)}
 .stat--fail .stat-num{color:var(--red)}
 .stat--error .stat-num{color:var(--amber)}
 .stat--manual .stat-num{color:var(--blue)}
@@ -273,10 +281,12 @@ h1{font-size:30px;font-weight:700;margin:12px 0 6px}
 .pill{justify-self:end;font:600 11px/1 var(--mono);letter-spacing:.04em;
   padding:5px 9px;border-radius:999px;white-space:nowrap}
 .dot--pass{background:var(--green)}
+.dot--attested{background:var(--green)}
 .dot--fail{background:var(--red)}
 .dot--error{background:var(--amber)}
 .dot--manual{background:var(--blue)}
 .pill--pass{color:var(--green);background:oklch(.74 .12 150/.13)}
+.pill--attested{color:var(--green);background:oklch(.74 .12 150/.13)}
 .pill--fail{color:var(--red);background:oklch(.64 .17 25/.13)}
 .pill--error{color:var(--amber);background:oklch(.80 .12 80/.13)}
 .pill--manual{color:var(--blue);background:oklch(.70 .13 235/.13)}

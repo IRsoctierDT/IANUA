@@ -17,6 +17,7 @@ from compliance.evidence import EvidenceRecord
 #: Compact badge per status for tables (text-first: also readable without color).
 STATUS_BADGES: dict[ControlStatus, str] = {
     ControlStatus.PASS: "✅ pass",
+    ControlStatus.ATTESTED: "🖋️ attested",
     ControlStatus.FAIL: "❌ fail",
     ControlStatus.ERROR: "⚠️ error",
     ControlStatus.MANUAL: "📝 manual",
