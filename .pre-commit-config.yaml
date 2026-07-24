@@ -69,6 +69,12 @@ repos:
         language: system
         files: ^(docs/status\.(data\.json|html|json)|scripts/build_status_page\.py|pyproject\.toml)$
         pass_filenames: false
+      - id: trust-page-sync
+        name: trust page in sync with trust.data.json
+        entry: python scripts/build_trust_page.py --check
+        language: system
+        files: ^(docs/trust\.(data\.json|html|json)|scripts/build_trust_page\.py)$
+        pass_filenames: false
 
   # --- Secret scanning (detect-secrets) ----------------------------------
   - repo: https://github.com/Yelp/detect-secrets

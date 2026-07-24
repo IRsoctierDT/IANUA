@@ -1,0 +1,107 @@
+{
+  "as_of": "2026-07-24",
+  "controls": [
+    {
+      "category": "Policy & Governance",
+      "id": "POL-01",
+      "status": "pass",
+      "title": "Policy engine denies boundary crossings by default"
+    },
+    {
+      "category": "Policy & Governance",
+      "id": "POL-02",
+      "status": "pass",
+      "title": "Irreversible actions require human approval"
+    },
+    {
+      "category": "Audit & Monitoring",
+      "id": "AUD-01",
+      "status": "pass",
+      "title": "Tamper-evident audit logging"
+    },
+    {
+      "category": "Secrets & Data Protection",
+      "id": "SEC-01",
+      "status": "pass",
+      "title": "No secrets in version control"
+    },
+    {
+      "category": "Secrets & Data Protection",
+      "id": "SEC-02",
+      "status": "pass",
+      "title": "Lab data isolated from version control"
+    },
+    {
+      "category": "Supply Chain",
+      "id": "SUP-01",
+      "status": "pass",
+      "title": "Dependencies pinned via lockfile"
+    },
+    {
+      "category": "Supply Chain",
+      "id": "SUP-02",
+      "status": "pass",
+      "title": "Software bill of materials published"
+    },
+    {
+      "category": "CI/CD & Change Management",
+      "id": "CIC-01",
+      "status": "pass",
+      "title": "CI enforces quality and security gates"
+    },
+    {
+      "category": "CI/CD & Change Management",
+      "id": "CIC-02",
+      "status": "pass",
+      "title": "Secret scanning before commit"
+    },
+    {
+      "category": "Security Testing",
+      "id": "TST-01",
+      "status": "pass",
+      "title": "Dedicated security test suite"
+    },
+    {
+      "category": "Policy & Governance",
+      "id": "DOC-01",
+      "status": "pass",
+      "title": "Governance documentation maintained"
+    },
+    {
+      "category": "Secure Configuration",
+      "id": "CFG-01",
+      "status": "pass",
+      "title": "Dashboard input limits configured"
+    },
+    {
+      "category": "CI/CD & Change Management",
+      "id": "MAN-01",
+      "status": "manual",
+      "title": "Branch protection on main"
+    },
+    {
+      "category": "CI/CD & Change Management",
+      "id": "MAN-02",
+      "status": "manual",
+      "title": "Human approval gate on deployments"
+    }
+  ],
+  "frameworks": [
+    {
+      "name": "NIST CSF 2.0",
+      "passing": 12,
+      "total": 14
+    },
+    {
+      "name": "SOC 2 (Trust Services Criteria)",
+      "passing": 12,
+      "total": 14
+    },
+    {
+      "name": "ISO/IEC 27001:2022",
+      "passing": 12,
+      "total": 14
+    }
+  ],
+  "score": 100
+}
