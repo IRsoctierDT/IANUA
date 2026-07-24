@@ -82,24 +82,24 @@
     {
       "category": "CI/CD & Change Management",
       "id": "MAN-02",
-      "status": "manual",
+      "status": "attested",
       "title": "Human approval gate on deployments"
     }
   ],
   "frameworks": [
     {
       "name": "NIST CSF 2.0",
-      "passing": 13,
+      "passing": 14,
       "total": 14
     },
     {
       "name": "SOC 2 (Trust Services Criteria)",
-      "passing": 13,
+      "passing": 14,
       "total": 14
     },
     {
       "name": "ISO/IEC 27001:2022",
-      "passing": 13,
+      "passing": 14,
       "total": 14
     }
   ],
