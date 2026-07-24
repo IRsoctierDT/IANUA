@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:1cc724a8-9ea8-5f1e-bd6d-bca606e4454b",
+  "serialNumber": "urn:uuid:011aa2fe-2b58-5ac2-a703-04a2aa63bfca",
   "version": 1,
   "metadata": {
     "timestamp": "2026-07-22T09:49:22Z",
@@ -224,11 +224,11 @@
       "purl": "pkg:pypi/gitdb@4.0.12"
     },
     {
-      "bom-ref": "pkg:pypi/gitpython@3.1.54",
+      "bom-ref": "pkg:pypi/gitpython@3.1.55",
       "name": "gitpython",
       "type": "library",
-      "version": "3.1.54",
-      "purl": "pkg:pypi/gitpython@3.1.54"
+      "version": "3.1.55",
+      "purl": "pkg:pypi/gitpython@3.1.55"
     },
     {
       "bom-ref": "pkg:pypi/grpcio@1.81.1",
