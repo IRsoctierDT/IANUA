@@ -1,0 +1,31 @@
+title: Adversary-in-the-Middle Indicated by Repeated ARP Cache Poisoning
+id: 7d1b3e08-5a92-4c6f-b8d3-91e4c7a05f26
+status: experimental
+description: >-
+  Three or more ARP cache-poisoning indicators involving the same MAC address
+  within five minutes. A single ARP anomaly can be lease churn or a flapping
+  interface; a burst from one MAC is an active adversary-in-the-middle attempt
+  (T1557.002) rather than noise, so it escalates to critical.
+references:
+  - https://attack.mitre.org/techniques/T1557/
+  - https://attack.mitre.org/techniques/T1557/002/
+author: IANUA
+date: 2026-07-23
+correlation:
+  type: event_count
+  rules:
+    - arp_cache_poisoning
+  group-by:
+    - src_mac
+  timespan: 5m
+  condition:
+    gte: 3
+falsepositives:
+  - A misconfigured device flapping between interfaces (identify and fix the
+    device, then allow-list its MAC)
+level: critical
+tags:
+  - attack.credential-access
+  - attack.t1557
+  - attack.collection
+  - attack.t1557.002

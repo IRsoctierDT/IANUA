@@ -13,6 +13,7 @@ The agent's display name carries the platform version automatically (see
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
 
@@ -31,6 +32,9 @@ _SEVERITY_SCORES: dict[str, int] = {
 
 # Minimum authentication failures from one source to call it brute force.
 _BRUTE_FORCE_THRESHOLD = 3
+# One ARP anomaly can be DHCP churn or a flapping interface; a burst from a
+# single source is an active adversary-in-the-middle attempt (T1557.002).
+_ARP_SPOOF_BURST_THRESHOLD = 3
 
 
 @dataclass(frozen=True)
@@ -73,7 +77,7 @@ class EventSummary:
 class CorrelatedFinding:
     """A multi-event pattern detected across the supplied sequence."""
 
-    pattern: Literal["brute_force", "auth_failure_then_success"]
+    pattern: Literal["brute_force", "auth_failure_then_success", "arp_spoof_burst"]
     source: str
     event_indices: list[int]
     severity: Severity
@@ -142,7 +146,7 @@ class SocAnalystAgent:
     # Sequence correlation
     # ------------------------------------------------------------------
 
-    def analyze_sequence(self, events: list[str | dict[str, Any]]) -> dict[str, Any]:
+    def analyze_sequence(self, events: Sequence[str | dict[str, Any]]) -> dict[str, Any]:
         """Correlate an ordered batch of log events into sequence-level findings.
 
         Detects multi-event attack patterns a single-line analysis cannot see:
@@ -168,8 +172,11 @@ class SocAnalystAgent:
             correlated findings, an overall severity/score, and recommended
             actions.
         """
-        if not isinstance(events, list) or not events:
-            raise ValueError("events must be a non-empty list of log entries.")
+        # Fail closed on the covariant-Sequence footgun: a bare ``str`` *is* a
+        # Sequence, and iterating it would silently analyze single characters
+        # as events. Accept any other non-empty sequence (list, tuple).
+        if isinstance(events, str) or not isinstance(events, Sequence) or not events:
+            raise ValueError("events must be a non-empty sequence of log entries.")
 
         summaries: list[EventSummary] = []
         privileged_indices: set[int] = set()
@@ -252,6 +259,7 @@ class SocAnalystAgent:
         """
         failures: dict[str, list[int]] = {}
         successes: dict[str, list[int]] = {}
+        arp_events: dict[str, list[int]] = {}
         for entry in summaries:
             if entry.source is None:
                 continue
@@ -259,6 +267,8 @@ class SocAnalystAgent:
                 failures.setdefault(entry.source, []).append(entry.index)
             elif entry.event_type == "successful login":
                 successes.setdefault(entry.source, []).append(entry.index)
+            elif entry.event_type == "arp spoofing":
+                arp_events.setdefault(entry.source, []).append(entry.index)
 
         findings: list[CorrelatedFinding] = []
         for source, fail_indices in sorted(failures.items()):
@@ -295,6 +305,22 @@ class SocAnalystAgent:
                         ),
                     )
                 )
+
+        for source, indices in sorted(arp_events.items()):
+            if len(indices) >= _ARP_SPOOF_BURST_THRESHOLD:
+                findings.append(
+                    CorrelatedFinding(
+                        pattern="arp_spoof_burst",
+                        source=source,
+                        event_indices=list(indices),
+                        severity="critical",
+                        description=(
+                            f"{len(indices)} ARP cache-poisoning indicators from "
+                            f"{source} — active adversary-in-the-middle attempt; "
+                            "traffic on this segment may be intercepted."
+                        ),
+                    )
+                )
         return findings
 
     @staticmethod
@@ -319,6 +345,16 @@ class SocAnalystAgent:
                 [
                     "Treat the account as potentially compromised: force credential rotation.",
                     "Review follow-on session activity and terminate active sessions.",
+                ]
+            )
+        if any(f.pattern == "arp_spoof_burst" for f in findings):
+            actions.extend(
+                [
+                    "Isolate the offending MAC address at the switch port; capture "
+                    "traffic on the affected segment before it is disturbed.",
+                    "Treat credentials and session tokens used on that segment "
+                    "during the window as exposed and rotate them.",
+                    "Enable dynamic ARP inspection / port security on the segment.",
                 ]
             )
         if overall in {"high", "critical"}:
@@ -374,6 +410,14 @@ class SocAnalystAgent:
         lowered = log_text.lower()
         if "failed password" in lowered or "invalid user" in lowered:
             return "authentication failure"
+        # ARP anomalies before the generic IDS/alert rule: an IDS alert *about*
+        # ARP spoofing is still adversary-in-the-middle activity, and the
+        # specific classification carries the T1557 mapping and severity.
+        if "arp" in lowered and any(
+            marker in lowered
+            for marker in ("moved from", "is using my ip", "spoof", "poison", "duplicate")
+        ):
+            return "arp spoofing"
         if "suricata" in lowered or "alert" in lowered:
             return "ids alert"
         if "blocked" in lowered or "deny" in lowered:
@@ -418,6 +462,10 @@ class SocAnalystAgent:
             return "high" if is_privileged else "medium"
         if event_type == "successful login":
             return "high" if is_privileged else "low"
+        if event_type == "arp spoofing":
+            # Adversary-in-the-middle setup: interception of credentials and
+            # session data follows directly, so a single indicator is high.
+            return "high"
         if event_type == "ids alert":
             return "medium"
         if event_type == "firewall block":

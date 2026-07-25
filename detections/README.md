@@ -28,6 +28,8 @@ Each rule is tagged with the MITRE ATT&CK technique the **SOC Analyst** and
 | `sigma/linux_account_added_to_privileged_group.yml` | Account added to sudo/wheel/admin | T1098 Account Manipulation | — |
 | `sigma/account_created_then_privileged.yml` | Account created then made privileged within 10m (correlation) | T1136.001 → T1098 | — |
 | `sigma/linux_command_history_cleared.yml` | Shell history cleared/disabled | T1070.003 Clear Command History | — |
+| `sigma/arp_cache_poisoning.yml` | IP-to-MAC rebinding anomaly (base rule) | T1557.002 AiTM: ARP Cache Poisoning | `arp spoofing` |
+| `sigma/arp_cache_poisoning_burst.yml` | ≥3 ARP anomalies from one MAC in 5m — active AiTM (correlation) | T1557 / T1557.002 | `arp spoofing` |
 
 ### Correlations
 

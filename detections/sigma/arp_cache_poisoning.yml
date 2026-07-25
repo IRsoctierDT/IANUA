@@ -1,0 +1,44 @@
+title: ARP Cache Poisoning Indicator
+name: arp_cache_poisoning
+id: 2c4a9f61-8e5d-4b3a-9c71-6f0d5a8b2e14
+status: experimental
+description: >-
+  A host's kernel or ARP daemon reporting that an IP address changed its MAC
+  address, or that a MAC address now claims multiple addresses. On a stable lab
+  segment this is the ground-truth signal of ARP cache poisoning — the setup
+  step for adversary-in-the-middle traffic interception. Base rule; see
+  arp_cache_poisoning_burst for the correlation that raises confidence.
+references:
+  - https://attack.mitre.org/techniques/T1557/002/
+author: IANUA
+date: 2026-07-23
+logsource:
+  product: linux
+  service: syslog
+detection:
+  selection_moved:
+    message|contains:
+      - 'moved from'
+      - 'is using my IP address'
+      - 'received packet with own address as source address'
+  selection_arp:
+    message|contains:
+      - 'arp'
+      - 'ARP'
+  filter_dhcp_lease:
+    # A DHCP lease handover legitimately re-binds an IP to a new MAC.
+    message|contains:
+      - 'DHCPACK'
+      - 'bound to'
+      - 'lease'
+  condition: selection_moved and selection_arp and not filter_dhcp_lease
+falsepositives:
+  - DHCP lease churn on a segment with short lease times (filtered above; widen
+    the filter for your environment)
+  - Deliberate failover of a virtual IP between interfaces (allow-list the VIP)
+level: high
+tags:
+  - attack.credential-access
+  - attack.t1557
+  - attack.collection
+  - attack.t1557.002

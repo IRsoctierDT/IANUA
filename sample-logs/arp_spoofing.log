@@ -1,0 +1,4 @@
+kernel: arp: 10.0.0.1 moved from aa:bb:cc:11:22:33 to de:ad:be:ef:00:01 from 10.0.0.66
+kernel: arp: 10.0.0.5 moved from aa:bb:cc:44:55:66 to de:ad:be:ef:00:01 from 10.0.0.66
+kernel: arp: 10.0.0.9 moved from aa:bb:cc:77:88:99 to de:ad:be:ef:00:01 from 10.0.0.66
+kernel: arp: 10.0.0.12 moved from aa:bb:cc:aa:bb:cc to de:ad:be:ef:00:01 from 10.0.0.66
