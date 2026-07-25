@@ -256,10 +256,13 @@ def test_sequence_rejects_empty_list() -> None:
 
 
 @pytest.mark.unit
-def test_sequence_rejects_non_list() -> None:
+def test_sequence_rejects_bare_string_not_iterating_characters() -> None:
+    # A str IS a Sequence, so the type checker accepts it; iterating it would
+    # silently analyze single characters as events. The runtime guard must
+    # fail closed.
     agent = SocAnalystAgent()
-    with pytest.raises(ValueError):
-        agent.analyze_sequence("not a list")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="non-empty sequence"):
+        agent.analyze_sequence("not a list")
 
 
 @pytest.mark.unit
@@ -444,3 +447,17 @@ def test_arp_burst_keyed_per_source_not_merged() -> None:
     result = SocAnalystAgent().analyze_sequence(events)
     # Four anomalies total, but neither source reaches the threshold alone.
     assert not [f for f in result["findings"] if f["pattern"] == "arp_spoof_burst"]
+
+
+
+@pytest.mark.unit
+def test_sequence_accepts_tuple_of_events() -> None:
+    events = tuple(
+        {
+            "src_ip": "10.0.0.66",
+            "message": f"arp: 10.0.0.{i} moved from aa:bb:cc:0{i}:00:00 to de:ad:be:ef:00:01",
+        }
+        for i in (1, 5, 9)
+    )
+    result = SocAnalystAgent().analyze_sequence(events)
+    assert [f["pattern"] for f in result["findings"]] == ["arp_spoof_burst"]

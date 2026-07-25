@@ -13,6 +13,7 @@ The agent's display name carries the platform version automatically (see
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
 
@@ -145,7 +146,7 @@ class SocAnalystAgent:
     # Sequence correlation
     # ------------------------------------------------------------------
 
-    def analyze_sequence(self, events: list[str | dict[str, Any]]) -> dict[str, Any]:
+    def analyze_sequence(self, events: Sequence[str | dict[str, Any]]) -> dict[str, Any]:
         """Correlate an ordered batch of log events into sequence-level findings.
 
         Detects multi-event attack patterns a single-line analysis cannot see:
@@ -171,8 +172,11 @@ class SocAnalystAgent:
             correlated findings, an overall severity/score, and recommended
             actions.
         """
-        if not isinstance(events, list) or not events:
-            raise ValueError("events must be a non-empty list of log entries.")
+        # Fail closed on the covariant-Sequence footgun: a bare ``str`` *is* a
+        # Sequence, and iterating it would silently analyze single characters
+        # as events. Accept any other non-empty sequence (list, tuple).
+        if isinstance(events, str) or not isinstance(events, Sequence) or not events:
+            raise ValueError("events must be a non-empty sequence of log entries.")
 
         summaries: list[EventSummary] = []
         privileged_indices: set[int] = set()
