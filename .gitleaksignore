@@ -1,0 +1,7 @@
+# Gitleaks false-positive fingerprints (commit:file:rule:line).
+# Each entry needs a justification.
+
+# Test fixture for the compliance secret-hygiene control: a fake high-entropy
+# API key written to a tmp_path .env.example inside the test. Replaced with a
+# zero-entropy placeholder in 99d6c99; this ignores the original commit's diff.
+433e05c174591636f8746602d2994f19288fc5b0:tests/unit/test_compliance_controls.py:generic-api-key:82

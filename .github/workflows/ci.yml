@@ -54,7 +54,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy agents scripts tests dashboard mcp rag
+        run: mypy agents scripts tests dashboard mcp rag compliance
 
   # ---------------------------------------------------------------- Stage 2
   security:
@@ -230,6 +230,9 @@ jobs:
         # Stdlib-only generator; fail closed if the committed outputs drifted
         # from their source data (same pattern as sbom-sync / check_locks).
         run: python scripts/build_status_page.py --check
+      - name: docs/trust.html and trust.json match docs/trust.data.json
+        # Same drift-gate pattern for the compliance trust page.
+        run: python scripts/build_trust_page.py --check
 
   build:
     name: Build package

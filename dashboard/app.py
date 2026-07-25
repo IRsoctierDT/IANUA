@@ -8,7 +8,20 @@ from pathlib import Path
 
 import streamlit as st
 from agents.orchestrator_agent import OrchestratorAgent
+from compliance.attestations import AttestationError, record, store_path
+from compliance.attestations import load as load_attestations
+from compliance.controls import ControlStatus
+from compliance.engine import run_controls
+from compliance.evidence import export_bundle, load_recent, record_run, verify_chain
+from compliance.trends import score_history
 
+from dashboard.compliance_view import (
+    FRAMEWORK_DISCLAIMER,
+    category_summary,
+    control_rows,
+    evidence_rows,
+    framework_refs_line,
+)
 from dashboard.escalations import AuditChainError, load_chain_view
 from dashboard.kb_search import search_kb_resilient
 from dashboard.ollama_service import ensure_ollama_running
@@ -46,7 +59,7 @@ with st.sidebar.expander("Ollama Models"):
 
 agent = OrchestratorAgent()
 
-tab_soc, tab_batch, tab_kb, tab_health, tab_reports, tab_approvals = st.tabs(
+tab_soc, tab_batch, tab_kb, tab_health, tab_reports, tab_approvals, tab_compliance = st.tabs(
     [
         "SOC Workflow",
         "Batch Processing",
@@ -54,8 +67,137 @@ tab_soc, tab_batch, tab_kb, tab_health, tab_reports, tab_approvals = st.tabs(
         "System Health",
         "Reports",
         "Pending Approvals",
+        "Compliance",
     ]
 )
+
+with tab_compliance:
+    st.subheader("Compliance Command Center")
+    st.caption(
+        "Continuous posture monitoring: automated controls evaluated against "
+        "this repository, mapped to NIST CSF 2.0, SOC 2, and ISO 27001. " + FRAMEWORK_DISCLAIMER
+    )
+    repo_root = Path(__file__).resolve().parent.parent
+
+    if st.button("Run controls & record evidence", key="compliance_run"):
+        try:
+            attestations = load_attestations(store_path(repo_root))
+        except AttestationError as exc:
+            # A malformed attestation file is a security event: surface it and
+            # run without attestations rather than trusting it partially.
+            st.error(f"Attestation store FAILED validation (ignored): {exc}")
+            attestations = {}
+        report = run_controls(repo_root, attestations=attestations)
+        record_run(report, root=repo_root)
+        st.session_state["compliance_report"] = report
+
+    stored_report = st.session_state.get("compliance_report")
+    if stored_report is None:
+        st.info("Run the controls to evaluate the current posture.")
+    else:
+        col_score, col_pass, col_fail, col_manual = st.columns(4)
+        col_score.metric("Posture score", f"{stored_report.score}%")
+        col_pass.metric("Passing", f"{stored_report.passing}/{len(stored_report.automated)}")
+        col_fail.metric("Failing", len(stored_report.failing))
+        awaiting = sum(1 for r in stored_report.manual if r.status is ControlStatus.MANUAL)
+        col_manual.metric("Awaiting attestation", awaiting)
+
+        history = score_history(repo_root)
+        if len(history) > 1:
+            st.subheader("Posture trend")
+            st.line_chart(
+                {"score": [p.score for p in history]},
+                x_label="recorded runs (chronological)",
+                y_label="score %",
+            )
+
+        st.subheader("Framework coverage")
+        for fw_rollup in stored_report.framework_rollups():
+            st.write(f"**{fw_rollup.framework.value}** — {fw_rollup.passing}/{fw_rollup.total}")
+            st.progress(fw_rollup.percent / 100)
+
+        st.subheader("Controls by category")
+        st.table(category_summary(stored_report))
+
+        st.subheader("All controls")
+        st.table(control_rows(stored_report))
+        with st.expander("Framework references per control"):
+            for result in stored_report.results:
+                refs = framework_refs_line(stored_report, result.control.id)
+                st.write(f"`{result.control.id}` {refs}")
+
+        st.subheader("Evidence trail")
+        chain = verify_chain(repo_root)
+        if chain.entries == 0:
+            st.info("No evidence chain yet — it starts with the first recorded run.")
+        elif chain.intact:
+            st.success(
+                f"Evidence chain verified — {chain.entries} entries, signature: {chain.signature}."
+            )
+        else:
+            # A broken chain is a security event, not a display glitch.
+            st.error(f"Evidence chain FAILED verification: {chain.failure}")
+        recent = load_recent(repo_root, limit=50)
+        if recent:
+            st.table(evidence_rows(recent))
+
+        with st.expander("Record an attestation (manual controls)"):
+            st.caption(
+                "Attestations are written to the committed "
+                "`compliance/attestations.json` — review and commit the change "
+                "yourself; recording here never publishes anything."
+            )
+            manual_controls = [r.control for r in stored_report.manual]
+            if not manual_controls:
+                st.info("No manual controls in the registry.")
+            else:
+                att_control = st.selectbox(
+                    "Control",
+                    manual_controls,
+                    format_func=lambda c: f"{c.id} — {c.title}",
+                    key="att_control",
+                )
+                att_by = st.text_input("Attested by (name/role)", key="att_by")
+                att_note = st.text_input(
+                    "What was verified (per the control's hint)", key="att_note"
+                )
+                att_days = st.number_input(
+                    "Valid for (days)", min_value=1, max_value=365, value=90, key="att_days"
+                )
+                if st.button("Record attestation", key="att_record"):
+                    if not att_by.strip() or not att_note.strip():
+                        st.warning("Name and verification note are both required.")
+                    else:
+                        from datetime import UTC, datetime, timedelta
+
+                        today = datetime.now(tz=UTC).date()
+                        try:
+                            record(
+                                store_path(repo_root),
+                                control_id=att_control.id,
+                                attested_by=att_by.strip(),
+                                date=today.isoformat(),
+                                expires=(today + timedelta(days=int(att_days))).isoformat(),
+                                note=att_note.strip(),
+                            )
+                        except AttestationError as exc:
+                            st.error(f"Attestation rejected: {exc}")
+                        else:
+                            st.success(
+                                "Recorded. Re-run controls to see the ATTESTED "
+                                "status, then commit compliance/attestations.json."
+                            )
+
+        if st.button("Export auditor bundle", key="compliance_export"):
+            bundle_path = export_bundle(
+                stored_report,
+                root=repo_root,
+                dest=repo_root
+                / "reports"
+                / "compliance"
+                / f"compliance-{stored_report.generated_at[:10]}.json",
+            )
+            st.success(f"Bundle written to `{bundle_path.relative_to(repo_root)}`")
 
 with tab_approvals:
     st.subheader("Agent Trust Broker — Pending Approvals")

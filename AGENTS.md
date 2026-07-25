@@ -112,6 +112,7 @@ ianua/
 │   ├── roles/                 # Role specs (planner, builder, reviewer, security)
 │   ├── tools/                 # Tool adapters; each validates its own input
 │   └── policies/              # Policy engine, audit chain, signing, approval logic
+├── compliance/                # Control registry, framework mappings, evidence engine
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
 ├── mcp/                       # MCP server + sandboxed tool execution
@@ -271,7 +272,7 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents scripts tests dashboard mcp rag
+mypy agents scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
 bandit -c pyproject.toml -r agents scripts mcp
@@ -279,6 +280,7 @@ bandit -c pyproject.toml -r agents scripts mcp
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
 python scripts/build_status_page.py --check   # status page ↔ status.data.json
+python scripts/build_trust_page.py --check    # trust page ↔ trust.data.json
 python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
 ```
 
