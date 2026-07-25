@@ -449,7 +449,6 @@ def test_arp_burst_keyed_per_source_not_merged() -> None:
     assert not [f for f in result["findings"] if f["pattern"] == "arp_spoof_burst"]
 
 
-
 @pytest.mark.unit
 def test_sequence_accepts_tuple_of_events() -> None:
     events = tuple(
