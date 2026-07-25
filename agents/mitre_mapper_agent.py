@@ -81,6 +81,34 @@ class MitreMapperAgent:
                 )
             )
 
+        if "arp spoofing" in normalized_event or (
+            "arp" in normalized_log
+            and any(m in normalized_log for m in ("moved from", "spoof", "poison"))
+        ):
+            return asdict(
+                MitreMappingResult(
+                    event_type=event_type,
+                    tactic="Credential Access",
+                    technique="Adversary-in-the-Middle: ARP Cache Poisoning",
+                    technique_id="T1557",
+                    confidence="medium",
+                    evidence=[
+                        "ARP cache-poisoning indicator detected "
+                        "(IP-to-MAC binding changed unexpectedly).",
+                        "ARP poisoning positions an attacker to intercept or relay "
+                        "traffic on the local segment.",
+                    ],
+                    recommended_investigation=[
+                        "Identify the MAC address claiming the disputed IP and locate "
+                        "the physical port it is attached to.",
+                        "Check whether DHCP lease churn or a virtual-IP failover "
+                        "explains the rebinding before treating it as hostile.",
+                        "Review traffic captured during the window for credential "
+                        "or session data exposed in cleartext.",
+                    ],
+                )
+            )
+
         if "ids alert" in normalized_event:
             return asdict(
                 MitreMappingResult(

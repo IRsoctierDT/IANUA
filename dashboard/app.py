@@ -160,6 +160,7 @@ with tab_soc:
 SAMPLE_SCENARIOS = {
     "SSH brute force (5 events)": "ssh_brute_force.log",
     "Auth batch — failures then success (3 events)": "auth_batch.log",
+    "ARP spoofing / adversary-in-the-middle (4 events)": "arp_spoofing.log",
 }
 
 with tab_batch:

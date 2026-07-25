@@ -366,3 +366,81 @@ def test_analyze_log_rejects_blank_message_json_string() -> None:
     agent = SocAnalystAgent()
     with pytest.raises(ValueError):
         agent.analyze_log('{"message": "   "}')
+
+
+# ------------------------------------------------- adversary-in-the-middle (T1557)
+@pytest.mark.unit
+def test_arp_anomaly_classified_and_high_severity() -> None:
+    result = SocAnalystAgent().analyze_log(
+        "kernel: arp: 10.0.0.1 moved from aa:bb:cc:11:22:33 to de:ad:be:ef:00:01"
+    )
+    assert result["event_type"] == "arp spoofing"
+    # AiTM setup precedes credential/session interception — never triaged as low.
+    assert result["severity"] == "high"
+
+
+@pytest.mark.unit
+def test_arp_classification_precedes_generic_ids_alert() -> None:
+    # An IDS alert *about* ARP spoofing is still AiTM activity; the specific
+    # classification carries the T1557 mapping, so it must win over "alert".
+    result = SocAnalystAgent().analyze_log(
+        "suricata alert: possible ARP spoofing detected, 10.0.0.1 moved from "
+        "aa:bb:cc:11:22:33 to de:ad:be:ef:00:01"
+    )
+    assert result["event_type"] == "arp spoofing"
+
+
+@pytest.mark.unit
+def test_arp_burst_correlates_to_critical_finding() -> None:
+    events = [
+        {
+            "src_ip": "10.0.0.66",
+            "message": f"arp: 10.0.0.{i} moved from aa:bb:cc:0{i}:00:00 to de:ad:be:ef:00:01",
+        }
+        for i in (1, 5, 9)
+    ]
+    result = SocAnalystAgent().analyze_sequence(events)
+    findings = [f for f in result["findings"] if f["pattern"] == "arp_spoof_burst"]
+    assert len(findings) == 1
+    assert findings[0]["source"] == "10.0.0.66"
+    assert findings[0]["severity"] == "critical"
+    assert findings[0]["event_indices"] == [0, 1, 2]
+    actions = " ".join(result["recommended_actions"]).lower()
+    assert "isolate" in actions and "rotate" in actions
+
+
+@pytest.mark.unit
+def test_arp_below_threshold_does_not_correlate() -> None:
+    # Two anomalies can be DHCP churn or a flapping interface — not a burst.
+    events = [
+        {
+            "src_ip": "10.0.0.66",
+            "message": "arp: 10.0.0.1 moved from aa:bb:cc:11:22:33 to de:ad:be:ef:00:01",
+        },
+        {
+            "src_ip": "10.0.0.66",
+            "message": "arp: 10.0.0.5 moved from aa:bb:cc:44:55:66 to de:ad:be:ef:00:01",
+        },
+    ]
+    result = SocAnalystAgent().analyze_sequence(events)
+    assert not [f for f in result["findings"] if f["pattern"] == "arp_spoof_burst"]
+
+
+@pytest.mark.unit
+def test_arp_burst_keyed_per_source_not_merged() -> None:
+    events = [
+        {
+            "src_ip": "10.0.0.66",
+            "message": f"arp: 10.0.0.{i} moved from aa:bb:cc:0{i}:00:00 to de:ad:be:ef:00:01",
+        }
+        for i in (1, 2)
+    ] + [
+        {
+            "src_ip": "10.0.0.77",
+            "message": f"arp: 10.0.0.{i} moved from aa:bb:cc:0{i}:00:00 to de:ad:be:ef:00:02",
+        }
+        for i in (3, 4)
+    ]
+    result = SocAnalystAgent().analyze_sequence(events)
+    # Four anomalies total, but neither source reaches the threshold alone.
+    assert not [f for f in result["findings"] if f["pattern"] == "arp_spoof_burst"]

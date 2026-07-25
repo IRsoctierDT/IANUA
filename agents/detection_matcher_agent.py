@@ -116,6 +116,7 @@ class DetectionMatcherAgent:
     _SEQUENCE_PATTERN_TECHNIQUES: ClassVar[dict[str, tuple[str, ...]]] = {
         "brute_force": ("T1110",),
         "auth_failure_then_success": ("T1110", "T1078"),
+        "arp_spoof_burst": ("T1557", "T1557.002"),
     }
 
     def match_for_finding(self, finding: dict[str, Any]) -> list[dict[str, Any]]:

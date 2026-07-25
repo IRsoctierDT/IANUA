@@ -30,3 +30,12 @@ def test_unknown_event_returns_unknown_mapping():
 
     assert result["technique_id"] == "UNKNOWN"
     assert result["confidence"] == "low"
+
+
+def test_arp_spoofing_maps_to_t1557():
+    result = MitreMapperAgent().map_event("arp spoofing", "arp: 10.0.0.1 moved from a to b")
+    assert result["technique_id"] == "T1557"
+    assert result["tactic"] == "Credential Access"
+    investigation = " ".join(result["recommended_investigation"]).lower()
+    # The mapping must prompt the analyst to rule out benign rebinding first.
+    assert "dhcp" in investigation

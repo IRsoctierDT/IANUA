@@ -5,6 +5,34 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Adversary-in-the-Middle (T1557) detection coverage, end to end** — the
+  agent vocabulary had no concept of on-path attacks; ARP poisoning logs fell
+  through to `unknown security event` (severity `unknown`) or were absorbed by
+  the generic `ids alert` rule. Now wired through every layer:
+  - **Detection content**: `arp_cache_poisoning.yml` (base rule — IP-to-MAC
+    rebinding anomalies, with a DHCP-lease filter so legitimate churn is not
+    alerted) and `arp_cache_poisoning_burst.yml` (correlation — ≥3 anomalies
+    from one MAC in 5 minutes, `critical`).
+  - **SOC Analyst Agent**: new `arp spoofing` event type classified *before*
+    the generic IDS rule (an IDS alert about ARP spoofing is still AiTM
+    activity, and the specific class carries the T1557 mapping), triaged
+    `high` on a single indicator — AiTM setup precedes credential and session
+    interception.
+  - **Sequence correlation**: `arp_spoof_burst` pattern (≥3 anomalies per
+    validated source, `critical`), keyed per source so unrelated hosts never
+    merge into a false burst, with containment-first recommended actions
+    (isolate the MAC at the switch port, capture before disturbing, rotate
+    credentials used on the segment, enable dynamic ARP inspection).
+  - **MITRE Mapper**: T1557 mapping whose recommended investigation prompts
+    the analyst to rule out DHCP churn and VIP failover before treating the
+    rebinding as hostile.
+  - **Detection Matcher**: `arp_spoof_burst` → T1557/T1557.002, so a burst
+    finding cross-references the correlation rule (and only it — the base rule
+    shares the tags but is single-event).
+  - Bundled `sample-logs/arp_spoofing.log` scenario in the dashboard batch tab
+    for one-click testing. Ten new tests across the four layers.
+
+### Added
 - **Business Proposal + Legal/Compliance agents advanced to active status** —
   the two "business cell" agents the landing page still carried as idle/review
   are now active-grade:

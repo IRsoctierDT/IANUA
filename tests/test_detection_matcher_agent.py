@@ -147,3 +147,13 @@ def test_sequence_matching_empty_and_malformed_findings() -> None:
     assert agent.match_for_sequence({"findings": []}) == []
     assert agent.match_for_sequence({}) == []
     assert agent.match_for_sequence({"findings": ["not-a-dict", 42]}) == []
+
+
+@pytest.mark.unit
+def test_arp_spoof_burst_matches_only_the_correlation_rule() -> None:
+    matches = DetectionMatcherAgent().match_for_finding({"pattern": "arp_spoof_burst"})
+    files = [m["file"] for m in matches]
+    assert "arp_cache_poisoning_burst.yml" in files
+    # the base rule shares the T1557 tags but has no correlation block
+    assert "arp_cache_poisoning.yml" not in files
+    assert all(m["level"] == "critical" for m in matches)
