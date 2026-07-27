@@ -86,6 +86,7 @@ Humans approve destructive, external, legal, financial, or security-sensitive ac
 | [`docs/HARDENING_ROADMAP.md`](./docs/HARDENING_ROADMAP.md) | Planned defense-in-depth hardening workstreams |
 | [`LICENSE`](./LICENSE) | Apache License 2.0 — the terms this work is offered under |
 | [`NOTICE`](./NOTICE) | Attributions, content provenance, trademark reservations |
+| [`docs/IP_AND_LICENSING.md`](./docs/IP_AND_LICENSING.md) | Why Apache-2.0, copyright/entity/trademark/patent posture |
 
 ---
 
@@ -188,7 +189,9 @@ You may use, modify, and redistribute this work, including commercially,
 subject to the license terms (which include an express patent grant).
 
 Attributions, content provenance, and trademark reservations are in
-[`NOTICE`](./NOTICE). Note that the license does **not** grant rights to the
+[`NOTICE`](./NOTICE); the reasoning behind the license choice and the
+copyright/trademark/patent posture is recorded in
+[`docs/IP_AND_LICENSING.md`](./docs/IP_AND_LICENSING.md). Note that the license does **not** grant rights to the
 IANUA name or marks (Apache-2.0 §6) — please brand derivative works as your
 own. Third-party marks referenced descriptively (MITRE ATT&CK®, NIST, OWASP®,
 CIS®) belong to their respective owners.

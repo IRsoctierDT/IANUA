@@ -22,3 +22,6 @@ Only submit work you have the right to license this way. If a change carries
 third-party code or content, say so in the PR and name its license; anything
 that would impose extra restrictions on downstream users needs a maintainer
 decision before it can be merged.
+
+Background on the license choice and the project's IP posture:
+[`docs/IP_AND_LICENSING.md`](./docs/IP_AND_LICENSING.md).

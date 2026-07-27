@@ -30,6 +30,18 @@ All notable changes to this project. Versions correspond to git tags.
   - Human-facing: README license section and governance-table rows, a
     `CONTRIBUTING.md` inbound=outbound clause (Apache-2.0 §5, no CLA), and a
     copyright line plus License link in the Pages footer.
+  - `docs/IP_AND_LICENSING.md` records the reasoning so it does not have to be
+    reconstructed later: why Apache-2.0 over MIT (§3 patent grant, §6
+    trademark non-grant), why the copyright holder is the individual author
+    rather than the GitHub handle (pseudonymous-term and enforcement friction;
+    assignable to an entity later), why no LLC yet and what would trigger one,
+    the trademark sequencing constraint (an application must name the owner,
+    so the entity decision comes first), and the patent position — public
+    disclosure already forecloses absolute-novelty jurisdictions, and
+    Apache-2.0 §3 licenses your patents to users anyway, so anything genuinely
+    patent-worthy must be held back and filed before publication. Facts are
+    separated from judgment, primary sources are cited, and the items needing
+    an attorney or CPA are named explicitly.
 
 ### Added
 - **Adversary-in-the-Middle (T1557) detection coverage, end to end** — the
