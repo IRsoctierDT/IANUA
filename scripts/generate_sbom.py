@@ -198,8 +198,11 @@ def _make_refs_deterministic(
 def _serial_number(timestamp: str, components: list[dict[str, Any]]) -> str:
     """Derive a deterministic CycloneDX ``serialNumber`` (URN UUID).
 
-    `actions/attest-sbom` detects CycloneDX by the presence of ``bomFormat`` *and*
-    ``serialNumber``, so the field is required for the SBOM to be attestable. We
+    The CycloneDX spec expects a ``serialNumber`` on a BOM instance, and
+    attestation/ingestion tooling (previously ``actions/attest-sbom``'s format
+    detection, now downstream SBOM consumers generally) keys on ``bomFormat``
+    plus ``serialNumber`` — so the field stays required for the SBOM to be
+    attestable and portable. We
     derive it (UUIDv5) from the timestamp and the component purls rather than
     using a random UUID, so generation stays byte-for-byte reproducible: identical
     inputs always yield the same serial number.

@@ -139,7 +139,7 @@ added; seed strategies directly from each tool's declared argument schema.
 ## 4. Signed SBOM + dependency provenance attestation in CI — implemented
 
 **Status.** Implemented and verified on the public repo. On push to `main` the `build` job
-produces both a **signed SBOM attestation** (`actions/attest-sbom`, CycloneDX predicate) and a
+produces both a **signed SBOM attestation** (`actions/attest`, explicit CycloneDX predicate) and a
 **SLSA build-provenance attestation** (`actions/attest-build-provenance`), keyless via GitHub
 OIDC. Verified end-to-end with `gh attestation verify` (SBOM predicate `https://cyclonedx.org/bom`;
 provenance via the default predicate) — see [`security/sbom/README.md`](../security/sbom/README.md).
