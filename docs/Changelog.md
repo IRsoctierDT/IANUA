@@ -5,6 +5,33 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Apache-2.0 licensing** — the repository carried no license, which legally
+  means *all rights reserved*: the public could read the code but not use,
+  fork, or build on it. Now licensed under Apache-2.0 (canonical text fetched
+  from apache.org, not reproduced from memory), chosen over MIT for two
+  properties this project needs: an express **patent grant**, and §6's
+  explicit **non-grant of trademark rights**, which keeps the IANUA marks
+  reserved while the code itself is open.
+  - `LICENSE` — full Apache-2.0 text, copyright attributed to the author
+    declared in `pyproject.toml`.
+  - `NOTICE` — attributions and reservations: IANUA trademark reservation
+    (fork freely, brand it your own), descriptive third-party marks
+    (MITRE ATT&CK®, NIST, OWASP®, CIS®, CompTIA®, Sigma, SOC 2®, ISO 27001),
+    and content provenance stating that knowledge-base entries are original
+    summaries citing primary sources, detection rules are original work,
+    compliance mappings are this project's interpretation rather than
+    certification or advice, and sample logs are synthetic.
+  - Machine-readable metadata: `pyproject.toml` uses the PEP 639 SPDX
+    expression with `license-files`, `package.json` declares the SPDX id, and
+    the CycloneDX SBOM's **root component** now carries its own license so
+    consumers see the terms of the artifact, not only of its dependencies.
+    Verified in a real build: the wheel emits `License-Expression: Apache-2.0`
+    and bundles both LICENSE and NOTICE.
+  - Human-facing: README license section and governance-table rows, a
+    `CONTRIBUTING.md` inbound=outbound clause (Apache-2.0 §5, no CLA), and a
+    copyright line plus License link in the Pages footer.
+
+### Added
 - **Adversary-in-the-Middle (T1557) detection coverage, end to end** — the
   agent vocabulary had no concept of on-path attacks; ARP poisoning logs fell
   through to `unknown security event` (severity `unknown`) or were absorbed by

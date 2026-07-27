@@ -10,3 +10,15 @@
 
 Agents additionally announce their active role (Planner/Builder/Reviewer/Security) and stop
 to ask the human at any approval gate or security boundary.
+
+## Licensing of contributions
+
+This project is licensed under the **Apache License 2.0** ([`LICENSE`](./LICENSE)).
+Per Apache-2.0 §5, any contribution you intentionally submit for inclusion is
+licensed under those same terms, with no additional conditions — inbound
+matches outbound. No separate CLA is required.
+
+Only submit work you have the right to license this way. If a change carries
+third-party code or content, say so in the PR and name its license; anything
+that would impose extra restrictions on downstream users needs a maintainer
+decision before it can be merged.

@@ -1,0 +1,79 @@
+IANUA
+Copyright 2026 Ivan Rozenblad
+
+This product includes software developed as part of the IANUA project
+(https://github.com/IRsoctierDT/IANUA), licensed under the Apache License,
+Version 2.0. See the LICENSE file for the full terms.
+
+--------------------------------------------------------------------------
+Trademarks
+--------------------------------------------------------------------------
+
+"IANUA" and the IANUA marks are trademarks of the copyright holder. As
+stated in Section 6 of the Apache License, this license does NOT grant
+permission to use those marks, except as required for reasonable and
+customary use in describing the origin of the work and reproducing this
+NOTICE file. You may fork, modify, and redistribute the code; please use
+your own project name and branding for derivative works.
+
+The following third-party marks are the property of their respective
+owners and are referenced here only descriptively, for interoperability
+and attribution. Their use does not imply any affiliation with, or
+endorsement by, those organizations:
+
+  * MITRE ATT&CK(R) is a registered trademark of The MITRE Corporation.
+    https://attack.mitre.org/
+  * NIST and the NIST Cybersecurity Framework are products of the U.S.
+    National Institute of Standards and Technology.
+    https://www.nist.gov/cyberframework
+  * OWASP(R) and the OWASP Top 10 are trademarks of the OWASP Foundation.
+    https://owasp.org/
+  * CIS(R) and CIS Controls(R) are registered trademarks of the Center for
+    Internet Security, Inc. https://www.cisecurity.org/controls/
+  * CompTIA(R) and Security+(R) are registered trademarks of CompTIA, Inc.
+  * Sigma (detection rule format) is maintained by the SigmaHQ project.
+    https://github.com/SigmaHQ/sigma
+  * SOC 2(R) is a registered trademark of the American Institute of
+    Certified Public Accountants (AICPA).
+  * ISO and ISO/IEC 27001 are trademarks of the International
+    Organization for Standardization.
+
+--------------------------------------------------------------------------
+Content provenance
+--------------------------------------------------------------------------
+
+Knowledge base (knowledge-base/): the entries are original summaries
+written for this project. Each file cites its authoritative source; no
+text is reproduced from those sources. Consult the cited primary sources
+for authoritative and current guidance.
+
+Detection content (detections/sigma/): all rules are original work
+authored for this project, expressed in the Sigma rule format. They are
+lab-scoped and defensive; see detections/README.md.
+
+Compliance mappings (compliance/): control-to-framework mappings are this
+project's own interpretation for engineering-posture tracking. They are
+not a certification, an audit, or legal/compliance advice, and they are
+not endorsed by any framework owner or standards body.
+
+Sample logs (sample-logs/): synthetic fixtures created for testing. They
+contain no real hosts, users, addresses, or captured production data.
+
+--------------------------------------------------------------------------
+Third-party dependencies
+--------------------------------------------------------------------------
+
+This project depends on third-party open-source packages, each governed by
+its own license. The complete dependency set, with versions and available
+license metadata, is published as CycloneDX SBOMs under security/sbom/.
+
+--------------------------------------------------------------------------
+No warranty
+--------------------------------------------------------------------------
+
+As stated in Sections 7 and 8 of the Apache License, this software is
+provided on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND. It is intended for defensive security work and authorized lab use
+only (see SECURITY.md and AGENTS.md); operating it against systems you do
+not own or lack written authorization to test is outside its intended use
+and is the operator's sole responsibility.
