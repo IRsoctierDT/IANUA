@@ -26,15 +26,15 @@ dependencies = []
 [project.optional-dependencies]
 # Install with:  pip install -e ".[dev]"
 dev = [
-  "ruff==0.15.22",
+  "ruff==0.16.0",
   "mypy>=2.3.0",
   "pytest>=8.0",
   "pytest-cov>=5.0",
-  "hypothesis>=6.156.6",
+  "hypothesis>=6.161.6",
   "bandit>=1.7",
   "pip-audit>=2.7",
   "detect-secrets>=1.5",
-  "pre-commit>=3.7",
+  "pre-commit>=4.6.1",
   "packaging>=24.0",
   "pyyaml>=6.0",
   "reportlab>=4.0",
@@ -42,9 +42,9 @@ dev = [
 ]
 
 dashboard = [
-  "streamlit>=1.59.2",
+  "streamlit>=1.60.0",
   "qdrant-client>=1.9",
-  "sentence-transformers>=3.0",
+  "sentence-transformers>=5.6.1",
 ]
 
 pdf = [
