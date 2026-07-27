@@ -216,6 +216,10 @@ def _root_component() -> dict[str, Any]:
         "bom-ref": "root-component",
         "name": pkg.get("name", "ianua"),
         "version": str(pkg.get("version", "0.0.0")),
+        # Declare our own license so consumers of the SBOM can see the terms
+        # of the root artifact, not just of its dependencies. Sourced from
+        # package.json, which mirrors pyproject's SPDX expression.
+        "licenses": [{"license": {"id": str(pkg.get("license", "Apache-2.0"))}}],
     }
 
 

@@ -17,6 +17,8 @@ description = "Portfolio-grade environment for AI ops, cybersecurity automation,
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Ivan Rozenblad" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 
 # Pin runtime deps here as the project grows. Justify each addition per AGENTS.md §4.
 dependencies = []

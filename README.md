@@ -84,6 +84,9 @@ Humans approve destructive, external, legal, financial, or security-sensitive ac
 | [`SECURITY.md`](./SECURITY.md) | Vulnerability reporting & security policy |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Human + agent contribution workflow |
 | [`docs/HARDENING_ROADMAP.md`](./docs/HARDENING_ROADMAP.md) | Planned defense-in-depth hardening workstreams |
+| [`LICENSE`](./LICENSE) | Apache License 2.0 — the terms this work is offered under |
+| [`NOTICE`](./NOTICE) | Attributions, content provenance, trademark reservations |
+| [`docs/IP_AND_LICENSING.md`](./docs/IP_AND_LICENSING.md) | Why Apache-2.0, copyright/entity/trademark/patent posture |
 
 ---
 
@@ -176,6 +179,22 @@ mcp/          MCP servers exposed to agents            detections/   defensive, 
 scripts/      operational & RAG tooling                data/         lab data only (gitignored)
 cli/          user-facing entry points — run_incident.py, batch_run_incidents.py
 ```
+
+---
+
+## License
+
+Licensed under the **Apache License 2.0** — see [`LICENSE`](./LICENSE).
+You may use, modify, and redistribute this work, including commercially,
+subject to the license terms (which include an express patent grant).
+
+Attributions, content provenance, and trademark reservations are in
+[`NOTICE`](./NOTICE); the reasoning behind the license choice and the
+copyright/trademark/patent posture is recorded in
+[`docs/IP_AND_LICENSING.md`](./docs/IP_AND_LICENSING.md). Note that the license does **not** grant rights to the
+IANUA name or marks (Apache-2.0 §6) — please brand derivative works as your
+own. Third-party marks referenced descriptively (MITRE ATT&CK®, NIST, OWASP®,
+CIS®) belong to their respective owners.
 
 ---
 

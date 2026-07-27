@@ -23,7 +23,14 @@
       "type": "application",
       "bom-ref": "root-component",
       "name": "ianua",
-      "version": "2.0.0"
+      "version": "2.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
     }
   },
   "components": [

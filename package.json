@@ -2,6 +2,7 @@
   "name": "ianua",
   "version": "2.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "design:lint": "npx @google/design.md lint DESIGN.md",
     "design:export:tailwind": "npx @google/design.md export --format json-tailwind DESIGN.md > tailwind.theme.json",

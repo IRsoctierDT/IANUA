@@ -5,6 +5,45 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Apache-2.0 licensing** — the repository carried no license, which legally
+  means *all rights reserved*: the public could read the code but not use,
+  fork, or build on it. Now licensed under Apache-2.0 (canonical text fetched
+  from apache.org, not reproduced from memory), chosen over MIT for two
+  properties this project needs: an express **patent grant**, and §6's
+  explicit **non-grant of trademark rights**, which keeps the IANUA marks
+  reserved while the code itself is open.
+  - `LICENSE` — full Apache-2.0 text, copyright attributed to the author
+    declared in `pyproject.toml`.
+  - `NOTICE` — attributions and reservations: IANUA trademark reservation
+    (fork freely, brand it your own), descriptive third-party marks
+    (MITRE ATT&CK®, NIST, OWASP®, CIS®, CompTIA®, Sigma, SOC 2®, ISO 27001),
+    and content provenance stating that knowledge-base entries are original
+    summaries citing primary sources, detection rules are original work,
+    compliance mappings are this project's interpretation rather than
+    certification or advice, and sample logs are synthetic.
+  - Machine-readable metadata: `pyproject.toml` uses the PEP 639 SPDX
+    expression with `license-files`, `package.json` declares the SPDX id, and
+    the CycloneDX SBOM's **root component** now carries its own license so
+    consumers see the terms of the artifact, not only of its dependencies.
+    Verified in a real build: the wheel emits `License-Expression: Apache-2.0`
+    and bundles both LICENSE and NOTICE.
+  - Human-facing: README license section and governance-table rows, a
+    `CONTRIBUTING.md` inbound=outbound clause (Apache-2.0 §5, no CLA), and a
+    copyright line plus License link in the Pages footer.
+  - `docs/IP_AND_LICENSING.md` records the reasoning so it does not have to be
+    reconstructed later: why Apache-2.0 over MIT (§3 patent grant, §6
+    trademark non-grant), why the copyright holder is the individual author
+    rather than the GitHub handle (pseudonymous-term and enforcement friction;
+    assignable to an entity later), why no LLC yet and what would trigger one,
+    the trademark sequencing constraint (an application must name the owner,
+    so the entity decision comes first), and the patent position — public
+    disclosure already forecloses absolute-novelty jurisdictions, and
+    Apache-2.0 §3 licenses your patents to users anyway, so anything genuinely
+    patent-worthy must be held back and filed before publication. Facts are
+    separated from judgment, primary sources are cited, and the items needing
+    an attorney or CPA are named explicitly.
+
+### Added
 - **Adversary-in-the-Middle (T1557) detection coverage, end to end** — the
   agent vocabulary had no concept of on-path attacks; ARP poisoning logs fell
   through to `unknown security event` (severity `unknown`) or were absorbed by
