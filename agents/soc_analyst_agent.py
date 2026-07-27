@@ -12,7 +12,9 @@ The agent's display name carries the platform version automatically (see
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
@@ -20,6 +22,10 @@ from typing import Any, Literal, cast
 from agents import versioned_agent_name
 
 Severity = Literal["low", "medium", "high", "critical", "unknown"]
+
+# How the input was understood: fully structured (dict / valid JSON), plain
+# text, or JSON-looking text that failed to parse and was downgraded to text.
+ParseStatus = Literal["structured", "text", "malformed_json"]
 
 # Severity label -> base numeric score (0-100)
 _SEVERITY_SCORES: dict[str, int] = {
@@ -93,6 +99,10 @@ class SequenceAnalysisResult:
     severity: Severity
     severity_score: int
     event_count: int
+    # Events whose source could not be extracted and validated — they cannot
+    # participate in source-based correlation, and a non-zero count is worth an
+    # analyst's attention (source-less formatting is attacker-controllable).
+    uncorrelated_event_count: int
     events: list[EventSummary]
     findings: list[CorrelatedFinding]
     recommended_actions: list[str]
@@ -118,13 +128,36 @@ class SocAnalystAgent:
                        with keys like ``message``, ``host``, ``user``, ``src_ip``,
                        ``timestamp``, ``severity``.
         """
-        log_text, structured = self._normalize_input(log_input)
+        log_text, structured, parse_status = self._normalize_input(log_input)
 
         event_type = self._classify_event(log_text)
         severity = self._estimate_severity(log_text, event_type, structured)
         severity_score = self._score_severity(severity, log_text, event_type, structured)
         indicators = self._extract_indicators(log_text, structured)
         evidence = self._build_evidence(log_text, structured, event_type)
+
+        assumptions = [
+            "Analysis is based only on the supplied log input.",
+            "No external enrichment, threat intelligence, or packet inspection was performed.",
+        ]
+        if parse_status == "malformed_json":
+            # Surface the downgrade: structured fields (severity, user, src_ip)
+            # were unavailable, so severity and privilege signals may be
+            # understated. An evidence row keeps it visible in rendered reports.
+            evidence.append(
+                EvidenceEntry(
+                    field="parse_status",
+                    value="malformed_json",
+                    significance=(
+                        "Input resembled JSON but failed to parse; analyzed as plain "
+                        "text without structured fields — severity may be understated."
+                    ),
+                )
+            )
+            assumptions.append(
+                "Input resembled JSON but failed to parse; structured fields were "
+                "not available to the analysis."
+            )
 
         result = SocAnalysisResult(
             agent=self.name,
@@ -135,10 +168,7 @@ class SocAnalystAgent:
             indicators=indicators,
             evidence=evidence,
             recommended_actions=self._recommend_actions(event_type, severity),
-            assumptions=[
-                "Analysis is based only on the supplied log input.",
-                "No external enrichment, threat intelligence, or packet inspection was performed.",
-            ],
+            assumptions=assumptions,
         )
         return asdict(result)
 
@@ -180,8 +210,11 @@ class SocAnalystAgent:
 
         summaries: list[EventSummary] = []
         privileged_indices: set[int] = set()
+        malformed_count = 0
         for index, event in enumerate(events):
-            log_text, structured = self._normalize_input(event)
+            log_text, structured, parse_status = self._normalize_input(event)
+            if parse_status == "malformed_json":
+                malformed_count += 1
             event_type = self._classify_event(log_text)
             severity = self._estimate_severity(log_text, event_type, structured)
             score = self._score_severity(severity, log_text, event_type, structured)
@@ -229,20 +262,39 @@ class SocAnalystAgent:
                 f"highest single-event severity: {overall}."
             )
 
+        assumptions = [
+            "Events are assumed to be in chronological order as supplied.",
+            "Analysis is based only on the supplied log input.",
+            "No external enrichment, threat intelligence, or packet inspection was performed.",
+        ]
+        # Silent exclusions are themselves a signal: events with no extractable
+        # source cannot participate in correlation, and JSON-looking events
+        # that failed to parse were analyzed without structured fields. Both
+        # are attacker-controllable via log formatting, so report them instead
+        # of letting evasion look like a clean sequence.
+        uncorrelated = sum(1 for s in summaries if s.source is None)
+        if uncorrelated:
+            assumptions.append(
+                f"{uncorrelated} event(s) had no extractable source address and were "
+                "excluded from source-based correlation."
+            )
+        if malformed_count:
+            assumptions.append(
+                f"{malformed_count} event(s) resembled JSON but failed to parse and "
+                "were analyzed as plain text without structured fields."
+            )
+
         result = SequenceAnalysisResult(
             agent=self.name,
             summary=summary,
             severity=overall,
             severity_score=overall_score,
             event_count=len(events),
+            uncorrelated_event_count=uncorrelated,
             events=summaries,
             findings=findings,
             recommended_actions=self._recommend_sequence_actions(findings, overall),
-            assumptions=[
-                "Events are assumed to be in chronological order as supplied.",
-                "Analysis is based only on the supplied log input.",
-                "No external enrichment, threat intelligence, or packet inspection was performed.",
-            ],
+            assumptions=assumptions,
         )
         return asdict(result)
 
@@ -368,8 +420,16 @@ class SocAnalystAgent:
     @staticmethod
     def _normalize_input(
         log_input: str | dict[str, Any],
-    ) -> tuple[str, dict[str, Any]]:
-        """Return (flat_text, structured_fields) from any supported input form."""
+    ) -> tuple[str, dict[str, Any], ParseStatus]:
+        """Return (flat_text, structured_fields, parse_status) from any input form.
+
+        ``parse_status`` makes analysis degradation visible instead of silent:
+        input that *looks like* JSON but fails to parse (truncated, malformed,
+        or crafted almost-JSON) is analyzed as plain text — without structured
+        fields such as ``severity`` and ``user`` — and is flagged
+        ``malformed_json`` so downstream reports show the downgrade rather
+        than a confident-looking full analysis.
+        """
         if isinstance(log_input, dict):
             if not log_input:
                 raise ValueError("log_input dict cannot be empty.")
@@ -377,7 +437,7 @@ class SocAnalystAgent:
             log_text = structured.get("message", " ".join(structured.values())).strip()
             if not log_text:
                 raise ValueError("log_input contains no usable text.")
-            return log_text, structured
+            return log_text, structured, "structured"
 
         if not isinstance(log_input, str):
             raise ValueError("log_input must be a string or dict.")
@@ -390,16 +450,16 @@ class SocAnalystAgent:
         if text.startswith("{"):
             try:
                 parsed = json.loads(text)
-                if isinstance(parsed, dict):
-                    structured = {k: str(v) for k, v in parsed.items()}
-                    log_text = structured.get("message", " ".join(structured.values())).strip()
-                    if not log_text:
-                        raise ValueError("log_input contains no usable text.")
-                    return log_text, structured
             except json.JSONDecodeError:
-                pass
+                return text, {}, "malformed_json"
+            if isinstance(parsed, dict):
+                structured = {k: str(v) for k, v in parsed.items()}
+                log_text = structured.get("message", " ".join(structured.values())).strip()
+                if not log_text:
+                    raise ValueError("log_input contains no usable text.")
+                return log_text, structured, "structured"
 
-        return text, {}
+        return text, {}, "text"
 
     # ------------------------------------------------------------------
     # Classification
@@ -432,19 +492,22 @@ class SocAnalystAgent:
     # Severity
     # ------------------------------------------------------------------
 
+    # Whole words only: bare substring matching inflated severity on words
+    # that merely *contain* an account name ("rootkit", "chroot", ...).
+    _PRIVILEGED_WORD_RE = re.compile(r"\b(?:root|administrator)\b")
+
     @staticmethod
     def _is_privileged(log_text: str, structured: dict[str, Any]) -> bool:
         """True when the event involves a privileged account (root/administrator).
 
-        Checks both the flat log text and the structured user/account fields.
+        The structured ``user``/``account`` field is authoritative when
+        present; the flat log text is matched on whole words only, so
+        "rootkit" or "chroot" no longer count as the root account.
         """
-        lowered = log_text.lower()
         user_val = structured.get("user", structured.get("account", "")).lower()
-        return (
-            "root" in lowered
-            or "administrator" in lowered
-            or user_val in ("root", "administrator", "admin")
-        )
+        if user_val in ("root", "administrator", "admin"):
+            return True
+        return bool(SocAnalystAgent._PRIVILEGED_WORD_RE.search(log_text.lower()))
 
     @staticmethod
     def _estimate_severity(
@@ -506,14 +569,31 @@ class SocAnalystAgent:
         return len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
     @staticmethod
+    def _is_ip(token: str) -> bool:
+        """True for a valid IPv4 *or* IPv6 address literal.
+
+        IPv6 matters for correlation coverage: matching only IPv4 would let an
+        attacker on an IPv6 source evade sequence correlation by construction.
+        Uses the stdlib parser (strict; rejects bare integers and hostnames).
+        """
+        try:
+            ipaddress.ip_address(token)
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
     def _extract_source(log_text: str, structured: dict[str, Any]) -> str | None:
         """Return the validated *source* address for correlation, or ``None``.
 
-        Uses an explicit structured source field when present, else the IPv4
-        address that directly follows ``from`` in plain text. Never falls back
-        to the general indicator list — that list may contain destination
-        addresses, and correlating on them would fabricate patterns (e.g.
-        brute force "from" a destination shared by unrelated clients).
+        Uses an explicit structured source field when present, else the IPv4 or
+        IPv6 address that directly follows ``from`` in plain text (bracketed
+        ``[addr]`` IPv6 forms are unwrapped). Never falls back to the general
+        indicator list — that list may contain destination addresses, and
+        correlating on them would fabricate patterns (e.g. brute force "from"
+        a destination shared by unrelated clients). Events that yield ``None``
+        here are counted in ``uncorrelated_event_count`` so the exclusion is
+        visible, never silent.
         """
         for key in ("src_ip", "source_ip", "ip", "remote_addr"):
             if key in structured:
@@ -522,7 +602,7 @@ class SocAnalystAgent:
         for pos, token in enumerate(tokens[:-1]):
             if token.lower() == "from":
                 candidate = tokens[pos + 1].strip("[]():;")
-                if SocAnalystAgent._is_ipv4(candidate):
+                if SocAnalystAgent._is_ip(candidate):
                     return candidate
         return None
 

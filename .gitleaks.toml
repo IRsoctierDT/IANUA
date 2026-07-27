@@ -1,6 +1,6 @@
 # .gitleaks.toml — IANUA
 #
-# Extends gitleaks' default ruleset; adds a single, narrow allowlist entry.
+# Extends gitleaks' default ruleset; adds a single, narrowly scoped allowlist.
 #
 # Why: .secrets.baseline is the detect-secrets baseline. It stores SHA-1
 # *digests* of strings that were human-reviewed and classified as false
@@ -10,13 +10,21 @@
 # the other. The digests are one-way hashes of non-secrets — nothing
 # recoverable, nothing sensitive.
 #
-# Scope is deliberately the single file path, not a rule or fingerprint
-# exemption: real secrets anywhere else — including in this config — are
-# still caught, and baseline edits don't need fingerprint churn.
+# Scope is deliberately BOTH conditions together (condition = "AND"): the
+# finding must be inside .secrets.baseline *and* on a `"hashed_secret"` digest
+# line. A whole-file path allowlist would blind gitleaks to a real credential
+# accidentally committed into the baseline (e.g. pasted into a mangled entry);
+# this scoping keeps that detection live. Real secrets anywhere else —
+# including in this config — are still caught, and baseline edits don't need
+# fingerprint churn. Requires gitleaks >= 8.25 ([[allowlists]] + condition),
+# which gitleaks-action v3 provides.
 
 [extend]
 useDefault = true
 
-[allowlist]
-description = "detect-secrets baseline stores SHA-1 digests of reviewed false positives, not secrets"
+[[allowlists]]
+description = "detect-secrets baseline: allow only the SHA-1 digest fields of reviewed false positives"
+condition = "AND"
 paths = ['''^\.secrets\.baseline$''']
+regexTarget = "line"
+regexes = ['''"hashed_secret":\s*"[a-f0-9]{40}"''']

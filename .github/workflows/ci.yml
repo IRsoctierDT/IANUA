@@ -95,12 +95,19 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         # Regenerate from the same lock for a reproducible SBOM. pip-audit exits
         # non-zero when advisories exist; the SBOM is still written and the gate
-        # above already failed the build, so tolerate it here. npm half is
-        # derived offline from the lockfile.
+        # above already failed the build, so tolerate that exit here — but NOT
+        # total tool failure: the checkout's python.cdx.json is deleted first
+        # and the output is validated, so a crashed pip-audit (which would
+        # silently leave the stale file in place) fails the step instead of
+        # producing a stale-but-plausible SBOM. npm half is derived offline
+        # from the lockfile.
         run: |
+          rm -f security/sbom/python.cdx.json
           pip-audit --disable-pip -r security/sbom/requirements.lock \
             -f cyclonedx-json -o security/sbom/python.cdx.json \
             --progress-spinner off || true
+          jq -e '.bomFormat == "CycloneDX"' security/sbom/python.cdx.json >/dev/null \
+            || { echo "::error::pip-audit did not produce a usable python.cdx.json"; exit 1; }
           python scripts/generate_sbom.py \
             --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       - name: Upload SBOM artifact
@@ -203,8 +210,15 @@ jobs:
         run: |
           ts="$(jq -r .metadata.timestamp security/sbom/sbom.cdx.json)"
           cp security/sbom/sbom.cdx.json /tmp/sbom.before.json
+          # Delete the checkout's copy before regenerating: `|| true` tolerates
+          # pip-audit's advisories-found exit, but a crashed pip-audit must not
+          # silently reuse the stale checkout file and let the diff pass without
+          # having verified anything — fail closed on unusable output instead.
+          rm -f security/sbom/python.cdx.json
           pip-audit --disable-pip -r security/sbom/requirements.lock \
             -f cyclonedx-json -o security/sbom/python.cdx.json --progress-spinner off || true
+          jq -e '.bomFormat == "CycloneDX"' security/sbom/python.cdx.json >/dev/null \
+            || { echo "::error::pip-audit did not produce a usable python.cdx.json"; exit 1; }
           python scripts/generate_sbom.py --timestamp "$ts"
           if ! diff -q <(jq -S '.components' /tmp/sbom.before.json) \
                        <(jq -S '.components' security/sbom/sbom.cdx.json) >/dev/null; then
