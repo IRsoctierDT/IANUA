@@ -267,15 +267,20 @@ jobs:
         # We skip (not continue-on-error) so that permission failures, wrong
         # paths, or API errors still break the build in public repos and GHAS
         # orgs where attestation is actually supported.
+        #
+        # actions/attest-sbom is deprecated; the generic actions/attest is its
+        # documented replacement. It no longer infers the SBOM format, so the
+        # CycloneDX in-toto predicate type is stated explicitly.
         if: >-
           github.event_name == 'push' &&
           github.ref == 'refs/heads/main' &&
           !(github.event.repository.private == true &&
             github.event.repository.owner.type == 'User')
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-path: "dist/*"
-          sbom-path: "security/sbom/sbom.cdx.json"
+          predicate-type: "https://cyclonedx.org/bom"
+          predicate-path: "security/sbom/sbom.cdx.json"
       - name: Attest build provenance for the artifacts (SLSA, main only)
         # SLSA build-provenance attestation for the distributions: records the
         # source commit, builder identity (GitHub Actions), and materials, so a
