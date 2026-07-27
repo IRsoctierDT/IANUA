@@ -142,8 +142,9 @@ already a required SCA gate; the npm path uses only the standard library.
 
 - **Provenance:** on push to `main` the `build` job binds the built distributions
   to **two** signed, keyless (Sigstore/OIDC) attestations recorded in the GitHub
-  attestations store — the **SBOM** (`actions/attest-sbom`) and **SLSA build
-  provenance** (`actions/attest-build-provenance`). Verify a downloaded artifact:
+  attestations store — the **SBOM** (`actions/attest`, CycloneDX predicate
+  declared explicitly) and **SLSA build provenance**
+  (`actions/attest-build-provenance`). Verify a downloaded artifact:
 
   ```bash
   # SBOM attestation — the SBOM predicate is CycloneDX, so pass its predicate type
