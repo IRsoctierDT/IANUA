@@ -80,10 +80,19 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# S310: urlopen() target is the module-level loopback constant OLLAMA_URL
+# (http://localhost). ruff < 0.16 cannot infer constant string literals, so an
+# inline noqa would be flagged as unused (RUF100) on ruff >= 0.16 — a config
+# ignore is version-stable in both directions.
+"dashboard/ollama_service.py" = ["S310"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+# ruff >= 0.16 formats Python code blocks inside Markdown by default. The
+# case-study / doc examples use deliberate comment alignment for readability,
+# so keep Markdown out of the formatter (linting is unaffected).
+exclude = ["*.md"]
 
 [tool.mypy]
 python_version = "3.11"

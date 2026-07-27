@@ -208,7 +208,7 @@ class SandboxRunner:
     def with_profiles(
         self,
         *,
-        seccomp_profile: Path | None | _Keep = _KEEP,
+        seccomp_profile: Path | _Keep | None = _KEEP,
         apparmor_profile: str | _Keep = _KEEP,
     ) -> SandboxRunner:
         """Return a copy of this runner with per-tool seccomp/AppArmor profiles.
