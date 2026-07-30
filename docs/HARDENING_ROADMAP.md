@@ -146,6 +146,15 @@ provenance via the default predicate) — see [`security/sbom/README.md`](../sec
 Both steps are guarded (push-to-`main`, non-private-user-repo) and fail closed, not
 `continue-on-error`.
 
+"Publish attestations alongside releases" is implemented by
+[`release.yml`](../.github/workflows/release.yml): when a maintainer publishes a GitHub
+Release (the human act is the AGENTS.md §5.1 publish approval — the workflow has no
+automatic trigger), the tagged commit is built and the release gets the wheel + sdist, the
+drift-gated CycloneDX SBOM, and both Sigstore attestation bundles
+(`sbom-attestation.intoto.jsonl`, `provenance-attestation.intoto.jsonl`) attached as
+assets for offline verification. Fail-closed end to end; re-runs are idempotent
+(`--clobber`).
+
 **Objective.** Extend the existing CycloneDX SBOM step into signed, verifiable build provenance,
 so consumers can confirm what was built, from which sources, by which workflow.
 

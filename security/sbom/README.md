@@ -155,6 +155,13 @@ already a required SCA gate; the npm path uses only the standard library.
   # Build-provenance attestation — verifies with the default predicate:
   gh attestation verify <artifact> --repo <owner>/<repo>
   ```
+
+  Every **GitHub Release** additionally ships the wheel + sdist, this SBOM, and
+  both Sigstore attestation bundles (`sbom-attestation.intoto.jsonl`,
+  `provenance-attestation.intoto.jsonl`) as downloadable assets, so artifacts
+  can be verified offline with `gh attestation verify <artifact> --bundle <bundle>`
+  — no API access required (`.github/workflows/release.yml`; runs only when a
+  maintainer publishes a release).
 - **Anti-drift:** the `sbom-sync` CI job fails closed if the derived pip locks
   disagree with `uv.lock` (`scripts/check_locks.py`) or if `sbom.cdx.json` is not
   regenerated from the committed lock. So a Dependabot bump that updates `uv.lock`
