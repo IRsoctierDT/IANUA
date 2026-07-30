@@ -1,0 +1,109 @@
+# release.yml — IANUA
+# Place at:  .github/workflows/release.yml
+#
+# Attaches verifiable supply-chain artifacts to every GitHub Release:
+# built distributions (wheel + sdist), the CycloneDX SBOM, and the Sigstore
+# attestation bundles (SBOM predicate + SLSA build provenance), so consumers
+# get everything needed for offline verification from the release page itself.
+# Closes docs/HARDENING_ROADMAP.md §4's remaining gap: "publish attestations
+# alongside releases."
+#
+# Human approval gate (AGENTS.md §5.1 "publishing packages"): this workflow
+# has NO automatic trigger — it runs only when a maintainer publishes a
+# release in the GitHub UI/CLI, which is itself the recorded human approval.
+# It never fires on push, schedule, or pull_request, and it uploads assets
+# only to the release the human just published.
+#
+# Fail-closed (HARDENING_ROADMAP §4 acceptance criteria): a build, signing,
+# or upload failure fails the job — no continue-on-error anywhere.
+
+name: Release assets
+
+on:
+  release:
+    types: [published]
+
+# Least privilege by default; the job opts into exactly what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-assets:
+    name: Attach dists + SBOM + attestations to the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # upload assets to this repo's releases
+      id-token: write       # OIDC for Sigstore keyless signing
+      attestations: write   # write the signed attestations
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # checkout resolves to the tagged commit for release events — the
+          # dists are built from exactly what the human tagged.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+      - name: Verify the committed SBOM is usable before shipping it
+        # The tag is expected to point at a CI-green main commit (drift gates
+        # already proved SBOM <-> uv.lock sync there). This is a last-line
+        # structural check so a malformed or missing SBOM can never be
+        # attached to a release: fail closed, do not regenerate here — the
+        # committed, drift-gated file is the canonical artifact.
+        run: |
+          jq -e '.bomFormat == "CycloneDX" and (.serialNumber | length > 0)' \
+            security/sbom/sbom.cdx.json >/dev/null \
+            || { echo "::error::security/sbom/sbom.cdx.json missing or malformed"; exit 1; }
+      - run: pip install build
+      - name: Build distributions from the tagged commit
+        run: python -m build
+      - name: Attest SBOM for the release artifacts (Sigstore)
+        # Same skip guard as ci.yml: the Attestations API rejects user-owned
+        # private repos. Skip (not continue-on-error) so real signing errors
+        # still fail the release everywhere attestation is supported.
+        id: attest-sbom
+        if: >-
+          !(github.event.repository.private == true &&
+            github.event.repository.owner.type == 'User')
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: "dist/*"
+          predicate-type: "https://cyclonedx.org/bom"
+          predicate-path: "security/sbom/sbom.cdx.json"
+      - name: Attest build provenance for the release artifacts (SLSA)
+        id: attest-provenance
+        if: >-
+          !(github.event.repository.private == true &&
+            github.event.repository.owner.type == 'User')
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
+        with:
+          subject-path: "dist/*"
+      - name: Stage attestation bundles under stable asset names
+        # bundle-path files carry generated names; copy to stable, documented
+        # names so release consumers and verification docs can rely on them.
+        # Paths flow through env, never inline shell interpolation (injection
+        # hygiene, even for action-generated values).
+        if: steps.attest-sbom.outputs.bundle-path != ''
+        env:
+          SBOM_BUNDLE: ${{ steps.attest-sbom.outputs.bundle-path }}
+          PROVENANCE_BUNDLE: ${{ steps.attest-provenance.outputs.bundle-path }}
+        run: |
+          cp "$SBOM_BUNDLE" sbom-attestation.intoto.jsonl
+          cp "$PROVENANCE_BUNDLE" provenance-attestation.intoto.jsonl
+      - name: Upload assets to the release
+        # --clobber makes re-runs idempotent (AGENTS.md §3 determinism &
+        # idempotence): re-publishing replaces assets, never duplicates them.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          assets=(dist/* security/sbom/sbom.cdx.json)
+          for bundle in sbom-attestation.intoto.jsonl provenance-attestation.intoto.jsonl; do
+            [ -f "$bundle" ] && assets+=("$bundle")
+          done
+          gh release upload "$TAG" "${assets[@]}" --clobber
+          echo "Attached: ${assets[*]}"
