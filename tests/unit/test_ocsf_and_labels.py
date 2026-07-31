@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import typing
 
 import pytest
@@ -124,3 +125,34 @@ class TestOrchestratorLabeling:
         )
         labels = {sl["source"]: sl["label"] for sl in result["source_labels"]}
         assert labels == {"198.51.100.9": "unknown"}
+
+    @pytest.mark.unit
+    def test_canary_event_source_is_labeled_malicious(self, tmp_path: object) -> None:
+        """End-to-end wiring: a real OpenCanary-shaped event must surface as a
+        malicious source label AND carry a per-event source (src_host), so it
+        participates in correlation and risk scoring — the review finding was
+        that intersecting differently-extracted source populations made this
+        path unreachable."""
+        canary_event = json.dumps(
+            {
+                "logtype": 4002,
+                "src_host": "203.0.113.9",
+                "dst_host": "10.0.0.1",
+                "message": "canary ssh service login attempt",
+            }
+        )
+        events = [
+            "Failed password for root from 198.51.100.9 port 22 ssh2",
+            canary_event,
+        ]
+        result = OrchestratorAgent().process_sequence(
+            events,
+            report_path=str(tmp_path / "r.md"),  # type: ignore[operator]
+        )
+        labels = {sl["source"]: sl for sl in result["source_labels"]}
+        assert "203.0.113.9" in labels, "canary source missing from labels"
+        assert labels["203.0.113.9"]["label"] == "malicious"
+        assert "canary" in labels["203.0.113.9"]["rule"]
+        # The canary event also carries a source at the event level now.
+        canary_entries = [e for e in result["sequence"]["events"] if e["source"] == "203.0.113.9"]
+        assert canary_entries, "canary event has no extracted source (src_host)"

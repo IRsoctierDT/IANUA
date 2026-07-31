@@ -635,7 +635,10 @@ class SocAnalystAgent:
         here are counted in ``uncorrelated_event_count`` so the exclusion is
         visible, never silent.
         """
-        for key in ("src_ip", "source_ip", "ip", "remote_addr"):
+        # src_host is the OpenCanary/canary event source field — without it,
+        # canary events carry no source and silently drop out of correlation,
+        # risk scoring, and labeling (found in review; pinned by test).
+        for key in ("src_ip", "source_ip", "ip", "remote_addr", "src_host"):
             if key in structured:
                 return str(structured[key])
         tokens = log_text.replace(",", " ").split()
