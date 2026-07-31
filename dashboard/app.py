@@ -59,10 +59,45 @@ with st.sidebar.expander("Ollama Models"):
 
 agent = OrchestratorAgent()
 
-tab_soc, tab_batch, tab_kb, tab_health, tab_reports, tab_approvals, tab_compliance = st.tabs(
+
+@st.cache_data
+def _load_navigator_layer() -> dict | None:
+    """Return the committed ATT&CK Navigator layer, or None if absent.
+
+    Read-only and fail-soft: a missing/unreadable layer degrades the tab to an
+    informational note rather than erroring the app.
+    """
+    path = Path("docs/attack-navigator-layer.json")
+    try:
+        layer = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return layer if isinstance(layer, dict) else None
+
+
+@st.cache_data
+def _sigma_rule_count() -> int:
+    """Count Sigma rule files in the corpus (display metric; fail-soft to 0)."""
+    try:
+        return len(list(Path("detections/sigma").glob("*.yml")))
+    except OSError:
+        return 0
+
+
+(
+    tab_soc,
+    tab_batch,
+    tab_coverage,
+    tab_kb,
+    tab_health,
+    tab_reports,
+    tab_approvals,
+    tab_compliance,
+) = st.tabs(
     [
         "SOC Workflow",
         "Batch Processing",
+        "Detection Coverage",
         "Knowledge Base Search",
         "System Health",
         "Reports",
@@ -303,6 +338,10 @@ SAMPLE_SCENARIOS = {
     "SSH brute force (5 events)": "ssh_brute_force.log",
     "Auth batch — failures then success (3 events)": "auth_batch.log",
     "ARP spoofing / adversary-in-the-middle (4 events)": "arp_spoofing.log",
+    "Persistence chain — account created → privileged → history cleared (4 events)": (
+        "persistence_chain.log"
+    ),
+    "Recon → port scan → firewall blocks → login attempt (5 events)": "recon_scan.log",
 }
 
 with tab_batch:
@@ -362,6 +401,40 @@ with tab_batch:
             col_score.metric("Severity score", f"{sequence['severity_score']} / 100")
             col_events.metric("Events analyzed", sequence["event_count"])
             st.caption(sequence["summary"])
+
+            # Honest-degradation strip: surface analysis caveats the result
+            # already records, so evasion-by-formatting is visible, not buried.
+            caveats = []
+            uncorrelated = sequence.get("uncorrelated_event_count", 0)
+            if uncorrelated:
+                caveats.append(
+                    f"{uncorrelated} event(s) had no extractable source and were "
+                    "excluded from source-based correlation."
+                )
+            for assumption in sequence.get("assumptions", []):
+                if "failed to parse" in assumption:
+                    caveats.append(assumption)
+            if caveats:
+                st.warning("**Analysis caveats** — " + " ".join(caveats))
+
+            st.subheader("Entity Risk (RBA)")
+            st.caption(
+                "Per-entity risk: each event's severity is weighted by type and "
+                "accumulated per source. A finding is raised only when an entity "
+                "crosses the threshold — every finding is explainable."
+            )
+            risk_findings = result.get("risk_findings", [])
+            if risk_findings:
+                for rf in risk_findings:
+                    st.markdown(
+                        f"- **`{rf['entity']}`** — risk **{rf['total_score']}** "
+                        f"(threshold {rf['threshold']}), {rf['contribution_count']} "
+                        f"event(s), dominant: _{rf['dominant_event_type']}_"
+                    )
+                    with st.expander(f"Risk story for {rf['entity']}"):
+                        st.dataframe(rf["contributions"], use_container_width=True)
+            else:
+                st.caption("No entity crossed the risk threshold in this batch.")
 
             st.subheader("Correlated Findings")
             findings = sequence["findings"]
@@ -434,6 +507,44 @@ with tab_batch:
             if sequence_report.exists():
                 with st.expander("Sequence Incident Report (Markdown)"):
                     st.markdown(sequence_report.read_text(encoding="utf-8"))
+
+with tab_coverage:
+    st.subheader("ATT&CK Detection Coverage")
+    st.caption(
+        "The techniques the Sigma corpus detects, generated deterministically "
+        "from detections/sigma/ (drift-gated in CI). Load the exported layer "
+        "into the MITRE ATT&CK Navigator for the full heatmap."
+    )
+    layer = _load_navigator_layer()
+    if layer is None:
+        st.info(
+            "Coverage layer not found — run "
+            "`python scripts/build_attack_navigator.py` to generate it."
+        )
+    else:
+        techniques = layer.get("techniques", [])
+        col_t, col_r = st.columns(2)
+        col_t.metric("Techniques covered", len(techniques))
+        col_r.metric("Sigma rules", _sigma_rule_count())
+        st.markdown("**Covered techniques** (score = rules covering each):")
+        st.dataframe(
+            [
+                {
+                    "technique": t["techniqueID"],
+                    "rules": t["score"],
+                    "detected_by": t["comment"].removeprefix("Detected by: "),
+                }
+                for t in techniques
+            ],
+            use_container_width=True,
+        )
+        st.download_button(
+            "Download ATT&CK Navigator layer (JSON)",
+            data=json.dumps(layer, indent=2, sort_keys=True),
+            file_name="attack-navigator-layer.json",
+            mime="application/json",
+            help="Import at mitre-attack.github.io/attack-navigator",
+        )
 
 with tab_kb:
     category = st.selectbox(
