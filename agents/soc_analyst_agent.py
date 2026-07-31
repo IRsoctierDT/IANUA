@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal, cast
 
 from agents import versioned_agent_name
+from agents.tools.ocsf import normalize as ocsf_normalize
 
 Severity = Literal["low", "medium", "high", "critical", "unknown"]
 
@@ -61,6 +62,9 @@ class SocAnalysisResult:
     severity: Severity
     severity_score: int
     event_type: str
+    # OCSF event-class descriptor for the event_type (category/class uid+name,
+    # schema version, mapped flag) — vendor-neutral schema alignment.
+    ocsf: dict[str, Any]
     indicators: list[str]
     evidence: list[EvidenceEntry]
     recommended_actions: list[str]
@@ -165,6 +169,7 @@ class SocAnalystAgent:
             severity=severity,
             severity_score=severity_score,
             event_type=event_type,
+            ocsf=ocsf_normalize(event_type),
             indicators=indicators,
             evidence=evidence,
             recommended_actions=self._recommend_actions(event_type, severity),

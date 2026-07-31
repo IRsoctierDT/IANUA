@@ -22,6 +22,7 @@ from agents.risk_engine import RiskContribution, RiskEngine
 from agents.soc_analyst_agent import SocAnalystAgent
 from agents.threat_intel_agent import ThreatIntelAgent
 from agents.tools.llm import Generator, resolve_generator
+from agents.tools.scanner_labels import canary_source, label_source
 
 
 class OrchestratorAgent:
@@ -181,6 +182,16 @@ class OrchestratorAgent:
         ]
         risk_findings = self.risk.score_as_dicts(risk_contributions)
 
+        # Deterministic source labeling (GreyNoise-style four-way taxonomy from
+        # static reviewed lists; canary interactions mark a source malicious).
+        canary_sources = {src for event in event_list if (src := canary_source(event))}
+        source_labels = [
+            label_source(source, canary_hit=source in canary_sources)
+            for source in sorted(
+                {entry["source"] for entry in sequence_result["events"] if entry["source"]}
+            )
+        ]
+
         self.report.generate_report(
             log_text,
             report_path,
@@ -205,6 +216,7 @@ class OrchestratorAgent:
             "sequence_detections": sequence_detections,
             "citations": citations,
             "risk_findings": risk_findings,
+            "source_labels": source_labels,
         }
 
 
