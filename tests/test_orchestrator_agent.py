@@ -123,6 +123,12 @@ def test_process_sequence_returns_sequence_and_report(tmp_path: Path) -> None:
     assert "brute_force" in content
     # Threat intel covers the sequence-wide indicator union.
     assert len(result["threat_intel"]) == 1
+    # RBA: four scored events from one source (203.0.113.7) accumulate past
+    # the default threshold, surfacing exactly one entity risk finding.
+    risk = result["risk_findings"]
+    assert len(risk) == 1
+    assert risk[0]["entity"] == "203.0.113.7"
+    assert risk[0]["total_score"] >= risk[0]["threshold"]
 
 
 @pytest.mark.unit

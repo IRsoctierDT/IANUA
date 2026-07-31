@@ -1,0 +1,82 @@
+{
+  "_comment": "Known-good (should_fire) and known-bad (should_not_fire) events for each base Sigma rule. Consumed by tests/test_sigma_replay.py so every base rule is regression-tested against real event shapes (detection-as-code). Field names match each rule's detection selection keys; the evaluator lowercases values.",
+  "ssh_failed_password": {
+    "should_fire": [
+      {"message": "Failed password for root from 10.0.0.5 port 22 ssh2"},
+      {"message": "Failed password for invalid user admin from 203.0.113.9"}
+    ],
+    "should_not_fire": [
+      {"message": "Accepted password for root from 10.0.0.5 port 22 ssh2"},
+      {"message": "session opened for user root by (uid=0)"}
+    ]
+  },
+  "ssh_accepted_root_login": {
+    "should_fire": [
+      {"message": "Accepted password for root from 10.0.0.5 port 22 ssh2"},
+      {"message": "Accepted publickey for root from 198.51.100.7 port 41111 ssh2"}
+    ],
+    "should_not_fire": [
+      {"message": "Accepted password for alice from 10.0.0.5 port 22 ssh2"},
+      {"message": "Failed password for root from 10.0.0.5 port 22 ssh2"}
+    ]
+  },
+  "firewall_block": {
+    "should_fire": [
+      {"message": "inbound connection blocked from 203.0.113.4 to port 3389"},
+      {"message": "denied TCP 198.51.100.2 -> 10.0.0.1:22"}
+    ],
+    "should_not_fire": [
+      {"message": "outbound connection blocked to 8.8.8.8:53"},
+      {"message": "accepted TCP 10.0.0.2 -> 10.0.0.1:443"}
+    ]
+  },
+  "linux_local_account_created": {
+    "should_fire": [
+      {"message": "useradd: new user: name=svc-backup, UID=1007"},
+      {"message": "new user 'contractor' added"}
+    ],
+    "should_not_fire": [
+      {"message": "userdel: removed user 'contractor'"},
+      {"message": "usermod: added user 'svc' to group 'staff'"}
+    ]
+  },
+  "account_added_to_privileged_group": {
+    "should_fire": [
+      {"message": "usermod: add 'svc-backup' to group 'sudo'"},
+      {"message": "gpasswd: user 'contractor' added by root to group 'wheel'"}
+    ],
+    "should_not_fire": [
+      {"message": "usermod: add 'svc-backup' to group 'staff'"},
+      {"message": "gpasswd: user 'contractor' added to group 'developers'"}
+    ]
+  },
+  "linux_command_history_cleared": {
+    "should_fire": [
+      {"message": "root executed: history -c"},
+      {"message": "shell: unset HISTFILE"}
+    ],
+    "should_not_fire": [
+      {"message": "root executed: history"},
+      {"message": "cat ~/.bash_history"}
+    ]
+  },
+  "network_port_scan": {
+    "should_fire": [
+      {"message": "Suricata alert: ET SCAN nmap TCP port scan from 203.0.113.7"},
+      {"message": "masscan probe burst from 198.51.100.9"}
+    ],
+    "should_not_fire": [
+      {"message": "Suricata alert: ET MALWARE beacon from 10.0.0.5"},
+      {"message": "connection established to 10.0.0.1:443"}
+    ]
+  },
+  "arp_cache_poisoning": {
+    "should_fire": [
+      {"message": "arp info: 10.0.0.1 moved from aa:bb:cc:dd:ee:ff to 11:22:33:44:55:66"}
+    ],
+    "should_not_fire": [
+      {"message": "dhcpd: DHCPACK on 10.0.0.20 to aa:bb:cc:dd:ee:ff bound to lease"},
+      {"message": "kernel: eth0 link up 1000Mbps full duplex"}
+    ]
+  }
+}

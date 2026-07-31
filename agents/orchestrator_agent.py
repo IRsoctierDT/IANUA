@@ -18,6 +18,7 @@ from agents.detection_matcher_agent import DetectionMatcherAgent
 from agents.incident_report_agent import IncidentReportAgent
 from agents.knowledge_base_agent import KnowledgeBaseAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
+from agents.risk_engine import RiskContribution, RiskEngine
 from agents.soc_analyst_agent import SocAnalystAgent
 from agents.threat_intel_agent import ThreatIntelAgent
 from agents.tools.llm import Generator, resolve_generator
@@ -31,6 +32,9 @@ class OrchestratorAgent:
         self.knowledge_base = KnowledgeBaseAgent()
         self.detections = DetectionMatcherAgent()
         self.report = IncidentReportAgent()
+        # Risk-based alerting: aggregates the sequence's per-event scores into
+        # per-entity (source) risk findings (deterministic; see RiskEngine).
+        self.risk = RiskEngine()
         # On by default via env (LLM_NARRATIVE=auto): the report's AI narrative is
         # produced when a local model is reachable, and fails soft otherwise. Pass
         # an explicit generator to override, or set LLM_NARRATIVE=off to disable.
@@ -161,6 +165,22 @@ class OrchestratorAgent:
         sequence_detections = self.detections.match_for_sequence(sequence_result)
         citations = self._verified_citations(soc_result, mitre_result)
 
+        # Risk-based alerting: score each attributable event against its source
+        # entity; findings surface entities whose accumulated risk crosses the
+        # threshold (source-less events cannot be attributed and are skipped —
+        # they are already reported in the sequence's uncorrelated count).
+        risk_contributions = [
+            RiskContribution(
+                entity=entry["source"],
+                event_type=entry["event_type"],
+                score=float(entry["severity_score"]),
+                detail=f"event #{entry['index']} ({entry['severity']})",
+            )
+            for entry in sequence_result["events"]
+            if entry["source"]
+        ]
+        risk_findings = self.risk.score_as_dicts(risk_contributions)
+
         self.report.generate_report(
             log_text,
             report_path,
@@ -184,6 +204,7 @@ class OrchestratorAgent:
             "detections": detection_matches,
             "sequence_detections": sequence_detections,
             "citations": citations,
+            "risk_findings": risk_findings,
         }
 
 

@@ -75,6 +75,12 @@ repos:
         language: system
         files: ^(docs/trust\.(data\.json|html|json)|scripts/build_trust_page\.py)$
         pass_filenames: false
+      - id: attack-navigator-sync
+        name: ATT&CK Navigator layer in sync with the Sigma corpus
+        entry: python scripts/build_attack_navigator.py --check
+        language: system
+        files: ^(detections/sigma/.*\.yml|docs/attack-navigator-layer\.json|scripts/build_attack_navigator\.py)$
+        pass_filenames: false
 
   # --- Secret scanning (detect-secrets) ----------------------------------
   - repo: https://github.com/Yelp/detect-secrets
