@@ -184,12 +184,17 @@ class OrchestratorAgent:
 
         # Deterministic source labeling (GreyNoise-style four-way taxonomy from
         # static reviewed lists; canary interactions mark a source malicious).
+        # The label population is the UNION of extracted event sources and
+        # canary-event sources: canary sources come from the src_host field,
+        # and intersecting two differently-extracted populations previously
+        # made the canary->malicious path unreachable (review finding).
         canary_sources = {src for event in event_list if (src := canary_source(event))}
+        extracted_sources = {
+            entry["source"] for entry in sequence_result["events"] if entry["source"]
+        }
         source_labels = [
             label_source(source, canary_hit=source in canary_sources)
-            for source in sorted(
-                {entry["source"] for entry in sequence_result["events"] if entry["source"]}
-            )
+            for source in sorted(extracted_sources | canary_sources)
         ]
 
         self.report.generate_report(
