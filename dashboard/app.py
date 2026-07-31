@@ -8,6 +8,7 @@ from pathlib import Path
 
 import streamlit as st
 from agents.orchestrator_agent import OrchestratorAgent
+from agents.tools.ocsf import normalize as ocsf_normalize
 from compliance.attestations import AttestationError, record, store_path
 from compliance.attestations import load as load_attestations
 from compliance.controls import ControlStatus
@@ -423,6 +424,22 @@ with tab_batch:
                 "accumulated per source. A finding is raised only when an entity "
                 "crosses the threshold — every finding is explainable."
             )
+            source_labels = result.get("source_labels", [])
+            if source_labels:
+                _BADGE = {
+                    "malicious": "🔴",
+                    "suspicious": "🟠",
+                    "benign-scanner": "🟢",
+                    "unknown": "⚪",
+                }
+                st.markdown(
+                    "**Source labels:** "
+                    + " · ".join(
+                        f"{_BADGE.get(sl['label'], '⚪')} `{sl['source']}` "
+                        f"{sl['label']} ({sl['rule']})"
+                        for sl in source_labels
+                    )
+                )
             risk_findings = result.get("risk_findings", [])
             if risk_findings:
                 for rf in risk_findings:
@@ -455,6 +472,7 @@ with tab_batch:
                     "event": entry["index"] + 1,
                     "log": lines[entry["index"]],
                     "event_type": entry["event_type"],
+                    "ocsf_class": ocsf_normalize(entry["event_type"])["class_name"],
                     "severity": entry["severity"],
                     "severity_score": entry["severity_score"],
                     "source": entry["source"] or "—",
