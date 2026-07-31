@@ -14,10 +14,16 @@
 //     the health panel reports them unavailable and knowledge-base search
 //     fails soft to the offline lexical corpus — the agent pipeline itself is
 //     deterministic and network-free, so SOC/batch/report features fully work.
+//   * Build speed: the full [dashboard] extra includes sentence-transformers,
+//     which drags in PyTorch + the NVIDIA CUDA wheel stack (multi-GB) — and
+//     that semantic path can never run here anyway (it needs Qdrant, which is
+//     absent; kb_search imports it lazily and fails soft by design). So the
+//     container installs only the deps the Codespace actually exercises,
+//     cutting first-build time from many minutes to roughly one.
 {
   "name": "IANUA — interactive test environment",
   "image": "mcr.microsoft.com/devcontainers/python:3.12",
-  "postCreateCommand": "pip install -e \".[dev,dashboard]\"",
+  "postCreateCommand": "pip install -e \".[dev]\" \"streamlit>=1.60.0\" \"qdrant-client>=1.9\"",
   "postAttachCommand": "streamlit run dashboard/app.py --server.headless true --server.port 8501",
   "forwardPorts": [8501],
   "portsAttributes": {
