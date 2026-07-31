@@ -209,7 +209,7 @@ def test_ai_narrative_fails_soft_on_generator_error(tmp_path: Path) -> None:
 
     class _DeadGen:
         def generate(self, prompt: str, *, system: str | None = None) -> str:
-            raise ValidationError("ollama unreachable")
+            raise ValidationError("model returned unparseable output")
 
     agent = IncidentReportAgent()
     output = tmp_path / "report.md"
@@ -221,6 +221,42 @@ def test_ai_narrative_fails_soft_on_generator_error(tmp_path: Path) -> None:
     )
     content = output.read_text(encoding="utf-8")
     assert "AI narrative unavailable" in content
+    # Genuine generator misbehavior keeps the verbatim detail — it is the
+    # debugging signal, distinct from the friendly offline message below.
+    assert "model returned unparseable output" in content
+    assert "local LLM offline" not in content
+
+
+@pytest.mark.unit
+def test_ai_narrative_offline_model_gets_actionable_message(tmp_path: Path) -> None:
+    """Transport failures (model not running) render an analyst-facing note.
+
+    The generator chains the underlying URLError/ConnectionRefusedError as the
+    cause; the report must show the actionable offline message, never a raw
+    socket trace, in the client-deliverable output.
+    """
+    import urllib.error
+
+    from agents.tools.validation import ValidationError
+
+    class _OfflineGen:
+        def generate(self, prompt: str, *, system: str | None = None) -> str:
+            try:
+                raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+            except urllib.error.URLError as exc:
+                raise ValidationError(f"generation request failed: {exc}") from exc
+
+    agent = IncidentReportAgent()
+    output = tmp_path / "report.md"
+    agent.generate_report(
+        "Failed password for root from 10.0.0.5 port 22 ssh2",
+        str(output),
+        generator=_OfflineGen(),
+    )
+    content = output.read_text(encoding="utf-8")
+    assert "local LLM offline" in content
+    assert "Start Ollama" in content
+    assert "Connection refused" not in content  # no raw socket trace in the report
 
 
 # ------------------------------------------------------------------ v1.9: sequence + citations
