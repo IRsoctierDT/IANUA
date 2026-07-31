@@ -1,0 +1,4 @@
+useradd: new user: name=svc-backup, UID=1007, GID=1007, home=/home/svc-backup, shell=/bin/bash
+usermod: add 'svc-backup' to group 'sudo'
+Accepted password for svc-backup from 203.0.113.44 port 52210 ssh2
+root executed: history -c
