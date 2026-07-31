@@ -1,0 +1,103 @@
+{
+  "description": "Techniques covered by the IANUA Sigma detection corpus, generated deterministically from detections/sigma/ by scripts/build_attack_navigator.py. Score = number of rules covering the technique.",
+  "domain": "enterprise-attack",
+  "gradient": {
+    "colors": [
+      "#ffe766",
+      "#ff6666"
+    ],
+    "maxValue": 3,
+    "minValue": 0
+  },
+  "hideDisabled": false,
+  "name": "IANUA Detection Coverage",
+  "sorting": 3,
+  "techniques": [
+    {
+      "color": "",
+      "comment": "Detected by: Network Port Scan Detected; Port Scan Indicated by Repeated Firewall Blocks",
+      "enabled": true,
+      "metadata": [],
+      "score": 2,
+      "showSubtechniques": true,
+      "techniqueID": "T1046"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: Linux Command History Cleared",
+      "enabled": true,
+      "metadata": [],
+      "score": 1,
+      "showSubtechniques": true,
+      "techniqueID": "T1070.003"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: SSH Brute Force Followed by Successful Root Login; Successful SSH Root Login",
+      "enabled": true,
+      "metadata": [],
+      "score": 2,
+      "showSubtechniques": true,
+      "techniqueID": "T1078"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: Linux Account Added to Privileged Group; New Account Created Then Added to Privileged Group",
+      "enabled": true,
+      "metadata": [],
+      "score": 2,
+      "showSubtechniques": true,
+      "techniqueID": "T1098"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: SSH Brute Force - Repeated Failed Passwords; SSH Brute Force Followed by Successful Root Login; SSH Failed Password",
+      "enabled": true,
+      "metadata": [],
+      "score": 3,
+      "showSubtechniques": true,
+      "techniqueID": "T1110"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: Linux Local Account Created; New Account Created Then Added to Privileged Group",
+      "enabled": true,
+      "metadata": [],
+      "score": 2,
+      "showSubtechniques": true,
+      "techniqueID": "T1136.001"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: ARP Cache Poisoning Indicator; Adversary-in-the-Middle Indicated by Repeated ARP Cache Poisoning",
+      "enabled": true,
+      "metadata": [],
+      "score": 2,
+      "showSubtechniques": true,
+      "techniqueID": "T1557"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: ARP Cache Poisoning Indicator; Adversary-in-the-Middle Indicated by Repeated ARP Cache Poisoning",
+      "enabled": true,
+      "metadata": [],
+      "score": 2,
+      "showSubtechniques": true,
+      "techniqueID": "T1557.002"
+    },
+    {
+      "color": "",
+      "comment": "Detected by: Firewall Block - Inbound Connection Denied; Port Scan Indicated by Repeated Firewall Blocks",
+      "enabled": true,
+      "metadata": [],
+      "score": 2,
+      "showSubtechniques": true,
+      "techniqueID": "T1595"
+    }
+  ],
+  "versions": {
+    "attack": "16",
+    "layer": "4.5",
+    "navigator": "5.1.0"
+  }
+}

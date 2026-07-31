@@ -259,6 +259,16 @@ jobs:
       - name: docs/trust.html and trust.json match docs/trust.data.json
         # Same drift-gate pattern for the compliance trust page.
         run: python scripts/build_trust_page.py --check
+      - name: Install PyYAML for the Sigma-corpus drift gate
+        # The status/trust generators are stdlib-only, but the ATT&CK Navigator
+        # layer is parsed from Sigma YAML — the one gate here that needs a real
+        # YAML parser. Install just PyYAML (small, pure fast wheel) rather than
+        # the full dev extra, keeping this drift job lightweight.
+        run: pip install "pyyaml>=6.0"
+      - name: docs/attack-navigator-layer.json matches the Sigma corpus
+        # Same drift-gate pattern: the ATT&CK coverage layer is a pure function
+        # of detections/sigma/, so a new/edited rule must regenerate it.
+        run: python scripts/build_attack_navigator.py --check
 
   build:
     name: Build package

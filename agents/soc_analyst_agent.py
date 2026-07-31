@@ -478,6 +478,28 @@ class SocAnalystAgent:
             for marker in ("moved from", "is using my ip", "spoof", "poison", "duplicate")
         ):
             return "arp spoofing"
+        # Further specific patterns before the generic IDS/alert rule, same
+        # rationale as ARP: the specific classification carries the ATT&CK
+        # mapping and severity even when the event arrives as an IDS alert.
+        # These close the classifier gap with the shipped Sigma content
+        # (account-creation / privileged-group / history-clear rule family).
+        if (
+            "history -c" in lowered
+            or ".bash_history" in lowered
+            or "log file cleared" in lowered
+            or ("auditd" in lowered and any(m in lowered for m in ("stopped", "disabled")))
+        ):
+            return "log tampering"
+        if (
+            "group" in lowered
+            and any(g in lowered for g in ("sudo", "wheel", "admin", "adm"))
+            and any(m in lowered for m in ("usermod", "gpasswd", "added"))
+        ):
+            return "privileged group addition"
+        if "useradd" in lowered or "new user" in lowered or "new account" in lowered:
+            return "account creation"
+        if any(m in lowered for m in ("nmap", "port scan", "portscan", "masscan")):
+            return "port scan"
         if "suricata" in lowered or "alert" in lowered:
             return "ids alert"
         if "blocked" in lowered or "deny" in lowered:
@@ -529,6 +551,19 @@ class SocAnalystAgent:
             # Adversary-in-the-middle setup: interception of credentials and
             # session data follows directly, so a single indicator is high.
             return "high"
+        if event_type == "log tampering":
+            # Destroying audit evidence is post-compromise behavior; treat a
+            # single indicator as high — there is rarely a benign burst of it.
+            return "high"
+        if event_type == "privileged group addition":
+            # Direct privilege escalation / persistence signal.
+            return "high"
+        if event_type == "account creation":
+            # Low signal alone (routine onboarding), meaningful in sequence
+            # with privilege changes — the Sigma correlation covers the chain.
+            return "medium"
+        if event_type == "port scan":
+            return "medium"
         if event_type == "ids alert":
             return "medium"
         if event_type == "firewall block":
@@ -709,6 +744,34 @@ class SocAnalystAgent:
                 [
                     "Review IDS signature metadata and packet capture.",
                     "Correlate with destination asset exposure.",
+                ]
+            )
+        if event_type == "log tampering":
+            actions.extend(
+                [
+                    "Treat the host as compromised until reviewed — evidence destruction is post-compromise behavior.",
+                    "Recover audit trail from remote/forwarded log copies.",
+                ]
+            )
+        if event_type == "privileged group addition":
+            actions.extend(
+                [
+                    "Verify the change against change-management records.",
+                    "Review the target account's creation time and recent activity.",
+                ]
+            )
+        if event_type == "account creation":
+            actions.extend(
+                [
+                    "Confirm the account was provisioned through an approved process.",
+                    "Watch for follow-on privilege changes on the same account.",
+                ]
+            )
+        if event_type == "port scan":
+            actions.extend(
+                [
+                    "Identify the scan source and whether it is an authorized scanner.",
+                    "Review exposure of the probed ports and services.",
                 ]
             )
         if severity in {"high", "critical"}:
