@@ -51,6 +51,19 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
             return _render_structured(generate_json(facts, system=_NARRATIVE_SYSTEM))
         return generator.generate(facts, system=_NARRATIVE_SYSTEM).strip()
     except ValidationError as exc:
+        # Analyst-facing taxonomy: a transport failure (model simply not
+        # running — the generator chains URLError/TimeoutError/OSError as the
+        # cause) gets an actionable message instead of a raw socket trace,
+        # which reads as breakage in a client-deliverable report. Genuine
+        # generator misbehavior (e.g. unparseable model output) stays verbatim
+        # — that detail is the debugging signal.
+        if isinstance(exc.__cause__, OSError):
+            return (
+                "_AI narrative unavailable — local LLM offline (model not "
+                "reachable on loopback). Start Ollama or llama-server to enable "
+                "this section; all findings above are deterministic and "
+                "unaffected._"
+            )
         return f"_AI narrative unavailable (generator error: {exc})._"
 
 
