@@ -109,6 +109,93 @@ class MitreMapperAgent:
                 )
             )
 
+        if "log tampering" in normalized_event:
+            return asdict(
+                MitreMappingResult(
+                    event_type=event_type,
+                    tactic="Defense Evasion",
+                    technique="Indicator Removal: Clear Command History",
+                    technique_id="T1070.003",
+                    confidence="medium",
+                    evidence=[
+                        "Audit-evidence destruction indicator detected "
+                        "(history cleared, log removed, or audit daemon stopped).",
+                        "Clearing evidence is post-compromise behavior — it presumes "
+                        "there was activity worth hiding.",
+                    ],
+                    recommended_investigation=[
+                        "Recover the audit trail from remote or forwarded log copies.",
+                        "Establish what the account did before the evidence was cleared.",
+                        "Treat the host as compromised until the review completes.",
+                    ],
+                )
+            )
+
+        if "privileged group addition" in normalized_event:
+            return asdict(
+                MitreMappingResult(
+                    event_type=event_type,
+                    tactic="Privilege Escalation",
+                    technique="Account Manipulation",
+                    technique_id="T1098",
+                    confidence="medium",
+                    evidence=[
+                        "An account was added to a privileged group (sudo/wheel/admin).",
+                        "Privileged-group membership grants durable elevated access "
+                        "— a persistence and escalation primitive.",
+                    ],
+                    recommended_investigation=[
+                        "Verify the change against change-management records.",
+                        "Check when the target account was created — a fresh account "
+                        "gaining privilege is the classic persistence chain.",
+                        "Review the actor account that performed the change.",
+                    ],
+                )
+            )
+
+        if "account creation" in normalized_event:
+            return asdict(
+                MitreMappingResult(
+                    event_type=event_type,
+                    tactic="Persistence",
+                    technique="Create Account: Local Account",
+                    technique_id="T1136.001",
+                    confidence="medium",
+                    evidence=[
+                        "A local account was created.",
+                        "Adversaries create local accounts to maintain access that "
+                        "survives credential rotation.",
+                    ],
+                    recommended_investigation=[
+                        "Confirm the account maps to an approved provisioning request.",
+                        "Watch for follow-on privilege changes on the same account.",
+                        "Review the creating account's session for other changes.",
+                    ],
+                )
+            )
+
+        if "port scan" in normalized_event:
+            return asdict(
+                MitreMappingResult(
+                    event_type=event_type,
+                    tactic="Discovery",
+                    technique="Network Service Discovery",
+                    technique_id="T1046",
+                    confidence="medium",
+                    evidence=[
+                        "Port-scanning activity detected (service discovery probes).",
+                        "Service discovery commonly precedes exploitation of the "
+                        "services it enumerates.",
+                    ],
+                    recommended_investigation=[
+                        "Identify the scan source and whether it is an authorized "
+                        "scanner (vulnerability management, asset inventory).",
+                        "Review exposure of the probed ports and their services.",
+                        "Correlate with follow-on connection attempts from the same source.",
+                    ],
+                )
+            )
+
         if "ids alert" in normalized_event:
             return asdict(
                 MitreMappingResult(

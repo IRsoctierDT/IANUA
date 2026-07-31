@@ -22,14 +22,15 @@ Each rule is tagged with the MITRE ATT&CK technique the **SOC Analyst** and
 | `sigma/ssh_brute_force.yml` | ≥10 failed SSH passwords from one source in 5m (correlation) | T1110 Brute Force | `authentication failure` |
 | `sigma/ssh_successful_root_login.yml` | Successful interactive root SSH login | T1078 Valid Accounts | `successful login` |
 | `sigma/ssh_bruteforce_then_success.yml` | Failed-then-successful root login from one source in 10m (correlation) | T1110 → T1078 | `authentication failure` → `successful login` |
-| `sigma/linux_local_account_created.yml` | Local account creation (useradd) | T1136.001 Create Account | — |
+| `sigma/linux_local_account_created.yml` | Local account creation (useradd) | T1136.001 Create Account | `account creation` |
 | `sigma/firewall_block.yml` | A single blocked/denied inbound connection (base rule) | T1595 Active Scanning | `firewall block` |
 | `sigma/firewall_block_burst.yml` | ≥20 blocks from one source in 5m — port scan / sweep (correlation) | T1595 / T1046 | `firewall block` |
-| `sigma/linux_account_added_to_privileged_group.yml` | Account added to sudo/wheel/admin | T1098 Account Manipulation | — |
-| `sigma/account_created_then_privileged.yml` | Account created then made privileged within 10m (correlation) | T1136.001 → T1098 | — |
-| `sigma/linux_command_history_cleared.yml` | Shell history cleared/disabled | T1070.003 Clear Command History | — |
+| `sigma/linux_account_added_to_privileged_group.yml` | Account added to sudo/wheel/admin | T1098 Account Manipulation | `privileged group addition` |
+| `sigma/account_created_then_privileged.yml` | Account created then made privileged within 10m (correlation) | T1136.001 → T1098 | `account creation` → `privileged group addition` |
+| `sigma/linux_command_history_cleared.yml` | Shell history cleared/disabled | T1070.003 Clear Command History | `log tampering` |
 | `sigma/arp_cache_poisoning.yml` | IP-to-MAC rebinding anomaly (base rule) | T1557.002 AiTM: ARP Cache Poisoning | `arp spoofing` |
 | `sigma/arp_cache_poisoning_burst.yml` | ≥3 ARP anomalies from one MAC in 5m — active AiTM (correlation) | T1557 / T1557.002 | `arp spoofing` |
+| `sigma/network_port_scan.yml` | Port-scan / service-discovery activity (nmap, masscan, IDS scan signatures) | T1046 Network Service Discovery | `port scan` |
 
 ### Correlations
 

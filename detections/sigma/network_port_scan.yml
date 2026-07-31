@@ -1,0 +1,36 @@
+title: Network Port Scan Detected
+name: network_port_scan
+id: 8c3f1a4e-5d27-4b9e-a1c6-91f2d0b7e3aa
+status: experimental
+description: >-
+  Port-scanning / service-discovery activity reported by an IDS or host
+  telemetry (nmap, masscan, generic port-scan signatures). Service discovery
+  commonly precedes exploitation of the services it enumerates. Maps to the
+  SOC Analyst Agent's "port scan" event type; noisy sweeps that manifest as
+  repeated firewall denials are additionally covered by the
+  firewall-block-burst correlation. Lab-scoped and defensive.
+references:
+  - https://attack.mitre.org/techniques/T1046/
+author: IANUA
+date: 2026-07-31
+tags:
+  - attack.discovery
+  - attack.t1046
+logsource:
+  category: ids
+detection:
+  selection_scan:
+    message|contains:
+      - "nmap"
+      - "port scan"
+      - "portscan"
+      - "masscan"
+  condition: selection_scan
+fields:
+  - src_ip
+  - dst_port
+falsepositives:
+  - Authorized vulnerability-management or asset-inventory scanners (maintain
+    an allow-list of scanner source addresses)
+  - Network monitoring tools performing service health checks
+level: medium
