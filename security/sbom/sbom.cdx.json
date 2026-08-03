@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:985c27b0-26cf-5c8c-95e1-5f3683372615",
+  "serialNumber": "urn:uuid:e7027a2a-b16a-5d99-9ba0-ffeef4ac614f",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-07-27T09:26:27Z",
+    "timestamp": "2026-08-03T23:28:41Z",
     "tools": {
       "components": [
         {
@@ -147,11 +147,11 @@
       "purl": "pkg:pypi/coverage@7.14.3"
     },
     {
-      "bom-ref": "pkg:pypi/cryptography@49.0.0",
+      "bom-ref": "pkg:pypi/cryptography@50.0.0",
       "name": "cryptography",
       "type": "library",
-      "version": "49.0.0",
-      "purl": "pkg:pypi/cryptography@49.0.0"
+      "version": "50.0.0",
+      "purl": "pkg:pypi/cryptography@50.0.0"
     },
     {
       "bom-ref": "pkg:pypi/cuda-bindings@13.3.1",
@@ -224,11 +224,11 @@
       "purl": "pkg:pypi/gitdb@4.0.12"
     },
     {
-      "bom-ref": "pkg:pypi/gitpython@3.1.55",
+      "bom-ref": "pkg:pypi/gitpython@3.1.57",
       "name": "gitpython",
       "type": "library",
-      "version": "3.1.55",
-      "purl": "pkg:pypi/gitpython@3.1.55"
+      "version": "3.1.57",
+      "purl": "pkg:pypi/gitpython@3.1.57"
     },
     {
       "bom-ref": "pkg:pypi/grpcio@1.81.1",
@@ -301,11 +301,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.161.6",
+      "bom-ref": "pkg:pypi/hypothesis@6.164.0",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.161.6",
-      "purl": "pkg:pypi/hypothesis@6.161.6"
+      "version": "6.164.0",
+      "purl": "pkg:pypi/hypothesis@6.164.0"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -805,11 +805,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.16.0",
+      "bom-ref": "pkg:pypi/ruff@0.16.1",
       "name": "ruff",
       "type": "library",
-      "version": "0.16.0",
-      "purl": "pkg:pypi/ruff@0.16.0"
+      "version": "0.16.1",
+      "purl": "pkg:pypi/ruff@0.16.1"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -1030,15 +1030,15 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/@google/design.md@0.3.0",
+      "bom-ref": "pkg:npm/@google/design.md@0.4.0",
       "name": "@google/design.md",
-      "version": "0.3.0",
-      "purl": "pkg:npm/@google/design.md@0.3.0",
+      "version": "0.4.0",
+      "purl": "pkg:npm/@google/design.md@0.4.0",
       "scope": "optional",
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "fe6871a44911e2258db8744ddf110e96f3f49d1eab959fc238d003ce1dd36eab1a4cf6315c9a231f81a35b71bdfd4f6e1767ee39d05475107bd864db58b45b46"
+          "content": "eda348bfa86c971219f62817ab569b6d5bbeb9efdfb7fa05314ac0ba1ce95458a31abf6ffa5d0292408142c1e8cee70d8991c8052e375c2ea5f20603651cacf5"
         }
       ]
     },

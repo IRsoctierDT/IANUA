@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:48d1e5df-419a-5a4e-aa5d-4b3d5e37e310",
+  "serialNumber": "urn:uuid:4cd3bf63-fafb-5414-ad4b-7cb0dea5d0cf",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-07-27T09:26:27Z",
+    "timestamp": "2026-08-03T23:28:41Z",
     "tools": {
       "components": [
         {
@@ -36,15 +36,15 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:npm/@google/design.md@0.3.0",
+      "bom-ref": "pkg:npm/@google/design.md@0.4.0",
       "name": "@google/design.md",
-      "version": "0.3.0",
-      "purl": "pkg:npm/@google/design.md@0.3.0",
+      "version": "0.4.0",
+      "purl": "pkg:npm/@google/design.md@0.4.0",
       "scope": "optional",
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "fe6871a44911e2258db8744ddf110e96f3f49d1eab959fc238d003ce1dd36eab1a4cf6315c9a231f81a35b71bdfd4f6e1767ee39d05475107bd864db58b45b46"
+          "content": "eda348bfa86c971219f62817ab569b6d5bbeb9efdfb7fa05314ac0ba1ce95458a31abf6ffa5d0292408142c1e8cee70d8991c8052e375c2ea5f20603651cacf5"
         }
       ]
     },
