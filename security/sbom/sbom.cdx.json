@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:e7027a2a-b16a-5d99-9ba0-ffeef4ac614f",
+  "serialNumber": "urn:uuid:3ad9c7d5-3862-5edf-b2f0-9a44dab7ec6c",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-03T23:28:41Z",
+    "timestamp": "2026-08-10T06:03:25Z",
     "tools": {
       "components": [
         {
@@ -224,11 +224,11 @@
       "purl": "pkg:pypi/gitdb@4.0.12"
     },
     {
-      "bom-ref": "pkg:pypi/gitpython@3.1.57",
+      "bom-ref": "pkg:pypi/gitpython@3.1.58",
       "name": "gitpython",
       "type": "library",
-      "version": "3.1.57",
-      "purl": "pkg:pypi/gitpython@3.1.57"
+      "version": "3.1.58",
+      "purl": "pkg:pypi/gitpython@3.1.58"
     },
     {
       "bom-ref": "pkg:pypi/grpcio@1.81.1",
@@ -245,11 +245,11 @@
       "purl": "pkg:pypi/h11@0.16.0"
     },
     {
-      "bom-ref": "pkg:pypi/h2@4.3.0",
+      "bom-ref": "pkg:pypi/h2@4.4.1",
       "name": "h2",
       "type": "library",
-      "version": "4.3.0",
-      "purl": "pkg:pypi/h2@4.3.0"
+      "version": "4.4.1",
+      "purl": "pkg:pypi/h2@4.4.1"
     },
     {
       "bom-ref": "pkg:pypi/hf-xet@1.5.1",
@@ -259,11 +259,11 @@
       "purl": "pkg:pypi/hf-xet@1.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/hpack@4.1.0",
+      "bom-ref": "pkg:pypi/hpack@4.2.0",
       "name": "hpack",
       "type": "library",
-      "version": "4.1.0",
-      "purl": "pkg:pypi/hpack@4.1.0"
+      "version": "4.2.0",
+      "purl": "pkg:pypi/hpack@4.2.0"
     },
     {
       "bom-ref": "pkg:pypi/httpcore@1.0.9",
