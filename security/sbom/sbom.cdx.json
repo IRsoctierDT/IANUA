@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:3ad9c7d5-3862-5edf-b2f0-9a44dab7ec6c",
+  "serialNumber": "urn:uuid:cc9021ba-a216-555a-93e9-daec60081418",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-10T06:03:25Z",
+    "timestamp": "2026-08-10T18:44:55Z",
     "tools": {
       "components": [
         {
@@ -217,20 +217,6 @@
       "purl": "pkg:pypi/fsspec@2026.6.0"
     },
     {
-      "bom-ref": "pkg:pypi/gitdb@4.0.12",
-      "name": "gitdb",
-      "type": "library",
-      "version": "4.0.12",
-      "purl": "pkg:pypi/gitdb@4.0.12"
-    },
-    {
-      "bom-ref": "pkg:pypi/gitpython@3.1.58",
-      "name": "gitpython",
-      "type": "library",
-      "version": "3.1.58",
-      "purl": "pkg:pypi/gitpython@3.1.58"
-    },
-    {
       "bom-ref": "pkg:pypi/grpcio@1.81.1",
       "name": "grpcio",
       "type": "library",
@@ -301,11 +287,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.164.0",
+      "bom-ref": "pkg:pypi/hypothesis@6.165.2",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.164.0",
-      "purl": "pkg:pypi/hypothesis@6.164.0"
+      "version": "6.165.2",
+      "purl": "pkg:pypi/hypothesis@6.165.2"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -567,11 +553,11 @@
       "purl": "pkg:pypi/packageurl-python@0.17.6"
     },
     {
-      "bom-ref": "pkg:pypi/packaging@26.2",
+      "bom-ref": "pkg:pypi/packaging@26.3",
       "name": "packaging",
       "type": "library",
-      "version": "26.2",
-      "purl": "pkg:pypi/packaging@26.2"
+      "version": "26.3",
+      "purl": "pkg:pypi/packaging@26.3"
     },
     {
       "bom-ref": "pkg:pypi/pandas@3.0.3",
@@ -756,11 +742,11 @@
       "purl": "pkg:pypi/pyyaml@6.0.3"
     },
     {
-      "bom-ref": "pkg:pypi/qdrant-client@1.18.0",
+      "bom-ref": "pkg:pypi/qdrant-client@1.19.0",
       "name": "qdrant-client",
       "type": "library",
-      "version": "1.18.0",
-      "purl": "pkg:pypi/qdrant-client@1.18.0"
+      "version": "1.19.0",
+      "purl": "pkg:pypi/qdrant-client@1.19.0"
     },
     {
       "bom-ref": "pkg:pypi/referencing@0.37.0",
@@ -833,11 +819,11 @@
       "purl": "pkg:pypi/scipy@1.18.0"
     },
     {
-      "bom-ref": "pkg:pypi/sentence-transformers@5.6.1",
+      "bom-ref": "pkg:pypi/sentence-transformers@5.7.0",
       "name": "sentence-transformers",
       "type": "library",
-      "version": "5.6.1",
-      "purl": "pkg:pypi/sentence-transformers@5.6.1"
+      "version": "5.7.0",
+      "purl": "pkg:pypi/sentence-transformers@5.7.0"
     },
     {
       "bom-ref": "pkg:pypi/setuptools@83.0.0",
@@ -861,13 +847,6 @@
       "purl": "pkg:pypi/six@1.17.0"
     },
     {
-      "bom-ref": "pkg:pypi/smmap@5.0.3",
-      "name": "smmap",
-      "type": "library",
-      "version": "5.0.3",
-      "purl": "pkg:pypi/smmap@5.0.3"
-    },
-    {
       "bom-ref": "pkg:pypi/sortedcontainers@2.4.0",
       "name": "sortedcontainers",
       "type": "library",
@@ -889,11 +868,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.60.0",
+      "bom-ref": "pkg:pypi/streamlit@1.61.1",
       "name": "streamlit",
       "type": "library",
-      "version": "1.60.0",
-      "purl": "pkg:pypi/streamlit@1.60.0"
+      "version": "1.61.1",
+      "purl": "pkg:pypi/streamlit@1.61.1"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
