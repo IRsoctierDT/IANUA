@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:cc9021ba-a216-555a-93e9-daec60081418",
+  "serialNumber": "urn:uuid:19e094b2-f420-5a98-bba1-dcd7317c3b83",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-10T18:44:55Z",
+    "timestamp": "2026-08-17T20:41:15Z",
     "tools": {
       "components": [
         {
@@ -287,11 +287,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.165.2",
+      "bom-ref": "pkg:pypi/hypothesis@6.165.8",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.165.2",
-      "purl": "pkg:pypi/hypothesis@6.165.2"
+      "version": "6.165.8",
+      "purl": "pkg:pypi/hypothesis@6.165.8"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -630,11 +630,11 @@
       "purl": "pkg:pypi/portalocker@3.2.0"
     },
     {
-      "bom-ref": "pkg:pypi/pre-commit@4.6.1",
+      "bom-ref": "pkg:pypi/pre-commit@4.6.2",
       "name": "pre-commit",
       "type": "library",
-      "version": "4.6.1",
-      "purl": "pkg:pypi/pre-commit@4.6.1"
+      "version": "4.6.2",
+      "purl": "pkg:pypi/pre-commit@4.6.2"
     },
     {
       "bom-ref": "pkg:pypi/protobuf@7.35.1",
@@ -791,11 +791,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.16.1",
+      "bom-ref": "pkg:pypi/ruff@0.16.3",
       "name": "ruff",
       "type": "library",
-      "version": "0.16.1",
-      "purl": "pkg:pypi/ruff@0.16.1"
+      "version": "0.16.3",
+      "purl": "pkg:pypi/ruff@0.16.3"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
