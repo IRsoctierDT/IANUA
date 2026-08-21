@@ -121,6 +121,12 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin >= 8.25: .gitleaks.toml's [[allowlists]] + condition syntax is
+          # silently IGNORED by older binaries (the action's cache served
+          # 8.24.3, un-suppressing the reviewed .secrets.baseline digests and
+          # failing the job on lines the allowlist covers). Keep this pin in
+          # step with the minimum documented in .gitleaks.toml.
+          GITLEAKS_VERSION: "8.30.1"
 
   # ---------------------------------------------------------------- Stage 3
   tests:
