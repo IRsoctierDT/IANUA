@@ -112,6 +112,9 @@ ianua/
 │   ├── roles/                 # Role specs (planner, builder, reviewer, security)
 │   ├── tools/                 # Tool adapters; each validates its own input
 │   └── policies/              # Policy engine, audit chain, signing, approval logic
+├── attack/                    # Pinned local MITRE ATT&CK corpus (committed shards + signed pin)
+│   ├── data/                  # Distilled technique/detection/relationship shards (drift-gated)
+│   └── pins/                  # Version pin manifest (sha256 per shard; Ed25519-signable)
 ├── compliance/                # Control registry, framework mappings, evidence engine
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
@@ -272,16 +275,18 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents scripts tests dashboard mcp rag compliance
+mypy agents attack scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents scripts mcp
+bandit -c pyproject.toml -r agents attack scripts mcp
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
 python scripts/build_status_page.py --check   # status page ↔ status.data.json
 python scripts/build_trust_page.py --check    # trust page ↔ trust.data.json
 python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
+python scripts/build_attack_navigator.py --check  # Navigator layer ↔ Sigma corpus + attack/ pin
+python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; revocation invariants
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)

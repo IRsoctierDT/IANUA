@@ -54,7 +54,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy agents scripts tests dashboard mcp rag compliance
+        run: mypy agents attack scripts tests dashboard mcp rag compliance
 
   # ---------------------------------------------------------------- Stage 2
   security:
@@ -84,7 +84,7 @@ jobs:
         # requirements.lock; see security/sbom/requirements-dev.lock.
         run: pip install --require-hashes -r security/sbom/requirements-dev.lock
       - name: Bandit (SAST)
-        run: bandit -c pyproject.toml -r agents scripts mcp
+        run: bandit -c pyproject.toml -r agents attack scripts mcp
       - name: pip-audit (SCA) — gate on the pinned closure
         # Audit the committed Linux/3.12 lock (declared [dev,dashboard] closure),
         # not the ephemeral CI environment. --disable-pip reads the fully-hashed
@@ -121,6 +121,12 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin >= 8.25: .gitleaks.toml's [[allowlists]] + condition syntax is
+          # silently IGNORED by older binaries (the action's cache served
+          # 8.24.3, un-suppressing the reviewed .secrets.baseline digests and
+          # failing the job on lines the allowlist covers). Keep this pin in
+          # step with the minimum documented in .gitleaks.toml.
+          GITLEAKS_VERSION: "8.30.1"
 
   # ---------------------------------------------------------------- Stage 3
   tests:
@@ -267,8 +273,14 @@ jobs:
         run: pip install "pyyaml>=6.0"
       - name: docs/attack-navigator-layer.json matches the Sigma corpus
         # Same drift-gate pattern: the ATT&CK coverage layer is a pure function
-        # of detections/sigma/, so a new/edited rule must regenerate it.
+        # of detections/sigma/ (validated against the pinned attack/ corpus),
+        # so a new/edited rule must regenerate it.
         run: python scripts/build_attack_navigator.py --check
+      - name: ATT&CK corpus integrity gate (pin, shard hashes, tombstones)
+        # Verifies the committed attack/ shards against the signed pin without
+        # the 54 MB upstream bundle: signature (when present), per-shard
+        # SHA-256, canonical rendering, and revocation/successor invariants.
+        run: python scripts/update_attack.py --check
 
   build:
     name: Build package

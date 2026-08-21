@@ -7,8 +7,15 @@ requires = ["setuptools>=84.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agents*", "rag*", "mcp*", "dashboard*", "scripts*", "compliance*"]
+include = ["agents*", "attack*", "rag*", "mcp*", "dashboard*", "scripts*", "compliance*"]
 exclude = ["tests*"]
+
+# Committed data stores that must ship inside a built wheel — a package
+# without its data would degrade silently (e.g. a mapper with no corpus).
+[tool.setuptools.package-data]
+attack = ["data/*.json", "pins/*.json", "collection-index.json"]
+agents = ["policies/policy.json"]
+compliance = ["attestations.json"]
 
 [project]
 name = "ianua"
@@ -96,7 +103,7 @@ exclude = ["*.md"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["agents", "scripts", "tests", "dashboard", "mcp", "rag", "compliance"]
+files = ["agents", "attack", "scripts", "tests", "dashboard", "mcp", "rag", "compliance"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
@@ -125,8 +132,12 @@ module = [
 ]
 ignore_missing_imports = true
 
+
+# Legacy exploratory scripts predating the typing baseline; every other
+# script is fully type-checked (the previous blanket scripts.* ignore hid
+# errors in new gate scripts too).
 [[tool.mypy.overrides]]
-module = "scripts.*"
+module = ["scripts.search_cyber_kb_chunked", "scripts.ingest_cyber_kb_chunked"]
 ignore_errors = true
 
 [tool.pytest.ini_options]
@@ -137,6 +148,8 @@ addopts = [
   "--strict-markers",
   "--strict-config",
   "--cov=agents",
+  "--cov=attack",
+  "--cov=compliance",
   "--cov=rag",
   "--cov=mcp",
   "--cov-report=term-missing",
@@ -150,7 +163,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agents", "rag", "mcp"]
+source = ["agents", "attack", "compliance", "rag", "mcp"]
 omit = ["tests/*", "*/__init__.py"]
 
 [tool.coverage.report]

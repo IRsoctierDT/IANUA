@@ -194,6 +194,7 @@ Verified and recorded in [`NOTICE`](../NOTICE):
 | `knowledge-base/` | Original summaries written for this project; each file cites its authoritative source, no source text reproduced |
 | `compliance/` | This project's own control-to-framework interpretation — not certification, audit, or advice, and not endorsed by any framework owner |
 | `sample-logs/` | Synthetic fixtures; no real hosts, users, addresses, or captured production data |
+| `attack/data/`, `attack/pins/` | **Redistributed third-party data**: distilled from the MITRE ATT&CK® Enterprise STIX bundle (release pinned by SHA-256), © The MITRE Corporation, carried under MITRE's Terms of Use (attribution required; not an OSI license). The Apache-2.0 grant does **not** cover this data — see `attack/ATTRIBUTION.md` and the `NOTICE` third-party-data section. Professional legal review is advisable before any *commercial* redistribution of the distilled corpus |
 | Dependencies | Third-party, each under its own license; the full set with available license metadata is published as CycloneDX SBOMs in `security/sbom/` |
 
 Third-party marks (MITRE ATT&CK®, NIST, OWASP®, CIS®, CompTIA®, SOC 2®,
@@ -211,6 +212,7 @@ affiliation or endorsement.
 | Trademark filed under the wrong owner | Settle the entity question **before** filing (§4) |
 | Someone forks and ships under the IANUA name | `NOTICE` + Apache-2.0 §6 reserve the marks; common-law rights exist from use; registration would strengthen enforcement |
 | Security tooling misused against systems the operator does not own | `LICENSE` §§7–8 disclaim warranty and liability; `SECURITY.md` and `AGENTS.md` §5 state the lawful-lab scope explicitly |
+| ATT&CK data redistributed inside an Apache-2.0 repo implies a grant IANUA cannot make | Demarcated in `NOTICE` (third-party-data section), `attack/ATTRIBUTION.md`, and the provenance table above; the pinned version and source URL are recorded in the pin manifest |
 
 ---
 

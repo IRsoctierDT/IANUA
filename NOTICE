@@ -60,6 +60,21 @@ Sample logs (sample-logs/): synthetic fixtures created for testing. They
 contain no real hosts, users, addresses, or captured production data.
 
 --------------------------------------------------------------------------
+Third-party data
+--------------------------------------------------------------------------
+
+MITRE ATT&CK(R) corpus (attack/data/, attack/pins/): the JSON shards are
+distilled from the MITRE ATT&CK Enterprise STIX bundle, release 19.2,
+retrieved from https://github.com/mitre-attack/attack-stix-data and pinned
+by SHA-256 in attack/pins/enterprise-attack.pin.json. ATT&CK content is
+(c) The MITRE Corporation, reproduced and distributed with the permission
+of The MITRE Corporation under MITRE's Terms of Use
+(https://attack.mitre.org/resources/legal-and-branding/terms-of-use/).
+Those Terms — NOT this repository's Apache-2.0 license — govern the
+distilled ATT&CK data; the Apache-2.0 grant in LICENSE applies to this
+project's own code and content only. Full attribution: attack/ATTRIBUTION.md.
+
+--------------------------------------------------------------------------
 Third-party dependencies
 --------------------------------------------------------------------------
 

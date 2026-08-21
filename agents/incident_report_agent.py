@@ -10,6 +10,7 @@ verification (see ``generate_report``).
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,9 +26,45 @@ _NARRATIVE_SYSTEM = (
 )
 
 
+# Upper bound on one rendered inline value. Log-derived text flows into
+# evidence values and mapper output; an oversized value must not be able to
+# balloon the report or the PDF renderer downstream.
+_MAX_INLINE_LEN = 500
+
+# C0 control characters (minus the newlines handled explicitly) and DEL:
+# stripped rather than escaped — they have no legitimate place in a report and
+# NUL in particular breaks downstream tooling.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize(text: str) -> str:
+    """Flatten newlines, strip control characters, and cap the length."""
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    text = _CONTROL_CHARS_RE.sub("", text)
+    if len(text) > _MAX_INLINE_LEN:
+        text = text[:_MAX_INLINE_LEN] + " …[truncated]"
+    return text
+
+
 def _md_cell(text: str) -> str:
-    """Escape pipe and newline characters so they don't break a Markdown table cell."""
-    return text.replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    """Escape untrusted text for a Markdown table cell or inline position.
+
+    Pipes and backticks are backslash-escaped (a raw backtick would open a
+    code span and swallow the rest of the line); newlines are flattened and
+    control characters stripped via ``_sanitize``.
+    """
+    return _sanitize(text).replace("|", "\\|").replace("`", "\\`")
+
+
+def _md_code(text: str) -> str:
+    """Neutralize untrusted text destined for *inside* a Markdown code span.
+
+    Backslash escapes do not work inside code spans, so a backtick in the
+    value would terminate the span and let the remainder render as active
+    Markdown. The backtick is replaced with an apostrophe — a visible,
+    documented substitution rather than a structural break.
+    """
+    return _sanitize(text).replace("`", "'")
 
 
 def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str:
@@ -100,7 +137,7 @@ def _render_sequence(
     ]
     if findings:
         lines.extend(
-            f"- **{_md_cell(str(f.get('pattern', '')))}** from `{_md_cell(str(f.get('source', '')))}` "
+            f"- **{_md_cell(str(f.get('pattern', '')))}** from `{_md_code(str(f.get('source', '')))}` "
             f"[{f.get('severity', 'N/A')}] — {_md_cell(str(f.get('description', '')))} "
             f"(events {f.get('event_indices', [])})"
             for f in findings
@@ -112,7 +149,7 @@ def _render_sequence(
         if sequence_detections:
             lines.extend(
                 f"- **{_md_cell(str(d.get('title', '')))}** [{d.get('level', 'unknown')}] — "
-                f"`{_md_cell(str(d.get('file', '')))}` "
+                f"`{_md_code(str(d.get('file', '')))}` "
                 f"({d.get('technique', '')}, covers {_md_cell(str(d.get('pattern', '')))})"
                 for d in sequence_detections
             )
@@ -198,7 +235,7 @@ class IncidentReportAgent:
 {datetime.now(UTC).isoformat()}
 
 ## Summary
-{soc_result["summary"]}
+{_md_cell(str(soc_result["summary"]))}
 
 ## Analyst Narrative (AI-generated)
 {narrative}
@@ -217,10 +254,10 @@ class IncidentReportAgent:
 - **Confidence:** {mitre_result["confidence"]}
 
 ### MITRE Evidence
-{chr(10).join(f"- {e}" for e in mitre_result["evidence"])}
+{chr(10).join(f"- {_md_cell(str(e))}" for e in mitre_result["evidence"])}
 
 ### MITRE Investigation Steps
-{chr(10).join(f"- {s}" for s in mitre_result["recommended_investigation"])}
+{chr(10).join(f"- {_md_cell(str(s))}" for s in mitre_result["recommended_investigation"])}
 
 ## Evidence
 
@@ -233,10 +270,10 @@ class IncidentReportAgent:
 **{soc_result.get("severity_score", "N/A")} / 100**
 
 ## Indicators
-{chr(10).join(f"- `{i}`" for i in indicators) if indicators else "- None detected"}
+{chr(10).join(f"- `{_md_code(str(i))}`" for i in indicators) if indicators else "- None detected"}
 
 ## Recommended Actions
-{chr(10).join(f"- {a}" for a in soc_result["recommended_actions"])}
+{chr(10).join(f"- {_md_cell(str(a))}" for a in soc_result["recommended_actions"])}
 
 ## Sequence Correlation
 {_render_sequence(sequence_result, sequence_detections)}
@@ -248,10 +285,10 @@ class IncidentReportAgent:
 {_render_citations(citations)}
 
 ## Detection Coverage
-{chr(10).join(f"- **{_md_cell(d['title'])}** [{d['level']}] — `{d['file']}` ({d['technique']})" for d in detection_matches) if detection_matches else "- No Sigma rule covers this technique yet"}
+{chr(10).join(f"- **{_md_cell(str(d['title']))}** [{_md_cell(str(d['level']))}] — `{_md_code(str(d['file']))}` ({_md_cell(str(d['technique']))})" for d in detection_matches) if detection_matches else "- No Sigma rule covers this technique yet"}
 
 ## Assumptions
-{chr(10).join(f"- {a}" for a in soc_result["assumptions"])}
+{chr(10).join(f"- {_md_cell(str(a))}" for a in soc_result["assumptions"])}
 """
 
         target.write_text(report, encoding="utf-8")

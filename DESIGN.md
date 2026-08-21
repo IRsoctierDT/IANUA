@@ -81,6 +81,7 @@ hard-coded secrets or unaudited external network access (see `AGENTS.md` §5).
 | Path | Responsibility | Key invariants |
 |---|---|---|
 | `agents/roles/` | Role definitions and their mandates | A role announces itself; honors its review priorities |
+| `attack/` | Pinned local MITRE ATT&CK corpus (committed shards + pin) | Never fetched at runtime; zero first-party imports; integrity-verified fail-closed before parse; revocation surfaced, never rewritten |
 | `agents/tools/` | Adapters from agent intent → real capability | Each adapter validates input and enforces least privilege |
 | `agents/policies/` | Guardrails, allow/deny lists, approval logic | Default deny; gates fail closed |
 | `rag/` | Document ingestion and retrieval | Only trusted local sources; no PII/client data |
@@ -112,6 +113,17 @@ a more-trusted one. Crossing one requires validation and (often) an approval gat
 4. **System → Filesystem/Network** — filesystem reach is scoped to the project and lab
    `data/`; network egress is default-deny and limited to lab hosts. Any other egress is a
    gated action.
+
+5. **External ATT&CK STIX bundle → local `attack/` store** — the upstream bundle is
+   untrusted third-party data. A human stages it (no code egress, AGENTS.md §5.1);
+   `scripts/update_attack.py --build` enforces a size ceiling and a nesting-depth scan,
+   verifies the streaming SHA-256 against the committed pin, and only then parses with
+   `RecursionError` handled explicitly. The pin is Ed25519-signable; `--check` verifies
+   signature (when present), per-shard hashes, canonical rendering, and the
+   revocation/successor invariants. A rejected bundle gets a `.REJECTED` forensic
+   marker and an audit record; previously committed shards stay authoritative.
+   Tampering hard-fails (`AttackIntegrityError`); absence degrades soft to an explicit
+   `AttackUnavailableError` — never a guess.
 
 **Sensitive data** (logs, legal docs, client info, credentials, PII) never crosses outward
 across these boundaries and is never committed.
@@ -159,6 +171,9 @@ across these boundaries and is never committed.
 | Dependency vulnerability | Supply-chain compromise | `pip-audit` SCA; pinned, justified deps |
 | Scope creep into offensive tooling | Legal/ethical exposure | Lawful-lab boundary (§5); escalate ambiguous cases |
 | Architectural drift | Erosion of trust boundaries | This doc is authoritative; reviewers enforce it |
+| Poisoned/tampered ATT&CK corpus drives wrong mappings | Confidently incorrect SOC output | Boundary 5 control stack: size ceiling → depth scan → SHA-256 → parse; signable pin; stdlib `json` only; nothing executed |
+| Silent ATT&CK staleness — dead techniques persist in content | Coverage claims drift from reality | Revoked/deprecated retained with successors; append-only tombstone ledger; merge-blocking reference gate in the Navigator builder; expiring MAN-03 attestation |
+| Solo-maintainer decay of the "ongoing" corpus | Currency claim becomes false | Version-distance freshness (advisory, never a gate); expiring attestation flips to "attestation due"; refresh is one documented human command ~2×/year — and if it stops, the dashboard says so |
 
 ---
 
@@ -200,6 +215,9 @@ default.
 | 2026-07-24 | Compliance layer (`compliance/`) with dashboard tab and published trust page | Vanta-style continuous posture monitoring, self-hosted: a registry of deterministic, offline controls evaluates the repository's own security posture, maps results to NIST CSF 2.0 / SOC 2 / ISO 27001 (labeled *indicative* — not an audit), and records evidence to the gitignored `data/compliance/` through the existing hash-chained `AuditLogger` so history tampering is detectable. Properties that cannot be verified offline (branch protection, Pages approval gate) are explicit **manual attestation** controls — they hold framework coverage below 100% rather than silently passing. The public trust page follows the status-page pattern exactly: committed snapshot (`docs/trust.data.json`, schema with no field for check details, so internals cannot leak), deterministic renderer, `--check` drift gate in CI and pre-commit, publishing behind the human-gated Pages deploy. |
 
 | 2026-07-24 | Attestations for manual controls are committed, expiring, and fail-closed | A manual control passes only via a reviewable entry in `compliance/attestations.json` (validated fail-closed; duplicates, bad dates, or extra fields reject the whole store). Attestations expire and revert the control to "attestation due" — no stale claim passes forever. Attested controls count in framework rollups but never in the automated posture score, and attestor names never reach the public trust page. Posture trend history derives purely from the recorded evidence trail. |
+
+| 2026-08-21 | ATT&CK is a committed, pruned, pinned index (`attack/`) — never a fetched bundle, never a code ladder | The enterprise STIX bundle is ~54 MB against a ~6 MiB repo pack, so committing it is out and fetching at analysis time would violate default-deny egress and make the suite network-dependent. A human stages the versioned file in gitignored `data/attack/`; `scripts/update_attack.py --build` verifies size and SHA-256 against the pin *before* parsing, then distils sub-1 MB shards plus an append-only tombstone ledger. There is **no `--fetch` mode**: routing one through `guarded.enforce()` cannot express per-invocation human approval — the only paths to success (an allow-list label, `report_only=True`) are permanent unscoped downgrades of the control. CI does not have the bundle, so `--check` is an integrity/invariant gate, not regenerate-and-diff: pin signature (when present), per-shard hashes, canonical rendering, tombstone invariants, size ceilings. Freshness is *version distance* against a committed collection-index snapshot — advisory only, never an exit code (a time-dependent gate turns `main` red with no commit and invites bulk-extended expiry dates, which destroys the control). The pin is Ed25519-signable via `agents/policies/signing.py` from the gate script (never from `attack/`, which has zero first-party imports); a hash-only pin honestly claims corruption-detection, not tamper-detection. |
+| 2026-08-21 | Revocation is surfaced, never silently rewritten — and a stale reference cannot merge | The index retains every technique the pinned bundle knows, including revoked and deprecated objects, so `lookup("T1064")` answers "deprecated, no replacement" instead of the indistinguishable-from-a-typo `None`. Revoked objects resolve successors through the `revoked-by` STIX relationship; deprecated objects carry no replacement pointer and the invariant check tolerates that asymmetry (it is MITRE's, not ours). The teeth: `scripts/build_attack_navigator.py` previously hard-coded `"attack": "16"` in a *published* artifact and validated tags by regex shape only (accepting `T9999` and every dead ID). It now reads the version from the pin and fails closed on any unresolvable, revoked, or deprecated Sigma tag — a rule pinned to a dead technique cannot merge. ATT&CK v19's restructures (Defense Evasion split into Stealth/Defense Impairment; detection prose moved from `x_mitre_detection` to detection-strategy/analytic objects) landed via the distiller with zero code assumptions broken — the validation of pinning the vocabulary instead of hard-coding it. |
 
 > Append new architectural decisions here (date, decision, rationale) so the history stays
 > auditable.

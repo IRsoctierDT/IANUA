@@ -1,0 +1,20 @@
+{
+  "attack_version": "19.2",
+  "bundle": {
+    "file_name": "enterprise-attack-19.2.json",
+    "sha256": "dc1639caa5501d720e280cf1cbd8fbe009884a0c9b3e6e9ed9d0c25166c3d8f4",
+    "size_bytes": 53835637
+  },
+  "retrieved": "2026-08-21",
+  "schema": 1,
+  "shards": {
+    "catalog.json": "d7b720d7a9eb7bb38c0b268a32d4f75e4625cf3c8bce66063261537e567ce4b3",
+    "descriptions-01.json": "748dffc1963181d704042fcebe73c9178b4fed18000a9352f7455150aeb60dac",
+    "descriptions-02.json": "dd8ac7e2a1872220834bdd36c148965205f914b4644fefe10a636cb4d110592b",
+    "detection-01.json": "9cbb266a5e80f7131c2be10fae5cf7735ffa37f124c8404d15da6f38a2afb34d",
+    "detection-02.json": "39e9e8e32e48e36ae88544671a646160b909da9e04b456fb9fa277b146c5563c",
+    "relationships-01.json": "9879ef2f4d6c9691cbb28efb2c7f507dcb5168afc30625727d53c453700e3972",
+    "tombstones.json": "4cb73e9cc90d175a7049577e97086515fb03b58d6d72d884fccfd23f0db460ab"
+  },
+  "signature": null
+}

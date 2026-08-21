@@ -1,8 +1,14 @@
 # CODEOWNERS — required reviewers for sensitive areas (AGENTS.md §8).
 # Replace @owner with your GitHub handle/team. Security-relevant paths require review.
 
+# NOTE (2026-08-21): @owner is a placeholder that resolves to NOBODY, so
+# these rules currently enforce nothing. Replace with a real GitHub handle
+# (e.g. @IRsoctierDT) to give AGENTS.md §8's mandatory-review rule teeth.
 *                       @owner
 /agents/                @owner
+/attack/                @owner
+/detections/            @owner
+/compliance/            @owner
 /mcp/                   @owner
 /infra/                 @owner
 /.github/               @owner
