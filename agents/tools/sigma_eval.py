@@ -60,6 +60,18 @@ def _match_startswith(value: str, spec: Any) -> bool:
     return any(value.startswith(str(n).lower()) for n in needles)
 
 
+def _match_endswith(value: str, spec: Any) -> bool:
+    """``field|endswith`` — the dominant modifier in endpoint Sigma content.
+
+    Almost every published process rule is written as ``Image|endswith:
+    '\\cmd.exe'``, so a corpus written against real endpoint telemetry needs
+    it. It was previously absent, which meant such a rule raised rather than
+    matching — loud, but still unusable.
+    """
+    needles = spec if isinstance(spec, list) else [spec]
+    return any(value.endswith(str(n).lower()) for n in needles)
+
+
 # Modifier -> matcher. This mapping IS the supported surface: _match_field
 # dispatches through it, so adding a modifier here is the only way to enable
 # one, and anything absent raises rather than silently not matching.
@@ -68,6 +80,7 @@ _SUPPORTED_MODIFIERS: dict[str, Callable[[str, Any], bool]] = {
     "contains": _match_contains,
     "contains|all": _match_contains_all,
     "startswith": _match_startswith,
+    "endswith": _match_endswith,
 }
 
 _QUANTIFIER_TARGET = re.compile(r"(\w+)\*")

@@ -20,10 +20,28 @@ def _rule(condition: str, **selections: dict) -> dict:
 def test_supported_modifiers_is_load_bearing() -> None:
     # The constant drives dispatch: exactly these modifiers evaluate, and
     # anything else raises rather than silently not matching.
-    assert set(_SUPPORTED_MODIFIERS) == {"", "contains", "contains|all", "startswith"}
-    rule = _rule("sel", sel={"message|endswith": "ssh2"})
+    assert set(_SUPPORTED_MODIFIERS) == {
+        "",
+        "contains",
+        "contains|all",
+        "startswith",
+        "endswith",
+    }
+    rule = _rule("sel", sel={"message|re": "ssh2$"})
     with pytest.raises(ValueError, match="unsupported Sigma field modifier"):
         evaluate(rule, {"message": "Failed password ssh2"})
+
+
+@pytest.mark.unit
+def test_endswith_anchors_at_the_end_and_accepts_a_list() -> None:
+    """The modifier endpoint Sigma content is overwhelmingly written against."""
+    rule = _rule("sel", sel={"image|endswith": "\\cmd.exe"})
+    assert evaluate(rule, {"image": "C:\\Windows\\System32\\cmd.exe"}) is True
+    # Anchored: a match anywhere else must not fire.
+    assert evaluate(rule, {"image": "C:\\cmd.exe.disguised.dll"}) is False
+    listed = _rule("sel", sel={"image|endswith": ["\\powershell.exe", "\\cmd.exe"]})
+    assert evaluate(listed, {"image": "C:\\Windows\\System32\\cmd.exe"}) is True
+    assert evaluate(listed, {"image": "C:\\Windows\\explorer.exe"}) is False
 
 
 @pytest.mark.unit

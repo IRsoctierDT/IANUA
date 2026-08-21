@@ -44,7 +44,7 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
-        files: ^(agents|attack|intel|scripts|tests|dashboard|mcp|rag|compliance)/
+        files: ^(agents|attack|intel|ingest|scripts|tests|dashboard|mcp|rag|compliance)/
         additional_dependencies: []   # add typed stub packages here as deps grow
 
   # --- Security static analysis (bandit) ---------------------------------
@@ -52,7 +52,7 @@ repos:
     rev: 1.7.10
     hooks:
       - id: bandit
-        args: ["-c", "pyproject.toml", "-r", "agents", "attack", "intel", "scripts", "mcp"]
+        args: ["-c", "pyproject.toml", "-r", "agents", "attack", "intel", "ingest", "scripts", "mcp"]
         additional_dependencies: ["bandit[toml]"]
 
   # --- Drift gates (stdlib-only, fast; mirror the read-only CI gates) -----

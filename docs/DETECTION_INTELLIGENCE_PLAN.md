@@ -74,10 +74,11 @@ typed surfaces; nothing in these packages reads a clock or opens a socket
 | P4 | `agents/mapping/`: data-driven engine, multi-technique output, digest gate | **DONE** — PR #155 |
 | P5 | `intel/`: behavioral library, synthetic seed, decay, corroboration, agent upgrade | **DONE** — this PR |
 | P6 | `detections/behaviors/`: behavioral TTP corpus, reference-gated index, matcher + report wiring | **DONE** — this PR |
-| P7 | `correlation/` wiring: scenario rules carry validated ATT&CK, incidents stamp coverage | Planned (needs the XDR ingest/correlation packages) |
+| P7 | `correlation/` wiring: scenario rules carry validated ATT&CK, incidents stamp coverage | Planned (waits on XDR-2; XDR-1 has landed) |
 | P8 | `agents/response/`: plan-only containment; security tests prove no executor exists | **DONE** — this PR |
 | P9 | Dashboard: Detection Intelligence tab — corpus health, intel freshness, behavioral telemetry split, maintenance debt, plan-only response notice | **DONE** — this PR |
-| XDR | `ingest/` + `correlation/` (multi-source parsers, entity resolution, incidents) | Planned (companion plan) |
+| XDR-1 | `ingest/`: canonical `NormalizedEvent`, ten parsers across five domains, fail-closed source recognition, OCSF classification for structured events | **DONE** — this PR |
+| XDR-2 | `correlation/`: entity resolution across domains, incident assembly, cross-source scoring | Planned (unblocks P7) |
 
 ## Trust boundaries added (DESIGN.md §5)
 
@@ -92,6 +93,11 @@ typed surfaces; nothing in these packages reads a clock or opens a socket
 8. Indicator → containment → live host — **closed by construction** until an
    explicit, signed, expiring, per-target approval primitive is designed as
    its own reviewed change.
+9. Third-party telemetry → canonical event → every downstream layer —
+   recognize-never-guess (ambiguous records are attributed to no parser),
+   degrade-visibly-never-drop, and no ambient authority (no clock, socket,
+   subprocess, filesystem, or dynamic exec — asserted over the package AST).
+   Email carries metadata only: there is no body field to hold one.
 
 ## Risks
 
@@ -111,7 +117,8 @@ the corpus to that budget deliberately.
 
 ## Future Enhancements
 
-- P6–P9 above, then the XDR ingest/correlation companion plan.
+- P7 and XDR-2 above: `correlation/` (entity resolution across domains,
+  incident assembly), which is the remaining half of the XDR path.
 - Unit 42 integration tiers: distill the MIT-licensed Adversary Playbooks
   (STIX 2.0, archived corpus) into `intel/behaviors/` via the human-staged
   pattern; `pan-unit42/iocs` snapshots stay gitignored under `data/intel/`;
