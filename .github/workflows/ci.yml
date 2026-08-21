@@ -291,6 +291,13 @@ jobs:
         # a full fail-closed load (license allow-list, TLP, never-flag,
         # ATT&CK anchors) — poisoned or stale intel content cannot merge.
         run: python scripts/check_intel_store.py --check
+      - name: Behavioral index in sync + ATT&CK reference gate
+        # The behavioral corpus is authored in YAML and consumed as a
+        # committed JSON projection. Rebuilding it here also runs the
+        # reference gate: a rule anchored to a revoked or deprecated
+        # technique fails with the successor named, so stale post-compromise
+        # content cannot merge.
+        run: python scripts/build_behavior_index.py --check
 
   build:
     name: Build package

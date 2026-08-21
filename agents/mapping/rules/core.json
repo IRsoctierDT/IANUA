@@ -5,7 +5,13 @@
       "id": "auth-failure-brute-force",
       "description": "Repeated authentication failures indicate credential brute forcing. Confidence medium: a single failure event alone cannot distinguish an attack from a typo; the sequence correlator raises certainty.",
       "when": [
-        {"field": "event_type", "op": "contains_any", "values": ["authentication failure"]}
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "authentication failure"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -28,7 +34,14 @@
       "id": "ssh-accepted-valid-accounts",
       "description": "An accepted SSH login is use of a valid account; legitimacy requires review. Matches on log text so transports classified under other event types still map.",
       "when": [
-        {"field": "log_text", "op": "contains_all", "values": ["ssh", "accepted"]}
+        {
+          "field": "log_text",
+          "op": "contains_all",
+          "values": [
+            "ssh",
+            "accepted"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -64,7 +77,13 @@
       "id": "arp-spoofing-event",
       "description": "The classifier's arp-spoofing event type: adversary-in-the-middle positioning on the local segment. Parent technique first (the event alone proves AiTM intent), ARP cache poisoning as the refined sub-technique.",
       "when": [
-        {"field": "event_type", "op": "contains_any", "values": ["arp spoofing"]}
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "arp spoofing"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -98,8 +117,22 @@
       "id": "arp-spoofing-log",
       "description": "Log-text fallback for ARP cache-poisoning indicators when the event type is generic (e.g. an IDS alert about ARP activity). Same attribution as arp-spoofing-event; the engine merges duplicates.",
       "when": [
-        {"field": "log_text", "op": "contains_any", "values": ["arp"]},
-        {"field": "log_text", "op": "contains_any", "values": ["moved from", "spoof", "poison"]}
+        {
+          "field": "log_text",
+          "op": "contains_any",
+          "values": [
+            "arp"
+          ]
+        },
+        {
+          "field": "log_text",
+          "op": "contains_any",
+          "values": [
+            "moved from",
+            "spoof",
+            "poison"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -133,7 +166,13 @@
       "id": "log-tampering-clear-history",
       "description": "Audit-evidence destruction. ATT&CK v19 places indicator removal under the Stealth tactic (Defense Evasion was split into Stealth and Defense Impairment in v19).",
       "when": [
-        {"field": "event_type", "op": "contains_any", "values": ["log tampering"]}
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "log tampering"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -142,7 +181,7 @@
           "confidence": "medium",
           "evidence": [
             "Audit-evidence destruction indicator detected (history cleared, log removed, or audit daemon stopped).",
-            "Clearing evidence is post-compromise behavior — it presumes there was activity worth hiding."
+            "Clearing evidence is post-compromise behavior \u2014 it presumes there was activity worth hiding."
           ],
           "investigation": [
             "Recover the audit trail from remote or forwarded log copies.",
@@ -154,9 +193,15 @@
     },
     {
       "id": "privileged-group-addition",
-      "description": "Membership in sudo/wheel/admin grants durable elevated access — an escalation and persistence primitive.",
+      "description": "Membership in sudo/wheel/admin grants durable elevated access \u2014 an escalation and persistence primitive.",
       "when": [
-        {"field": "event_type", "op": "contains_any", "values": ["privileged group addition"]}
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "privileged group addition"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -165,11 +210,11 @@
           "confidence": "medium",
           "evidence": [
             "An account was added to a privileged group (sudo/wheel/admin).",
-            "Privileged-group membership grants durable elevated access — a persistence and escalation primitive."
+            "Privileged-group membership grants durable elevated access \u2014 a persistence and escalation primitive."
           ],
           "investigation": [
             "Verify the change against change-management records.",
-            "Check when the target account was created — a fresh account gaining privilege is the classic persistence chain.",
+            "Check when the target account was created \u2014 a fresh account gaining privilege is the classic persistence chain.",
             "Review the actor account that performed the change."
           ]
         }
@@ -179,7 +224,13 @@
       "id": "account-creation-local",
       "description": "Local account creation as a persistence mechanism. The classifier's markers (useradd, new user/account) prove a local account specifically, so the sub-technique is warranted.",
       "when": [
-        {"field": "event_type", "op": "contains_any", "values": ["account creation"]}
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "account creation"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -202,7 +253,13 @@
       "id": "port-scan-service-discovery",
       "description": "Service discovery commonly precedes exploitation of the services it enumerates.",
       "when": [
-        {"field": "event_type", "op": "contains_any", "values": ["port scan"]}
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "port scan"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -223,9 +280,15 @@
     },
     {
       "id": "successful-login-valid-accounts",
-      "description": "Any successful login the classifier surfaces as a security event maps to Valid Accounts pending legitimacy review — coverage the transport-specific SSH rule alone missed.",
+      "description": "Any successful login the classifier surfaces as a security event maps to Valid Accounts pending legitimacy review \u2014 coverage the transport-specific SSH rule alone missed.",
       "when": [
-        {"field": "event_type", "op": "equals", "values": ["successful login"]}
+        {
+          "field": "event_type",
+          "op": "equals",
+          "values": [
+            "successful login"
+          ]
+        }
       ],
       "techniques": [
         {
@@ -245,10 +308,56 @@
       ]
     },
     {
-      "id": "ids-alert-analyst-review",
-      "description": "A generic IDS alert cannot be attributed to a technique without signature and packet context — an explicit review sentinel, never a guess.",
+      "id": "audit-daemon-disabled",
+      "description": "The classifier folds audit-daemon shutdown and shell-history clearing into one 'log tampering' event type, but ATT&CK v19 separates them: disabling the sensor is Disable or Modify Tools (T1685, Defense Impairment), while clearing history is Indicator Removal (T1070.003, Stealth). A literal predicate on the log text recovers the distinction, so the defense-impairment attribution and its behavioral coverage surface instead of being lost to the coarser classification.",
       "when": [
-        {"field": "event_type", "op": "contains_any", "values": ["ids alert"]}
+        {
+          "field": "log_text",
+          "op": "contains_any",
+          "values": [
+            "auditd",
+            "audit daemon"
+          ]
+        },
+        {
+          "field": "log_text",
+          "op": "contains_any",
+          "values": [
+            "stop",
+            "disabl",
+            "shutting down",
+            "shutdown"
+          ]
+        }
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1685",
+          "tactic": "defense-impairment",
+          "confidence": "medium",
+          "evidence": [
+            "The host audit daemon was stopped or disabled.",
+            "Turning off the sensor that records subsequent activity impairs the defense itself \u2014 distinct from destroying evidence already written."
+          ],
+          "investigation": [
+            "Confirm whether a maintenance window or host reboot explains the stop.",
+            "Establish whether audit coverage resumed, and what happened while it was off.",
+            "Review the account that issued the stop against change-management records."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ids-alert-analyst-review",
+      "description": "A generic IDS alert cannot be attributed to a technique without signature and packet context \u2014 an explicit review sentinel, never a guess.",
+      "when": [
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "ids alert"
+          ]
+        }
       ],
       "techniques": [],
       "legacy": {

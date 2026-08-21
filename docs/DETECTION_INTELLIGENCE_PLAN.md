@@ -73,7 +73,7 @@ typed surfaces; nothing in these packages reads a clock or opens a socket
 | P3 | Navigator rewire: version from pin; dead technique tags cannot merge | **DONE** — PR #154 |
 | P4 | `agents/mapping/`: data-driven engine, multi-technique output, digest gate | **DONE** — PR #155 |
 | P5 | `intel/`: behavioral library, synthetic seed, decay, corroboration, agent upgrade | **DONE** — this PR |
-| P6 | `detections/behaviors/`: behavioral Sigma content split by executor capability | Planned |
+| P6 | `detections/behaviors/`: behavioral TTP corpus, reference-gated index, matcher + report wiring | **DONE** — this PR |
 | P7 | `correlation/` wiring: scenario rules carry validated ATT&CK, incidents stamp coverage | Planned (needs the XDR ingest/correlation packages) |
 | P8 | `agents/response/`: plan-only containment; security tests prove no executor exists | Planned |
 | P9 | Dashboard: corpus health, intel freshness, read-only response tab | Planned |

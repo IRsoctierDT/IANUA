@@ -1,0 +1,45 @@
+title: Office Application Spawns a Command Shell
+name: office_app_spawns_shell
+id: 3c8e5d2a-7b1f-4e6c-9a4d-2f3e4d5c6b71
+status: experimental
+validation: telemetry-required
+description: >-
+  A document-handling application (Word, Excel, Outlook) spawning a command
+  interpreter is the classic malicious-document detonation: documents render
+  content, they do not administer systems. Requires endpoint process telemetry
+  (Sysmon EID 1 / auditd execve with parent linkage) that this platform does
+  not yet ingest — the rule ships validated against synthetic fixtures and is
+  labeled accordingly.
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+  - https://attack.mitre.org/techniques/T1059/001/
+author: IANUA
+date: 2026-08-21
+tags:
+  - attack.execution
+  - attack.t1204.002
+  - attack.t1059.001
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_parent:
+    parent_image|contains:
+      - "winword"
+      - "excel"
+      - "powerpnt"
+      - "outlook"
+  selection_child:
+    image|contains:
+      - "cmd.exe"
+      - "powershell"
+      - "wscript"
+      - "mshta"
+  condition: selection_parent and selection_child
+fields:
+  - parent_image
+  - image
+  - command_line
+falsepositives:
+  - Office add-ins that legitimately shell out (rare; inventory and filter them explicitly)
+level: critical

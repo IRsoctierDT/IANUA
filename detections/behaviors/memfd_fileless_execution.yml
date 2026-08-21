@@ -1,0 +1,34 @@
+title: Fileless Execution via memfd_create
+name: memfd_fileless_execution
+id: 6b8d0f2a-4c6e-4e8a-9b1c-7e8f9a0b1cc6
+status: experimental
+validation: telemetry-required
+description: >-
+  memfd_create followed by execution gives a payload that never touches disk —
+  no file for hash matching to find, which is precisely why the syscall
+  behavior itself is the indicator. Requires auditd syscall telemetry
+  (memfd_create / execveat) that this platform does not yet ingest.
+references:
+  - https://attack.mitre.org/techniques/T1620/
+author: IANUA
+date: 2026-08-21
+tags:
+  - attack.stealth
+  - attack.t1620
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_syscall:
+    message|contains: "memfd_create"
+  selection_exec:
+    message|contains:
+      - "execveat"
+      - "/proc/self/fd/"
+  condition: selection_syscall and selection_exec
+fields:
+  - host
+  - message
+falsepositives:
+  - Runtimes using memfd for legitimate JIT or sandboxing (some browsers, systemd-nspawn) — baseline per host role
+level: high

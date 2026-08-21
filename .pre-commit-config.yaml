@@ -75,6 +75,12 @@ repos:
         language: system
         files: ^(docs/trust\.(data\.json|html|json)|scripts/build_trust_page\.py)$
         pass_filenames: false
+      - id: behavior-index-check
+        name: Behavioral index in sync with detections/behaviors/
+        entry: python scripts/build_behavior_index.py --check
+        language: system
+        files: ^(detections/behaviors/.*\.yml|detections/behaviors\.index\.json|scripts/build_behavior_index\.py|attack/(data|pins)/.*\.json)$
+        pass_filenames: false
       - id: intel-store-check
         name: Intel store digest + validity vs the pinned corpus
         entry: python scripts/check_intel_store.py --check

@@ -1,0 +1,35 @@
+title: Certutil Used to Fetch a Remote File
+name: certutil_remote_download
+id: 9b2d4f6e-1a3c-4d5b-8e7f-3a4b5c6d7e82
+status: experimental
+validation: telemetry-required
+description: >-
+  certutil.exe fetching from a URL is living-off-the-land ingress tool
+  transfer: a signed certificate utility repurposed as a downloader. The
+  behavior (LOLBin + URL) outlives any particular payload host. Requires
+  endpoint command-line telemetry.
+references:
+  - https://attack.mitre.org/techniques/T1105/
+author: IANUA
+date: 2026-08-21
+tags:
+  - attack.command-and-control
+  - attack.t1105
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection_binary:
+    command_line|contains: "certutil"
+  selection_fetch:
+    command_line|contains:
+      - "urlcache"
+      - "-split -f http"
+      - "verifyctl"
+  condition: selection_binary and selection_fetch
+fields:
+  - command_line
+  - parent_image
+falsepositives:
+  - Legitimate certificate-store maintenance rarely touches URLs — verify the fetched origin
+level: high
