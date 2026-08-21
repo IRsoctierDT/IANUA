@@ -111,7 +111,9 @@ ianua/
 ├── agents/                    # Agent implementations, orchestration, versioning
 │   ├── roles/                 # Role specs (planner, builder, reviewer, security)
 │   ├── tools/                 # Tool adapters; each validates its own input
-│   └── policies/              # Policy engine, audit chain, signing, approval logic
+│   ├── policies/              # Policy engine, audit chain, signing, approval logic
+│   ├── mapping/               # Event→technique engine + committed ruleset
+│   └── response/              # Draft containment plans (plan-only; no executor)
 ├── attack/                    # Pinned local MITRE ATT&CK corpus (committed shards + signed pin)
 │   ├── data/                  # Distilled technique/detection/relationship shards (drift-gated)
 │   └── pins/                  # Version pin manifest (sha256 per shard; Ed25519-signable)

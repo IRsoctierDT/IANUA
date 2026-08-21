@@ -85,9 +85,10 @@ hard-coded secrets or unaudited external network access (see `AGENTS.md` §5).
 | `intel/` | Local threat-intel library (first-party behavioral + synthetic atomic seed) | No live feed; TLP:CLEAR only; expiring, decaying, never-flag enforced at ingest and query; single-source network verdicts capped |
 | `agents/tools/` | Adapters from agent intent → real capability | Each adapter validates input and enforces least privilege |
 | `agents/policies/` | Guardrails, allow/deny lists, approval logic | Default deny; gates fail closed |
+| `agents/response/` | Draft containment plans (plan-only; no executor exists) | Every plan is `draft`; every action is human-owned, restrict-only, with rollback; capture precedes disruption |
 | `rag/` | Document ingestion and retrieval | Only trusted local sources; no PII/client data |
 | `mcp/` | MCP servers exposed to agents | Minimal, typed, validated tool surface; sandboxed execution |
-| `dashboard/` | Streamlit command center over the agent pipeline | Local-only backends; fails soft with honest degradation labels |
+| `dashboard/` | Streamlit command center over the agent pipeline | Local-only backends; fails soft with honest degradation labels — an unavailable layer reports *unavailable*, never empty-and-healthy; staleness and telemetry gaps are surfaced as status, not hidden |
 | `compliance/` | Control registry, framework mappings, evidence engine | Checks are read-only/offline and fail closed; evidence carries no secrets; manual controls surface as attestations, never silent passes |
 | `knowledge-base/` | Local retrieval corpus (NIST/MITRE/OWASP notes) | Trusted local content only; grounds citations |
 | `security/sbom/` | CycloneDX SBOMs + exported hash-pinned locks | Derived from `uv.lock`; CI drift gates verify, never auto-commit |
@@ -138,6 +139,26 @@ a more-trusted one. Crossing one requires validation and (often) an approval gat
    `suspicious`. `as_of` is always injected (no module reads a clock); ATT&CK anchors on
    behavioral records degrade to `stale-anchor` on deprecation/revocation rather than
    letting an external taxonomy switch off a working local detection.
+
+7. **Analyst/LLM-authored rule → committed store (write path)** — poisoning a *store*
+   poisons every future detection, so no programmatic writer exists: mapping rules,
+   intel records, behavioral rules, and the response catalogue change only through a
+   reviewed PR, each guarded by a committed canonicalized digest or index gate.
+   Predicates are literal-only by schema (no regex ⇒ no ReDoS over attacker-influenced
+   text). LLM output may enrich narrative prose; it may **never** author a technique ID,
+   a predicate, a target, or a response tier.
+
+8. **Indicator/attribution → containment action → live host** — **closed by
+   construction.** `agents/response/` emits a `draft` plan and nothing else; no executor
+   ships, and security tests fail the build if one appears (no module outside the
+   planning set, no import path to `subprocess`/`socket`/`mcp.sandbox`, no dynamic-exec
+   call, no clock read, no writer). Recorded honestly: the boundary is closed because
+   the repository has **no per-invocation approval primitive** — the policy allow-list
+   is a standing grant, `guarded.enforce(report_only=True)` bypasses the raise, the
+   audit record has no payload slot to bind an approval to, the sandbox cannot perform
+   host actions without weakening an existing control, and there is no caller identity.
+   Opening it requires designing an explicit, signed, expiring, per-target approval
+   primitive as its own reviewed change.
 
 **Sensitive data** (logs, legal docs, client info, credentials, PII) never crosses outward
 across these boundaries and is never committed.
@@ -239,6 +260,8 @@ default.
 | 2026-08-21 | Threat intelligence is first-party, behavioral, expiring, and synthetic where atomic (`intel/`) | The durable asset is a small, ATT&CK-anchored, fixture-backed behavioral library IANUA authors — no licensing exposure, no decay clock — plus a synthetic atomic seed built only from RFC 5737/3849/2606 values and clearly fabricated hashes, so lookup/decay/corroboration are exercisable from a clean clone without publishing accusations about real third-party infrastructure. No live feed ships: a useful atomic corpus needs an API key (§5.1 secret gate) and non-loopback egress (§5.1 network gate) to buy indicators stale within days. Aging differs in kind by Pyramid-of-Pain level: atomic indicators decay exponentially (per-type half-life; URL 14d → hash 365d) with a hard expiry; behavioral records age on a human review interval and on ATT&CK revisions — a deprecated/revoked anchor degrades the record to `stale-anchor`, never rejects it. `as_of` is injected everywhere (the store's newest retrieval date is the deterministic fallback); no module in `intel/` reads a clock or opens a socket, enforced by security tests. `ThreatIntelAgent` now classifies with stdlib `ipaddress` (explicit internal CIDRs, deliberately not `is_private`, which returns True for the RFC 5737 documentation ranges the seed occupies) and consults the library fail-soft. |
 
 | 2026-08-21 | Behavioral detection content is authored in YAML, consumed as a committed JSON projection, and reference-gated | `detections/behaviors/` holds the post-compromise TTP corpus aimed at payloads already resident on a host. Rules are authored in Sigma YAML (what detection engineers actually write) but consumed through `detections/behaviors.index.json`, built by `scripts/build_behavior_index.py`: the matcher reads coverage with stdlib `json`, so PyYAML stays off the runtime import path and no third fail-soft `ModuleNotFoundError` branch appears — a detection engine silently loading zero rules is a fail-*open*, not fail-soft. The builder is the reference gate: every `attack.tXXXX` tag must resolve to an **active** technique in the pinned corpus, so a rule anchored to a technique a later release retires fails the build with its successor named. This caught a real case during authoring — `T1562.001` is revoked in 19.2 (superseded by `T1685`, which v19 moved into the new Defense Impairment tactic). Every rule carries a mandatory `validation:` marker (`telemetry-available` vs `telemetry-required`) and at least one stated false-positive source, and the marker is asserted against the rule's own selection fields: a rule keying on process-creation telemetry the platform does not ingest **must** declare itself aspirational. That honesty is why the published Navigator layer stays a pure function of `detections/sigma/` — folding telemetry-required rules into a coverage heatmap would inflate a public claim with detections that cannot fire. Fixtures follow the base-corpus pattern with a raised bar: at least three negatives per rule, because behavioral rules key on ordinary administrative tooling and must prove they discriminate — which only works now that the evaluator honors parentheses and precedence. |
+
+| 2026-08-21 | Containment is a plan, not a capability — and the boundary is closed because the approval primitive does not exist yet | `agents/response/` produces an evidence-linked, ATT&CK-anchored `ResponsePlan` in `draft` state, serialized by allow-list projection so nothing from raw incident text or the process environment can transit into it. **No executor ships and there is no arming flag.** This is not caution for its own sake: `SandboxRunner` hard-codes `--network none`, `--cap-drop ALL`, `--read-only` and no PID namespace, so it cannot perform any host action and making it able to would weaken an existing control; `PolicyEngine`'s allow-list resolves before the policy table, making it a permanent unscoped standing grant rather than per-invocation approval; `guarded.enforce(report_only=True)` bypasses the raise entirely; `AuditLogger.record` has no structured payload slot to bind an approval to; and the repository has no caller identity at all. Security tests enumerate the package and fail the build if an executor appears, if any module gains an import path to `subprocess`/`socket`/`mcp.sandbox`, if a dynamic-exec call or clock read appears, or if a plan reaches any state other than `draft`. The action catalogue is committed, reviewed data validated fail-closed: verbs come from a closed **restrict-only** allow-list (collect/revoke/isolate/block/reset/quarantine/terminate — the schema cannot express gaining access, moving laterally, or acting on a third party), every action names a **human** owner and carries a rollback, irreversible actions must state their finality in words, and anything evidence-affecting must declare a prerequisite. Plan ordering is a safety property: tier 0 collection always precedes reversible containment, which always precedes irreversible action, because terminating a process destroys the volatile memory that is often the only readable copy of the implant. Weak signal produces **no plan at all** — a port scan or unattributed IDS alert yields `None` rather than a proposal, since acting on weak evidence is how false positives become outages. The restraint is the artifact: a containment layer whose security tests prove it cannot execute is a stronger claim than a half-working remote-kill path, and the latter would be a §5 liability. |
 
 > Append new architectural decisions here (date, decision, rationale) so the history stays
 > auditable.

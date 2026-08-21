@@ -75,8 +75,8 @@ typed surfaces; nothing in these packages reads a clock or opens a socket
 | P5 | `intel/`: behavioral library, synthetic seed, decay, corroboration, agent upgrade | **DONE** — this PR |
 | P6 | `detections/behaviors/`: behavioral TTP corpus, reference-gated index, matcher + report wiring | **DONE** — this PR |
 | P7 | `correlation/` wiring: scenario rules carry validated ATT&CK, incidents stamp coverage | Planned (needs the XDR ingest/correlation packages) |
-| P8 | `agents/response/`: plan-only containment; security tests prove no executor exists | Planned |
-| P9 | Dashboard: corpus health, intel freshness, read-only response tab | Planned |
+| P8 | `agents/response/`: plan-only containment; security tests prove no executor exists | **DONE** — this PR |
+| P9 | Dashboard: Detection Intelligence tab — corpus health, intel freshness, behavioral telemetry split, maintenance debt, plan-only response notice | **DONE** — this PR |
 | XDR | `ingest/` + `correlation/` (multi-source parsers, entity resolution, incidents) | Planned (companion plan) |
 
 ## Trust boundaries added (DESIGN.md §5)

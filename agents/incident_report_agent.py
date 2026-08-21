@@ -184,6 +184,55 @@ def _render_behaviors(behavior_matches: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def _render_response_plan(response_plan: dict | None) -> str:
+    """Render the draft containment plan — guidance for a human, never an act.
+
+    The disclaimer, the per-action owner, and the explicit rollback are all
+    load-bearing: a reader must never mistake this section for something the
+    platform did. Irreversible and evidence-affecting steps are called out
+    before the step list so the cost is visible before the instruction.
+    """
+    if not response_plan:
+        return (
+            "- No containment plan proposed — the attributed techniques do not warrant "
+            "action on this evidence alone"
+        )
+    lines = [
+        f"> **{_md_cell(str(response_plan.get('disclaimer', '')))}**",
+        "",
+        f"- **Plan:** `{_md_code(str(response_plan.get('plan_id', '')))}` "
+        f"(state: {_md_cell(str(response_plan.get('execution_state', 'draft')))})",
+        f"- **Targets:** {_md_cell(', '.join(map(str, response_plan.get('targets', []))))}",
+    ]
+    actions = response_plan.get("actions", [])
+    irreversible = [a for a in actions if not a.get("reversible", True)]
+    evidence = [a for a in actions if a.get("destroys_evidence", False)]
+    if irreversible:
+        lines.append(
+            "- **Irreversible steps requiring explicit approval:** "
+            + _md_cell(", ".join(str(a.get("title", "")) for a in irreversible))
+        )
+    if evidence:
+        lines.append(
+            "- **Evidence-affecting steps (capture first):** "
+            + _md_cell(", ".join(str(a.get("title", "")) for a in evidence))
+        )
+    for action in actions:
+        lines.extend(
+            [
+                "",
+                f"### Tier {action.get('tier', '?')} — {_md_cell(str(action.get('title', '')))}",
+                f"- **Target:** `{_md_code(str(action.get('target', '')))}`",
+                f"- **Performed by:** {_md_cell(str(action.get('owner', '')))}",
+                f"- **Why:** {_md_cell(str(action.get('rationale', '')))}",
+                "- **Steps:**",
+            ]
+        )
+        lines.extend(f"  1. {_md_cell(str(step))}" for step in action.get("steps", []))
+        lines.append(f"- **Rollback:** {_md_cell(str(action.get('rollback', '')))}")
+    return "\n".join(lines)
+
+
 def _render_citations(citations: list[dict] | None) -> str:
     """Render verified passage-level citations with char-offset locators."""
     if not citations:
@@ -211,6 +260,7 @@ class IncidentReportAgent:
         kb_references: list[dict] | None = None,
         detection_matches: list[dict] | None = None,
         behavior_matches: list[dict] | None = None,
+        response_plan: dict | None = None,
         sequence_result: dict | None = None,
         sequence_detections: list[dict] | None = None,
         citations: list[dict] | None = None,
@@ -318,6 +368,9 @@ class IncidentReportAgent:
 
 ## Behavioral Coverage (post-compromise)
 {_render_behaviors(behavior_matches)}
+
+## Response Plan (DRAFT — not executed)
+{_render_response_plan(response_plan)}
 
 ## Assumptions
 {chr(10).join(f"- {_md_cell(str(a))}" for a in soc_result["assumptions"])}

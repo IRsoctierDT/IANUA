@@ -1,0 +1,159 @@
+{
+  "schema": 1,
+  "_comment": "Committed catalogue of containment actions IANUA may PLAN. Every entry is restrict-only (it reduces an adversary's capability; nothing here grants access, moves laterally, or modifies a third party), carries an explicit rollback, and names its execution owner. IANUA never executes any of these \u2014 agents/response/ emits a draft plan a human carries out, and tests/security/test_response_no_executor.py fails the build if executor code ever appears. See DESIGN.md 5 boundary 8.",
+  "actions": [
+    {
+      "action_id": "capture-volatile-memory",
+      "title": "Capture volatile memory and process state before any disruption",
+      "tier": 0,
+      "verb": "collect",
+      "action_class": "read_only",
+      "reversible": true,
+      "destroys_evidence": false,
+      "owner": "human-analyst",
+      "rationale": "Killing a process destroys its volatile memory \u2014 often the only copy of injected code, decrypted configuration, and C2 keys. Evidence capture therefore precedes every disruptive tier, without exception.",
+      "steps": [
+        "Acquire a memory image of the affected host using the team's approved tooling.",
+        "Record the full process tree with parent linkage, command lines, and open handles.",
+        "Hash and store the acquisition alongside the incident record."
+      ],
+      "rollback": "None required \u2014 collection is non-destructive and read-only.",
+      "prerequisites": []
+    },
+    {
+      "action_id": "preserve-log-evidence",
+      "title": "Preserve and forward host log evidence",
+      "tier": 0,
+      "verb": "collect",
+      "action_class": "read_only",
+      "reversible": true,
+      "destroys_evidence": false,
+      "owner": "human-analyst",
+      "rationale": "Where the incident involves evidence destruction or sensor tampering, the surviving copies live off-host. Securing them early bounds what the adversary can still erase.",
+      "steps": [
+        "Export the relevant window from the central log platform and store it read-only.",
+        "Verify whether forwarding was interrupted, and record any gap explicitly."
+      ],
+      "rollback": "None required \u2014 collection is non-destructive and read-only.",
+      "prerequisites": []
+    },
+    {
+      "action_id": "revoke-account-sessions",
+      "title": "Revoke active sessions and refresh tokens for the affected account",
+      "tier": 2,
+      "verb": "revoke",
+      "action_class": "destructive",
+      "reversible": true,
+      "destroys_evidence": false,
+      "owner": "identity-administrator",
+      "rationale": "Session revocation removes an adversary's current access without deleting the account or its history, and the user can simply sign in again \u2014 the highest-value reversible containment available for credential compromise.",
+      "steps": [
+        "Revoke active sessions and refresh tokens for the account in the identity provider.",
+        "Require re-authentication with a second factor on next sign-in.",
+        "Record the revocation time so subsequent activity is unambiguously post-containment."
+      ],
+      "rollback": "None needed \u2014 the legitimate user re-authenticates normally.",
+      "prerequisites": [
+        "capture-volatile-memory"
+      ]
+    },
+    {
+      "action_id": "isolate-host-network",
+      "title": "Place the host in network isolation, retaining management access",
+      "tier": 2,
+      "verb": "isolate",
+      "action_class": "destructive",
+      "reversible": true,
+      "destroys_evidence": false,
+      "owner": "network-administrator",
+      "rationale": "Isolation severs command-and-control and lateral movement while leaving the host running \u2014 memory, processes, and on-disk artefacts stay available for analysis, which powering off would destroy.",
+      "steps": [
+        "Move the host to the quarantine segment, retaining the analyst management path.",
+        "Confirm the isolation took effect and note any sessions that survived it.",
+        "Record the service impact so the business owner can weigh restoration timing."
+      ],
+      "rollback": "Return the host to its production segment once analysis concludes and the compromise is remediated.",
+      "prerequisites": [
+        "capture-volatile-memory"
+      ]
+    },
+    {
+      "action_id": "block-indicator-egress",
+      "title": "Block egress to a corroborated malicious destination",
+      "tier": 2,
+      "verb": "block",
+      "action_class": "destructive",
+      "reversible": true,
+      "destroys_evidence": false,
+      "owner": "network-administrator",
+      "rationale": "Blocking a destination is cheap and reversible, but it is also the action a poisoned feed would most like to trigger. Only corroborated, non-never-flagged indicators are ever proposed, and the block is scoped and time-boxed.",
+      "steps": [
+        "Confirm the destination is corroborated by independent sources and outside all never-flag ranges.",
+        "Apply a scoped, time-boxed egress block and log the change with its expiry.",
+        "Watch for the affected host retrying the destination, which confirms the implant is still active."
+      ],
+      "rollback": "Remove the block entry; it is time-boxed and expires on its own if missed.",
+      "prerequisites": []
+    },
+    {
+      "action_id": "reset-account-credentials",
+      "title": "Reset credentials for the affected account",
+      "tier": 3,
+      "verb": "reset",
+      "action_class": "secret_handling",
+      "reversible": false,
+      "destroys_evidence": false,
+      "owner": "human-identity-administrator",
+      "rationale": "Credential reset ends persistent access but cannot be undone and disrupts the legitimate user. AGENTS.md 5.1 assigns secret handling to a human without exception: no agent in this platform reads, stores, or rotates a credential.",
+      "steps": [
+        "A human administrator resets the credential through the identity provider directly.",
+        "Verify the reset out-of-band with the account owner before restoring access.",
+        "Audit for attacker-installed persistence that survives a password change: SSH authorized keys, API tokens, OAuth grants, mail forwarding rules."
+      ],
+      "rollback": "Not reversible. The account owner regains access through the standard credential-recovery process.",
+      "prerequisites": [
+        "revoke-account-sessions"
+      ]
+    },
+    {
+      "action_id": "quarantine-suspect-file",
+      "title": "Quarantine a suspect file after acquisition",
+      "tier": 3,
+      "verb": "quarantine",
+      "action_class": "destructive",
+      "reversible": true,
+      "destroys_evidence": true,
+      "owner": "human-endpoint-administrator",
+      "rationale": "Quarantine removes the payload from its execution path. It is listed as evidence-affecting because moving a file alters timestamps and can trip attacker tripwires; acquisition of a forensic copy comes first.",
+      "steps": [
+        "Acquire and hash a forensic copy before touching the original.",
+        "Move the file to the quarantine store with its original path and metadata recorded.",
+        "Confirm nothing legitimate depended on the path before it is left absent."
+      ],
+      "rollback": "Restore the file from quarantine to its recorded original path.",
+      "prerequisites": [
+        "capture-volatile-memory"
+      ]
+    },
+    {
+      "action_id": "terminate-malicious-process",
+      "title": "Terminate a confirmed malicious process",
+      "tier": 3,
+      "verb": "terminate",
+      "action_class": "destructive",
+      "reversible": false,
+      "destroys_evidence": true,
+      "owner": "human-endpoint-administrator",
+      "rationale": "Termination stops active harm but irreversibly destroys the process's volatile memory \u2014 frequently the only place the implant is unpacked and its configuration readable. Memory capture is a hard prerequisite, and a wrong identification here is a self-inflicted outage on a production service.",
+      "steps": [
+        "Verify the process identity against the acquired process tree, not the alert alone.",
+        "Confirm the memory capture completed and is readable before proceeding.",
+        "Terminate the process and record whether it respawned, which indicates persistence."
+      ],
+      "rollback": "Not reversible. If the identification was wrong, restart the legitimate service from its normal management path and record the outage.",
+      "prerequisites": [
+        "capture-volatile-memory"
+      ]
+    }
+  ]
+}

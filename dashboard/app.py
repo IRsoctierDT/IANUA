@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import streamlit as st
@@ -16,6 +17,7 @@ from compliance.engine import run_controls
 from compliance.evidence import export_bundle, load_recent, record_run, verify_chain
 from compliance.trends import score_history
 
+from dashboard import intelligence_view
 from dashboard.compliance_view import (
     FRAMEWORK_DISCLAIMER,
     category_summary,
@@ -89,6 +91,7 @@ def _sigma_rule_count() -> int:
     tab_soc,
     tab_batch,
     tab_coverage,
+    tab_intel,
     tab_kb,
     tab_health,
     tab_reports,
@@ -99,6 +102,7 @@ def _sigma_rule_count() -> int:
         "SOC Workflow",
         "Batch Processing",
         "Detection Coverage",
+        "Detection Intelligence",
         "Knowledge Base Search",
         "System Health",
         "Reports",
@@ -106,6 +110,52 @@ def _sigma_rule_count() -> int:
         "Compliance",
     ]
 )
+
+with tab_intel:
+    st.subheader("Detection Intelligence")
+    st.caption(
+        "Health of the layers that give triage its vocabulary: the pinned ATT&CK "
+        "corpus, the mapping ruleset, the threat-intel library, the behavioral "
+        "detection corpus, and the plan-only response layer. Staleness is reported "
+        "as status, not hidden — a corpus nobody refreshes is stale whether or not "
+        "anything looks broken."
+    )
+    _as_of = date.today()
+    st.table(intelligence_view.layer_rows(as_of=_as_of))
+
+    st.subheader("Behavioral coverage (post-compromise)")
+    st.caption(
+        "Rules aimed at payloads already resident on a host. A rule marked "
+        "'⏳ required' replays green against fixtures but cannot fire in this "
+        "deployment until the telemetry it needs is ingested — it is validated "
+        "logic waiting on a sensor, never counted as live coverage."
+    )
+    _behaviors = intelligence_view.behavior_rows()
+    if _behaviors:
+        st.table(_behaviors)
+    else:
+        st.info("Behavioral index unavailable — run scripts/build_behavior_index.py.")
+
+    st.subheader("Maintenance debt")
+    st.caption(
+        "Records whose human review interval has lapsed, or whose ATT&CK anchor "
+        "was retired upstream. This is the honest cost of an 'ongoing' library."
+    )
+    _debt = intelligence_view.review_due_rows(as_of=_as_of)
+    if _debt:
+        st.warning(f"{len(_debt)} record(s) need review.")
+        st.table(_debt)
+    else:
+        st.success("No review debt: every behavioral record is inside its review interval.")
+
+    st.subheader("Response layer")
+    st.error(
+        "**PLAN ONLY — NOT EXECUTED.** IANUA does not perform containment actions. "
+        "The platform drafts an evidence-linked plan; a named human operator "
+        "executes it on systems they own or are authorized to administer. No "
+        "executor exists anywhere in this repository, and security tests fail the "
+        "build if one appears (DESIGN.md §5 boundary 8, docs/RESPONSE_LAYER.md)."
+    )
 
 with tab_compliance:
     st.subheader("Compliance Command Center")
