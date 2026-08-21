@@ -1,0 +1,35 @@
+title: SSH Authorized Keys Appended from the Command Line
+name: ssh_authorized_keys_appended
+id: 8a1c3e5d-7f9b-4d2c-a4e6-6d7e8f9a0bb5
+status: experimental
+validation: telemetry-required
+description: >-
+  Appending to ~/.ssh/authorized_keys from a shell grants credential-free
+  access that survives password rotation — key-based persistence in one line.
+  Requires command-line telemetry; file-integrity monitoring on
+  authorized_keys is the complementary control.
+references:
+  - https://attack.mitre.org/techniques/T1098/004/
+author: IANUA
+date: 2026-08-21
+tags:
+  - attack.persistence
+  - attack.t1098.004
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_file:
+    command_line|contains: "authorized_keys"
+  selection_write:
+    command_line|contains:
+      - "echo "
+      - "tee -a"
+      - ">>"
+  condition: selection_file and selection_write
+fields:
+  - command_line
+  - user
+falsepositives:
+  - Legitimate key distribution by provisioning tooling — filter the deployment account
+level: high

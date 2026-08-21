@@ -1,0 +1,36 @@
+title: Cron Entry Installed for Reboot Persistence
+name: cron_reboot_persistence
+id: 1d3f5b7a-9c8e-4a2d-b6f4-5c6d7e8f9aa4
+status: experimental
+validation: telemetry-required
+description: >-
+  Writing an @reboot cron entry — or dropping a file into /etc/cron.d — gives
+  a payload execution that survives restarts. The persistence mechanism is the
+  durable behavior; the payload path changes per intrusion. Requires
+  command-line or file-write telemetry.
+references:
+  - https://attack.mitre.org/techniques/T1053/003/
+author: IANUA
+date: 2026-08-21
+tags:
+  - attack.persistence
+  - attack.t1053.003
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_target:
+    command_line|contains:
+      - "/etc/cron.d/"
+      - "crontab"
+  selection_marker:
+    command_line|contains:
+      - "@reboot"
+      - "/var/spool/cron"
+  condition: selection_target and selection_marker
+fields:
+  - command_line
+  - user
+falsepositives:
+  - Configuration-management tools (Ansible, Puppet) installing scheduled jobs — filter their runner accounts
+level: high

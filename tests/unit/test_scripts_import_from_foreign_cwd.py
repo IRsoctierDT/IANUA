@@ -21,6 +21,7 @@ _GATES = [
     ["scripts/update_attack.py", "--check"],
     ["scripts/check_mapping_rules.py", "--check"],
     ["scripts/check_intel_store.py", "--check"],
+    ["scripts/build_behavior_index.py", "--check"],
     ["scripts/build_attack_navigator.py", "--check"],
     ["scripts/check_locks.py"],
     ["scripts/build_status_page.py", "--check"],

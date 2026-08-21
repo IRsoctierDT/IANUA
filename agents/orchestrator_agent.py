@@ -97,6 +97,9 @@ class OrchestratorAgent:
         kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
 
         detection_matches = self.detections.match_for_event(mitre_result)
+        # Post-compromise behavioral coverage across every attributed
+        # technique, each flagged with whether its telemetry is ingested here.
+        behavior_matches = self.detections.match_behaviors_for_event(mitre_result)
 
         citations = self._verified_citations(soc_result, mitre_result)
 
@@ -107,6 +110,7 @@ class OrchestratorAgent:
             mitre_result=mitre_result,
             kb_references=kb_references,
             detection_matches=detection_matches,
+            behavior_matches=behavior_matches,
             citations=citations,
             citations_verified=True,
             generator=self.generator,
@@ -118,6 +122,7 @@ class OrchestratorAgent:
             "threat_intel": intel_results,
             "knowledge_base": kb_references,
             "detections": detection_matches,
+            "behaviors": behavior_matches,
             "citations": citations,
         }
 

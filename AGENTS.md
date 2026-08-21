@@ -290,6 +290,7 @@ python scripts/build_attack_navigator.py --check  # Navigator layer ↔ Sigma co
 python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; revocation invariants
 python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; techniques resolve in the pin
 python scripts/check_intel_store.py --check   # intel library ↔ digest; licenses, TLP, anchors validate
+python scripts/build_behavior_index.py --check # behavioral index ↔ corpus; anchors resolve active
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)

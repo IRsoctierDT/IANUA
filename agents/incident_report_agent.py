@@ -158,6 +158,32 @@ def _render_sequence(
     return "\n".join(lines)
 
 
+def _render_behaviors(behavior_matches: list[dict] | None) -> str:
+    """Render behavioral (post-compromise TTP) coverage for the event.
+
+    Each rule states whether the telemetry it needs is ingested today, so a
+    rule that replays green against fixtures but cannot fire in production is
+    labelled rather than counted as real coverage.
+    """
+    if not behavior_matches:
+        return "- No behavioral rule covers this technique yet"
+    lines = []
+    for match in behavior_matches:
+        validation = str(match.get("validation", "unknown"))
+        flag = (
+            "active"
+            if validation == "telemetry-available"
+            else "awaiting telemetry - not live in this deployment"
+        )
+        lines.append(
+            f"- **{_md_cell(str(match.get('title', '')))}** "
+            f"[{_md_cell(str(match.get('level', 'unknown')))}] — "
+            f"`{_md_code(str(match.get('file', '')))}` "
+            f"({_md_cell(str(match.get('technique', '')))}; {flag})"
+        )
+    return "\n".join(lines)
+
+
 def _render_citations(citations: list[dict] | None) -> str:
     """Render verified passage-level citations with char-offset locators."""
     if not citations:
@@ -184,6 +210,7 @@ class IncidentReportAgent:
         mitre_result: dict | None = None,
         kb_references: list[dict] | None = None,
         detection_matches: list[dict] | None = None,
+        behavior_matches: list[dict] | None = None,
         sequence_result: dict | None = None,
         sequence_detections: list[dict] | None = None,
         citations: list[dict] | None = None,
@@ -197,7 +224,9 @@ class IncidentReportAgent:
         re-running analysis when the orchestrator has already done it.
         ``kb_references`` (from the Knowledge Base Agent) adds cited framework
         context; ``detection_matches`` (from the Detection Matcher Agent) lists
-        the Sigma rules that cover the event's technique; ``sequence_result``
+        the Sigma rules that cover the event's technique; ``behavior_matches``
+        lists the post-compromise behavioral rules covering it, each flagged
+        with whether its telemetry is actually ingested; ``sequence_result``
         (from ``SocAnalystAgent.analyze_sequence``) surfaces multi-event
         correlated findings; ``citations`` (passage-level citations from
         ``KnowledgeBaseAgent.cite``) quote the exact grounding passages with
@@ -286,6 +315,9 @@ class IncidentReportAgent:
 
 ## Detection Coverage
 {chr(10).join(f"- **{_md_cell(str(d['title']))}** [{_md_cell(str(d['level']))}] — `{_md_code(str(d['file']))}` ({_md_cell(str(d['technique']))})" for d in detection_matches) if detection_matches else "- No Sigma rule covers this technique yet"}
+
+## Behavioral Coverage (post-compromise)
+{_render_behaviors(behavior_matches)}
 
 ## Assumptions
 {chr(10).join(f"- {_md_cell(str(a))}" for a in soc_result["assumptions"])}
