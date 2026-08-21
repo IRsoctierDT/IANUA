@@ -1,0 +1,76 @@
+{
+  "indicators": [
+    {
+      "type": "ipv4",
+      "value": "203.0.113.66",
+      "risk": "malicious",
+      "confidence": "high",
+      "source_id": "synthetic-feed-alpha",
+      "first_seen": "2026-07-01",
+      "retrieved": "2026-08-14",
+      "expires": "2026-11-14",
+      "tlp": "clear",
+      "reference": "https://feed-alpha.example/reports/demo-c2"
+    },
+    {
+      "type": "ipv4",
+      "value": "203.0.113.66",
+      "risk": "malicious",
+      "confidence": "medium",
+      "source_id": "synthetic-feed-bravo",
+      "first_seen": "2026-07-03",
+      "retrieved": "2026-08-18",
+      "expires": "2026-11-18",
+      "tlp": "clear",
+      "reference": "https://feed-bravo.example/pulse/demo-c2"
+    },
+    {
+      "type": "ipv4",
+      "value": "198.51.100.77",
+      "risk": "malicious",
+      "confidence": "high",
+      "source_id": "synthetic-feed-alpha",
+      "first_seen": "2026-08-01",
+      "retrieved": "2026-08-14",
+      "expires": "2026-11-14",
+      "tlp": "clear",
+      "reference": "https://feed-alpha.example/reports/single-source-demo"
+    },
+    {
+      "type": "domain",
+      "value": "beacon.invalid",
+      "risk": "suspicious",
+      "confidence": "medium",
+      "source_id": "synthetic-feed-bravo",
+      "first_seen": "2026-06-15",
+      "retrieved": "2026-08-18",
+      "expires": "2027-02-18",
+      "tlp": "clear",
+      "reference": "https://feed-bravo.example/pulse/demo-dns"
+    },
+    {
+      "type": "sha256",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001",
+      "risk": "malicious",
+      "confidence": "high",
+      "source_id": "synthetic-feed-alpha",
+      "first_seen": "2026-05-01",
+      "retrieved": "2026-08-14",
+      "expires": "2027-08-14",
+      "tlp": "clear",
+      "reference": "https://feed-alpha.example/samples/demo-payload"
+    },
+    {
+      "type": "ipv4",
+      "value": "192.0.2.199",
+      "risk": "suspicious",
+      "confidence": "low",
+      "source_id": "synthetic-feed-alpha",
+      "first_seen": "2026-01-05",
+      "retrieved": "2026-02-01",
+      "expires": "2026-05-01",
+      "tlp": "clear",
+      "reference": "https://feed-alpha.example/reports/expired-demo"
+    }
+  ]
+}

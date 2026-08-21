@@ -7,14 +7,15 @@ requires = ["setuptools>=84.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agents*", "attack*", "rag*", "mcp*", "dashboard*", "scripts*", "compliance*"]
+include = ["agents*", "attack*", "intel*", "rag*", "mcp*", "dashboard*", "scripts*", "compliance*"]
 exclude = ["tests*"]
 
 # Committed data stores that must ship inside a built wheel — a package
 # without its data would degrade silently (e.g. a mapper with no corpus).
 [tool.setuptools.package-data]
 attack = ["data/*.json", "pins/*.json", "collection-index.json"]
-agents = ["policies/policy.json"]
+intel = ["*.json", "seed/*.json", "behaviors/*.json", "store.sha256"]
+agents = ["policies/policy.json", "mapping/rules/*.json", "mapping/rules.sha256"]
 compliance = ["attestations.json"]
 
 [project]
@@ -103,7 +104,7 @@ exclude = ["*.md"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["agents", "attack", "scripts", "tests", "dashboard", "mcp", "rag", "compliance"]
+files = ["agents", "attack", "intel", "scripts", "tests", "dashboard", "mcp", "rag", "compliance"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
@@ -149,6 +150,7 @@ addopts = [
   "--strict-config",
   "--cov=agents",
   "--cov=attack",
+  "--cov=intel",
   "--cov=compliance",
   "--cov=rag",
   "--cov=mcp",
@@ -163,7 +165,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agents", "attack", "compliance", "rag", "mcp"]
+source = ["agents", "attack", "intel", "compliance", "rag", "mcp"]
 omit = ["tests/*", "*/__init__.py"]
 
 [tool.coverage.report]

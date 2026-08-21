@@ -1,0 +1,101 @@
+{
+  "behaviors": [
+    {
+      "id": "bhv-ssh-password-spray",
+      "title": "SSH password guessing / spraying against exposed services",
+      "description": "Sustained authentication failures from one source against one or many accounts over SSH. Behavioral, not atomic: the source address rotates cheaply, the behavior (guess, fail, iterate) does not.",
+      "attack_techniques": ["T1110"],
+      "event_types": ["authentication failure"],
+      "markers": [
+        "Repeated failed password events from a single source address",
+        "Failure bursts across many usernames (spray) or one username (targeted)",
+        "Failure-then-success from the same source shortly afterwards"
+      ],
+      "false_positives": [
+        "An administrator mistyping a password several times",
+        "A misconfigured automation retrying with stale credentials"
+      ],
+      "confidence": "medium",
+      "source_id": "ianua-first-party",
+      "last_reviewed": "2026-08-21",
+      "review_interval_days": 365
+    },
+    {
+      "id": "bhv-shell-history-clearing",
+      "title": "Interactive evidence destruction after hands-on-keyboard activity",
+      "description": "Clearing shell history, truncating logs, or stopping the audit daemon presumes there was activity worth hiding — a near-zero-false-positive post-compromise behavior on servers.",
+      "attack_techniques": ["T1070.003"],
+      "event_types": ["log tampering"],
+      "markers": [
+        "history -c or .bash_history removal on a server",
+        "Audit daemon stopped or disabled outside a maintenance window",
+        "Log files cleared shortly after an interactive session"
+      ],
+      "false_positives": [
+        "Image-building or golden-image preparation pipelines that scrub history by design"
+      ],
+      "confidence": "high",
+      "source_id": "ianua-first-party",
+      "last_reviewed": "2026-08-21",
+      "review_interval_days": 365
+    },
+    {
+      "id": "bhv-persistence-account-chain",
+      "title": "Fresh local account granted privileged group membership",
+      "description": "Creating a local account and shortly after adding it to sudo/wheel/admin is the classic durable-access chain: it survives credential rotation and password resets on compromised accounts.",
+      "attack_techniques": ["T1136.001", "T1098"],
+      "event_types": ["account creation", "privileged group addition"],
+      "markers": [
+        "useradd followed by usermod/gpasswd into a privileged group within the same session",
+        "Account naming that mimics service accounts (svc-, backup-, ops-)",
+        "Creation performed by an account that itself logged in recently from a new source"
+      ],
+      "false_positives": [
+        "Legitimate provisioning runs — corroborate against change-management records"
+      ],
+      "confidence": "medium",
+      "source_id": "ianua-first-party",
+      "last_reviewed": "2026-08-21",
+      "review_interval_days": 365
+    },
+    {
+      "id": "bhv-arp-aitm-positioning",
+      "title": "ARP cache poisoning to establish an adversary-in-the-middle position",
+      "description": "A burst of gratuitous ARP rebindings from one station repositions traffic through the attacker. One rebind can be DHCP churn; a burst from a single source is positioning.",
+      "attack_techniques": ["T1557", "T1557.002"],
+      "event_types": ["arp spoofing"],
+      "markers": [
+        "IP-to-MAC binding changes for multiple hosts announced by one station",
+        "Duplicate-address warnings clustered in time on one segment",
+        "Cleartext credential or session capture opportunities on the affected segment"
+      ],
+      "false_positives": [
+        "DHCP lease churn after an outage",
+        "Virtual-IP failover (VRRP/keepalived) re-announcing legitimately"
+      ],
+      "confidence": "medium",
+      "source_id": "ianua-first-party",
+      "last_reviewed": "2026-08-21",
+      "review_interval_days": 365
+    },
+    {
+      "id": "bhv-service-discovery-sweep",
+      "title": "Port and service discovery preceding exploitation",
+      "description": "Service discovery is cheap and noisy; its intelligence value is in what follows. A scan followed by targeted connections to the enumerated services from the same source escalates intent.",
+      "attack_techniques": ["T1046"],
+      "event_types": ["port scan"],
+      "markers": [
+        "Sequential or randomized connection probes across many ports from one source",
+        "Follow-on connections to a subset of the probed ports shortly after",
+        "Probes against designated-unused (darknet) address space"
+      ],
+      "false_positives": [
+        "Authorized vulnerability-management or asset-inventory scanners — maintain a scanner allow-list"
+      ],
+      "confidence": "medium",
+      "source_id": "ianua-first-party",
+      "last_reviewed": "2026-08-21",
+      "review_interval_days": 365
+    }
+  ]
+}

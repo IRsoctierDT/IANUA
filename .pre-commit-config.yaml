@@ -44,7 +44,7 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
-        files: ^(agents|attack|scripts|tests|dashboard|mcp|rag|compliance)/
+        files: ^(agents|attack|intel|scripts|tests|dashboard|mcp|rag|compliance)/
         additional_dependencies: []   # add typed stub packages here as deps grow
 
   # --- Security static analysis (bandit) ---------------------------------
@@ -52,7 +52,7 @@ repos:
     rev: 1.7.10
     hooks:
       - id: bandit
-        args: ["-c", "pyproject.toml", "-r", "agents", "attack", "scripts", "mcp"]
+        args: ["-c", "pyproject.toml", "-r", "agents", "attack", "intel", "scripts", "mcp"]
         additional_dependencies: ["bandit[toml]"]
 
   # --- Drift gates (stdlib-only, fast; mirror the read-only CI gates) -----
@@ -74,6 +74,12 @@ repos:
         entry: python scripts/build_trust_page.py --check
         language: system
         files: ^(docs/trust\.(data\.json|html|json)|scripts/build_trust_page\.py)$
+        pass_filenames: false
+      - id: intel-store-check
+        name: Intel store digest + validity vs the pinned corpus
+        entry: python scripts/check_intel_store.py --check
+        language: system
+        files: ^(intel/.*\.json|intel/store\.sha256|scripts/check_intel_store\.py|attack/(data|pins)/.*\.json)$
         pass_filenames: false
       - id: mapping-rules-check
         name: Mapping ruleset digest + validity vs the pinned corpus

@@ -59,6 +59,13 @@ not endorsed by any framework owner or standards body.
 Sample logs (sample-logs/): synthetic fixtures created for testing. They
 contain no real hosts, users, addresses, or captured production data.
 
+Threat-intelligence library (intel/): behavioral records are original,
+first-party analysis authored for this project; atomic indicators are
+synthetic demonstration data using RFC 5737/3849 documentation address
+ranges, RFC 2606 reserved names, and clearly fabricated hashes only. No
+real-world indicator of compromise, and no accusation about any real host,
+domain, or file, is published by this repository.
+
 --------------------------------------------------------------------------
 Third-party data
 --------------------------------------------------------------------------
