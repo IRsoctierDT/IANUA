@@ -101,3 +101,21 @@ def test_no_blanket_scripts_mypy_ignore() -> None:
             assert name != "scripts.*" or not override.get("ignore_errors"), (
                 "blanket scripts.* ignore_errors hides errors in new gate scripts"
             )
+
+
+@pytest.mark.unit
+def test_committed_package_data_is_not_gitignored() -> None:
+    """An unanchored ignore pattern (e.g. bare ``data/``) must never shadow
+    committed package data — that is exactly how the ATT&CK shards were once
+    silently dropped from a push while every local gate stayed green."""
+    import subprocess
+
+    for probe in ("attack/data/catalog.json", "attack/pins/enterprise-attack.pin.json"):
+        result = subprocess.run(  # noqa: S603 - fixed argv
+            ["git", "check-ignore", "-q", probe],  # noqa: S607 - git from PATH, test env
+            capture_output=True,
+            cwd=_REPO,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode != 0, f"{probe} is gitignored — committed data would be dropped"
