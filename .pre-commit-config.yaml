@@ -44,7 +44,7 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
-        files: ^(agents|scripts|tests|dashboard|mcp|rag)/
+        files: ^(agents|attack|scripts|tests|dashboard|mcp|rag|compliance)/
         additional_dependencies: []   # add typed stub packages here as deps grow
 
   # --- Security static analysis (bandit) ---------------------------------
@@ -52,7 +52,7 @@ repos:
     rev: 1.7.10
     hooks:
       - id: bandit
-        args: ["-c", "pyproject.toml", "-r", "agents", "scripts", "mcp"]
+        args: ["-c", "pyproject.toml", "-r", "agents", "attack", "scripts", "mcp"]
         additional_dependencies: ["bandit[toml]"]
 
   # --- Drift gates (stdlib-only, fast; mirror the read-only CI gates) -----
@@ -75,11 +75,17 @@ repos:
         language: system
         files: ^(docs/trust\.(data\.json|html|json)|scripts/build_trust_page\.py)$
         pass_filenames: false
+      - id: attack-corpus-check
+        name: ATT&CK corpus shards match the signed pin
+        entry: python scripts/update_attack.py --check
+        language: system
+        files: ^(attack/(data|pins)/.*\.json|attack/collection-index\.json|scripts/update_attack\.py)$
+        pass_filenames: false
       - id: attack-navigator-sync
         name: ATT&CK Navigator layer in sync with the Sigma corpus
         entry: python scripts/build_attack_navigator.py --check
         language: system
-        files: ^(detections/sigma/.*\.yml|docs/attack-navigator-layer\.json|scripts/build_attack_navigator\.py)$
+        files: ^(detections/sigma/.*\.yml|docs/attack-navigator-layer\.json|scripts/build_attack_navigator\.py|attack/(data|pins)/.*\.json)$
         pass_filenames: false
 
   # --- Secret scanning (detect-secrets) ----------------------------------

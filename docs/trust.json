@@ -1,5 +1,5 @@
 {
-  "as_of": "2026-07-24",
+  "as_of": "2026-08-21",
   "controls": [
     {
       "category": "Policy & Governance",
@@ -44,6 +44,12 @@
       "title": "Software bill of materials published"
     },
     {
+      "category": "Supply Chain",
+      "id": "SUP-03",
+      "status": "pass",
+      "title": "ATT&CK corpus pinned and integrity-verified"
+    },
+    {
       "category": "CI/CD & Change Management",
       "id": "CIC-01",
       "status": "pass",
@@ -84,35 +90,41 @@
       "id": "MAN-02",
       "status": "attested",
       "title": "Human approval gate on deployments"
+    },
+    {
+      "category": "Supply Chain",
+      "id": "MAN-03",
+      "status": "attested",
+      "title": "ATT&CK corpus reviewed against the current upstream release"
     }
   ],
   "disclaimer": "Framework mappings are indicative \u2014 not an audit, certification, or legal advice.",
   "frameworks": [
     {
       "name": "NIST CSF 2.0",
-      "passing": 14,
+      "passing": 16,
       "percent": 100,
-      "total": 14
+      "total": 16
     },
     {
       "name": "SOC 2 (Trust Services Criteria)",
-      "passing": 14,
+      "passing": 16,
       "percent": 100,
-      "total": 14
+      "total": 16
     },
     {
       "name": "ISO/IEC 27001:2022",
-      "passing": 14,
+      "passing": 16,
       "percent": 100,
-      "total": 14
+      "total": 16
     }
   ],
   "score": 100,
   "summary": {
-    "attested": 2,
+    "attested": 3,
     "error": 0,
     "fail": 0,
     "manual": 0,
-    "pass": 12
+    "pass": 13
   }
 }

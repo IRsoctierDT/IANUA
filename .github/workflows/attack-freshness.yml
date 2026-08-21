@@ -1,0 +1,31 @@
+# attack-freshness.yml — weekly ADVISORY report on ATT&CK corpus currency.
+#
+# Deliberately network-free and write-free: it reads the committed pin and the
+# committed collection-index snapshot, reports version distance and pin age,
+# and NEVER fails (freshness is not a gate — DESIGN.md §11 2026-08-21). It
+# also never fetches: refreshing the corpus is a human action (AGENTS.md §5.1)
+# documented in attack/README.md.
+name: ATT&CK corpus freshness (advisory)
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  freshness:
+    name: Report version distance (never fails)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Advisory freshness report
+        # Exit code intentionally swallowed: this job informs, it never blocks.
+        run: python scripts/update_attack.py --plan || true

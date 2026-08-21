@@ -43,6 +43,11 @@ except ModuleNotFoundError:  # pragma: no cover - yaml present in dev/CI
     raise SystemExit(2) from None
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:  # script may run from anywhere
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from attack import load_corpus, load_pin, validate_reference  # noqa: E402
+
 _SIGMA_DIR = _REPO_ROOT / "detections" / "sigma"
 _OUTPUT = _REPO_ROOT / "docs" / "attack-navigator-layer.json"
 
@@ -65,7 +70,15 @@ def _extract_techniques(tags: Any) -> set[str]:
 
 
 def build_layer(sigma_dir: Path = _SIGMA_DIR) -> dict[str, Any]:
-    """Build the Navigator layer dict from the Sigma corpus (deterministic)."""
+    """Build the Navigator layer dict from the Sigma corpus (deterministic).
+
+    Every technique tag is validated against the pinned local ATT&CK corpus
+    (``attack/``): a tag that does not resolve, or resolves to a revoked or
+    deprecated technique, raises — so a rule pinned to a dead technique cannot
+    merge. The layer's ATT&CK version comes from the pin, never a hard-coded
+    string. The layer itself stays a pure function of ``detections/sigma/``.
+    """
+    corpus = load_corpus()
     # technique_id -> list of rule titles covering it
     coverage: dict[str, list[str]] = {}
     for path in sorted(sigma_dir.glob("*.yml")):
@@ -74,6 +87,13 @@ def build_layer(sigma_dir: Path = _SIGMA_DIR) -> dict[str, Any]:
             raise ValueError(f"{path.name}: rule is not a mapping")
         title = str(rule.get("title", path.stem))
         for technique in _extract_techniques(rule.get("tags")):
+            verdict = validate_reference(technique, corpus)
+            if not verdict.ok:
+                detail = "; ".join(verdict.problems) or verdict.status
+                raise ValueError(
+                    f"{path.name}: tag references a dead technique — {detail}"
+                    + (f" (successor: {verdict.successor})" if verdict.successor else "")
+                )
             coverage.setdefault(technique, []).append(title)
 
     max_count = max((len(v) for v in coverage.values()), default=1)
@@ -85,7 +105,11 @@ def build_layer(sigma_dir: Path = _SIGMA_DIR) -> dict[str, Any]:
                 "techniqueID": technique_id,
                 "score": len(titles),
                 "color": "",
-                "comment": "Detected by: " + "; ".join(titles),
+                "comment": (
+                    "Detected by: "
+                    + "; ".join(titles)
+                    + f" — {corpus.techniques[technique_id].name}"
+                ),
                 "enabled": True,
                 "metadata": [],
                 "showSubtechniques": True,
@@ -94,7 +118,11 @@ def build_layer(sigma_dir: Path = _SIGMA_DIR) -> dict[str, Any]:
 
     return {
         "name": "IANUA Detection Coverage",
-        "versions": {"attack": "16", "navigator": "5.1.0", "layer": "4.5"},
+        "versions": {
+            "attack": load_pin().attack_version.split(".")[0],
+            "navigator": "5.1.0",
+            "layer": "4.5",
+        },
         "domain": "enterprise-attack",
         "description": (
             "Techniques covered by the IANUA Sigma detection corpus, generated "

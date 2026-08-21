@@ -15,7 +15,7 @@
   "techniques": [
     {
       "color": "",
-      "comment": "Detected by: Network Port Scan Detected; Port Scan Indicated by Repeated Firewall Blocks",
+      "comment": "Detected by: Network Port Scan Detected; Port Scan Indicated by Repeated Firewall Blocks \u2014 Network Service Discovery",
       "enabled": true,
       "metadata": [],
       "score": 2,
@@ -24,7 +24,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: Linux Command History Cleared",
+      "comment": "Detected by: Linux Command History Cleared \u2014 Clear Command History",
       "enabled": true,
       "metadata": [],
       "score": 1,
@@ -33,7 +33,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: SSH Brute Force Followed by Successful Root Login; Successful SSH Root Login",
+      "comment": "Detected by: SSH Brute Force Followed by Successful Root Login; Successful SSH Root Login \u2014 Valid Accounts",
       "enabled": true,
       "metadata": [],
       "score": 2,
@@ -42,7 +42,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: Linux Account Added to Privileged Group; New Account Created Then Added to Privileged Group",
+      "comment": "Detected by: Linux Account Added to Privileged Group; New Account Created Then Added to Privileged Group \u2014 Account Manipulation",
       "enabled": true,
       "metadata": [],
       "score": 2,
@@ -51,7 +51,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: SSH Brute Force - Repeated Failed Passwords; SSH Brute Force Followed by Successful Root Login; SSH Failed Password",
+      "comment": "Detected by: SSH Brute Force - Repeated Failed Passwords; SSH Brute Force Followed by Successful Root Login; SSH Failed Password \u2014 Brute Force",
       "enabled": true,
       "metadata": [],
       "score": 3,
@@ -60,7 +60,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: Linux Local Account Created; New Account Created Then Added to Privileged Group",
+      "comment": "Detected by: Linux Local Account Created; New Account Created Then Added to Privileged Group \u2014 Local Account",
       "enabled": true,
       "metadata": [],
       "score": 2,
@@ -69,7 +69,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: ARP Cache Poisoning Indicator; Adversary-in-the-Middle Indicated by Repeated ARP Cache Poisoning",
+      "comment": "Detected by: ARP Cache Poisoning Indicator; Adversary-in-the-Middle Indicated by Repeated ARP Cache Poisoning \u2014 Adversary-in-the-Middle",
       "enabled": true,
       "metadata": [],
       "score": 2,
@@ -78,7 +78,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: ARP Cache Poisoning Indicator; Adversary-in-the-Middle Indicated by Repeated ARP Cache Poisoning",
+      "comment": "Detected by: ARP Cache Poisoning Indicator; Adversary-in-the-Middle Indicated by Repeated ARP Cache Poisoning \u2014 ARP Cache Poisoning",
       "enabled": true,
       "metadata": [],
       "score": 2,
@@ -87,7 +87,7 @@
     },
     {
       "color": "",
-      "comment": "Detected by: Firewall Block - Inbound Connection Denied; Port Scan Indicated by Repeated Firewall Blocks",
+      "comment": "Detected by: Firewall Block - Inbound Connection Denied; Port Scan Indicated by Repeated Firewall Blocks \u2014 Active Scanning",
       "enabled": true,
       "metadata": [],
       "score": 2,
@@ -96,7 +96,7 @@
     }
   ],
   "versions": {
-    "attack": "16",
+    "attack": "19",
     "layer": "4.5",
     "navigator": "5.1.0"
   }

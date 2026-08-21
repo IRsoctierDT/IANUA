@@ -26,6 +26,10 @@ htmlcov/
 *.pem
 data/
 !data/.gitkeep
+# data/attack/ holds the human-staged ~54 MB ATT&CK STIX bundle (never
+# committed; the distilled shards under attack/data/ are the committed form)
+# and data/intel/ will hold gitignored local intel snapshots. Both are
+# already covered by data/ above — named here so nobody "fixes" that.
 
 # OS junk
 .DS_Store
