@@ -196,6 +196,59 @@ class MitreMapperAgent:
                 )
             )
 
+        if "ransomware" in normalized_event or any(
+            m in normalized_log
+            for m in ("ransom note", "ransom_note", "files encrypted", "vssadmin delete shadows")
+        ):
+            return asdict(
+                MitreMappingResult(
+                    event_type=event_type,
+                    tactic="Impact",
+                    technique="Data Encrypted for Impact",
+                    technique_id="T1486",
+                    confidence="high",
+                    evidence=[
+                        "Ransomware indicator detected (encryption activity, ransom "
+                        "note, or shadow-copy deletion).",
+                        "Encryption for impact is time-critical: unrecovered data "
+                        "grows with every minute the payload keeps running.",
+                    ],
+                    recommended_investigation=[
+                        "Contain first (agents/tools/containment.py): stop the "
+                        "encrypting process, quarantine the payload, and isolate "
+                        "the affected lab host.",
+                        "Check for recovery inhibition (T1490): shadow copies and "
+                        "backups deleted or disabled.",
+                        "Identify the initial access vector and any staged "
+                        "exfiltration preceding encryption (double extortion).",
+                    ],
+                )
+            )
+
+        if "extortion" in normalized_event or "double extortion" in normalized_log:
+            return asdict(
+                MitreMappingResult(
+                    event_type=event_type,
+                    tactic="Impact",
+                    technique="Financial Theft",
+                    technique_id="T1657",
+                    confidence="medium",
+                    evidence=[
+                        "Extortion indicator detected (ransom/payment demand or data-leak threat).",
+                        "Extortion leverage depends on continued access and staged "
+                        "data — both are containable.",
+                    ],
+                    recommended_investigation=[
+                        "Contain the leverage (agents/tools/containment.py): "
+                        "isolate affected hosts, block exfiltration indicators, "
+                        "and disable compromised accounts.",
+                        "Establish what data was staged or exfiltrated and from which systems.",
+                        "Preserve the demand and all attacker communication as "
+                        "evidence; escalate to the human owner (AGENTS.md §6.3).",
+                    ],
+                )
+            )
+
         if "ids alert" in normalized_event:
             return asdict(
                 MitreMappingResult(

@@ -34,9 +34,15 @@ intended action ─▶ PolicyEngine.evaluate()
 ```
 
 - **`approval.py`** — `classify_action()` maps a description to an `ActionClass`
-  (read_only · destructive · external_network · deployment · dependency ·
+  (read_only · containment · destructive · external_network · deployment · dependency ·
   secret_handling · boundary_crossing · unknown). `PolicyEngine.evaluate()` applies
-  the policy: read-only → allow; gated classes → require_approval; `boundary_crossing`
+  the policy: read-only → allow; `containment` (defensive payload containment:
+  quarantine, process stop, host isolation, indicator block, account disable) → allow,
+  audited, reversible-by-design (sole exception: the SIGKILL variant
+  `stop_process(force=True)`, separately deny-listable as `stop_process_force`) —
+  classified *after every gated class* so hybrid phrasing ("quarantine and
+  delete…", "quarantine the sample and upload it…") still gates (DESIGN.md
+  decision log, 2026-08-21); gated classes → require_approval; `boundary_crossing`
   → deny; **unknown → require_approval (fail closed)**.
 - **`audit.py`** — `AuditLogger.record()` appends a JSON line whose `entry_hash`
   chains the previous entry's hash. `verify()` recomputes the chain end-to-end and
@@ -64,6 +70,8 @@ elif decision.decision == "deny":
 |------|-----------|
 | Misclassification of a novel action | Unknown class **fails closed** to require_approval |
 | Allow-list used to smuggle a prohibition | Allow-list **cannot** override `boundary_crossing` |
+| Destructive action disguised as containment | Containment is classified **after every gated class** (offensive/secret/destructive/deployment/dependency/network keywords) — hybrid phrasing stays gated; the toolkit's primitives are reversible and lab-scoped |
+| Auto-containment misfire (false positive) | Reversible primitives with rollback counterparts; every action audited; operators can re-gate the class or deny-list capabilities in the bundle |
 | Audit log edited to hide an action | Hash chain — `verify()` detects edits/insertions/deletions |
 | Secrets written into the audit log | Log records decisions/short reasons only; callers must not pass payloads (§5) |
 
@@ -77,7 +85,8 @@ Zero runtime cost beyond local file I/O; pure standard library, no external serv
   tool call through the policy engine: each `Tool` declares an `action_class`, and
   only `allow` decisions execute (`require_approval`/`deny` fail closed). An optional
   `AuditLogger` records every decision, including blocked attempts. Read-only tools
-  run as before; a non-read-only tool needs an operator allow-list entry to run.
+  run as before; apart from the auto-allowed read-only and defensive containment
+  classes, a tool needs an operator allow-list entry to run.
 
 ## Future Enhancements
 
