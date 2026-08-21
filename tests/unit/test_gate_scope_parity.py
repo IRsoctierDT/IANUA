@@ -19,11 +19,22 @@ _REPO = Path(__file__).resolve().parents[2]
 
 # The canonical scopes. A new package updates THIS list plus every config the
 # assertions below point at — the point is that forgetting one fails loudly.
-PACKAGES = {"agents", "attack", "intel", "rag", "mcp", "dashboard", "scripts", "compliance"}
+PACKAGES = {
+    "agents",
+    "attack",
+    "intel",
+    "ingest",
+    "rag",
+    "mcp",
+    "dashboard",
+    "scripts",
+    "compliance",
+}
 MYPY_SCOPE = {
     "agents",
     "attack",
     "intel",
+    "ingest",
     "scripts",
     "tests",
     "dashboard",
@@ -31,10 +42,10 @@ MYPY_SCOPE = {
     "rag",
     "compliance",
 }
-COVERAGE_SCOPE = {"agents", "attack", "intel", "compliance", "rag", "mcp"}
+COVERAGE_SCOPE = {"agents", "attack", "intel", "ingest", "compliance", "rag", "mcp"}
 # Bandit covers the packages that parse untrusted or externally influenced
 # input (agent pipeline, corpus loaders, operational scripts, MCP surface).
-BANDIT_SCOPE = {"agents", "attack", "intel", "scripts", "mcp"}
+BANDIT_SCOPE = {"agents", "attack", "intel", "ingest", "scripts", "mcp"}
 
 
 def _pyproject() -> dict:

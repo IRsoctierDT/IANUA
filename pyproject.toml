@@ -7,7 +7,10 @@ requires = ["setuptools>=84.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agents*", "attack*", "intel*", "rag*", "mcp*", "dashboard*", "scripts*", "compliance*"]
+include = [
+  "agents*", "attack*", "intel*", "ingest*", "rag*", "mcp*", "dashboard*", "scripts*",
+  "compliance*",
+]
 exclude = ["tests*"]
 
 # Committed data stores that must ship inside a built wheel — a package
@@ -104,7 +107,10 @@ exclude = ["*.md"]
 
 [tool.mypy]
 python_version = "3.11"
-files = ["agents", "attack", "intel", "scripts", "tests", "dashboard", "mcp", "rag", "compliance"]
+files = [
+  "agents", "attack", "intel", "ingest", "scripts", "tests", "dashboard", "mcp", "rag",
+  "compliance",
+]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
@@ -151,6 +157,7 @@ addopts = [
   "--cov=agents",
   "--cov=attack",
   "--cov=intel",
+  "--cov=ingest",
   "--cov=compliance",
   "--cov=rag",
   "--cov=mcp",
@@ -165,7 +172,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agents", "attack", "intel", "compliance", "rag", "mcp"]
+source = ["agents", "attack", "intel", "ingest", "compliance", "rag", "mcp"]
 omit = ["tests/*", "*/__init__.py"]
 
 [tool.coverage.report]

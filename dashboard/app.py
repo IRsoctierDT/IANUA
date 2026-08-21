@@ -114,11 +114,12 @@ def _sigma_rule_count() -> int:
 with tab_intel:
     st.subheader("Detection Intelligence")
     st.caption(
-        "Health of the layers that give triage its vocabulary: the pinned ATT&CK "
-        "corpus, the mapping ruleset, the threat-intel library, the behavioral "
-        "detection corpus, and the plan-only response layer. Staleness is reported "
-        "as status, not hidden — a corpus nobody refreshes is stale whether or not "
-        "anything looks broken."
+        "Health of the layers that give triage its vocabulary: multi-source "
+        "telemetry ingest, the pinned ATT&CK corpus, the mapping ruleset, the "
+        "threat-intel library, the behavioral detection corpus, and the plan-only "
+        "response layer. Staleness is reported as status, not hidden — a corpus "
+        "nobody refreshes is stale whether or not anything looks broken, and a "
+        "domain with no parser is a blind spot whether or not anything alerts."
     )
     _as_of = date.today()
     st.table(intelligence_view.layer_rows(as_of=_as_of))

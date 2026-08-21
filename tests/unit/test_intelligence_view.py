@@ -22,6 +22,7 @@ def test_layer_rows_cover_every_layer() -> None:
     rows = view.layer_rows(as_of=_TODAY)
     layers = {row["Layer"] for row in rows}
     assert layers == {
+        "Telemetry ingest",
         "ATT&CK corpus",
         "Mapping ruleset",
         "Threat-intel library",
@@ -140,10 +141,20 @@ def test_every_status_fails_soft_and_says_so(monkeypatch: pytest.MonkeyPatch) ->
 
     # The headline table still renders every row rather than raising.
     rows = view.layer_rows(as_of=_TODAY)
-    assert len(rows) == 5
+    assert len(rows) == 6
 
 
 @pytest.mark.unit
 def test_views_are_deterministic_in_as_of() -> None:
     assert view.layer_rows(as_of=_TODAY) == view.layer_rows(as_of=_TODAY)
     assert view.behavior_rows() == view.behavior_rows()
+
+
+@pytest.mark.unit
+def test_ingest_status_reports_domain_coverage_not_parser_count() -> None:
+    """A defender needs to know which domains are blind, not how much code exists."""
+    status = view.ingest_status()
+    assert "5/5 domains" in status.detail
+    for domain in ("endpoint", "network", "cloud", "identity", "email"):
+        assert domain in status.detail
+    assert "never guessed" in status.detail

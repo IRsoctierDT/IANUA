@@ -30,7 +30,9 @@ class TestOcsf:
             ("firewall block", 4001, "Network Activity"),
             ("arp spoofing", 4001, "Network Activity"),
             ("ids alert", 2004, "Detection Finding"),
-            ("log tampering", 1008, "File System Activity"),
+            # 1008 is Event Log Activity in OCSF 1.x; 1001 is File System
+            # Activity. The uid here was always right, the label was not.
+            ("log tampering", 1008, "Event Log Activity"),
         ],
     )
     def test_known_event_types_map(self, event_type: str, class_uid: int, class_name: str) -> None:

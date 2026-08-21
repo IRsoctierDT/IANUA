@@ -130,6 +130,34 @@ def behavior_status() -> LayerStatus:
     )
 
 
+def ingest_status() -> LayerStatus:
+    """Multi-source coverage: which of the five domains can actually be read.
+
+    Reported as domains covered rather than parsers written, because "ten
+    parsers" says nothing about whether a defender is blind to cloud.
+    """
+    try:
+        from ingest import SIGNATURES
+
+        domains = {signature.source_type for signature in SIGNATURES}
+    except Exception as exc:
+        return LayerStatus("Telemetry ingest", _badge(False), f"{_UNAVAILABLE}: {exc}")
+    expected = {"endpoint", "network", "cloud", "identity", "email"}
+    missing = sorted(expected - domains)
+    detail = (
+        f"{len(SIGNATURES)} parsers across {len(domains & expected)}/5 domains "
+        f"({', '.join(sorted(domains & expected))}) · unrecognized sources are "
+        "labelled, never guessed"
+    )
+    if missing:
+        return LayerStatus(
+            "Telemetry ingest",
+            _badge(False, warn=True),
+            f"no parser for {', '.join(missing)} — {detail}",
+        )
+    return LayerStatus("Telemetry ingest", _badge(True), detail)
+
+
 def response_status() -> LayerStatus:
     """Response layer: always plan-only. The status IS the guarantee."""
     try:
@@ -151,6 +179,7 @@ def layer_rows(*, as_of: date) -> list[dict[str, str]]:
     return [
         status.as_row()
         for status in (
+            ingest_status(),
             attack_corpus_status(as_of=as_of),
             mapping_status(),
             intel_status(as_of=as_of),
