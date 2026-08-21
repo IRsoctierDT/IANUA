@@ -116,6 +116,7 @@ ianua/
 │   ├── data/                  # Distilled technique/detection/relationship shards (drift-gated)
 │   └── pins/                  # Version pin manifest (sha256 per shard; Ed25519-signable)
 ├── compliance/                # Control registry, framework mappings, evidence engine
+├── intel/                     # Local threat-intel library (first-party behavioral + synthetic seed)
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
 ├── mcp/                       # MCP server + sandboxed tool execution
@@ -275,10 +276,10 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack scripts tests dashboard mcp rag compliance
+mypy agents attack intel scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack scripts mcp
+bandit -c pyproject.toml -r agents attack intel scripts mcp
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
@@ -288,6 +289,7 @@ python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
 python scripts/build_attack_navigator.py --check  # Navigator layer ↔ Sigma corpus + attack/ pin
 python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; revocation invariants
 python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; techniques resolve in the pin
+python scripts/check_intel_store.py --check   # intel library ↔ digest; licenses, TLP, anchors validate
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)

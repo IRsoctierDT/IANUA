@@ -82,6 +82,7 @@ hard-coded secrets or unaudited external network access (see `AGENTS.md` §5).
 |---|---|---|
 | `agents/roles/` | Role definitions and their mandates | A role announces itself; honors its review priorities |
 | `attack/` | Pinned local MITRE ATT&CK corpus (committed shards + pin) | Never fetched at runtime; zero first-party imports; integrity-verified fail-closed before parse; revocation surfaced, never rewritten |
+| `intel/` | Local threat-intel library (first-party behavioral + synthetic atomic seed) | No live feed; TLP:CLEAR only; expiring, decaying, never-flag enforced at ingest and query; single-source network verdicts capped |
 | `agents/tools/` | Adapters from agent intent → real capability | Each adapter validates input and enforces least privilege |
 | `agents/policies/` | Guardrails, allow/deny lists, approval logic | Default deny; gates fail closed |
 | `rag/` | Document ingestion and retrieval | Only trusted local sources; no PII/client data |
@@ -124,6 +125,19 @@ a more-trusted one. Crossing one requires validation and (often) an approval gat
    marker and an audit record; previously committed shards stay authoritative.
    Tampering hard-fails (`AttackIntegrityError`); absence degrades soft to an explicit
    `AttackUnavailableError` — never a guess.
+
+6. **Third-party intel feed → `intel/` indicator store** — no live feed ships; committed
+   content is first-party or synthetic only, and any future vendored snapshot lands in
+   gitignored `data/intel/`. Whole-store fail-closed validation: unlisted `source_id` or
+   non-allow-listed license rejects; TLP above CLEAR is refused at ingest (an intel hit's
+   restricted datum IS the indicator value, and reports are tracked); every atomic
+   indicator carries a mandatory expiry with per-type exponential decay; the explicit
+   never-flag CIDR list (never `ipaddress.is_private`, which is wrong in both directions)
+   is enforced at ingest AND query; network-observable indicators need two sources with
+   distinct declared upstreams for a `malicious` verdict — one poisoned feed caps at
+   `suspicious`. `as_of` is always injected (no module reads a clock); ATT&CK anchors on
+   behavioral records degrade to `stale-anchor` on deprecation/revocation rather than
+   letting an external taxonomy switch off a working local detection.
 
 **Sensitive data** (logs, legal docs, client info, credentials, PII) never crosses outward
 across these boundaries and is never committed.
@@ -174,6 +188,7 @@ across these boundaries and is never committed.
 | Poisoned/tampered ATT&CK corpus drives wrong mappings | Confidently incorrect SOC output | Boundary 5 control stack: size ceiling → depth scan → SHA-256 → parse; signable pin; stdlib `json` only; nothing executed |
 | Silent ATT&CK staleness — dead techniques persist in content | Coverage claims drift from reality | Revoked/deprecated retained with successors; append-only tombstone ledger; merge-blocking reference gate in the Navigator builder; expiring MAN-03 attestation |
 | Solo-maintainer decay of the "ongoing" corpus | Currency claim becomes false | Version-distance freshness (advisory, never a gate); expiring attestation flips to "attestation due"; refresh is one documented human command ~2×/year — and if it stops, the dashboard says so |
+| Intel-feed poisoning causes analyst DoS or whitewashing | Alert flood, or attacker infrastructure branded clean | Never-flag denylist at ingest and query; two-source corroboration with declared upstream independence; per-type decay with hard expiry; no atomic indicator can authorize any action; no live feed at all |
 
 ---
 
@@ -220,6 +235,8 @@ default.
 | 2026-08-21 | Revocation is surfaced, never silently rewritten — and a stale reference cannot merge | The index retains every technique the pinned bundle knows, including revoked and deprecated objects, so `lookup("T1064")` answers "deprecated, no replacement" instead of the indistinguishable-from-a-typo `None`. Revoked objects resolve successors through the `revoked-by` STIX relationship; deprecated objects carry no replacement pointer and the invariant check tolerates that asymmetry (it is MITRE's, not ours). The teeth: `scripts/build_attack_navigator.py` previously hard-coded `"attack": "16"` in a *published* artifact and validated tags by regex shape only (accepting `T9999` and every dead ID). It now reads the version from the pin and fails closed on any unresolvable, revoked, or deprecated Sigma tag — a rule pinned to a dead technique cannot merge. ATT&CK v19's restructures (Defense Evasion split into Stealth/Defense Impairment; detection prose moved from `x_mitre_detection` to detection-strategy/analytic objects) landed via the distiller with zero code assumptions broken — the validation of pinning the vocabulary instead of hard-coding it. |
 
 | 2026-08-21 | Event-to-technique mapping moves from Python control flow into a reviewed data store under `agents/mapping/` | `MitreMapperAgent` becomes a thin facade over a committed, ordered ruleset; `map_event()` keeps its exact signature and legacy dict shape (additive keys: `techniques`, `matched_rules`, `attack_version`). The predicate language is literal-only by schema — no regex operator exists, so ReDoS over attacker-influenced log text is structurally impossible — with bounded rule/clause/value counts, validated fail-closed in the attestations style; every output string is a store- or corpus-declared constant, so log text can never transit into a result. The ruleset lives under `agents/mapping/` (not `detections/`) so the engine parsing untrusted text sits inside the bandit and coverage scopes by construction and a built wheel ships its rules (`detections` is absent from `packages.find.include`). Rules resolve against `attack/` at load: unknown → reject; revoked → reject naming the successor; deprecated → reject (operational content re-anchors deliberately); each rule declares its tactic, validated as a member of the technique's tactics, because techniques are multi-tactic and deriving would drift on version bumps. Integrity is a committed canonicalized digest (`rules.sha256`) verified by `scripts/check_mapping_rules.py --check` in CI and pre-commit — not per-event audit writes, which would give a pure function a clock and unbounded chain growth. Deliberate visible consequences of sourcing names from the pinned corpus: T1557 reads "Adversary-in-the-Middle" (the old compound label belonged to T1557.002) and T1070.003 sits under "Stealth" (v19 split Defense Evasion). |
+
+| 2026-08-21 | Threat intelligence is first-party, behavioral, expiring, and synthetic where atomic (`intel/`) | The durable asset is a small, ATT&CK-anchored, fixture-backed behavioral library IANUA authors — no licensing exposure, no decay clock — plus a synthetic atomic seed built only from RFC 5737/3849/2606 values and clearly fabricated hashes, so lookup/decay/corroboration are exercisable from a clean clone without publishing accusations about real third-party infrastructure. No live feed ships: a useful atomic corpus needs an API key (§5.1 secret gate) and non-loopback egress (§5.1 network gate) to buy indicators stale within days. Aging differs in kind by Pyramid-of-Pain level: atomic indicators decay exponentially (per-type half-life; URL 14d → hash 365d) with a hard expiry; behavioral records age on a human review interval and on ATT&CK revisions — a deprecated/revoked anchor degrades the record to `stale-anchor`, never rejects it. `as_of` is injected everywhere (the store's newest retrieval date is the deterministic fallback); no module in `intel/` reads a clock or opens a socket, enforced by security tests. `ThreatIntelAgent` now classifies with stdlib `ipaddress` (explicit internal CIDRs, deliberately not `is_private`, which returns True for the RFC 5737 documentation ranges the seed occupies) and consults the library fail-soft. |
 
 > Append new architectural decisions here (date, decision, rationale) so the history stays
 > auditable.

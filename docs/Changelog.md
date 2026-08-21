@@ -5,6 +5,19 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Detection-intelligence layer** (tracked plan:
+  `docs/DETECTION_INTELLIGENCE_PLAN.md`) across three merged slices:
+  `attack/` — a version-pinned, hash-verified local MITRE ATT&CK corpus
+  (Enterprise 19.2) with tombstoned revocations and merge-blocking reference
+  gates; `agents/mapping/` — the MITRE mapper's if/elif ladder replaced by a
+  committed, digest-gated ruleset with multi-technique attribution;
+  `intel/` — a first-party behavioral threat-intelligence library
+  (ATT&CK-anchored, review-aged) plus a synthetic atomic seed with per-type
+  confidence decay, never-flag policy suppression, and two-source
+  corroboration. The Sigma condition evaluator gained real operator
+  precedence and parentheses (previously `a and not (f1 or f2)` evaluated
+  wrong), and incident-report rendering now sanitizes untrusted text in all
+  three Markdown positions it reaches. Runtime dependencies remain empty.
 - **Apache-2.0 licensing** — the repository carried no license, which legally
   means *all rights reserved*: the public could read the code but not use,
   fork, or build on it. Now licensed under Apache-2.0 (canonical text fetched

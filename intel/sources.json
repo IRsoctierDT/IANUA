@@ -1,0 +1,28 @@
+{
+  "sources": [
+    {
+      "source_id": "ianua-first-party",
+      "name": "IANUA first-party behavioral research",
+      "url": "https://github.com/IRsoctierDT/IANUA",
+      "license": "Apache-2.0",
+      "upstream": "ianua.local",
+      "retrieved": "2026-08-21"
+    },
+    {
+      "source_id": "synthetic-feed-alpha",
+      "name": "Synthetic demo feed Alpha (RFC 5737/2606 values only)",
+      "url": "https://feed-alpha.example",
+      "license": "CC0-1.0",
+      "upstream": "feed-alpha.example",
+      "retrieved": "2026-08-14"
+    },
+    {
+      "source_id": "synthetic-feed-bravo",
+      "name": "Synthetic demo feed Bravo (RFC 5737/2606 values only)",
+      "url": "https://feed-bravo.example",
+      "license": "CC0-1.0",
+      "upstream": "feed-bravo.example",
+      "retrieved": "2026-08-18"
+    }
+  ]
+}
