@@ -281,6 +281,11 @@ jobs:
         # the 54 MB upstream bundle: signature (when present), per-shard
         # SHA-256, canonical rendering, and revocation/successor invariants.
         run: python scripts/update_attack.py --check
+      - name: Mapping ruleset digest + validity vs the pinned corpus
+        # Canonicalized digest of agents/mapping/rules/ plus a full store load:
+        # a rule anchored to a technique the pin marks revoked/deprecated
+        # fails here with the successor named — stale mappings cannot merge.
+        run: python scripts/check_mapping_rules.py --check
 
   build:
     name: Build package

@@ -1,0 +1,283 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "id": "auth-failure-brute-force",
+      "description": "Repeated authentication failures indicate credential brute forcing. Confidence medium: a single failure event alone cannot distinguish an attack from a typo; the sequence correlator raises certainty.",
+      "when": [
+        {"field": "event_type", "op": "contains_any", "values": ["authentication failure"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1110",
+          "tactic": "credential-access",
+          "confidence": "medium",
+          "evidence": [
+            "Authentication failure event detected.",
+            "Repeated failed login activity may indicate brute force behavior."
+          ],
+          "investigation": [
+            "Check source IP frequency.",
+            "Review failed login count per account.",
+            "Verify whether MFA or account lockout controls were triggered."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ssh-accepted-valid-accounts",
+      "description": "An accepted SSH login is use of a valid account; legitimacy requires review. Matches on log text so transports classified under other event types still map.",
+      "when": [
+        {"field": "log_text", "op": "contains_all", "values": ["ssh", "accepted"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1078",
+          "tactic": "initial-access",
+          "confidence": "medium",
+          "evidence": [
+            "SSH accepted-login pattern detected.",
+            "Valid account usage may require legitimacy review."
+          ],
+          "investigation": [
+            "Confirm whether the login was expected.",
+            "Review source IP reputation and geolocation.",
+            "Check for follow-on activity after login."
+          ]
+        },
+        {
+          "technique_id": "T1021.004",
+          "tactic": "lateral-movement",
+          "confidence": "low",
+          "evidence": [
+            "An interactive SSH session was established.",
+            "If the source is an internal host, SSH is the classic lateral-movement transport."
+          ],
+          "investigation": [
+            "Determine whether the source host is internal or external.",
+            "For an internal source, review that host for prior compromise indicators."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "arp-spoofing-event",
+      "description": "The classifier's arp-spoofing event type: adversary-in-the-middle positioning on the local segment. Parent technique first (the event alone proves AiTM intent), ARP cache poisoning as the refined sub-technique.",
+      "when": [
+        {"field": "event_type", "op": "contains_any", "values": ["arp spoofing"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1557",
+          "tactic": "credential-access",
+          "confidence": "medium",
+          "evidence": [
+            "ARP cache-poisoning indicator detected (IP-to-MAC binding changed unexpectedly).",
+            "ARP poisoning positions an attacker to intercept or relay traffic on the local segment."
+          ],
+          "investigation": [
+            "Identify the MAC address claiming the disputed IP and locate the physical port it is attached to.",
+            "Check whether DHCP lease churn or a virtual-IP failover explains the rebinding before treating it as hostile.",
+            "Review traffic captured during the window for credential or session data exposed in cleartext."
+          ]
+        },
+        {
+          "technique_id": "T1557.002",
+          "tactic": "credential-access",
+          "confidence": "medium",
+          "evidence": [
+            "The observed mechanism (gratuitous ARP rebinding) is specifically ARP cache poisoning."
+          ],
+          "investigation": [
+            "Enable dynamic ARP inspection or equivalent on the affected segment if available."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "arp-spoofing-log",
+      "description": "Log-text fallback for ARP cache-poisoning indicators when the event type is generic (e.g. an IDS alert about ARP activity). Same attribution as arp-spoofing-event; the engine merges duplicates.",
+      "when": [
+        {"field": "log_text", "op": "contains_any", "values": ["arp"]},
+        {"field": "log_text", "op": "contains_any", "values": ["moved from", "spoof", "poison"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1557",
+          "tactic": "credential-access",
+          "confidence": "medium",
+          "evidence": [
+            "ARP cache-poisoning indicator detected (IP-to-MAC binding changed unexpectedly).",
+            "ARP poisoning positions an attacker to intercept or relay traffic on the local segment."
+          ],
+          "investigation": [
+            "Identify the MAC address claiming the disputed IP and locate the physical port it is attached to.",
+            "Check whether DHCP lease churn or a virtual-IP failover explains the rebinding before treating it as hostile.",
+            "Review traffic captured during the window for credential or session data exposed in cleartext."
+          ]
+        },
+        {
+          "technique_id": "T1557.002",
+          "tactic": "credential-access",
+          "confidence": "medium",
+          "evidence": [
+            "The observed mechanism (gratuitous ARP rebinding) is specifically ARP cache poisoning."
+          ],
+          "investigation": [
+            "Enable dynamic ARP inspection or equivalent on the affected segment if available."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "log-tampering-clear-history",
+      "description": "Audit-evidence destruction. ATT&CK v19 places indicator removal under the Stealth tactic (Defense Evasion was split into Stealth and Defense Impairment in v19).",
+      "when": [
+        {"field": "event_type", "op": "contains_any", "values": ["log tampering"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1070.003",
+          "tactic": "stealth",
+          "confidence": "medium",
+          "evidence": [
+            "Audit-evidence destruction indicator detected (history cleared, log removed, or audit daemon stopped).",
+            "Clearing evidence is post-compromise behavior — it presumes there was activity worth hiding."
+          ],
+          "investigation": [
+            "Recover the audit trail from remote or forwarded log copies.",
+            "Establish what the account did before the evidence was cleared.",
+            "Treat the host as compromised until the review completes."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "privileged-group-addition",
+      "description": "Membership in sudo/wheel/admin grants durable elevated access — an escalation and persistence primitive.",
+      "when": [
+        {"field": "event_type", "op": "contains_any", "values": ["privileged group addition"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1098",
+          "tactic": "privilege-escalation",
+          "confidence": "medium",
+          "evidence": [
+            "An account was added to a privileged group (sudo/wheel/admin).",
+            "Privileged-group membership grants durable elevated access — a persistence and escalation primitive."
+          ],
+          "investigation": [
+            "Verify the change against change-management records.",
+            "Check when the target account was created — a fresh account gaining privilege is the classic persistence chain.",
+            "Review the actor account that performed the change."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "account-creation-local",
+      "description": "Local account creation as a persistence mechanism. The classifier's markers (useradd, new user/account) prove a local account specifically, so the sub-technique is warranted.",
+      "when": [
+        {"field": "event_type", "op": "contains_any", "values": ["account creation"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1136.001",
+          "tactic": "persistence",
+          "confidence": "medium",
+          "evidence": [
+            "A local account was created.",
+            "Adversaries create local accounts to maintain access that survives credential rotation."
+          ],
+          "investigation": [
+            "Confirm the account maps to an approved provisioning request.",
+            "Watch for follow-on privilege changes on the same account.",
+            "Review the creating account's session for other changes."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "port-scan-service-discovery",
+      "description": "Service discovery commonly precedes exploitation of the services it enumerates.",
+      "when": [
+        {"field": "event_type", "op": "contains_any", "values": ["port scan"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1046",
+          "tactic": "discovery",
+          "confidence": "medium",
+          "evidence": [
+            "Port-scanning activity detected (service discovery probes).",
+            "Service discovery commonly precedes exploitation of the services it enumerates."
+          ],
+          "investigation": [
+            "Identify the scan source and whether it is an authorized scanner (vulnerability management, asset inventory).",
+            "Review exposure of the probed ports and their services.",
+            "Correlate with follow-on connection attempts from the same source."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "successful-login-valid-accounts",
+      "description": "Any successful login the classifier surfaces as a security event maps to Valid Accounts pending legitimacy review — coverage the transport-specific SSH rule alone missed.",
+      "when": [
+        {"field": "event_type", "op": "equals", "values": ["successful login"]}
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1078",
+          "tactic": "initial-access",
+          "confidence": "medium",
+          "evidence": [
+            "A successful login was surfaced as a security event.",
+            "Valid account usage may require legitimacy review."
+          ],
+          "investigation": [
+            "Confirm whether the login was expected.",
+            "Review source IP reputation and geolocation.",
+            "Check for follow-on activity after login."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ids-alert-analyst-review",
+      "description": "A generic IDS alert cannot be attributed to a technique without signature and packet context — an explicit review sentinel, never a guess.",
+      "when": [
+        {"field": "event_type", "op": "contains_any", "values": ["ids alert"]}
+      ],
+      "techniques": [],
+      "legacy": {
+        "tactic": "Detection-dependent",
+        "technique": "Requires analyst review",
+        "technique_id": "UNKNOWN",
+        "confidence": "low",
+        "evidence": [
+          "IDS alert requires signature and packet-context review."
+        ],
+        "investigation": [
+          "Review IDS signature metadata.",
+          "Correlate with destination asset exposure.",
+          "Inspect packet capture if available."
+        ]
+      }
+    }
+  ],
+  "fallback": {
+    "tactic": "Unknown",
+    "technique": "Unknown",
+    "technique_id": "UNKNOWN",
+    "confidence": "low",
+    "evidence": [
+      "No supported mapping rule matched."
+    ],
+    "investigation": [
+      "Review raw log evidence.",
+      "Add a new mapping rule if pattern becomes repeatable."
+    ]
+  }
+}

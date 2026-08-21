@@ -75,6 +75,12 @@ repos:
         language: system
         files: ^(docs/trust\.(data\.json|html|json)|scripts/build_trust_page\.py)$
         pass_filenames: false
+      - id: mapping-rules-check
+        name: Mapping ruleset digest + validity vs the pinned corpus
+        entry: python scripts/check_mapping_rules.py --check
+        language: system
+        files: ^(agents/mapping/(rules/.*\.json|rules\.sha256)|scripts/check_mapping_rules\.py|attack/(data|pins)/.*\.json)$
+        pass_filenames: false
       - id: attack-corpus-check
         name: ATT&CK corpus shards match the signed pin
         entry: python scripts/update_attack.py --check

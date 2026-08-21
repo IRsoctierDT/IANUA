@@ -287,6 +287,7 @@ python scripts/build_trust_page.py --check    # trust page ↔ trust.data.json
 python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
 python scripts/build_attack_navigator.py --check  # Navigator layer ↔ Sigma corpus + attack/ pin
 python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; revocation invariants
+python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; techniques resolve in the pin
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)
