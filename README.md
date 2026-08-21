@@ -29,10 +29,12 @@ security operation.
 | **Orchestrator Agent** — Multi-agent workflow coordination | Agent | Complete |
 | **ATT&CK Corpus (`attack/`)** — version-pinned local MITRE ATT&CK 19.x: hash-verified shards, tombstoned revocations, merge-blocking reference gates ([plan](./docs/DETECTION_INTELLIGENCE_PLAN.md)) | Data | Complete |
 | **Threat-Intel Library (`intel/`)** — first-party behavioral records (ATT&CK-anchored, review-aged) + synthetic atomic seed with per-type decay | Data | Complete |
+| **Behavioral Detections (`detections/behaviors/`)** — post-compromise TTP corpus, reference-gated against the pinned corpus, each rule declaring whether its telemetry is ingested | Detection | Complete |
+| **Response Layer (`agents/response/`)** — draft containment plans with per-action rollback and human owners; **no executor exists** and security tests prove it ([doc](./docs/RESPONSE_LAYER.md)) | Agent | Complete |
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |
-| **Dashboard** — Streamlit command center: SOC workflow (severity + KB grounding), batch processing, KB search, system health, reports | Dashboard | Complete |
+| **Dashboard** — Streamlit command center: SOC workflow (severity + KB grounding), batch processing, **Detection Intelligence** (corpus health, intel freshness, behavioral telemetry split, maintenance debt), KB search, system health, reports | Dashboard | Complete |
 
 **All eight agent blueprints are built.** Further work is enhancement, not new surface.
 
