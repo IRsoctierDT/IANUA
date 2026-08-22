@@ -7,8 +7,13 @@ Design goals (see DESIGN.md §3-§6, AGENTS.md §5-§6):
   * Fail closed                -- unknown tools / bad input raise, never guess.
   * Default-deny network       -- this stub performs NO network egress.
 
-This is transport-agnostic scaffolding: wire `ToolRegistry.dispatch` into your
-MCP transport of choice (stdio/websocket) once the real SDK is added.
+Transport wiring already exists: `mcp/transport.py` speaks line-delimited
+JSON-RPC 2.0 over stdio against this registry with zero third-party
+dependencies, so the gates run offline. Swapping in the official MCP SDK's
+stdio server is an optional future step — a new dependency, so it is gated
+(AGENTS.md §5.1) and needs a package-rename plan first (this local package
+shares the SDK's `mcp` import name). The registry and its security model
+(allow-list + policy gate + self-validating tools) stay unchanged either way.
 """
 
 from __future__ import annotations
@@ -49,9 +54,11 @@ class ToolRegistry:
 
     Every dispatch is evaluated by ``policy`` before the handler runs: only
     ``allow`` decisions execute; ``require_approval`` and ``deny`` are blocked
-    (fail closed) so a non-read-only tool cannot run autonomously without an
-    operator allow-list entry. When an ``audit`` logger is provided, each decision
-    is recorded to the tamper-evident trail.
+    (fail closed). Under the default policy only the ``read_only`` and
+    defensive ``containment`` classes are auto-allowed (see
+    ``agents/policies/approval.py``); a tool in any other class cannot run
+    autonomously without an operator allow-list entry. When an ``audit`` logger
+    is provided, each decision is recorded to the tamper-evident trail.
     """
 
     root: Path

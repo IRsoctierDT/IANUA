@@ -32,6 +32,40 @@ def test_unknown_event_returns_unknown_mapping():
     assert result["confidence"] == "low"
 
 
+def test_ransomware_event_maps_to_t1486_with_containment_steps():
+    result = MitreMapperAgent().map_event(
+        "ransomware detected",
+        "mass rename to .locked extension observed on file server",
+    )
+    assert result["technique_id"] == "T1486"
+    assert result["tactic"] == "Impact"
+    assert result["confidence"] == "high"
+    steps = " ".join(result["recommended_investigation"]).lower()
+    # Response must lead with containment, and point at the sanctioned toolkit.
+    assert "containment" in steps
+    assert "quarantine" in steps
+
+
+def test_ransomware_log_indicators_map_to_t1486():
+    result = MitreMapperAgent().map_event(
+        "suspicious activity",
+        "cmd.exe spawned: vssadmin delete shadows /all /quiet",
+    )
+    assert result["technique_id"] == "T1486"
+
+
+def test_extortion_event_maps_to_t1657():
+    result = MitreMapperAgent().map_event(
+        "extortion demand received",
+        "pay 10 BTC or the stolen data will be leaked",
+    )
+    assert result["technique_id"] == "T1657"
+    assert result["tactic"] == "Impact"
+    steps = " ".join(result["recommended_investigation"]).lower()
+    assert "isolate" in steps
+    assert "escalate" in steps
+
+
 def test_arp_spoofing_maps_to_t1557():
     result = MitreMapperAgent().map_event("arp spoofing", "arp: 10.0.0.1 moved from a to b")
     assert result["technique_id"] == "T1557"

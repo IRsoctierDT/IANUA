@@ -181,7 +181,7 @@
           "confidence": "medium",
           "evidence": [
             "Audit-evidence destruction indicator detected (history cleared, log removed, or audit daemon stopped).",
-            "Clearing evidence is post-compromise behavior \u2014 it presumes there was activity worth hiding."
+            "Clearing evidence is post-compromise behavior — it presumes there was activity worth hiding."
           ],
           "investigation": [
             "Recover the audit trail from remote or forwarded log copies.",
@@ -193,7 +193,7 @@
     },
     {
       "id": "privileged-group-addition",
-      "description": "Membership in sudo/wheel/admin grants durable elevated access \u2014 an escalation and persistence primitive.",
+      "description": "Membership in sudo/wheel/admin grants durable elevated access — an escalation and persistence primitive.",
       "when": [
         {
           "field": "event_type",
@@ -210,11 +210,11 @@
           "confidence": "medium",
           "evidence": [
             "An account was added to a privileged group (sudo/wheel/admin).",
-            "Privileged-group membership grants durable elevated access \u2014 a persistence and escalation primitive."
+            "Privileged-group membership grants durable elevated access — a persistence and escalation primitive."
           ],
           "investigation": [
             "Verify the change against change-management records.",
-            "Check when the target account was created \u2014 a fresh account gaining privilege is the classic persistence chain.",
+            "Check when the target account was created — a fresh account gaining privilege is the classic persistence chain.",
             "Review the actor account that performed the change."
           ]
         }
@@ -280,7 +280,7 @@
     },
     {
       "id": "successful-login-valid-accounts",
-      "description": "Any successful login the classifier surfaces as a security event maps to Valid Accounts pending legitimacy review \u2014 coverage the transport-specific SSH rule alone missed.",
+      "description": "Any successful login the classifier surfaces as a security event maps to Valid Accounts pending legitimacy review — coverage the transport-specific SSH rule alone missed.",
       "when": [
         {
           "field": "event_type",
@@ -337,7 +337,7 @@
           "confidence": "medium",
           "evidence": [
             "The host audit daemon was stopped or disabled.",
-            "Turning off the sensor that records subsequent activity impairs the defense itself \u2014 distinct from destroying evidence already written."
+            "Turning off the sensor that records subsequent activity impairs the defense itself — distinct from destroying evidence already written."
           ],
           "investigation": [
             "Confirm whether a maintenance window or host reboot explains the stop.",
@@ -348,8 +348,140 @@
       ]
     },
     {
+      "id": "ransomware-event",
+      "description": "An event explicitly classified as ransomware is encryption-for-impact in progress. Confidence high: the classification already asserts the behavior, and the cost of treating it as anything less is unrecovered data. Response steps lead with containment (agents/tools/containment.py) because encryption completes in minutes.",
+      "when": [
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "ransomware"
+          ]
+        }
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1486",
+          "tactic": "impact",
+          "confidence": "high",
+          "evidence": [
+            "Ransomware indicator detected (encryption activity, ransom note, or shadow-copy deletion).",
+            "Encryption for impact is time-critical: unrecovered data grows with every minute the payload keeps running."
+          ],
+          "investigation": [
+            "Contain first (agents/tools/containment.py): stop the encrypting process, quarantine the payload, and isolate the affected lab host.",
+            "Check for recovery inhibition (T1490): shadow copies and backups deleted or disabled.",
+            "Identify the initial access vector and any staged exfiltration preceding encryption (double extortion)."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ransomware-log-indicators",
+      "description": "High-fidelity ransomware markers in raw log text: a ransom note artifact, an explicit files-encrypted message, or shadow-copy deletion via vssadmin. The vssadmin marker also attributes Inhibit System Recovery (T1490) — destroying recovery material is the ransomware preparation step that makes paying look necessary.",
+      "when": [
+        {
+          "field": "log_text",
+          "op": "contains_any",
+          "values": [
+            "ransom note",
+            "ransom_note",
+            "files encrypted",
+            "vssadmin delete shadows"
+          ]
+        }
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1486",
+          "tactic": "impact",
+          "confidence": "high",
+          "evidence": [
+            "Ransomware indicator detected (encryption activity, ransom note, or shadow-copy deletion).",
+            "Encryption for impact is time-critical: unrecovered data grows with every minute the payload keeps running."
+          ],
+          "investigation": [
+            "Contain first (agents/tools/containment.py): stop the encrypting process, quarantine the payload, and isolate the affected lab host.",
+            "Check for recovery inhibition (T1490): shadow copies and backups deleted or disabled.",
+            "Identify the initial access vector and any staged exfiltration preceding encryption (double extortion)."
+          ]
+        },
+        {
+          "technique_id": "T1490",
+          "tactic": "impact",
+          "confidence": "high",
+          "evidence": [
+            "Shadow-copy or backup destruction indicator detected alongside ransomware activity.",
+            "Destroying recovery material precedes encryption so restoration without payment is impossible."
+          ],
+          "investigation": [
+            "Inventory which recovery mechanisms (shadow copies, backups, snapshots) were reachable from the host.",
+            "Verify off-host backups are intact and isolated before any recovery attempt."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "extortion-event",
+      "description": "An event classified as extortion (ransom or data-leak demand). Confidence medium: the demand is observed, but the underlying access and staged data still need confirmation. Response steps lead with containing the leverage.",
+      "when": [
+        {
+          "field": "event_type",
+          "op": "contains_any",
+          "values": [
+            "extortion"
+          ]
+        }
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1657",
+          "tactic": "impact",
+          "confidence": "medium",
+          "evidence": [
+            "Extortion indicator detected (ransom/payment demand or data-leak threat).",
+            "Extortion leverage depends on continued access and staged data — both are containable."
+          ],
+          "investigation": [
+            "Contain the leverage (agents/tools/containment.py): isolate affected hosts, block exfiltration indicators, and disable compromised accounts.",
+            "Establish what data was staged or exfiltrated and from which systems.",
+            "Preserve the demand and all attacker communication as evidence; escalate to the human owner (AGENTS.md §6.3)."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "extortion-log-double-extortion",
+      "description": "The phrase 'double extortion' in log or alert text marks the encrypt-and-leak pattern: data theft before encryption gives the adversary leverage that survives restoration from backup.",
+      "when": [
+        {
+          "field": "log_text",
+          "op": "contains_any",
+          "values": [
+            "double extortion"
+          ]
+        }
+      ],
+      "techniques": [
+        {
+          "technique_id": "T1657",
+          "tactic": "impact",
+          "confidence": "medium",
+          "evidence": [
+            "Extortion indicator detected (ransom/payment demand or data-leak threat).",
+            "Extortion leverage depends on continued access and staged data — both are containable."
+          ],
+          "investigation": [
+            "Contain the leverage (agents/tools/containment.py): isolate affected hosts, block exfiltration indicators, and disable compromised accounts.",
+            "Establish what data was staged or exfiltrated and from which systems.",
+            "Preserve the demand and all attacker communication as evidence; escalate to the human owner (AGENTS.md §6.3)."
+          ]
+        }
+      ]
+    },
+    {
       "id": "ids-alert-analyst-review",
-      "description": "A generic IDS alert cannot be attributed to a technique without signature and packet context \u2014 an explicit review sentinel, never a guess.",
+      "description": "A generic IDS alert cannot be attributed to a technique without signature and packet context — an explicit review sentinel, never a guess.",
       "when": [
         {
           "field": "event_type",
