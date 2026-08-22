@@ -5,9 +5,19 @@ emit), it returns the Sigma rules in ``detections/sigma/`` that cover that
 technique. This closes the loop between *triage* (what happened) and *detection
 engineering* (what alerts on it), using the shared ATT&CK vocabulary.
 
+It also reports **behavioral** coverage from ``detections/behaviors/`` — the
+post-compromise TTP corpus aimed at payloads already resident on a host. That
+corpus is authored in YAML but consumed here through its committed JSON
+projection (``detections/behaviors.index.json``, built and reference-gated by
+``scripts/build_behavior_index.py``), so behavioral coverage is available with
+stdlib ``json`` alone and never depends on PyYAML at runtime. Each behavioral
+match carries its ``validation`` marker, so a rule whose telemetry this
+platform does not yet ingest is reported as *aspirational coverage* rather
+than silently counted as real.
+
 Design (DESIGN.md §5):
-- **Read-only, network-free, deterministic.** It only reads the local Sigma
-  corpus and matches on technique tags.
+- **Read-only, network-free, deterministic.** It only reads the local corpora
+  and matches on technique tags.
 - **Fails soft.** A missing corpus — or PyYAML not being installed — yields no
   matches rather than an error, so the agent pipeline degrades gracefully and the
   package keeps a dependency-free core.
@@ -15,6 +25,7 @@ Design (DESIGN.md §5):
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -25,6 +36,7 @@ except ModuleNotFoundError:  # pragma: no cover - yaml is present in dev/CI
     yaml = None
 
 DEFAULT_SIGMA_DIR = Path("detections/sigma")
+DEFAULT_BEHAVIOR_INDEX = Path("detections/behaviors.index.json")
 
 # Sigma severity order for ranking matches (most severe first).
 _LEVEL_RANK: dict[str, int] = {
@@ -47,11 +59,35 @@ class DetectionMatch:
     file: str
 
 
+@dataclass(frozen=True)
+class BehaviorMatch:
+    """A behavioral rule covering a technique, with its telemetry honesty flag.
+
+    ``validation`` is ``telemetry-available`` when this platform actually
+    ingests the signal the rule needs, or ``telemetry-required`` when the rule
+    replays green against fixtures but cannot fire in production until the
+    sensor exists. Reporting it keeps aspirational coverage visibly
+    aspirational instead of inflating a coverage claim.
+    """
+
+    rule_id: str
+    title: str
+    level: str
+    technique: str
+    validation: str
+    file: str
+
+
 class DetectionMatcherAgent:
     """Map a MITRE technique to the Sigma rules that detect it."""
 
-    def __init__(self, sigma_dir: Path | str = DEFAULT_SIGMA_DIR) -> None:
+    def __init__(
+        self,
+        sigma_dir: Path | str = DEFAULT_SIGMA_DIR,
+        behavior_index: Path | str = DEFAULT_BEHAVIOR_INDEX,
+    ) -> None:
         self.sigma_dir = Path(sigma_dir)
+        self.behavior_index = Path(behavior_index)
 
     @staticmethod
     def _normalize(technique_id: str) -> str:
@@ -107,6 +143,82 @@ class DetectionMatcherAgent:
         if not isinstance(technique_id, str):
             return []
         return self.match_for_technique(technique_id)
+
+    # --------------------------------------------------- behavioral matching
+    def _load_behavior_index(self) -> list[dict[str, Any]]:
+        """Read the committed JSON projection (stdlib only; fails soft)."""
+        if not self.behavior_index.is_file():
+            return []
+        try:
+            document = json.loads(self.behavior_index.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        behaviors = document.get("behaviors") if isinstance(document, dict) else None
+        return behaviors if isinstance(behaviors, list) else []
+
+    def match_behaviors_for_technique(self, technique_id: str) -> list[dict[str, Any]]:
+        """Behavioral rules covering ``technique_id``, most severe first.
+
+        Matching is exact on the technique id, mirroring
+        :meth:`match_for_technique`. Each result carries ``validation`` so a
+        caller can distinguish coverage that can fire today from coverage
+        waiting on telemetry.
+        """
+        target = self._normalize(technique_id)
+        if not target or target in {"unknown", "t"}:
+            return []
+        wanted = target.upper()
+
+        matches: list[BehaviorMatch] = []
+        for entry in self._load_behavior_index():
+            if not isinstance(entry, dict):
+                continue
+            techniques = entry.get("techniques", [])
+            if not isinstance(techniques, list) or wanted not in techniques:
+                continue
+            matches.append(
+                BehaviorMatch(
+                    rule_id=str(entry.get("id", "")),
+                    title=str(entry.get("title", "")),
+                    level=str(entry.get("level", "unknown")),
+                    technique=wanted,
+                    validation=str(entry.get("validation", "unknown")),
+                    file=str(entry.get("file", "")),
+                )
+            )
+        matches.sort(key=lambda m: (_LEVEL_RANK.get(m.level, 99), m.title))
+        return [asdict(m) for m in matches]
+
+    def match_behaviors_for_event(self, mitre_result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Behavioral coverage across every technique a mapping result attributes.
+
+        Uses the mapper's full ``techniques`` list when present (the
+        multi-technique view) and falls back to the legacy scalar, so a
+        secondary attribution can still surface its behavioral coverage.
+        Deduplicated by rule id; deterministic order.
+        """
+        wanted: list[str] = []
+        for attribution in mitre_result.get("techniques", []) or []:
+            if isinstance(attribution, dict):
+                technique_id = attribution.get("technique_id")
+                if isinstance(technique_id, str):
+                    wanted.append(technique_id)
+        if not wanted:
+            legacy = mitre_result.get("technique_id")
+            if isinstance(legacy, str):
+                wanted.append(legacy)
+
+        seen: set[str] = set()
+        combined: list[dict[str, Any]] = []
+        for technique_id in wanted:
+            for match in self.match_behaviors_for_technique(technique_id):
+                key = match["rule_id"] or f"{match['file']}|{match['title']}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                combined.append(match)
+        combined.sort(key=lambda m: (_LEVEL_RANK.get(m["level"], 99), m["title"]))
+        return combined
 
     # ------------------------------------------------- sequence-level matching
     # A multi-event finding is covered by multi-event detection content: only

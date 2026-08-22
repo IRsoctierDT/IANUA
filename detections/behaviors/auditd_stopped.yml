@@ -1,0 +1,41 @@
+title: Audit Daemon Stopped or Disabled
+name: auditd_stopped
+id: 7f4a2b1c-9d3e-4f5a-8b6c-1e2d3c4b5a60
+status: experimental
+validation: telemetry-available
+description: >-
+  The Linux audit daemon was stopped or disabled. Turning off the sensor that
+  records what happens next is defense impairment in its plainest form —
+  legitimate only inside a maintenance window. Distinct from history clearing
+  (T1070.003): this disables future evidence rather than destroying past
+  evidence.
+references:
+  - https://attack.mitre.org/techniques/T1685/
+author: IANUA
+date: 2026-08-21
+tags:
+  - attack.defense-impairment
+  - attack.t1685
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection_daemon:
+    message|contains: "auditd"
+  selection_action:
+    message|contains:
+      - "stopped"
+      - "disabled"
+      - "shutting down"
+  filter_startup:
+    message|contains:
+      - "starting"
+      - "started"
+      - "restarting"
+  condition: selection_daemon and selection_action and not filter_startup
+fields:
+  - host
+  - user
+falsepositives:
+  - Planned maintenance windows and host reboots — corroborate against change records
+level: high

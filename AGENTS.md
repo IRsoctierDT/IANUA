@@ -111,8 +111,16 @@ ianua/
 ├── agents/                    # Agent implementations, orchestration, versioning
 │   ├── roles/                 # Role specs (planner, builder, reviewer, security)
 │   ├── tools/                 # Tool adapters; each validates its own input
-│   └── policies/              # Policy engine, audit chain, signing, approval logic
+│   ├── policies/              # Policy engine, audit chain, signing, approval logic
+│   ├── mapping/               # Event→technique engine + committed ruleset
+│   └── response/              # Draft containment plans (plan-only; no executor)
+├── attack/                    # Pinned local MITRE ATT&CK corpus (committed shards + signed pin)
+│   ├── data/                  # Distilled technique/detection/relationship shards (drift-gated)
+│   └── pins/                  # Version pin manifest (sha256 per shard; Ed25519-signable)
 ├── compliance/                # Control registry, framework mappings, evidence engine
+├── intel/                     # Local threat-intel library (first-party behavioral + synthetic seed)
+├── ingest/                    # Multi-source telemetry normalization (XDR front door)
+│   └── parsers/               # One module per domain: endpoint, network, cloud, identity, email
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
 ├── mcp/                       # MCP server + sandboxed tool execution
@@ -272,16 +280,21 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents scripts tests dashboard mcp rag compliance
+mypy agents attack intel ingest scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest scripts mcp
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
 python scripts/build_status_page.py --check   # status page ↔ status.data.json
 python scripts/build_trust_page.py --check    # trust page ↔ trust.data.json
 python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
+python scripts/build_attack_navigator.py --check  # Navigator layer ↔ Sigma corpus + attack/ pin
+python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; revocation invariants
+python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; techniques resolve in the pin
+python scripts/check_intel_store.py --check   # intel library ↔ digest; licenses, TLP, anchors validate
+python scripts/build_behavior_index.py --check # behavioral index ↔ corpus; anchors resolve active
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)

@@ -24,8 +24,14 @@ htmlcov/
 .env
 *.key
 *.pem
-data/
-!data/.gitkeep
+# Root-anchored: an unanchored "data/" also matched nested directories like
+# attack/data/, silently dropping the committed ATT&CK shards from the repo
+# (caught by CI's corpus gate; pinned by test_gate_scope_parity).
+/data/
+!/data/.gitkeep
+# /data/attack/ holds the human-staged ~54 MB ATT&CK STIX bundle (never
+# committed; the distilled shards under attack/data/ are the committed form)
+# and /data/intel/ will hold gitignored local intel snapshots.
 
 # OS junk
 .DS_Store

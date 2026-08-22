@@ -1,0 +1,112 @@
+{
+  "attack_version": "19.2",
+  "behaviors": [
+    {
+      "description": "The Linux audit daemon was stopped or disabled. Turning off the sensor that records what happens next is defense impairment in its plainest form \u2014 legitimate only inside a maintenance window. Distinct from history clearing (T1070.003): this disables future evidence rather than destroying past evidence.",
+      "false_positives": [
+        "Planned maintenance windows and host reboots \u2014 corroborate against change records"
+      ],
+      "file": "auditd_stopped.yml",
+      "id": "7f4a2b1c-9d3e-4f5a-8b6c-1e2d3c4b5a60",
+      "level": "high",
+      "name": "auditd_stopped",
+      "techniques": [
+        "T1685"
+      ],
+      "title": "Audit Daemon Stopped or Disabled",
+      "validation": "telemetry-available"
+    },
+    {
+      "description": "certutil.exe fetching from a URL is living-off-the-land ingress tool transfer: a signed certificate utility repurposed as a downloader. The behavior (LOLBin + URL) outlives any particular payload host. Requires endpoint command-line telemetry.",
+      "false_positives": [
+        "Legitimate certificate-store maintenance rarely touches URLs \u2014 verify the fetched origin"
+      ],
+      "file": "certutil_remote_download.yml",
+      "id": "9b2d4f6e-1a3c-4d5b-8e7f-3a4b5c6d7e82",
+      "level": "high",
+      "name": "certutil_remote_download",
+      "techniques": [
+        "T1105"
+      ],
+      "title": "Certutil Used to Fetch a Remote File",
+      "validation": "telemetry-required"
+    },
+    {
+      "description": "Writing an @reboot cron entry \u2014 or dropping a file into /etc/cron.d \u2014 gives a payload execution that survives restarts. The persistence mechanism is the durable behavior; the payload path changes per intrusion. Requires command-line or file-write telemetry.",
+      "false_positives": [
+        "Configuration-management tools (Ansible, Puppet) installing scheduled jobs \u2014 filter their runner accounts"
+      ],
+      "file": "cron_reboot_persistence.yml",
+      "id": "1d3f5b7a-9c8e-4a2d-b6f4-5c6d7e8f9aa4",
+      "level": "high",
+      "name": "cron_reboot_persistence",
+      "techniques": [
+        "T1053.003"
+      ],
+      "title": "Cron Entry Installed for Reboot Persistence",
+      "validation": "telemetry-required"
+    },
+    {
+      "description": "memfd_create followed by execution gives a payload that never touches disk \u2014 no file for hash matching to find, which is precisely why the syscall behavior itself is the indicator. Requires auditd syscall telemetry (memfd_create / execveat) that this platform does not yet ingest.",
+      "false_positives": [
+        "Runtimes using memfd for legitimate JIT or sandboxing (some browsers, systemd-nspawn) \u2014 baseline per host role"
+      ],
+      "file": "memfd_fileless_execution.yml",
+      "id": "6b8d0f2a-4c6e-4e8a-9b1c-7e8f9a0b1cc6",
+      "level": "high",
+      "name": "memfd_fileless_execution",
+      "techniques": [
+        "T1620"
+      ],
+      "title": "Fileless Execution via memfd_create",
+      "validation": "telemetry-required"
+    },
+    {
+      "description": "A document-handling application (Word, Excel, Outlook) spawning a command interpreter is the classic malicious-document detonation: documents render content, they do not administer systems. Requires endpoint process telemetry (Sysmon EID 1 / auditd execve with parent linkage) that this platform does not yet ingest \u2014 the rule ships validated against synthetic fixtures and is labeled accordingly.",
+      "false_positives": [
+        "Office add-ins that legitimately shell out (rare; inventory and filter them explicitly)"
+      ],
+      "file": "office_app_spawns_shell.yml",
+      "id": "3c8e5d2a-7b1f-4e6c-9a4d-2f3e4d5c6b71",
+      "level": "critical",
+      "name": "office_app_spawns_shell",
+      "techniques": [
+        "T1059.001",
+        "T1204.002"
+      ],
+      "title": "Office Application Spawns a Command Shell",
+      "validation": "telemetry-required"
+    },
+    {
+      "description": "A command line disabling real-time protection or stopping an endpoint security service. An administrator does this rarely and with a ticket; an intruder does it first. Requires endpoint command-line telemetry.",
+      "false_positives": [
+        "Endpoint-agent upgrades performed by the management platform itself"
+      ],
+      "file": "security_tool_tamper_command.yml",
+      "id": "5e7a9c1b-3d2f-4b6e-8c5a-4b5c6d7e8f93",
+      "level": "critical",
+      "name": "security_tool_tamper_command",
+      "techniques": [
+        "T1685"
+      ],
+      "title": "Endpoint Security Tooling Disabled from the Command Line",
+      "validation": "telemetry-required"
+    },
+    {
+      "description": "Appending to ~/.ssh/authorized_keys from a shell grants credential-free access that survives password rotation \u2014 key-based persistence in one line. Requires command-line telemetry; file-integrity monitoring on authorized_keys is the complementary control.",
+      "false_positives": [
+        "Legitimate key distribution by provisioning tooling \u2014 filter the deployment account"
+      ],
+      "file": "ssh_authorized_keys_appended.yml",
+      "id": "8a1c3e5d-7f9b-4d2c-a4e6-6d7e8f9a0bb5",
+      "level": "high",
+      "name": "ssh_authorized_keys_appended",
+      "techniques": [
+        "T1098.004"
+      ],
+      "title": "SSH Authorized Keys Appended from the Command Line",
+      "validation": "telemetry-required"
+    }
+  ],
+  "schema": 1
+}

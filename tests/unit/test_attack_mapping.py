@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 
+import attack
 import pytest
 from agents.tools import attack_mapping
 from agents.tools.containment import ContainmentToolkit
@@ -69,11 +70,34 @@ def test_rollbacks_and_variants_share_their_primary_mapping() -> None:
 
 @pytest.mark.unit
 def test_t1098_lists_both_tactics() -> None:
-    """ATT&CK v16 files Account Manipulation under Persistence AND Privilege Escalation."""
+    """The pinned corpus files Account Manipulation under Persistence AND Privilege Escalation."""
     mapping = attack_mapping.get_mapping("disable_account")
     t1098 = next(t for t in mapping.counters if t.technique_id == "T1098")
     assert "Persistence" in t1098.tactic
     assert "Privilege Escalation" in t1098.tactic
+
+
+@pytest.mark.unit
+def test_catalog_resolves_from_the_pinned_corpus() -> None:
+    """Names/tactics come from attack/ — the catalog cannot drift from the pin."""
+    corpus = attack.load_corpus()
+    assert corpus.attack_version == attack_mapping.ATTACK_VERSION
+    for mapping in attack_mapping.all_mappings():
+        for technique in mapping.counters:
+            pinned = corpus.techniques[technique.technique_id]
+            assert pinned.status == "active", technique.technique_id
+            assert technique.name == pinned.name
+            for short in pinned.tactics:
+                assert corpus.tactics[short].name in technique.tactic
+
+
+@pytest.mark.unit
+def test_dead_anchor_fails_closed() -> None:
+    """A revoked technique (T1562 in the pinned release) cannot enter the catalog."""
+    with pytest.raises(ValueError, match="does not resolve active"):
+        attack_mapping._resolve_technique("T1562", "dead anchor")
+    with pytest.raises(ValueError, match="does not resolve active"):
+        attack_mapping._resolve_technique("T9999", "unknown anchor")
 
 
 @pytest.mark.unit
@@ -95,7 +119,7 @@ def test_attack_coverage_is_json_serializable() -> None:
     coverage = attack_mapping.attack_coverage()
     payload = json.loads(json.dumps(coverage))
     assert payload["domain"] == "enterprise-attack"
-    assert payload["attack_version"] == "16"
+    assert payload["attack_version"] == attack.load_corpus().attack_version
     capabilities = {c["capability"] for c in payload["capabilities"]}
     assert "quarantine_file" in capabilities
     for entry in payload["capabilities"]:

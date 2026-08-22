@@ -10,6 +10,7 @@ verification (see ``generate_report``).
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,9 +26,45 @@ _NARRATIVE_SYSTEM = (
 )
 
 
+# Upper bound on one rendered inline value. Log-derived text flows into
+# evidence values and mapper output; an oversized value must not be able to
+# balloon the report or the PDF renderer downstream.
+_MAX_INLINE_LEN = 500
+
+# C0 control characters (minus the newlines handled explicitly) and DEL:
+# stripped rather than escaped — they have no legitimate place in a report and
+# NUL in particular breaks downstream tooling.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize(text: str) -> str:
+    """Flatten newlines, strip control characters, and cap the length."""
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    text = _CONTROL_CHARS_RE.sub("", text)
+    if len(text) > _MAX_INLINE_LEN:
+        text = text[:_MAX_INLINE_LEN] + " …[truncated]"
+    return text
+
+
 def _md_cell(text: str) -> str:
-    """Escape pipe and newline characters so they don't break a Markdown table cell."""
-    return text.replace("|", "\\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    """Escape untrusted text for a Markdown table cell or inline position.
+
+    Pipes and backticks are backslash-escaped (a raw backtick would open a
+    code span and swallow the rest of the line); newlines are flattened and
+    control characters stripped via ``_sanitize``.
+    """
+    return _sanitize(text).replace("|", "\\|").replace("`", "\\`")
+
+
+def _md_code(text: str) -> str:
+    """Neutralize untrusted text destined for *inside* a Markdown code span.
+
+    Backslash escapes do not work inside code spans, so a backtick in the
+    value would terminate the span and let the remainder render as active
+    Markdown. The backtick is replaced with an apostrophe — a visible,
+    documented substitution rather than a structural break.
+    """
+    return _sanitize(text).replace("`", "'")
 
 
 def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str:
@@ -100,7 +137,7 @@ def _render_sequence(
     ]
     if findings:
         lines.extend(
-            f"- **{_md_cell(str(f.get('pattern', '')))}** from `{_md_cell(str(f.get('source', '')))}` "
+            f"- **{_md_cell(str(f.get('pattern', '')))}** from `{_md_code(str(f.get('source', '')))}` "
             f"[{f.get('severity', 'N/A')}] — {_md_cell(str(f.get('description', '')))} "
             f"(events {f.get('event_indices', [])})"
             for f in findings
@@ -112,12 +149,87 @@ def _render_sequence(
         if sequence_detections:
             lines.extend(
                 f"- **{_md_cell(str(d.get('title', '')))}** [{d.get('level', 'unknown')}] — "
-                f"`{_md_cell(str(d.get('file', '')))}` "
+                f"`{_md_code(str(d.get('file', '')))}` "
                 f"({d.get('technique', '')}, covers {_md_cell(str(d.get('pattern', '')))})"
                 for d in sequence_detections
             )
         else:
             lines.append("- No correlation rule covers these patterns yet")
+    return "\n".join(lines)
+
+
+def _render_behaviors(behavior_matches: list[dict] | None) -> str:
+    """Render behavioral (post-compromise TTP) coverage for the event.
+
+    Each rule states whether the telemetry it needs is ingested today, so a
+    rule that replays green against fixtures but cannot fire in production is
+    labelled rather than counted as real coverage.
+    """
+    if not behavior_matches:
+        return "- No behavioral rule covers this technique yet"
+    lines = []
+    for match in behavior_matches:
+        validation = str(match.get("validation", "unknown"))
+        flag = (
+            "active"
+            if validation == "telemetry-available"
+            else "awaiting telemetry - not live in this deployment"
+        )
+        lines.append(
+            f"- **{_md_cell(str(match.get('title', '')))}** "
+            f"[{_md_cell(str(match.get('level', 'unknown')))}] — "
+            f"`{_md_code(str(match.get('file', '')))}` "
+            f"({_md_cell(str(match.get('technique', '')))}; {flag})"
+        )
+    return "\n".join(lines)
+
+
+def _render_response_plan(response_plan: dict | None) -> str:
+    """Render the draft containment plan — guidance for a human, never an act.
+
+    The disclaimer, the per-action owner, and the explicit rollback are all
+    load-bearing: a reader must never mistake this section for something the
+    platform did. Irreversible and evidence-affecting steps are called out
+    before the step list so the cost is visible before the instruction.
+    """
+    if not response_plan:
+        return (
+            "- No containment plan proposed — the attributed techniques do not warrant "
+            "action on this evidence alone"
+        )
+    lines = [
+        f"> **{_md_cell(str(response_plan.get('disclaimer', '')))}**",
+        "",
+        f"- **Plan:** `{_md_code(str(response_plan.get('plan_id', '')))}` "
+        f"(state: {_md_cell(str(response_plan.get('execution_state', 'draft')))})",
+        f"- **Targets:** {_md_cell(', '.join(map(str, response_plan.get('targets', []))))}",
+    ]
+    actions = response_plan.get("actions", [])
+    irreversible = [a for a in actions if not a.get("reversible", True)]
+    evidence = [a for a in actions if a.get("destroys_evidence", False)]
+    if irreversible:
+        lines.append(
+            "- **Irreversible steps requiring explicit approval:** "
+            + _md_cell(", ".join(str(a.get("title", "")) for a in irreversible))
+        )
+    if evidence:
+        lines.append(
+            "- **Evidence-affecting steps (capture first):** "
+            + _md_cell(", ".join(str(a.get("title", "")) for a in evidence))
+        )
+    for action in actions:
+        lines.extend(
+            [
+                "",
+                f"### Tier {action.get('tier', '?')} — {_md_cell(str(action.get('title', '')))}",
+                f"- **Target:** `{_md_code(str(action.get('target', '')))}`",
+                f"- **Performed by:** {_md_cell(str(action.get('owner', '')))}",
+                f"- **Why:** {_md_cell(str(action.get('rationale', '')))}",
+                "- **Steps:**",
+            ]
+        )
+        lines.extend(f"  1. {_md_cell(str(step))}" for step in action.get("steps", []))
+        lines.append(f"- **Rollback:** {_md_cell(str(action.get('rollback', '')))}")
     return "\n".join(lines)
 
 
@@ -147,6 +259,8 @@ class IncidentReportAgent:
         mitre_result: dict | None = None,
         kb_references: list[dict] | None = None,
         detection_matches: list[dict] | None = None,
+        behavior_matches: list[dict] | None = None,
+        response_plan: dict | None = None,
         sequence_result: dict | None = None,
         sequence_detections: list[dict] | None = None,
         citations: list[dict] | None = None,
@@ -160,7 +274,9 @@ class IncidentReportAgent:
         re-running analysis when the orchestrator has already done it.
         ``kb_references`` (from the Knowledge Base Agent) adds cited framework
         context; ``detection_matches`` (from the Detection Matcher Agent) lists
-        the Sigma rules that cover the event's technique; ``sequence_result``
+        the Sigma rules that cover the event's technique; ``behavior_matches``
+        lists the post-compromise behavioral rules covering it, each flagged
+        with whether its telemetry is actually ingested; ``sequence_result``
         (from ``SocAnalystAgent.analyze_sequence``) surfaces multi-event
         correlated findings; ``citations`` (passage-level citations from
         ``KnowledgeBaseAgent.cite``) quote the exact grounding passages with
@@ -198,7 +314,7 @@ class IncidentReportAgent:
 {datetime.now(UTC).isoformat()}
 
 ## Summary
-{soc_result["summary"]}
+{_md_cell(str(soc_result["summary"]))}
 
 ## Analyst Narrative (AI-generated)
 {narrative}
@@ -217,10 +333,10 @@ class IncidentReportAgent:
 - **Confidence:** {mitre_result["confidence"]}
 
 ### MITRE Evidence
-{chr(10).join(f"- {e}" for e in mitre_result["evidence"])}
+{chr(10).join(f"- {_md_cell(str(e))}" for e in mitre_result["evidence"])}
 
 ### MITRE Investigation Steps
-{chr(10).join(f"- {s}" for s in mitre_result["recommended_investigation"])}
+{chr(10).join(f"- {_md_cell(str(s))}" for s in mitre_result["recommended_investigation"])}
 
 ## Evidence
 
@@ -233,10 +349,10 @@ class IncidentReportAgent:
 **{soc_result.get("severity_score", "N/A")} / 100**
 
 ## Indicators
-{chr(10).join(f"- `{i}`" for i in indicators) if indicators else "- None detected"}
+{chr(10).join(f"- `{_md_code(str(i))}`" for i in indicators) if indicators else "- None detected"}
 
 ## Recommended Actions
-{chr(10).join(f"- {a}" for a in soc_result["recommended_actions"])}
+{chr(10).join(f"- {_md_cell(str(a))}" for a in soc_result["recommended_actions"])}
 
 ## Sequence Correlation
 {_render_sequence(sequence_result, sequence_detections)}
@@ -248,10 +364,16 @@ class IncidentReportAgent:
 {_render_citations(citations)}
 
 ## Detection Coverage
-{chr(10).join(f"- **{_md_cell(d['title'])}** [{d['level']}] — `{d['file']}` ({d['technique']})" for d in detection_matches) if detection_matches else "- No Sigma rule covers this technique yet"}
+{chr(10).join(f"- **{_md_cell(str(d['title']))}** [{_md_cell(str(d['level']))}] — `{_md_code(str(d['file']))}` ({_md_cell(str(d['technique']))})" for d in detection_matches) if detection_matches else "- No Sigma rule covers this technique yet"}
+
+## Behavioral Coverage (post-compromise)
+{_render_behaviors(behavior_matches)}
+
+## Response Plan (DRAFT — not executed)
+{_render_response_plan(response_plan)}
 
 ## Assumptions
-{chr(10).join(f"- {a}" for a in soc_result["assumptions"])}
+{chr(10).join(f"- {_md_cell(str(a))}" for a in soc_result["assumptions"])}
 """
 
         target.write_text(report, encoding="utf-8")

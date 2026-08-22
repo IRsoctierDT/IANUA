@@ -5,6 +5,44 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Multi-source telemetry ingest (`ingest/`)** — the XDR front door. Ten
+  parsers across five domains (Sysmon and auditd; Zeek and Suricata EVE; AWS
+  CloudTrail and Azure Activity; Entra ID sign-ins and Okta System Log;
+  Defender for Office 365 and Google Workspace) normalize into one
+  `NormalizedEvent`, so classification, ATT&CK mapping, behavioral matching,
+  and response planning stop caring which product emitted a record. A
+  normalized event bridges to the existing detection content through
+  `to_match_view()`, which the Sigma evaluator consumes directly.
+
+  Three rules govern the layer, each backed by tests rather than by prose:
+  **recognition is never a guess** — a record is parsed only when one parser
+  signature claims it on distinctive keys, and a record two signatures claim
+  is attributed to neither, because mis-attributing a cloud record to an
+  endpoint parser produces a confident wrong analysis; **nothing is dropped**
+  — oversized, over-nested, undecodable, and type-confused records still
+  yield an event with `parse_status` demoted and a note saying what happened;
+  and **nothing is ambient** — no clock (a substituted "now" would fabricate
+  the ordering correlation depends on), no filesystem, network, subprocess,
+  or dynamic exec, asserted over the package's AST. Email is held tighter
+  still: `EmailContext` has no body field, and a security test proves no
+  parser in any domain reads one.
+- **OCSF classification for structured events** — `normalize_source_event()`
+  keys off `(source_type, activity)` rather than re-deriving a class from
+  prose, and reports `mapped: False` when it fell back to a domain default or
+  Base Event, so "classified" is never confused with "defaulted".
+- **Detection-intelligence layer** (tracked plan:
+  `docs/DETECTION_INTELLIGENCE_PLAN.md`) across three merged slices:
+  `attack/` — a version-pinned, hash-verified local MITRE ATT&CK corpus
+  (Enterprise 19.2) with tombstoned revocations and merge-blocking reference
+  gates; `agents/mapping/` — the MITRE mapper's if/elif ladder replaced by a
+  committed, digest-gated ruleset with multi-technique attribution;
+  `intel/` — a first-party behavioral threat-intelligence library
+  (ATT&CK-anchored, review-aged) plus a synthetic atomic seed with per-type
+  confidence decay, never-flag policy suppression, and two-source
+  corroboration. The Sigma condition evaluator gained real operator
+  precedence and parentheses (previously `a and not (f1 or f2)` evaluated
+  wrong), and incident-report rendering now sanitizes untrusted text in all
+  three Markdown positions it reaches. Runtime dependencies remain empty.
 - **Apache-2.0 licensing** — the repository carried no license, which legally
   means *all rights reserved*: the public could read the code but not use,
   fork, or build on it. Now licensed under Apache-2.0 (canonical text fetched
@@ -254,6 +292,12 @@ pyproject-derived version.**
   exception surfacing as a traceback.
 
 ### Fixed
+- **`sigma_eval` now supports `endswith`** — the modifier nearly all published
+  endpoint Sigma content is written against (`Image|endswith: '\\cmd.exe'`).
+  Its absence made such a rule raise rather than match: loud, but unusable.
+- **OCSF class 1008 is Event Log Activity**, not File System Activity (that is
+  1001). The uid on the `log tampering` mapping was always right; only the
+  label was wrong.
 - **IANUA rename completed; rename tooling repaired** — `scripts/rename_to_ianua.py`
   no longer rewrites or scans its own source (its `REPLACEMENTS` table contains
   the legacy identifiers by design, so `--apply` used to collapse the table to

@@ -1,0 +1,799 @@
+{
+  "entries": {
+    "T1002": {
+      "name": "Data Compressed",
+      "status": "revoked",
+      "successor": "T1560"
+    },
+    "T1004": {
+      "name": "Winlogon Helper DLL",
+      "status": "revoked",
+      "successor": "T1547.004"
+    },
+    "T1009": {
+      "name": "Binary Padding",
+      "status": "revoked",
+      "successor": "T1027.001"
+    },
+    "T1013": {
+      "name": "Port Monitors",
+      "status": "revoked",
+      "successor": "T1547.010"
+    },
+    "T1015": {
+      "name": "Accessibility Features",
+      "status": "revoked",
+      "successor": "T1546.008"
+    },
+    "T1017": {
+      "name": "Application Deployment Software",
+      "status": "revoked",
+      "successor": "T1072"
+    },
+    "T1019": {
+      "name": "System Firmware",
+      "status": "revoked",
+      "successor": "T1542.001"
+    },
+    "T1022": {
+      "name": "Data Encrypted",
+      "status": "revoked",
+      "successor": "T1560"
+    },
+    "T1023": {
+      "name": "Shortcut Modification",
+      "status": "revoked",
+      "successor": "T1547.009"
+    },
+    "T1024": {
+      "name": "Custom Cryptographic Protocol",
+      "status": "revoked",
+      "successor": "T1573"
+    },
+    "T1026": {
+      "name": "Multiband Communication",
+      "status": "deprecated"
+    },
+    "T1028": {
+      "name": "Windows Remote Management",
+      "status": "revoked",
+      "successor": "T1021.006"
+    },
+    "T1031": {
+      "name": "Modify Existing Service",
+      "status": "revoked",
+      "successor": "T1543.003"
+    },
+    "T1032": {
+      "name": "Standard Cryptographic Protocol",
+      "status": "revoked",
+      "successor": "T1573"
+    },
+    "T1034": {
+      "name": "Path Interception",
+      "status": "deprecated"
+    },
+    "T1035": {
+      "name": "Service Execution",
+      "status": "revoked",
+      "successor": "T1569.002"
+    },
+    "T1038": {
+      "name": "DLL Search Order Hijacking",
+      "status": "revoked",
+      "successor": "T1574.001"
+    },
+    "T1042": {
+      "name": "Change Default File Association",
+      "status": "revoked",
+      "successor": "T1546.001"
+    },
+    "T1043": {
+      "name": "Commonly Used Port",
+      "status": "deprecated"
+    },
+    "T1044": {
+      "name": "File System Permissions Weakness",
+      "status": "revoked",
+      "successor": "T1574.010"
+    },
+    "T1045": {
+      "name": "Software Packing",
+      "status": "revoked",
+      "successor": "T1027.002"
+    },
+    "T1050": {
+      "name": "New Service",
+      "status": "revoked",
+      "successor": "T1543.003"
+    },
+    "T1051": {
+      "name": "Shared Webroot",
+      "status": "deprecated"
+    },
+    "T1053.001": {
+      "name": "At (Linux)",
+      "status": "revoked",
+      "successor": "T1053.002"
+    },
+    "T1053.004": {
+      "name": "Launchd",
+      "status": "deprecated"
+    },
+    "T1054": {
+      "name": "Indicator Blocking",
+      "status": "revoked",
+      "successor": "T1685"
+    },
+    "T1058": {
+      "name": "Service Registry Permissions Weakness",
+      "status": "revoked",
+      "successor": "T1574.011"
+    },
+    "T1060": {
+      "name": "Registry Run Keys / Startup Folder",
+      "status": "revoked",
+      "successor": "T1547.001"
+    },
+    "T1061": {
+      "name": "Graphical User Interface",
+      "status": "deprecated"
+    },
+    "T1062": {
+      "name": "Hypervisor",
+      "status": "deprecated"
+    },
+    "T1063": {
+      "name": "Security Software Discovery",
+      "status": "revoked",
+      "successor": "T1518.001"
+    },
+    "T1064": {
+      "name": "Scripting",
+      "status": "deprecated"
+    },
+    "T1065": {
+      "name": "Uncommonly Used Port",
+      "status": "revoked",
+      "successor": "T1571"
+    },
+    "T1066": {
+      "name": "Indicator Removal from Tools",
+      "status": "revoked",
+      "successor": "T1027.005"
+    },
+    "T1067": {
+      "name": "Bootkit",
+      "status": "revoked",
+      "successor": "T1542.003"
+    },
+    "T1070.001": {
+      "name": "Clear Windows Event Logs",
+      "status": "revoked",
+      "successor": "T1685.005"
+    },
+    "T1070.002": {
+      "name": "Clear Linux or Mac System Logs",
+      "status": "revoked",
+      "successor": "T1685.006"
+    },
+    "T1073": {
+      "name": "DLL Side-Loading",
+      "status": "revoked",
+      "successor": "T1574.002"
+    },
+    "T1075": {
+      "name": "Pass the Hash",
+      "status": "revoked",
+      "successor": "T1550.002"
+    },
+    "T1076": {
+      "name": "Remote Desktop Protocol",
+      "status": "revoked",
+      "successor": "T1021.001"
+    },
+    "T1077": {
+      "name": "Windows Admin Shares",
+      "status": "revoked",
+      "successor": "T1021.002"
+    },
+    "T1079": {
+      "name": "Multilayer Encryption",
+      "status": "revoked",
+      "successor": "T1573"
+    },
+    "T1081": {
+      "name": "Credentials in Files",
+      "status": "revoked",
+      "successor": "T1552.001"
+    },
+    "T1084": {
+      "name": "Windows Management Instrumentation Event Subscription",
+      "status": "revoked",
+      "successor": "T1546.003"
+    },
+    "T1085": {
+      "name": "Rundll32",
+      "status": "revoked",
+      "successor": "T1218.011"
+    },
+    "T1086": {
+      "name": "PowerShell",
+      "status": "revoked",
+      "successor": "T1059.001"
+    },
+    "T1088": {
+      "name": "Bypass User Account Control",
+      "status": "revoked",
+      "successor": "T1548.002"
+    },
+    "T1089": {
+      "name": "Disabling Security Tools",
+      "status": "revoked",
+      "successor": "T1685"
+    },
+    "T1093": {
+      "name": "Process Hollowing",
+      "status": "revoked",
+      "successor": "T1055.012"
+    },
+    "T1094": {
+      "name": "Custom Command and Control Protocol",
+      "status": "revoked",
+      "successor": "T1095"
+    },
+    "T1096": {
+      "name": "NTFS File Attributes",
+      "status": "revoked",
+      "successor": "T1564.004"
+    },
+    "T1097": {
+      "name": "Pass the Ticket",
+      "status": "revoked",
+      "successor": "T1550.003"
+    },
+    "T1099": {
+      "name": "Timestomp",
+      "status": "revoked",
+      "successor": "T1070.006"
+    },
+    "T1100": {
+      "name": "Web Shell",
+      "status": "revoked",
+      "successor": "T1505.003"
+    },
+    "T1101": {
+      "name": "Security Support Provider",
+      "status": "revoked",
+      "successor": "T1547.005"
+    },
+    "T1103": {
+      "name": "AppInit DLLs",
+      "status": "revoked",
+      "successor": "T1546.010"
+    },
+    "T1107": {
+      "name": "File Deletion",
+      "status": "revoked",
+      "successor": "T1070.004"
+    },
+    "T1108": {
+      "name": "Redundant Access",
+      "status": "deprecated"
+    },
+    "T1109": {
+      "name": "Component Firmware",
+      "status": "revoked",
+      "successor": "T1542.002"
+    },
+    "T1116": {
+      "name": "Code Signing",
+      "status": "revoked",
+      "successor": "T1553.002"
+    },
+    "T1117": {
+      "name": "Regsvr32",
+      "status": "revoked",
+      "successor": "T1218.010"
+    },
+    "T1118": {
+      "name": "InstallUtil",
+      "status": "revoked",
+      "successor": "T1218.004"
+    },
+    "T1121": {
+      "name": "Regsvcs/Regasm",
+      "status": "revoked",
+      "successor": "T1218.009"
+    },
+    "T1122": {
+      "name": "Component Object Model Hijacking",
+      "status": "revoked",
+      "successor": "T1546.015"
+    },
+    "T1126": {
+      "name": "Network Share Connection Removal",
+      "status": "revoked",
+      "successor": "T1070.005"
+    },
+    "T1128": {
+      "name": "Netsh Helper DLL",
+      "status": "revoked",
+      "successor": "T1546.007"
+    },
+    "T1130": {
+      "name": "Install Root Certificate",
+      "status": "revoked",
+      "successor": "T1553.004"
+    },
+    "T1131": {
+      "name": "Authentication Package",
+      "status": "revoked",
+      "successor": "T1547.002"
+    },
+    "T1138": {
+      "name": "Application Shimming",
+      "status": "revoked",
+      "successor": "T1546.011"
+    },
+    "T1139": {
+      "name": "Bash History",
+      "status": "revoked",
+      "successor": "T1552.003"
+    },
+    "T1141": {
+      "name": "Input Prompt",
+      "status": "revoked",
+      "successor": "T1056.002"
+    },
+    "T1142": {
+      "name": "Keychain",
+      "status": "revoked",
+      "successor": "T1555.001"
+    },
+    "T1143": {
+      "name": "Hidden Window",
+      "status": "revoked",
+      "successor": "T1564.003"
+    },
+    "T1144": {
+      "name": "Gatekeeper Bypass",
+      "status": "revoked",
+      "successor": "T1553.001"
+    },
+    "T1145": {
+      "name": "Private Keys",
+      "status": "revoked",
+      "successor": "T1552.004"
+    },
+    "T1146": {
+      "name": "Clear Command History",
+      "status": "revoked",
+      "successor": "T1070.003"
+    },
+    "T1147": {
+      "name": "Hidden Users",
+      "status": "revoked",
+      "successor": "T1564.002"
+    },
+    "T1148": {
+      "name": "HISTCONTROL",
+      "status": "revoked",
+      "successor": "T1690"
+    },
+    "T1149": {
+      "name": "LC_MAIN Hijacking",
+      "status": "deprecated"
+    },
+    "T1150": {
+      "name": "Plist Modification",
+      "status": "revoked",
+      "successor": "T1547.011"
+    },
+    "T1151": {
+      "name": "Space after Filename",
+      "status": "revoked",
+      "successor": "T1036.006"
+    },
+    "T1152": {
+      "name": "Launchctl",
+      "status": "revoked",
+      "successor": "T1569.001"
+    },
+    "T1153": {
+      "name": "Source",
+      "status": "deprecated"
+    },
+    "T1154": {
+      "name": "Trap",
+      "status": "revoked",
+      "successor": "T1546.005"
+    },
+    "T1155": {
+      "name": "AppleScript",
+      "status": "revoked",
+      "successor": "T1059.002"
+    },
+    "T1156": {
+      "name": "Malicious Shell Modification",
+      "status": "revoked",
+      "successor": "T1546.004"
+    },
+    "T1157": {
+      "name": "Dylib Hijacking",
+      "status": "revoked",
+      "successor": "T1574.004"
+    },
+    "T1158": {
+      "name": "Hidden Files and Directories",
+      "status": "revoked",
+      "successor": "T1564.001"
+    },
+    "T1159": {
+      "name": "Launch Agent",
+      "status": "revoked",
+      "successor": "T1543.001"
+    },
+    "T1160": {
+      "name": "Launch Daemon",
+      "status": "revoked",
+      "successor": "T1543.004"
+    },
+    "T1161": {
+      "name": "LC_LOAD_DYLIB Addition",
+      "status": "revoked",
+      "successor": "T1546.006"
+    },
+    "T1162": {
+      "name": "Login Item",
+      "status": "revoked",
+      "successor": "T1547.011"
+    },
+    "T1163": {
+      "name": "Rc.common",
+      "status": "revoked",
+      "successor": "T1037.004"
+    },
+    "T1164": {
+      "name": "Re-opened Applications",
+      "status": "revoked",
+      "successor": "T1547.007"
+    },
+    "T1165": {
+      "name": "Startup Items",
+      "status": "revoked",
+      "successor": "T1037.005"
+    },
+    "T1166": {
+      "name": "Setuid and Setgid",
+      "status": "revoked",
+      "successor": "T1548.001"
+    },
+    "T1167": {
+      "name": "Securityd Memory",
+      "status": "revoked",
+      "successor": "T1555.002"
+    },
+    "T1168": {
+      "name": "Local Job Scheduling",
+      "status": "revoked",
+      "successor": "T1053"
+    },
+    "T1169": {
+      "name": "Sudo",
+      "status": "revoked",
+      "successor": "T1548.003"
+    },
+    "T1170": {
+      "name": "Mshta",
+      "status": "revoked",
+      "successor": "T1218.005"
+    },
+    "T1171": {
+      "name": "LLMNR/NBT-NS Poisoning and Relay",
+      "status": "revoked",
+      "successor": "T1557.001"
+    },
+    "T1172": {
+      "name": "Domain Fronting",
+      "status": "revoked",
+      "successor": "T1090.004"
+    },
+    "T1173": {
+      "name": "Dynamic Data Exchange",
+      "status": "revoked",
+      "successor": "T1559.002"
+    },
+    "T1174": {
+      "name": "Password Filter DLL",
+      "status": "revoked",
+      "successor": "T1556.002"
+    },
+    "T1175": {
+      "name": "Component Object Model and Distributed COM",
+      "status": "deprecated"
+    },
+    "T1177": {
+      "name": "LSASS Driver",
+      "status": "revoked",
+      "successor": "T1547.008"
+    },
+    "T1178": {
+      "name": "SID-History Injection",
+      "status": "revoked",
+      "successor": "T1134.005"
+    },
+    "T1179": {
+      "name": "Hooking",
+      "status": "revoked",
+      "successor": "T1056.004"
+    },
+    "T1180": {
+      "name": "Screensaver",
+      "status": "revoked",
+      "successor": "T1546.002"
+    },
+    "T1181": {
+      "name": "Extra Window Memory Injection",
+      "status": "revoked",
+      "successor": "T1055.011"
+    },
+    "T1182": {
+      "name": "AppCert DLLs",
+      "status": "revoked",
+      "successor": "T1546.009"
+    },
+    "T1183": {
+      "name": "Image File Execution Options Injection",
+      "status": "revoked",
+      "successor": "T1546.012"
+    },
+    "T1184": {
+      "name": "SSH Hijacking",
+      "status": "revoked",
+      "successor": "T1563.001"
+    },
+    "T1186": {
+      "name": "Process Doppelgänging",
+      "status": "revoked",
+      "successor": "T1055.013"
+    },
+    "T1188": {
+      "name": "Multi-hop Proxy",
+      "status": "revoked",
+      "successor": "T1090.003"
+    },
+    "T1191": {
+      "name": "CMSTP",
+      "status": "revoked",
+      "successor": "T1218.003"
+    },
+    "T1192": {
+      "name": "Spearphishing Link",
+      "status": "revoked",
+      "successor": "T1566.002"
+    },
+    "T1193": {
+      "name": "Spearphishing Attachment",
+      "status": "revoked",
+      "successor": "T1566.001"
+    },
+    "T1194": {
+      "name": "Spearphishing via Service",
+      "status": "revoked",
+      "successor": "T1566.003"
+    },
+    "T1196": {
+      "name": "Control Panel Items",
+      "status": "revoked",
+      "successor": "T1218.002"
+    },
+    "T1198": {
+      "name": "SIP and Trust Provider Hijacking",
+      "status": "revoked",
+      "successor": "T1553.003"
+    },
+    "T1206": {
+      "name": "Sudo Caching",
+      "status": "revoked",
+      "successor": "T1548.003"
+    },
+    "T1208": {
+      "name": "Kerberoasting",
+      "status": "revoked",
+      "successor": "T1558.003"
+    },
+    "T1209": {
+      "name": "Time Providers",
+      "status": "revoked",
+      "successor": "T1547.003"
+    },
+    "T1214": {
+      "name": "Credentials in Registry",
+      "status": "revoked",
+      "successor": "T1552.002"
+    },
+    "T1215": {
+      "name": "Kernel Modules and Extensions",
+      "status": "revoked",
+      "successor": "T1547.006"
+    },
+    "T1223": {
+      "name": "Compiled HTML File",
+      "status": "revoked",
+      "successor": "T1218.001"
+    },
+    "T1483": {
+      "name": "Domain Generation Algorithms",
+      "status": "revoked",
+      "successor": "T1568.002"
+    },
+    "T1487": {
+      "name": "Disk Structure Wipe",
+      "status": "revoked",
+      "successor": "T1561.002"
+    },
+    "T1488": {
+      "name": "Disk Content Wipe",
+      "status": "revoked",
+      "successor": "T1561.001"
+    },
+    "T1492": {
+      "name": "Stored Data Manipulation",
+      "status": "revoked",
+      "successor": "T1565.001"
+    },
+    "T1493": {
+      "name": "Transmitted Data Manipulation",
+      "status": "revoked",
+      "successor": "T1565.002"
+    },
+    "T1494": {
+      "name": "Runtime Data Manipulation",
+      "status": "revoked",
+      "successor": "T1565.003"
+    },
+    "T1500": {
+      "name": "Compile After Delivery",
+      "status": "revoked",
+      "successor": "T1027.004"
+    },
+    "T1501": {
+      "name": "Systemd Service",
+      "status": "revoked",
+      "successor": "T1543.002"
+    },
+    "T1502": {
+      "name": "Parent PID Spoofing",
+      "status": "revoked",
+      "successor": "T1134.004"
+    },
+    "T1503": {
+      "name": "Credentials from Web Browsers",
+      "status": "revoked",
+      "successor": "T1555.003"
+    },
+    "T1504": {
+      "name": "PowerShell Profile",
+      "status": "revoked",
+      "successor": "T1546.013"
+    },
+    "T1506": {
+      "name": "Web Session Cookie",
+      "status": "revoked",
+      "successor": "T1550.004"
+    },
+    "T1514": {
+      "name": "Elevated Execution with Prompt",
+      "status": "revoked",
+      "successor": "T1548.004"
+    },
+    "T1519": {
+      "name": "Emond",
+      "status": "revoked",
+      "successor": "T1546.014"
+    },
+    "T1522": {
+      "name": "Cloud Instance Metadata API",
+      "status": "revoked",
+      "successor": "T1552.005"
+    },
+    "T1527": {
+      "name": "Application Access Token",
+      "status": "revoked",
+      "successor": "T1550.001"
+    },
+    "T1536": {
+      "name": "Revert Cloud Instance",
+      "status": "revoked",
+      "successor": "T1578.004"
+    },
+    "T1547.011": {
+      "name": "Plist Modification",
+      "status": "revoked",
+      "successor": "T1647"
+    },
+    "T1562": {
+      "name": "Impair Defenses",
+      "status": "revoked",
+      "successor": "T1685"
+    },
+    "T1562.001": {
+      "name": "Disable or Modify Tools",
+      "status": "revoked",
+      "successor": "T1685"
+    },
+    "T1562.002": {
+      "name": "Disable Windows Event Logging",
+      "status": "revoked",
+      "successor": "T1685.001"
+    },
+    "T1562.003": {
+      "name": "Impair Command History Logging",
+      "status": "revoked",
+      "successor": "T1690"
+    },
+    "T1562.004": {
+      "name": "Disable or Modify System Firewall",
+      "status": "revoked",
+      "successor": "T1686"
+    },
+    "T1562.006": {
+      "name": "Indicator Blocking",
+      "status": "revoked",
+      "successor": "T1685"
+    },
+    "T1562.007": {
+      "name": "Disable or Modify Cloud Firewall",
+      "status": "revoked",
+      "successor": "T1686.001"
+    },
+    "T1562.008": {
+      "name": "Disable or Modify Cloud Logs",
+      "status": "revoked",
+      "successor": "T1685.002"
+    },
+    "T1562.009": {
+      "name": "Safe Mode Boot",
+      "status": "revoked",
+      "successor": "T1688"
+    },
+    "T1562.010": {
+      "name": "Downgrade Attack",
+      "status": "revoked",
+      "successor": "T1689"
+    },
+    "T1562.011": {
+      "name": "Spoof Security Alerting",
+      "status": "revoked",
+      "successor": "T1685.003"
+    },
+    "T1562.012": {
+      "name": "Disable or Modify Linux Audit System",
+      "status": "revoked",
+      "successor": "T1685.004"
+    },
+    "T1562.013": {
+      "name": "Disable or Modify Network Device Firewall",
+      "status": "revoked",
+      "successor": "T1686.002"
+    },
+    "T1574.002": {
+      "name": "DLL Side-Loading",
+      "status": "revoked",
+      "successor": "T1574.001"
+    },
+    "T1656": {
+      "name": "Impersonation",
+      "status": "revoked",
+      "successor": "T1684.001"
+    },
+    "T1672": {
+      "name": "Email Spoofing",
+      "status": "revoked",
+      "successor": "T1684.002"
+    }
+  },
+  "parent_count": 0,
+  "parent_sha256": null
+}

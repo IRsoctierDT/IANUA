@@ -18,6 +18,7 @@ from agents.detection_matcher_agent import DetectionMatcherAgent
 from agents.incident_report_agent import IncidentReportAgent
 from agents.knowledge_base_agent import KnowledgeBaseAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
+from agents.response import ResponsePlanner
 from agents.risk_engine import RiskContribution, RiskEngine
 from agents.soc_analyst_agent import SocAnalystAgent
 from agents.threat_intel_agent import ThreatIntelAgent
@@ -33,6 +34,9 @@ class OrchestratorAgent:
         self.knowledge_base = KnowledgeBaseAgent()
         self.detections = DetectionMatcherAgent()
         self.report = IncidentReportAgent()
+        # Plan-only containment: emits draft guidance for a human, never acts
+        # (DESIGN.md §5 boundary 8 — no executor exists anywhere in the repo).
+        self.response = ResponsePlanner()
         # Risk-based alerting: aggregates the sequence's per-event scores into
         # per-entity (source) risk findings (deterministic; see RiskEngine).
         self.risk = RiskEngine()
@@ -97,8 +101,14 @@ class OrchestratorAgent:
         kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
 
         detection_matches = self.detections.match_for_event(mitre_result)
+        # Post-compromise behavioral coverage across every attributed
+        # technique, each flagged with whether its telemetry is ingested here.
+        behavior_matches = self.detections.match_behaviors_for_event(mitre_result)
 
         citations = self._verified_citations(soc_result, mitre_result)
+
+        plan = self.response.plan_for_event(mitre_result, soc_result)
+        response_plan = plan.to_dict() if plan is not None else None
 
         self.report.generate_report(
             log_text,
@@ -107,6 +117,8 @@ class OrchestratorAgent:
             mitre_result=mitre_result,
             kb_references=kb_references,
             detection_matches=detection_matches,
+            behavior_matches=behavior_matches,
+            response_plan=response_plan,
             citations=citations,
             citations_verified=True,
             generator=self.generator,
@@ -118,6 +130,8 @@ class OrchestratorAgent:
             "threat_intel": intel_results,
             "knowledge_base": kb_references,
             "detections": detection_matches,
+            "behaviors": behavior_matches,
+            "response_plan": response_plan,
             "citations": citations,
         }
 

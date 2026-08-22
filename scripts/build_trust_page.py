@@ -413,6 +413,22 @@ def check(
         actual = path.read_text(encoding="utf-8") if path.is_file() else None
         if actual != expected:
             problems.append(f"{path.name} is stale — run `python scripts/build_trust_page.py`")
+    # The published page is a frozen snapshot: the compliance engine runs only
+    # in --snapshot mode, so an attestation expiring after the snapshot was
+    # taken would change nothing published. This assertion is MAN-0x's teeth
+    # in CI — an expired attestation fails the gate until the human re-attests
+    # (or the control honestly shows "attestation due" in a fresh snapshot).
+    if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
+        sys.path.insert(0, str(REPO_ROOT))
+    from compliance.attestations import load, store_path
+
+    for attestation in load(store_path(REPO_ROOT)).values():
+        if attestation.expires < report.as_of:
+            problems.append(
+                f"attestation for {attestation.control_id} expired {attestation.expires} "
+                f"(snapshot as_of {report.as_of}) — re-attest, then refresh the snapshot "
+                "with `python scripts/build_trust_page.py --snapshot`"
+            )
     return problems
 
 

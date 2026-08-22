@@ -4,9 +4,13 @@ Every containment capability in :mod:`agents.tools.containment` is mapped to the
 ATT&CK Enterprise techniques it counters and the ATT&CK mitigation it implements,
 each with a description — so a reviewer, a report, or a dashboard can state
 *exactly* what adversary behavior a capability addresses and why it exists.
-Technique/mitigation IDs and names follow ATT&CK Enterprise **v16**, the same
-version pinned by ``scripts/build_attack_navigator.py`` (source:
-https://attack.mitre.org — verify IDs there before extending this catalog).
+Technique names and tactics are **resolved from the pinned local corpus**
+(``attack/`` — the platform's single ATT&CK authority) at import, and every
+anchor must resolve *active* there: an unknown, revoked, or deprecated
+technique fails the build rather than shipping a stale claim, matching the
+repository-wide invariant. Mitigation references (M-IDs) are curated
+first-party data — the pinned corpus does not carry mitigation objects —
+verify them at https://attack.mitre.org before extending the catalog.
 
 The mapping is deterministic, read-only data: frozen dataclasses in a
 module-level registry, no network access, no untrusted input. ``get_mapping``
@@ -23,7 +27,15 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Any
 
+from attack import load_corpus
+
 from agents.policies import ActionClass
+
+#: The pinned corpus every anchor below resolves against (fail-closed).
+_CORPUS = load_corpus()
+
+#: ATT&CK release the catalog is validated against, from the signed pin.
+ATTACK_VERSION: str = _CORPUS.attack_version
 
 
 @dataclass(frozen=True)
@@ -76,142 +88,114 @@ class CapabilityAttackMapping:
 
 # --- technique catalog (shared across capabilities) -------------------------
 
-_T1486 = AttackTechnique(
-    technique_id="T1486",
-    name="Data Encrypted for Impact",
-    tactic="Impact",
-    description=(
-        "Ransomware encrypts data on target systems to interrupt availability "
-        "and extort payment. Stopping the encrypting process and quarantining "
-        "the payload limits how much data is lost."
-    ),
+
+def _resolve_technique(technique_id: str, description: str) -> AttackTechnique:
+    """Build a catalog entry whose name/tactics come from the pinned corpus.
+
+    Fails closed (mirroring the mapping-store gate): an anchor that is unknown,
+    revoked, or deprecated in the pinned release raises at import, so the build
+    breaks instead of shipping a stale or dead ATT&CK claim.
+    """
+    technique = _CORPUS.techniques.get(technique_id)
+    if technique is None or technique.status != "active":
+        status = technique.status if technique is not None else "unknown"
+        raise ValueError(
+            f"containment ATT&CK anchor {technique_id!r} does not resolve active "
+            f"in the pinned corpus (status: {status}) — re-anchor deliberately "
+            f"(attack/ pin, version {ATTACK_VERSION})"
+        )
+    tactic = " / ".join(
+        _CORPUS.tactics[short].name if short in _CORPUS.tactics else short
+        for short in technique.tactics
+    )
+    return AttackTechnique(
+        technique_id=technique_id,
+        name=technique.name,
+        tactic=tactic,
+        description=description,
+    )
+
+
+_T1486 = _resolve_technique(
+    "T1486",
+    "Ransomware encrypts data on target systems to interrupt availability "
+    "and extort payment. Stopping the encrypting process and quarantining "
+    "the payload limits how much data is lost.",
 )
-_T1490 = AttackTechnique(
-    technique_id="T1490",
-    name="Inhibit System Recovery",
-    tactic="Impact",
-    description=(
-        "Adversaries delete or disable backups, shadow copies, and recovery "
-        "features so victims cannot restore without paying. Halting the payload "
-        "early preserves the recovery material it would destroy."
-    ),
+_T1490 = _resolve_technique(
+    "T1490",
+    "Adversaries delete or disable backups, shadow copies, and recovery "
+    "features so victims cannot restore without paying. Halting the payload "
+    "early preserves the recovery material it would destroy.",
 )
-_T1489 = AttackTechnique(
-    technique_id="T1489",
-    name="Service Stop",
-    tactic="Impact",
-    description=(
-        "Ransomware stops services (databases, backup agents, security tools) "
-        "to unlock files for encryption and blind defenders. Stopping the "
-        "malicious process interrupts this preparation phase."
-    ),
+_T1489 = _resolve_technique(
+    "T1489",
+    "Ransomware stops services (databases, backup agents, security tools) "
+    "to unlock files for encryption and blind defenders. Stopping the "
+    "malicious process interrupts this preparation phase.",
 )
-_T1657 = AttackTechnique(
-    technique_id="T1657",
-    name="Financial Theft",
-    tactic="Impact",
-    description=(
-        "Extortion, ransomware payments, and fraudulent transfers monetize an "
-        "intrusion. Containing the payload and cutting its data-theft channels "
-        "removes the leverage the extortion depends on."
-    ),
+_T1657 = _resolve_technique(
+    "T1657",
+    "Extortion, ransomware payments, and fraudulent transfers monetize an "
+    "intrusion. Containing the payload and cutting its data-theft channels "
+    "removes the leverage the extortion depends on.",
 )
-_T1059 = AttackTechnique(
-    technique_id="T1059",
-    name="Command and Scripting Interpreter",
-    tactic="Execution",
-    description=(
-        "Payloads commonly run through shells and script interpreters. "
-        "Suspending or killing the interpreter process stops the payload's "
-        "execution chain."
-    ),
+_T1059 = _resolve_technique(
+    "T1059",
+    "Payloads commonly run through shells and script interpreters. "
+    "Suspending or killing the interpreter process stops the payload's "
+    "execution chain.",
 )
-_T1204 = AttackTechnique(
-    technique_id="T1204",
-    name="User Execution",
-    tactic="Execution",
-    description=(
-        "A user is lured into opening a malicious file or link. Quarantining "
-        "the dropped file prevents (re-)execution of the lure."
-    ),
+_T1204 = _resolve_technique(
+    "T1204",
+    "A user is lured into opening a malicious file or link. Quarantining "
+    "the dropped file prevents (re-)execution of the lure.",
 )
-_T1105 = AttackTechnique(
-    technique_id="T1105",
-    name="Ingress Tool Transfer",
-    tactic="Command and Control",
-    description=(
-        "Adversaries transfer tools and payloads onto a compromised host. "
-        "Quarantining the transferred file and blocking the delivery indicator "
-        "breaks staged delivery of follow-on stages."
-    ),
+_T1105 = _resolve_technique(
+    "T1105",
+    "Adversaries transfer tools and payloads onto a compromised host. "
+    "Quarantining the transferred file and blocking the delivery indicator "
+    "breaks staged delivery of follow-on stages.",
 )
-_T1071 = AttackTechnique(
-    technique_id="T1071",
-    name="Application Layer Protocol",
-    tactic="Command and Control",
-    description=(
-        "Command-and-control traffic hides in HTTP(S), DNS, and other common "
-        "protocols. Isolating the host or blocking the C2 indicator severs the "
-        "operator's control channel."
-    ),
+_T1071 = _resolve_technique(
+    "T1071",
+    "Command-and-control traffic hides in HTTP(S), DNS, and other common "
+    "protocols. Isolating the host or blocking the C2 indicator severs the "
+    "operator's control channel.",
 )
-_T1041 = AttackTechnique(
-    technique_id="T1041",
-    name="Exfiltration Over C2 Channel",
-    tactic="Exfiltration",
-    description=(
-        "Stolen data leaves over the existing C2 channel — the theft that powers "
-        "double-extortion. Host isolation cuts the channel before more data "
-        "leaves."
-    ),
+_T1041 = _resolve_technique(
+    "T1041",
+    "Stolen data leaves over the existing C2 channel — the theft that powers "
+    "double-extortion. Host isolation cuts the channel before more data "
+    "leaves.",
 )
-_T1567 = AttackTechnique(
-    technique_id="T1567",
-    name="Exfiltration Over Web Service",
-    tactic="Exfiltration",
-    description=(
-        "Data is exfiltrated to legitimate web services (cloud storage, code "
-        "repos) to blend in. Blocking the destination indicator stops the "
-        "upload path."
-    ),
+_T1567 = _resolve_technique(
+    "T1567",
+    "Data is exfiltrated to legitimate web services (cloud storage, code "
+    "repos) to blend in. Blocking the destination indicator stops the "
+    "upload path.",
 )
-_T1021 = AttackTechnique(
-    technique_id="T1021",
-    name="Remote Services",
-    tactic="Lateral Movement",
-    description=(
-        "Adversaries spread with SSH, RDP, and SMB using valid accounts. "
-        "Isolating the compromised host stops it from reaching its neighbors."
-    ),
+_T1021 = _resolve_technique(
+    "T1021",
+    "Adversaries spread with SSH, RDP, and SMB using valid accounts. "
+    "Isolating the compromised host stops it from reaching its neighbors.",
 )
-_T1078 = AttackTechnique(
-    technique_id="T1078",
-    name="Valid Accounts",
-    tactic="Defense Evasion / Persistence / Privilege Escalation / Initial Access",
-    description=(
-        "Compromised credentials give adversaries legitimate-looking access. "
-        "Disabling the compromised account revokes that access at the source."
-    ),
+_T1078 = _resolve_technique(
+    "T1078",
+    "Compromised credentials give adversaries legitimate-looking access. "
+    "Disabling the compromised account revokes that access at the source.",
 )
-_T1098 = AttackTechnique(
-    technique_id="T1098",
-    name="Account Manipulation",
-    tactic="Persistence / Privilege Escalation",
-    description=(
-        "Adversaries modify accounts (group membership, credentials, "
-        "permissions) to keep access. Disabling the manipulated account cuts "
-        "the persistence it grants."
-    ),
+_T1098 = _resolve_technique(
+    "T1098",
+    "Adversaries modify accounts (group membership, credentials, "
+    "permissions) to keep access. Disabling the manipulated account cuts "
+    "the persistence it grants.",
 )
-_T1133 = AttackTechnique(
-    technique_id="T1133",
-    name="External Remote Services",
-    tactic="Persistence / Initial Access",
-    description=(
-        "VPNs and other externally facing services are entered with stolen "
-        "credentials. Disabling the compromised account closes that entry "
-        "point."
-    ),
+_T1133 = _resolve_technique(
+    "T1133",
+    "VPNs and other externally facing services are entered with stolen "
+    "credentials. Disabling the compromised account closes that entry "
+    "point.",
 )
 
 # --- capability → ATT&CK registry -------------------------------------------
@@ -372,7 +356,7 @@ def describe_capability(capability: str) -> dict[str, Any]:
 def attack_coverage() -> dict[str, Any]:
     """Return the whole catalog as JSON-serializable data (report/dashboard-ready)."""
     return {
-        "attack_version": "16",
+        "attack_version": ATTACK_VERSION,
         "domain": "enterprise-attack",
         "capabilities": [describe_capability(m.capability) for m in _MAPPINGS],
     }

@@ -54,7 +54,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy agents scripts tests dashboard mcp rag compliance
+        run: mypy agents attack intel ingest scripts tests dashboard mcp rag compliance
 
   # ---------------------------------------------------------------- Stage 2
   security:
@@ -84,7 +84,7 @@ jobs:
         # requirements.lock; see security/sbom/requirements-dev.lock.
         run: pip install --require-hashes -r security/sbom/requirements-dev.lock
       - name: Bandit (SAST)
-        run: bandit -c pyproject.toml -r agents scripts mcp
+        run: bandit -c pyproject.toml -r agents attack intel ingest scripts mcp
       - name: pip-audit (SCA) — gate on the pinned closure
         # Audit the committed Linux/3.12 lock (declared [dev,dashboard] closure),
         # not the ephemeral CI environment. --disable-pip reads the fully-hashed
@@ -121,6 +121,12 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin >= 8.25: .gitleaks.toml's [[allowlists]] + condition syntax is
+          # silently IGNORED by older binaries (the action's cache served
+          # 8.24.3, un-suppressing the reviewed .secrets.baseline digests and
+          # failing the job on lines the allowlist covers). Keep this pin in
+          # step with the minimum documented in .gitleaks.toml.
+          GITLEAKS_VERSION: "8.30.1"
 
   # ---------------------------------------------------------------- Stage 3
   tests:
@@ -267,8 +273,31 @@ jobs:
         run: pip install "pyyaml>=6.0"
       - name: docs/attack-navigator-layer.json matches the Sigma corpus
         # Same drift-gate pattern: the ATT&CK coverage layer is a pure function
-        # of detections/sigma/, so a new/edited rule must regenerate it.
+        # of detections/sigma/ (validated against the pinned attack/ corpus),
+        # so a new/edited rule must regenerate it.
         run: python scripts/build_attack_navigator.py --check
+      - name: ATT&CK corpus integrity gate (pin, shard hashes, tombstones)
+        # Verifies the committed attack/ shards against the signed pin without
+        # the 54 MB upstream bundle: signature (when present), per-shard
+        # SHA-256, canonical rendering, and revocation/successor invariants.
+        run: python scripts/update_attack.py --check
+      - name: Mapping ruleset digest + validity vs the pinned corpus
+        # Canonicalized digest of agents/mapping/rules/ plus a full store load:
+        # a rule anchored to a technique the pin marks revoked/deprecated
+        # fails here with the successor named — stale mappings cannot merge.
+        run: python scripts/check_mapping_rules.py --check
+      - name: Intel store digest + validity vs the pinned corpus
+        # Same drift-gate pattern for intel/: digest over committed data plus
+        # a full fail-closed load (license allow-list, TLP, never-flag,
+        # ATT&CK anchors) — poisoned or stale intel content cannot merge.
+        run: python scripts/check_intel_store.py --check
+      - name: Behavioral index in sync + ATT&CK reference gate
+        # The behavioral corpus is authored in YAML and consumed as a
+        # committed JSON projection. Rebuilding it here also runs the
+        # reference gate: a rule anchored to a revoked or deprecated
+        # technique fails with the successor named, so stale post-compromise
+        # content cannot merge.
+        run: python scripts/build_behavior_index.py --check
 
   build:
     name: Build package

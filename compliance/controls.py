@@ -222,6 +222,32 @@ def check_sbom_present(root: Path) -> CheckResult:
     return CheckResult(ControlStatus.FAIL, "no SBOM documents under security/sbom/")
 
 
+def check_attack_corpus_integrity(root: Path) -> CheckResult:
+    """SUP-03: committed ATT&CK shards verify against the pin, offline.
+
+    Read-only and fail closed: a missing pin, a hash mismatch, or a corpus
+    that does not load is a FAIL — never a silent pass. Runs the same loader
+    the platform uses, so the control is load-bearing, not decorative.
+    """
+    import sys
+
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    try:
+        from attack import load_corpus, load_pin
+
+        pin = load_pin(root / "attack" / "pins" / "enterprise-attack.pin.json")
+        corpus = load_corpus(pin=pin, data_dir=root / "attack" / "data")
+    except Exception as exc:
+        return CheckResult(ControlStatus.FAIL, f"ATT&CK corpus failed verification: {exc}")
+    signed = "signed pin" if pin.signature is not None else "unsigned pin (corruption-only claim)"
+    return CheckResult(
+        ControlStatus.PASS,
+        f"ATT&CK {corpus.attack_version}: {len(corpus.techniques)} techniques, "
+        f"{len(corpus.tombstones)} tombstones verified against {signed}.",
+    )
+
+
 def check_ci_gates(root: Path) -> CheckResult:
     """CI enforces lint, types, SAST, and tests on every change."""
     ci = _read_text(root, ".github/workflows/ci.yml")
@@ -394,6 +420,22 @@ def registry() -> tuple[Control, ...]:
             check=check_sbom_present,
         ),
         Control(
+            id="SUP-03",
+            title="ATT&CK corpus pinned and integrity-verified",
+            description=(
+                "The committed local ATT&CK shards match the version pin's "
+                "per-shard hashes and pass revocation/successor invariants."
+            ),
+            category=Category.SUPPLY_CHAIN,
+            severity=Severity.HIGH,
+            framework_refs=_refs(
+                (Framework.NIST_CSF, "ID.RA-09"),
+                (Framework.SOC_2, "CC8.1"),
+                (Framework.ISO_27001, "A.8.9"),
+            ),
+            check=check_attack_corpus_integrity,
+        ),
+        Control(
             id="CIC-01",
             title="CI enforces quality and security gates",
             description="Every change passes lint, type, SAST, and test stages in CI.",
@@ -497,6 +539,28 @@ def registry() -> tuple[Control, ...]:
             attestation_hint=(
                 "GitHub -> Settings -> Environments -> github-pages: confirm a "
                 "required reviewer is configured."
+            ),
+        ),
+        Control(
+            id="MAN-03",
+            title="ATT&CK corpus reviewed against the current upstream release",
+            description=(
+                "A human has compared the pinned ATT&CK version to the current "
+                "MITRE release and either refreshed the corpus or accepted the "
+                "distance. Freshness is advisory by design (never a build "
+                "gate), so this expiring attestation is what keeps an "
+                "unmaintained corpus from silently claiming currency."
+            ),
+            category=Category.SUPPLY_CHAIN,
+            severity=Severity.MEDIUM,
+            framework_refs=_refs(
+                (Framework.NIST_CSF, "ID.RA-09"),
+                (Framework.SOC_2, "CC8.1"),
+                (Framework.ISO_27001, "A.8.9"),
+            ),
+            attestation_hint=(
+                "Run scripts/update_attack.py --plan; refresh via --build or "
+                "record acceptance of the reported version distance."
             ),
         ),
     )

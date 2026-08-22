@@ -90,13 +90,17 @@ def test_engine_reverts_expired_attestation_to_manual(tmp_path: Path) -> None:
 
 def test_attested_counts_in_rollups_not_in_automated_score(tmp_path: Path) -> None:
     atts = {c.id: Attestation(**_entry(control_id=c.id)) for c in registry() if not c.automated}
+    manual_count = sum(1 for c in registry() if not c.automated)
+    assert manual_count >= 2  # the registry always carries manual controls
     unattested = run_controls(tmp_path, clock=lambda: _CLOCK)
     attested = run_controls(tmp_path, clock=lambda: _CLOCK, attestations=atts)
     assert attested.score == unattested.score  # score stays automated-only
     for before, after in zip(
         unattested.framework_rollups(), attested.framework_rollups(), strict=True
     ):
-        assert after.passing == before.passing + 2  # both manual controls now count
+        # every manual control now counts in the rollup (they all carry refs
+        # to every framework in this registry)
+        assert after.passing == before.passing + manual_count
 
 
 def test_record_round_trips_and_sorts(tmp_path: Path) -> None:
