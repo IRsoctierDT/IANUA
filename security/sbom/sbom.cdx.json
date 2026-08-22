@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:19e094b2-f420-5a98-bba1-dcd7317c3b83",
+  "serialNumber": "urn:uuid:7919a2aa-5cd1-582d-80a8-60f3035e58ae",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-17T20:41:15Z",
+    "timestamp": "2026-08-22T01:23:47Z",
     "tools": {
       "components": [
         {
@@ -602,11 +602,11 @@
       "purl": "pkg:pypi/pip-requirements-parser@32.0.1"
     },
     {
-      "bom-ref": "pkg:pypi/pip@26.1.2",
+      "bom-ref": "pkg:pypi/pip@26.2.1",
       "name": "pip",
       "type": "library",
-      "version": "26.1.2",
-      "purl": "pkg:pypi/pip@26.1.2"
+      "version": "26.2.1",
+      "purl": "pkg:pypi/pip@26.2.1"
     },
     {
       "bom-ref": "pkg:pypi/platformdirs@4.10.0",
