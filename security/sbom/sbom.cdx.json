@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:7919a2aa-5cd1-582d-80a8-60f3035e58ae",
+  "serialNumber": "urn:uuid:1e9d41bd-26e6-527a-8681-2b3b98ab7e47",
   "version": 1,
   "metadata": {
     "timestamp": "2026-08-22T01:23:47Z",
@@ -147,11 +147,11 @@
       "purl": "pkg:pypi/coverage@7.14.3"
     },
     {
-      "bom-ref": "pkg:pypi/cryptography@50.0.0",
+      "bom-ref": "pkg:pypi/cryptography@50.0.1",
       "name": "cryptography",
       "type": "library",
-      "version": "50.0.0",
-      "purl": "pkg:pypi/cryptography@50.0.0"
+      "version": "50.0.1",
+      "purl": "pkg:pypi/cryptography@50.0.1"
     },
     {
       "bom-ref": "pkg:pypi/cuda-bindings@13.3.1",
@@ -287,11 +287,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.165.8",
+      "bom-ref": "pkg:pypi/hypothesis@6.165.10",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.165.8",
-      "purl": "pkg:pypi/hypothesis@6.165.8"
+      "version": "6.165.10",
+      "purl": "pkg:pypi/hypothesis@6.165.10"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -406,11 +406,11 @@
       "purl": "pkg:pypi/mypy-extensions@1.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/mypy@2.3.0",
+      "bom-ref": "pkg:pypi/mypy@2.3.1",
       "name": "mypy",
       "type": "library",
-      "version": "2.3.0",
-      "purl": "pkg:pypi/mypy@2.3.0"
+      "version": "2.3.1",
+      "purl": "pkg:pypi/mypy@2.3.1"
     },
     {
       "bom-ref": "pkg:pypi/narwhals@2.22.1",
@@ -763,11 +763,11 @@
       "purl": "pkg:pypi/regex@2026.5.9"
     },
     {
-      "bom-ref": "pkg:pypi/reportlab@5.0.0",
+      "bom-ref": "pkg:pypi/reportlab@5.0.1",
       "name": "reportlab",
       "type": "library",
-      "version": "5.0.0",
-      "purl": "pkg:pypi/reportlab@5.0.0"
+      "version": "5.0.1",
+      "purl": "pkg:pypi/reportlab@5.0.1"
     },
     {
       "bom-ref": "pkg:pypi/requests@2.34.2",
@@ -791,11 +791,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.16.3",
+      "bom-ref": "pkg:pypi/ruff@0.16.5",
       "name": "ruff",
       "type": "library",
-      "version": "0.16.3",
-      "purl": "pkg:pypi/ruff@0.16.3"
+      "version": "0.16.5",
+      "purl": "pkg:pypi/ruff@0.16.5"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -819,11 +819,11 @@
       "purl": "pkg:pypi/scipy@1.18.0"
     },
     {
-      "bom-ref": "pkg:pypi/sentence-transformers@5.7.0",
+      "bom-ref": "pkg:pypi/sentence-transformers@6.0.0",
       "name": "sentence-transformers",
       "type": "library",
-      "version": "5.7.0",
-      "purl": "pkg:pypi/sentence-transformers@5.7.0"
+      "version": "6.0.0",
+      "purl": "pkg:pypi/sentence-transformers@6.0.0"
     },
     {
       "bom-ref": "pkg:pypi/setuptools@83.0.0",
@@ -868,11 +868,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.61.1",
+      "bom-ref": "pkg:pypi/streamlit@1.62.0",
       "name": "streamlit",
       "type": "library",
-      "version": "1.61.1",
-      "purl": "pkg:pypi/streamlit@1.61.1"
+      "version": "1.62.0",
+      "purl": "pkg:pypi/streamlit@1.62.0"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
@@ -880,13 +880,6 @@
       "type": "library",
       "version": "1.14.0",
       "purl": "pkg:pypi/sympy@1.14.0"
-    },
-    {
-      "bom-ref": "pkg:pypi/tenacity@9.1.4",
-      "name": "tenacity",
-      "type": "library",
-      "version": "9.1.4",
-      "purl": "pkg:pypi/tenacity@9.1.4"
     },
     {
       "bom-ref": "pkg:pypi/threadpoolctl@3.6.0",
