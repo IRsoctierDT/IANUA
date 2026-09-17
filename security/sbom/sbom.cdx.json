@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:1e9d41bd-26e6-527a-8681-2b3b98ab7e47",
+  "serialNumber": "urn:uuid:7843159d-d3a0-5074-bbcc-c632decd04d8",
   "version": 1,
   "metadata": {
     "timestamp": "2026-08-22T01:23:47Z",
@@ -82,13 +82,6 @@
       "type": "library",
       "version": "1.9.4",
       "purl": "pkg:pypi/bandit@1.9.4"
-    },
-    {
-      "bom-ref": "pkg:pypi/blinker@1.9.0",
-      "name": "blinker",
-      "type": "library",
-      "version": "1.9.0",
-      "purl": "pkg:pypi/blinker@1.9.0"
     },
     {
       "bom-ref": "pkg:pypi/boolean-py@5.0",
@@ -287,11 +280,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.165.10",
+      "bom-ref": "pkg:pypi/hypothesis@6.168.0",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.165.10",
-      "purl": "pkg:pypi/hypothesis@6.165.10"
+      "version": "6.168.0",
+      "purl": "pkg:pypi/hypothesis@6.168.0"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -791,11 +784,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.16.5",
+      "bom-ref": "pkg:pypi/ruff@0.16.7",
       "name": "ruff",
       "type": "library",
-      "version": "0.16.5",
-      "purl": "pkg:pypi/ruff@0.16.5"
+      "version": "0.16.7",
+      "purl": "pkg:pypi/ruff@0.16.7"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -819,11 +812,11 @@
       "purl": "pkg:pypi/scipy@1.18.0"
     },
     {
-      "bom-ref": "pkg:pypi/sentence-transformers@6.0.0",
+      "bom-ref": "pkg:pypi/sentence-transformers@6.0.1",
       "name": "sentence-transformers",
       "type": "library",
-      "version": "6.0.0",
-      "purl": "pkg:pypi/sentence-transformers@6.0.0"
+      "version": "6.0.1",
+      "purl": "pkg:pypi/sentence-transformers@6.0.1"
     },
     {
       "bom-ref": "pkg:pypi/setuptools@83.0.0",
@@ -868,11 +861,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.62.0",
+      "bom-ref": "pkg:pypi/streamlit@1.63.0",
       "name": "streamlit",
       "type": "library",
-      "version": "1.62.0",
-      "purl": "pkg:pypi/streamlit@1.62.0"
+      "version": "1.63.0",
+      "purl": "pkg:pypi/streamlit@1.63.0"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
