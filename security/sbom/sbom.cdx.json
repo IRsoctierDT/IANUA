@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:7843159d-d3a0-5074-bbcc-c632decd04d8",
+  "serialNumber": "urn:uuid:4fa1691d-80b4-5615-814d-c1c3770c0d6e",
   "version": 1,
   "metadata": {
     "timestamp": "2026-08-22T01:23:47Z",
@@ -735,11 +735,11 @@
       "purl": "pkg:pypi/pyyaml@6.0.3"
     },
     {
-      "bom-ref": "pkg:pypi/qdrant-client@1.19.0",
+      "bom-ref": "pkg:pypi/qdrant-client@1.19.1",
       "name": "qdrant-client",
       "type": "library",
-      "version": "1.19.0",
-      "purl": "pkg:pypi/qdrant-client@1.19.0"
+      "version": "1.19.1",
+      "purl": "pkg:pypi/qdrant-client@1.19.1"
     },
     {
       "bom-ref": "pkg:pypi/referencing@0.37.0",
@@ -784,11 +784,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.16.7",
+      "bom-ref": "pkg:pypi/ruff@0.16.8",
       "name": "ruff",
       "type": "library",
-      "version": "0.16.7",
-      "purl": "pkg:pypi/ruff@0.16.7"
+      "version": "0.16.8",
+      "purl": "pkg:pypi/ruff@0.16.8"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -812,11 +812,11 @@
       "purl": "pkg:pypi/scipy@1.18.0"
     },
     {
-      "bom-ref": "pkg:pypi/sentence-transformers@6.0.1",
+      "bom-ref": "pkg:pypi/sentence-transformers@6.1.0",
       "name": "sentence-transformers",
       "type": "library",
-      "version": "6.0.1",
-      "purl": "pkg:pypi/sentence-transformers@6.0.1"
+      "version": "6.1.0",
+      "purl": "pkg:pypi/sentence-transformers@6.1.0"
     },
     {
       "bom-ref": "pkg:pypi/setuptools@83.0.0",
@@ -861,11 +861,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.63.0",
+      "bom-ref": "pkg:pypi/streamlit@1.64.0",
       "name": "streamlit",
       "type": "library",
-      "version": "1.63.0",
-      "purl": "pkg:pypi/streamlit@1.63.0"
+      "version": "1.64.0",
+      "purl": "pkg:pypi/streamlit@1.64.0"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
