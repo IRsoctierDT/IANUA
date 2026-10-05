@@ -386,7 +386,10 @@ jobs:
   # TEMPORARY: PR #176 repair helper. Remove after generated artifacts are committed.
   regenerate-pr176-artifacts:
     name: Regenerate PR 176 dependency artifacts
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dependabot/uv/runtime-445ceb6331' && github.event.head_commit.message == 'ci: trigger PR 176 repository-native regeneration'
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/dependabot/uv/runtime-445ceb6331' &&
+      github.event.head_commit.message == 'ci: trigger PR 176 repository-native regeneration'
     runs-on: ubuntu-latest
     permissions:
       contents: write
