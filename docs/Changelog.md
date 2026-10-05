@@ -4,6 +4,8 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+## v2.1.0 — Detection Intelligence & XDR Foundation — 2026-10-05
+
 ### Added
 - **Multi-source telemetry ingest (`ingest/`)** — the XDR front door. Ten
   parsers across five domains (Sysmon and auditd; Zeek and Suricata EVE; AWS
