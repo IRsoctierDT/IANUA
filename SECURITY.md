@@ -10,7 +10,8 @@ or have written authorization to test. See [AGENTS.md](./AGENTS.md) §5.
 
 | Version | Status |
 |---------|--------|
-| 2.0.x (current — Master v2 STICHES Edition) | Supported — security fixes applied |
+| 2.1.x (current — Detection Intelligence & XDR Foundation) | Supported — security fixes applied |
+| 2.0.x | Critical security fixes only, upgrade recommended |
 | 1.x | Critical security fixes only, upgrade recommended |
 | < 1.0 | Not supported |
 
