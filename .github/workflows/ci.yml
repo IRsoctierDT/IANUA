@@ -44,6 +44,8 @@ jobs:
         # uv.lock is the dependency source of truth; fail closed if pyproject
         # changed without re-locking (and the exported pip locks would drift).
         run: uv lock --check
+      - name: Release version surfaces are synchronized
+        run: python scripts/check_version_sync.py
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
