@@ -13,7 +13,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dependabot/uv/runtime-445ceb6331]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -386,14 +386,14 @@ jobs:
   # TEMPORARY: PR #176 repair helper. Remove after generated artifacts are committed.
   regenerate-pr176-artifacts:
     name: Regenerate PR 176 dependency artifacts
-    if: github.event_name == 'pull_request' && github.event.pull_request.number == 176
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dependabot/uv/runtime-445ceb6331' && github.event.head_commit.message == 'ci: trigger PR 176 repository-native regeneration'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          persist-credentials: false
+          persist-credentials: true
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -415,15 +415,19 @@ jobs:
             --progress-spinner off || true
           jq -e '.bomFormat == "CycloneDX"' security/sbom/python.cdx.json >/dev/null
           python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      - name: Upload regenerated dependency artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: pr176-regenerated-dependency-artifacts
-          path: |
-            uv.lock
-            security/sbom/requirements.lock
-            security/sbom/requirements-dev.lock
-            security/sbom/python.cdx.json
-            security/sbom/npm.cdx.json
+      - name: Commit regenerated dependency artifacts to PR branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock \
+            security/sbom/requirements.lock \
+            security/sbom/requirements-dev.lock \
+            security/sbom/python.cdx.json \
+            security/sbom/npm.cdx.json \
             security/sbom/sbom.cdx.json
-          if-no-files-found: error
+          if git diff --cached --quiet; then
+            echo "No regenerated changes to commit."
+            exit 0
+          fi
+          git commit -m "fix: refresh PR 176 locks and SBOM [skip-pr176-regen]"
+          git push origin HEAD:dependabot/uv/runtime-445ceb6331
