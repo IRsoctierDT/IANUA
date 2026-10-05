@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:4fa1691d-80b4-5615-814d-c1c3770c0d6e",
+  "serialNumber": "urn:uuid:932f8505-6f3b-5ec1-bd09-7b6ff0e63a83",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-22T01:23:47Z",
+    "timestamp": "2026-10-05T18:37:39Z",
     "tools": {
       "components": [
         {
@@ -63,11 +63,11 @@
       "purl": "pkg:pypi/anyio@4.14.2"
     },
     {
-      "bom-ref": "pkg:pypi/ast-serialize@0.6.0",
+      "bom-ref": "pkg:pypi/ast-serialize@0.12.1",
       "name": "ast-serialize",
       "type": "library",
-      "version": "0.6.0",
-      "purl": "pkg:pypi/ast-serialize@0.6.0"
+      "version": "0.12.1",
+      "purl": "pkg:pypi/ast-serialize@0.12.1"
     },
     {
       "bom-ref": "pkg:pypi/attrs@26.1.0",
@@ -140,11 +140,11 @@
       "purl": "pkg:pypi/coverage@7.14.3"
     },
     {
-      "bom-ref": "pkg:pypi/cryptography@50.0.1",
+      "bom-ref": "pkg:pypi/cryptography@50.0.2",
       "name": "cryptography",
       "type": "library",
-      "version": "50.0.1",
-      "purl": "pkg:pypi/cryptography@50.0.1"
+      "version": "50.0.2",
+      "purl": "pkg:pypi/cryptography@50.0.2"
     },
     {
       "bom-ref": "pkg:pypi/cuda-bindings@13.3.1",
@@ -280,11 +280,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.168.0",
+      "bom-ref": "pkg:pypi/hypothesis@6.168.3",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.168.0",
-      "purl": "pkg:pypi/hypothesis@6.168.0"
+      "version": "6.168.3",
+      "purl": "pkg:pypi/hypothesis@6.168.3"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -343,11 +343,11 @@
       "purl": "pkg:pypi/jsonschema@4.26.0"
     },
     {
-      "bom-ref": "pkg:pypi/librt@0.13.0",
+      "bom-ref": "pkg:pypi/librt@0.16.0",
       "name": "librt",
       "type": "library",
-      "version": "0.13.0",
-      "purl": "pkg:pypi/librt@0.13.0"
+      "version": "0.16.0",
+      "purl": "pkg:pypi/librt@0.16.0"
     },
     {
       "bom-ref": "pkg:pypi/license-expression@30.4.4",
@@ -399,11 +399,11 @@
       "purl": "pkg:pypi/mypy-extensions@1.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/mypy@2.3.1",
+      "bom-ref": "pkg:pypi/mypy@2.4.0",
       "name": "mypy",
       "type": "library",
-      "version": "2.3.1",
-      "purl": "pkg:pypi/mypy@2.3.1"
+      "version": "2.4.0",
+      "purl": "pkg:pypi/mypy@2.4.0"
     },
     {
       "bom-ref": "pkg:pypi/narwhals@2.22.1",
@@ -714,11 +714,11 @@
       "purl": "pkg:pypi/python-dateutil@2.9.0.post0"
     },
     {
-      "bom-ref": "pkg:pypi/python-discovery@1.4.2",
+      "bom-ref": "pkg:pypi/python-discovery@1.6.1",
       "name": "python-discovery",
       "type": "library",
-      "version": "1.4.2",
-      "purl": "pkg:pypi/python-discovery@1.4.2"
+      "version": "1.6.1",
+      "purl": "pkg:pypi/python-discovery@1.6.1"
     },
     {
       "bom-ref": "pkg:pypi/python-multipart@0.0.32",
@@ -784,11 +784,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.16.8",
+      "bom-ref": "pkg:pypi/ruff@0.16.10",
       "name": "ruff",
       "type": "library",
-      "version": "0.16.8",
-      "purl": "pkg:pypi/ruff@0.16.8"
+      "version": "0.16.10",
+      "purl": "pkg:pypi/ruff@0.16.10"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -959,11 +959,11 @@
       "purl": "pkg:pypi/typing-inspection@0.4.2"
     },
     {
-      "bom-ref": "pkg:pypi/urllib3@2.7.0",
+      "bom-ref": "pkg:pypi/urllib3@2.8.0",
       "name": "urllib3",
       "type": "library",
-      "version": "2.7.0",
-      "purl": "pkg:pypi/urllib3@2.7.0"
+      "version": "2.8.0",
+      "purl": "pkg:pypi/urllib3@2.8.0"
     },
     {
       "bom-ref": "pkg:pypi/uvicorn@0.49.0",
@@ -973,11 +973,11 @@
       "purl": "pkg:pypi/uvicorn@0.49.0"
     },
     {
-      "bom-ref": "pkg:pypi/virtualenv@21.5.1",
+      "bom-ref": "pkg:pypi/virtualenv@21.14.5",
       "name": "virtualenv",
       "type": "library",
-      "version": "21.5.1",
-      "purl": "pkg:pypi/virtualenv@21.5.1"
+      "version": "21.14.5",
+      "purl": "pkg:pypi/virtualenv@21.14.5"
     },
     {
       "bom-ref": "pkg:pypi/watchdog@6.0.0",
