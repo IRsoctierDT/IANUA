@@ -381,3 +381,46 @@ jobs:
         run: |
           echo "Human approval recorded via the 'production' environment gate (AGENTS.md §5.1)."
           echo "Wire the real deploy step here. Keep secrets in the env's secret store only."
+
+
+  # TEMPORARY: PR #176 repair helper. Remove after generated artifacts are committed.
+  regenerate-pr176-artifacts:
+    name: Regenerate PR 176 dependency artifacts
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 176
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install refresh prerequisite
+        run: python -m pip install "packaging==26.3"
+      - name: Regenerate derived locks from uv.lock
+        run: python scripts/refresh_locks.py
+      - name: Install regenerated hash-pinned dev toolchain
+        run: python -m pip install --require-hashes -r security/sbom/requirements-dev.lock
+      - name: Regenerate CycloneDX SBOM
+        run: |
+          rm -f security/sbom/python.cdx.json
+          python -m pip_audit --disable-pip -r security/sbom/requirements.lock \
+            -f cyclonedx-json -o security/sbom/python.cdx.json \
+            --progress-spinner off || true
+          jq -e '.bomFormat == "CycloneDX"' security/sbom/python.cdx.json >/dev/null
+          python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - name: Upload regenerated dependency artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr176-regenerated-dependency-artifacts
+          path: |
+            security/sbom/requirements.lock
+            security/sbom/requirements-dev.lock
+            security/sbom/python.cdx.json
+            security/sbom/npm.cdx.json
+            security/sbom/sbom.cdx.json
+          if-no-files-found: error
