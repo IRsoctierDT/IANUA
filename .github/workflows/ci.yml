@@ -401,6 +401,8 @@ jobs:
           python-version: "3.12"
       - name: Install refresh prerequisite
         run: python -m pip install "packaging==26.3"
+      - name: Upgrade vulnerable transitive pins in uv.lock
+        run: uv lock --upgrade-package urllib3 --upgrade-package virtualenv
       - name: Regenerate derived locks from uv.lock
         run: python scripts/refresh_locks.py
       - name: Install regenerated hash-pinned dev toolchain
@@ -418,6 +420,7 @@ jobs:
         with:
           name: pr176-regenerated-dependency-artifacts
           path: |
+            uv.lock
             security/sbom/requirements.lock
             security/sbom/requirements-dev.lock
             security/sbom/python.cdx.json
