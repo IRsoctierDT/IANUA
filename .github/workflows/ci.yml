@@ -13,7 +13,7 @@ name: CI
 
 on:
   push:
-    branches: [main, dependabot/uv/runtime-445ceb6331]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -381,56 +381,3 @@ jobs:
         run: |
           echo "Human approval recorded via the 'production' environment gate (AGENTS.md §5.1)."
           echo "Wire the real deploy step here. Keep secrets in the env's secret store only."
-
-
-  # TEMPORARY: PR #176 repair helper. Remove after generated artifacts are committed.
-  regenerate-pr176-artifacts:
-    name: Regenerate PR 176 dependency artifacts
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/dependabot/uv/runtime-445ceb6331' &&
-      github.event.head_commit.message == 'ci: trigger PR 176 repository-native regeneration'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: true
-      - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.12"
-      - name: Install refresh prerequisite
-        run: python -m pip install "packaging==26.3"
-      - name: Upgrade vulnerable transitive pins in uv.lock
-        run: uv lock --upgrade-package urllib3 --upgrade-package virtualenv
-      - name: Regenerate derived locks from uv.lock
-        run: python scripts/refresh_locks.py
-      - name: Install regenerated hash-pinned dev toolchain
-        run: python -m pip install --require-hashes -r security/sbom/requirements-dev.lock
-      - name: Regenerate CycloneDX SBOM
-        run: |
-          rm -f security/sbom/python.cdx.json
-          python -m pip_audit --disable-pip -r security/sbom/requirements.lock \
-            -f cyclonedx-json -o security/sbom/python.cdx.json \
-            --progress-spinner off || true
-          jq -e '.bomFormat == "CycloneDX"' security/sbom/python.cdx.json >/dev/null
-          python scripts/generate_sbom.py --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      - name: Commit regenerated dependency artifacts to PR branch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add uv.lock \
-            security/sbom/requirements.lock \
-            security/sbom/requirements-dev.lock \
-            security/sbom/python.cdx.json \
-            security/sbom/npm.cdx.json \
-            security/sbom/sbom.cdx.json
-          if git diff --cached --quiet; then
-            echo "No regenerated changes to commit."
-            exit 0
-          fi
-          git commit -m "fix: refresh PR 176 locks and SBOM [skip-pr176-regen]"
-          git push origin HEAD:dependabot/uv/runtime-445ceb6331
