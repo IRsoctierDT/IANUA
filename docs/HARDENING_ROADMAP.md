@@ -147,13 +147,35 @@ Both steps are guarded (push-to-`main`, non-private-user-repo) and fail closed, 
 `continue-on-error`.
 
 "Publish attestations alongside releases" is implemented by
-[`release.yml`](../.github/workflows/release.yml): when a maintainer publishes a GitHub
-Release (the human act is the AGENTS.md §5.1 publish approval — the workflow has no
-automatic trigger), the tagged commit is built and the release gets the wheel + sdist, the
-drift-gated CycloneDX SBOM, and both Sigstore attestation bundles
-(`sbom-attestation.intoto.jsonl`, `provenance-attestation.intoto.jsonl`) attached as
-assets for offline verification. Fail-closed end to end; re-runs are idempotent
-(`--clobber`).
+[`release.yml`](../.github/workflows/release.yml). A maintainer can publish a
+GitHub Release to attach assets, or manually run **Release assets** from the
+default branch with a canonical tag such as `v2.1.0`. Both are explicit human
+approval actions (AGENTS.md §5.1); push and PR events never publish.
+
+For a new release, merge the release preparation and wait for CI to pass, then:
+
+```bash
+gh workflow run release.yml --ref main -f tag=v2.1.0
+gh run list --workflow release.yml
+gh release view v2.1.0
+```
+
+The dispatch uses the selected default-branch commit when the tag is absent.
+For an existing tag it checks out that exact tag and verifies the commit belongs
+to default-branch history; it never moves tags. The version-chain check rejects
+mismatched tags. Lint, formatting, typing and tests run before building. The
+workflow builds wheel + sdist, stages the drift-gated CycloneDX SBOM and Sigstore
+bundles (where supported), adds `SHA256SUMS`, and retains a downloadable Actions
+artifact before publication. It then creates a release **with assets**, or
+repairs a published release with idempotent uploads, and verifies asset names.
+An existing draft is refused rather than silently published.
+
+A release created with `GITHUB_TOKEN` does not trigger another release workflow;
+this path performs the build, signing and attachment in the same run. If upload
+fails, use the retained Actions artifact for diagnosis, fix access, and rerun
+**Release assets** with the same tag. Hosted API access and signing cannot be
+validated by a local package build. Missing tag/version, signing, or upload
+failures remain blocking; no control uses `continue-on-error`.
 
 **Objective.** Extend the existing CycloneDX SBOM step into signed, verifiable build provenance,
 so consumers can confirm what was built, from which sources, by which workflow.

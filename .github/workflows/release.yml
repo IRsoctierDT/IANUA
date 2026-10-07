@@ -8,11 +8,10 @@
 # Closes docs/HARDENING_ROADMAP.md §4's remaining gap: "publish attestations
 # alongside releases."
 #
-# Human approval gate (AGENTS.md §5.1 "publishing packages"): this workflow
-# has NO automatic trigger — it runs only when a maintainer publishes a
-# release in the GitHub UI/CLI, which is itself the recorded human approval.
-# It never fires on push, schedule, or pull_request, and it uploads assets
-# only to the release the human just published.
+# Human approval remains explicit: publish a release or manually dispatch this
+# workflow from the default branch. A dispatch builds first, then creates the
+# release with assets; existing tags are resolved without moving them.
+# No push, schedule, or pull-request publication trigger is permitted.
 #
 # Fail-closed (HARDENING_ROADMAP §4 acceptance criteria): a build, signing,
 # or upload failure fails the job — no continue-on-error anywhere.
@@ -22,18 +21,28 @@ name: Release assets
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Canonical release tag (e.g. v2.1.0); existing tags are never moved'
+        required: true
+        type: string
 
 # Least privilege by default; the job opts into exactly what it needs.
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.release.tag_name }}
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   publish-assets:
     name: Attach dists + SBOM + attestations to the release
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
     permissions:
       contents: write       # upload assets to this repo's releases
@@ -43,14 +52,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          # checkout resolves to the tagged commit for release events — the
-          # dists are built from exactly what the human tagged.
+          ref: ${{ github.event.release.tag_name || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
+      - name: Resolve immutable release source
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          EVENT: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag"; exit 1; }
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            git checkout --detach "refs/tags/$TAG"
+          elif [ "$EVENT" != workflow_dispatch ]; then
+            echo "Release event has no matching tag"; exit 1
+          fi
+          git merge-base --is-ancestor HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
+
       - name: Verify canonical release tag and version chain
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: python scripts/check_version_sync.py --tag "$TAG"
       - name: Verify the committed SBOM is usable before shipping it
         # The tag is expected to point at a CI-green main commit (drift gates
@@ -62,7 +85,14 @@ jobs:
           jq -e '.bomFormat == "CycloneDX" and (.serialNumber | length > 0)' \
             security/sbom/sbom.cdx.json >/dev/null \
             || { echo "::error::security/sbom/sbom.cdx.json missing or malformed"; exit 1; }
-      - run: pip install build
+      - name: Install development and build tooling
+        run: pip install build -e ".[dev]"
+      - name: Validate release source
+        run: |
+          ruff check .
+          ruff format --check .
+          mypy agents attack intel ingest scripts tests dashboard mcp rag compliance
+          pytest
       - name: Build distributions from the tagged commit
         run: python -m build
       - name: Attest SBOM for the release artifacts (Sigstore)
@@ -98,16 +128,36 @@ jobs:
         run: |
           cp "$SBOM_BUNDLE" sbom-attestation.intoto.jsonl
           cp "$PROVENANCE_BUNDLE" provenance-attestation.intoto.jsonl
-      - name: Upload assets to the release
-        # --clobber makes re-runs idempotent (AGENTS.md §3 determinism &
-        # idempotence): re-publishing replaces assets, never duplicates them.
+      - name: Stage complete release assets and checksums
+        run: |
+          mkdir release-assets
+          cp dist/*.whl dist/*.tar.gz security/sbom/sbom.cdx.json release-assets/
+          for bundle in sbom-attestation.intoto.jsonl provenance-attestation.intoto.jsonl; do
+            [ ! -f "$bundle" ] || cp "$bundle" release-assets/
+          done
+          (cd release-assets && sha256sum * > SHA256SUMS)
+      - name: Retain assets even if GitHub release publication fails
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-assets-${{ github.event.release.tag_name || inputs.tag }}
+          path: release-assets/
+          if-no-files-found: error
+      - name: Create release with assets or repair existing release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          assets=(dist/* security/sbom/sbom.cdx.json)
-          for bundle in sbom-attestation.intoto.jsonl provenance-attestation.intoto.jsonl; do
-            [ -f "$bundle" ] && assets+=("$bundle")
+          if gh release view "$TAG" --json isDraft > /tmp/release-state.json; then
+            jq -e '.isDraft == false' /tmp/release-state.json >/dev/null
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            # GITHUB_TOKEN-created releases do not trigger another workflow;
+            # all assets are already built, tested, and signed in this run.
+            gh release create "$TAG" release-assets/* \
+              --target "$(git rev-parse HEAD)" --title "IANUA $TAG" --generate-notes
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name' > /tmp/release-assets.txt
+          for asset in release-assets/*; do
+            grep -Fx "$(basename "$asset")" /tmp/release-assets.txt >/dev/null
           done
-          gh release upload "$TAG" "${assets[@]}" --clobber
-          echo "Attached: ${assets[*]}"

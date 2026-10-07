@@ -4,6 +4,11 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Fixed
+- Add an explicit release-assets dispatch that builds and validates before
+  creating a release, supports repair of existing releases without moving tags,
+  and retains assets with SHA-256 checksums for publication recovery.
+
 ## v2.1.0 — Detection Intelligence & XDR Foundation — 2026-10-05
 
 ### Added
