@@ -1,5 +1,5 @@
 {
-  "as_of": "2026-07-22",
+  "as_of": "2026-10-05",
   "sections": [
     {
       "components": [
@@ -115,5 +115,5 @@
   },
   "tagline": "Live component status for the IANUA platform \u2014 SOC automation, RAG, and agentic workflows.",
   "title": "IANUA",
-  "version": "2.0.0"
+  "version": "2.1.0"
 }

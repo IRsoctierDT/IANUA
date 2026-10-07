@@ -2,7 +2,7 @@
 
 ## Current Version
 
-v2.0.0 — **Master v2 STICHES Edition** — the IANUA identity era (renamed
+v2.1.0 — **Detection Intelligence & XDR Foundation** — the IANUA identity era (renamed
 repo-wide, canonical everywhere), sequence-correlating SOC pipeline surfaced
 end-to-end (agents → reports → dashboard), verified passage citations,
 IDF-weighted retrieval, deepened audit forensics, and a one-click Codespaces
