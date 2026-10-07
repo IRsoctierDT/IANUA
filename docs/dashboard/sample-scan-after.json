@@ -1,0 +1,49 @@
+{
+  "dimension_grades": {
+    "credential": "A",
+    "exposure": "A",
+    "pinning": "C",
+    "tool_scope": "C"
+  },
+  "generated_with_online": false,
+  "overall_grade": "C",
+  "schema_version": "1.1",
+  "servers": [
+    {
+      "bind_addr": null,
+      "findings": [
+        {
+          "dimension": "pinning",
+          "id": "PIN-UNPINNED",
+          "location": {
+            "line": 8,
+            "path": "sample/.mcp.json"
+          },
+          "rationale": "Unpinned dependencies can change between runs.",
+          "remediation": "Pin the package to a reviewed version.",
+          "severity": "medium",
+          "title": "Synthetic example: package version is unpinned"
+        },
+        {
+          "dimension": "tool_scope",
+          "id": "SCOPE-WILDCARD",
+          "location": {
+            "line": 10,
+            "path": "sample/.mcp.json"
+          },
+          "rationale": "Wildcard grants authorize more tools than this example requires.",
+          "remediation": "Restrict the grant to the tools you intend to use.",
+          "severity": "medium",
+          "title": "Synthetic example: wildcard tool permission"
+        }
+      ],
+      "grade": "B",
+      "id": "sample/.mcp.json#example",
+      "inspection_incomplete": false,
+      "port": null,
+      "running": false,
+      "state": "declared"
+    }
+  ],
+  "tool": "ianua-broker"
+}

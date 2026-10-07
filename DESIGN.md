@@ -198,6 +198,18 @@ across these boundaries and is never committed.
 
 ---
 
+### Imported scanner reports
+
+The dashboard accepts IANUA-Broker JSON snapshots through a bounded,
+allowlisted parser. Imported files are untrusted data, even when labelled
+redacted: no report path is opened, no command is executed, and no external
+request is made by this feature. Only normalized fields reach plain-text/table
+rendering; arbitrary secret and unknown fields are not retained. The report
+viewer keeps data in the current session, with explicit upload consent, and
+clears stale results when an upload is removed or invalid. It cannot certify
+that free text is secret-free. Comparisons preserve incomplete-inspection
+signals and never infer resolution from an incomplete current report.
+
 ## 6. Security Architecture
 
 - **Least privilege** at every layer — tools request the minimum scope; processes run with

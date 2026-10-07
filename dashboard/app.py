@@ -28,6 +28,7 @@ from dashboard.compliance_view import (
 from dashboard.escalations import AuditChainError, load_chain_view
 from dashboard.kb_search import search_kb_resilient
 from dashboard.ollama_service import ensure_ollama_running
+from dashboard.scan_report_view import render_scan_reports
 from dashboard.system_health import (
     get_git_tag,
     get_ollama_models,
@@ -95,6 +96,7 @@ def _sigma_rule_count() -> int:
     tab_kb,
     tab_health,
     tab_reports,
+    tab_scan_reports,
     tab_approvals,
     tab_compliance,
 ) = st.tabs(
@@ -106,6 +108,7 @@ def _sigma_rule_count() -> int:
         "Knowledge Base Search",
         "System Health",
         "Reports",
+        "Scan Reports",
         "Pending Approvals",
         "Compliance",
     ]
@@ -665,3 +668,7 @@ with tab_reports:
             st.info("No reports generated yet. Run a SOC workflow to create one.")
     else:
         st.info("Reports directory not found.")
+
+
+with tab_scan_reports:
+    render_scan_reports(st)
