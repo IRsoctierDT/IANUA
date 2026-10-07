@@ -1,0 +1,49 @@
+{
+  "dimension_grades": {
+    "credential": "F",
+    "exposure": "A",
+    "pinning": "C",
+    "tool_scope": "A"
+  },
+  "generated_with_online": false,
+  "overall_grade": "F",
+  "schema_version": "1.1",
+  "servers": [
+    {
+      "bind_addr": null,
+      "findings": [
+        {
+          "dimension": "credential",
+          "id": "CRED-PLAINTEXT",
+          "location": {
+            "line": 4,
+            "path": "sample/.mcp.json"
+          },
+          "rationale": "This is a fictional finding; no credential is present in this fixture.",
+          "remediation": "Use an approved credential store and rotate the affected credential.",
+          "severity": "critical",
+          "title": "Synthetic example: plaintext credential detected"
+        },
+        {
+          "dimension": "pinning",
+          "id": "PIN-UNPINNED",
+          "location": {
+            "line": 8,
+            "path": "sample/.mcp.json"
+          },
+          "rationale": "Unpinned dependencies can change between runs.",
+          "remediation": "Pin the package to a reviewed version.",
+          "severity": "medium",
+          "title": "Synthetic example: package version is unpinned"
+        }
+      ],
+      "grade": "F",
+      "id": "sample/.mcp.json#example",
+      "inspection_incomplete": false,
+      "port": null,
+      "running": false,
+      "state": "declared"
+    }
+  ],
+  "tool": "ianua-broker"
+}

@@ -4,6 +4,12 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- Session-only review of redacted IANUA-Broker JSON scan reports with finding
+  filters and remediation guidance in the Streamlit dashboard.
+- Baseline/current comparison with new, changed, unchanged, resolved, and
+  incomplete-inspection-aware not-observed findings.
+
 ### Fixed
 - Add an explicit release-assets dispatch that builds and validates before
   creating a release, supports repair of existing releases without moving tags,

@@ -140,9 +140,14 @@ MCP_ROOT=./data python -m mcp.transport
 ```bash
 pip install -e ".[dashboard]"     # streamlit + qdrant-client + sentence-transformers
 streamlit run dashboard/app.py
-# Tabs: SOC Workflow · Batch Processing · Knowledge Base Search · System Health · Reports
+# Tabs include SOC Workflow · Batch Processing · Scan Reports · Knowledge Base Search · Reports
 # KB search and health panels degrade gracefully if Qdrant/Ollama aren't running.
 ```
+
+The **Scan Reports** tab imports redacted IANUA-Broker JSON reports for filtered
+finding review and before/after comparison. Uploaded snapshots stay in the
+session; the feature does not initiate scans. See the
+[report-review walkthrough](docs/dashboard/STREAMLIT_DASHBOARD.md).
 
 **Try the dashboard in your browser — no local setup (GitHub Codespaces):**
 
