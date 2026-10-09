@@ -54,6 +54,10 @@ _CASE_ROW = re.compile(
     r"\s*(?P<layer>[^|]+?)\s*\|\s*(?P<what>[^|]+?)\s*\|\s*$",
     re.MULTILINE,
 )
+# Every marker token, matched or not — catches stray and unbalanced markers.
+_ANY_MARKER = re.compile(r"<!-- (BEGIN|END) GENERATED: ([^>]*?) -->")
+# Any numbered index row; each must parse as a case-study row (no silent drops).
+_NUMBERED_ROW = re.compile(r"^\|\s*\d+\s*\|.*$", re.MULTILINE)
 _NUMBER_WORDS = [
     "Zero",
     "One",
@@ -92,9 +96,16 @@ def render_release() -> str:
 
 def render_case_studies() -> str:
     """The case-study count and table, from ``docs/case-studies/README.md``."""
-    rows = list(_CASE_ROW.finditer(CASE_STUDY_INDEX.read_text(encoding="utf-8")))
+    index = CASE_STUDY_INDEX.read_text(encoding="utf-8")
+    rows = list(_CASE_ROW.finditer(index))
     if not rows:
         raise ReadmeError("no case-study rows found in docs/case-studies/README.md")
+    numbered = len(_NUMBERED_ROW.findall(index))
+    if numbered != len(rows):
+        raise ReadmeError(
+            f"{numbered - len(rows)} numbered case-study row(s) in "
+            "docs/case-studies/README.md do not parse (escaped pipe or malformed link?)"
+        )
     count = len(rows)
     word = _NUMBER_WORDS[count] if count < len(_NUMBER_WORDS) else str(count)
     lines = [
@@ -149,6 +160,11 @@ def regenerate(text: str) -> tuple[str, list[str]]:
     if unknown or missing or duplicated:
         raise ReadmeError(
             f"README markers invalid: missing={missing} unknown={unknown} duplicated={duplicated}"
+        )
+    tokens = len(_ANY_MARKER.findall(text))
+    if tokens != 2 * len(found):
+        raise ReadmeError(
+            f"README has {tokens - 2 * len(found)} stray or unbalanced generated-section marker(s)"
         )
     changed: list[str] = []
 

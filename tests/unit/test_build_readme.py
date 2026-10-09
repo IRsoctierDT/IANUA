@@ -34,8 +34,10 @@ def test_quality_gate_block_matches_the_charter_verbatim() -> None:
         lambda t: t.replace("<!-- BEGIN GENERATED: release -->", ""),
         lambda t: t + "\n<!-- BEGIN GENERATED: bogus -->\nx\n<!-- END GENERATED: bogus -->\n",
         lambda t: t + "\n<!-- BEGIN GENERATED: release -->\nx\n<!-- END GENERATED: release -->\n",
+        lambda t: t + "\n<!-- END GENERATED: release -->\n",
+        lambda t: t + "\n<!-- BEGIN GENERATED: Bogus Name -->\n",
     ],
-    ids=["missing", "unknown", "duplicated"],
+    ids=["missing", "unknown", "duplicated", "stray-end", "unmatched-begin"],
 )
 def test_invalid_markers_fail_closed(mutate: object) -> None:
     text = build_readme.README.read_text(encoding="utf-8")
@@ -50,6 +52,20 @@ def test_empty_case_study_index_fails_closed(
     empty.write_text("# Case Studies\n\nno table\n", encoding="utf-8")
     monkeypatch.setattr(build_readme, "CASE_STUDY_INDEX", empty)
     with pytest.raises(build_readme.ReadmeError):
+        build_readme.render_case_studies()
+
+
+def test_unparseable_case_study_row_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A numbered row the parser cannot read must fail, never be silently dropped."""
+    index = tmp_path / "README.md"
+    original = build_readme.CASE_STUDY_INDEX.read_text(encoding="utf-8")
+    index.write_text(
+        original + "| 99 | [New](./new.md) | Layer | Input \\| output |\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(build_readme, "CASE_STUDY_INDEX", index)
+    with pytest.raises(build_readme.ReadmeError, match="do not parse"):
         build_readme.render_case_studies()
 
 
