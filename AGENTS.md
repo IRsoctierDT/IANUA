@@ -289,6 +289,7 @@ bandit -c pyproject.toml -r agents attack intel ingest scripts mcp
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
 python scripts/build_status_page.py --check   # status page ↔ status.data.json
 python scripts/build_trust_page.py --check    # trust page ↔ trust.data.json
+python scripts/build_readme.py --check        # README generated sections ↔ their sources
 python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
 python scripts/build_attack_navigator.py --check  # Navigator layer ↔ Sigma corpus + attack/ pin
 python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; revocation invariants
