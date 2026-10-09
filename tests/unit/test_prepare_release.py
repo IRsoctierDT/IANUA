@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -23,12 +24,14 @@ _SURFACES = (
     "SECURITY.md",
     "tests/unit/test_version_sync.py",
 )
+# Generator outputs: copied so a real or stubbed generator can touch them.
+_GENERATED = ("docs/status.html", "README.md")
 
 
 @pytest.fixture
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of every release surface; both scripts are pointed at it."""
-    for rel in _SURFACES:
+    for rel in _SURFACES + _GENERATED:
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(prepare_release.ROOT / rel, target)
@@ -38,7 +41,7 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
-    return {rel: (root / rel).read_bytes() for rel in _SURFACES}
+    return {rel: (root / rel).read_bytes() for rel in _SURFACES + _GENERATED}
 
 
 def _next_minor() -> str:
@@ -46,13 +49,17 @@ def _next_minor() -> str:
     return f"{major}.{minor + 1}.0"
 
 
-def _stub_regenerate(root: Path, version: str) -> dict[Path, str]:
+def _stub_regenerate(root: Path, version: str) -> Callable[[dict[Path, str]], None]:
     """Stand-in for the status-page build: only the version field matters here."""
-    status = root / "docs" / "status.json"
-    data = json.loads(status.read_text(encoding="utf-8"))
-    data["version"] = version
-    status.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return {}
+
+    def regenerate(originals: dict[Path, str]) -> None:
+        status = root / "docs" / "status.json"
+        originals.setdefault(status, status.read_text(encoding="utf-8"))
+        data = json.loads(status.read_text(encoding="utf-8"))
+        data["version"] = version
+        status.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    return regenerate
 
 
 @pytest.mark.unit
@@ -68,7 +75,7 @@ def test_plan_covers_every_surface_and_writes_nothing(sandbox: Path) -> None:
 @pytest.mark.unit
 def test_apply_bumps_all_surfaces_in_sync(sandbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     version = _next_minor()
-    monkeypatch.setattr(prepare_release, "_regenerate", lambda: _stub_regenerate(sandbox, version))
+    monkeypatch.setattr(prepare_release, "_regenerate", _stub_regenerate(sandbox, version))
     changes = prepare_release.plan(version, "Live Tool Inspection", "2026-11-02")
     prepare_release.apply(changes, version)
     assert check_version_sync.check(f"v{version}") == version
@@ -83,7 +90,7 @@ def test_apply_bumps_all_surfaces_in_sync(sandbox: Path, monkeypatch: pytest.Mon
 def test_failure_restores_every_file(sandbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     before = _snapshot(sandbox)
 
-    def boom() -> dict[Path, str]:
+    def boom(originals: dict[Path, str]) -> None:
         raise prepare_release.ReleaseError("regeneration failed")
 
     monkeypatch.setattr(prepare_release, "_regenerate", boom)
@@ -100,7 +107,7 @@ def test_failed_verification_restores_every_file(
 ) -> None:
     """Without the status regeneration the sync check fails — and nothing sticks."""
     before = _snapshot(sandbox)
-    monkeypatch.setattr(prepare_release, "_regenerate", dict)
+    monkeypatch.setattr(prepare_release, "_regenerate", lambda originals: None)
     version = _next_minor()
     changes = prepare_release.plan(version, "Live Tool Inspection", "2026-11-02")
     with pytest.raises(check_version_sync.VersionSyncError):
@@ -172,23 +179,28 @@ def test_cli_dry_run_and_bad_input_exit_codes(
 
 
 @pytest.mark.unit
-def test_regenerate_runs_generators_and_returns_originals(
+def test_regenerate_runs_generators_and_snapshots_outputs(
     sandbox: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from scripts import build_status_page
+    from scripts import build_readme, build_status_page
 
-    calls: list[list[str]] = []
+    calls: list[str] = []
 
-    def record(argv: list[str]) -> int:
-        calls.append(argv)
-        return 0
+    def recorder(name: str) -> Callable[[list[str]], int]:
+        def run(argv: list[str]) -> int:
+            calls.append(name)
+            return 0
 
-    monkeypatch.setattr(build_status_page, "main", record)
-    (sandbox / "docs" / "status.html").write_text("<html></html>\n", encoding="utf-8")
-    originals = prepare_release._regenerate()
-    assert calls == [[]]
-    assert sandbox / "docs" / "status.html" in originals
-    assert sandbox / "docs" / "status.json" in originals
+        return run
+
+    monkeypatch.setattr(build_status_page, "main", recorder("status"))
+    monkeypatch.setattr(build_readme, "main", recorder("readme"))
+    originals: dict[Path, str] = {}
+    prepare_release._regenerate(originals)
+    assert calls == ["status", "readme"]
+    assert set(originals) == {
+        sandbox / rel for rel in ("docs/status.html", "docs/status.json", "README.md")
+    }
 
 
 @pytest.mark.unit
@@ -196,9 +208,28 @@ def test_regenerate_failure_raises(sandbox: Path, monkeypatch: pytest.MonkeyPatc
     from scripts import build_status_page
 
     monkeypatch.setattr(build_status_page, "main", lambda argv: 2)
-    (sandbox / "docs" / "status.html").write_text("<html></html>\n", encoding="utf-8")
     with pytest.raises(prepare_release.ReleaseError, match="regenerating"):
-        prepare_release._regenerate()
+        prepare_release._regenerate({})
+
+
+@pytest.mark.unit
+def test_partially_written_generator_output_is_restored(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generator that writes one output and then fails must not leave it changed."""
+    from scripts import build_status_page
+
+    def half_write(argv: list[str]) -> int:
+        (sandbox / "docs" / "status.html").write_text("PARTIAL\n", encoding="utf-8")
+        return 2
+
+    monkeypatch.setattr(build_status_page, "main", half_write)
+    before = _snapshot(sandbox)
+    version = _next_minor()
+    changes = prepare_release.plan(version, "Live Tool Inspection", "2026-11-02")
+    with pytest.raises(prepare_release.ReleaseError, match="regenerating"):
+        prepare_release.apply(changes, version)
+    assert _snapshot(sandbox) == before
 
 
 @pytest.mark.unit
@@ -206,7 +237,7 @@ def test_cli_success_reports_updated_files(
     sandbox: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     version = _next_minor()
-    monkeypatch.setattr(prepare_release, "_regenerate", lambda: _stub_regenerate(sandbox, version))
+    monkeypatch.setattr(prepare_release, "_regenerate", _stub_regenerate(sandbox, version))
     args = [version, "--title", "Live Tool Inspection", "--date", "2026-11-02"]
     assert prepare_release.main(args) == 0
     assert f"prepare-release: OK: v{version}" in capsys.readouterr().out
