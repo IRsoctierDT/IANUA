@@ -123,7 +123,7 @@ Maturity is the Skeptic-corrected rating (1–5). Star counts are as rendered on
 | Snyk Agent Scan (ex-Invariant mcp-scan) | Snyk | Apache-2.0 | Installed harnesses, MCP servers and skills across 13 clients | Toxic-flow lineage from Invariant; `--ci`, MDM mode; 3.1k stars | Requires `SNYK_TOKEN` and the hosted analysis API; rug-pull and cross-origin not named in v0.6 | 4 |
 | Tencent AI-Infra-Guard | Tencent | Apache-2.0 | AI infra fingerprinting (146 components, 2000+ CVE rules); MCP and skill scan in 14 categories | 6.8k stars, v4.6.2 (2026-09-17) | Skill scan is LLM-based (`LLM_API_KEY`); no SARIF; web UI unauthenticated | 4 |
 | Trail of Bits mcp-context-protector | Trail of Bits | Apache-2.0 | Runtime wrapper: TOFU pin of instructions, descriptions and schemas; blocks on drift; re-checks on `list_changed` | Best-documented rug-pull defense; ANSI sanitization; response quarantine | 226 stars, no releases, no report format | 3 |
-| mcpseal | individual | MIT | `.mcp-lock.json` of name + description + inputSchema; proxy blocks on mismatch | Zero runtime deps, offline | 0.1.4 (2026-08-22); annotations not in the hash; single maintainer | 2 |
+| mcpseal | individual | MIT | `.mcp-lock.json` of name + description + inputSchema; proxy blocks on mismatch | Local-first; pins `sha256` over canonical `{name, description, inputSchema}` | 0.1.4 (2026-08-22); annotations and outputSchema not in the hash; stores last-approved description text in plaintext; 3 runtime deps (`canonicaljson`, `keyring`, `cryptography`) plus opt-in event upload to a control plane when logged in (corrected 2026-10-09, see §6.3); single maintainer | 2 |
 | rugsnare | individual | Apache-2.0 | scan/diff baseline, exit 1 on drift, optional proxy | CI-ready | 3 stars | 1 |
 | mcp-shield | individual | MIT | Client configs, plus connects to servers: hidden instructions, shadowing, cross-origin | `--identify-as` client-dependent behavior check | 15 commits, no releases | 2 |
 | Lasso MCP Gateway `--scan` | Lasso | MIT | Reputation (Smithery/npm/GitHub) + description scan; auto-blocks under score 30 | Presidio PII masking | Cloud guardrails need an API key; 40 commits | 2 |
@@ -240,6 +240,21 @@ skill malware. All three are Apache or MIT licensed and mostly offline.
 - MCPSafetyScanner is a paper, not a tool.
 - garak and PyRIT are model-level red-team harnesses with no tool or MCP target, so they do
   not bear on IANUA's gap.
+
+### 6.3 Post-publication correction (2026-10-09)
+
+The mcpseal row originally said "zero runtime deps, offline". That claim came
+from the project's marketing copy. Reading the published v0.1.4 source (PyPI
+sdist, sha256 `1b0b99e7…b468`, verified against PyPI's published digest)
+shows:
+- three runtime dependencies: `canonicaljson`, `keyring` and `cryptography`;
+- an opt-in path that uploads events to a control plane, active only after a
+  user logs in;
+- a lockfile that stores each approved tool's description text in plaintext,
+  next to its hash.
+
+The core pinning is local, so the "partial" verdict below stands. The
+"zero-dependency" contrast with IANUA-Broker is overstated.
 
 ### 6.2 Verdicts on the eight candidate directions
 
