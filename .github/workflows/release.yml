@@ -8,9 +8,11 @@
 # Closes docs/HARDENING_ROADMAP.md §4's remaining gap: "publish attestations
 # alongside releases."
 #
-# Human approval remains explicit: publish a release or manually dispatch this
-# workflow from the default branch. A dispatch builds first, then creates the
-# release with assets; existing tags are resolved without moving them.
+# Human approval remains explicit: publish a release, manually dispatch this
+# workflow from the default branch, or approve the `release` environment in
+# release-on-merge.yml (which tags the CI-verified commit, then dispatches
+# this workflow). A dispatch builds first, then creates the release with
+# assets; existing tags are resolved without moving them.
 # No push, schedule, or pull-request publication trigger is permitted.
 #
 # Fail-closed (HARDENING_ROADMAP §4 acceptance criteria): a build, signing,

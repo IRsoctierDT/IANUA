@@ -11,6 +11,10 @@
    `python scripts/build_readme.py`. CI fails if they drift.
 7. **Definition of Done:** AGENTS.md §6.2 checklist satisfied; approval gates (§5.1) recorded.
 
+**Releases:** run `python scripts/prepare_release.py X.Y.Z --title "..."` and open the result
+as a `release: prepare IANUA vX.Y.Z` PR; tagging and publishing follow the merge behind a human
+approval. See [`docs/RELEASING.md`](./docs/RELEASING.md).
+
 Agent commits are authored as the owner (`IDRozenblad <44316408+IRsoctierDT@users.noreply.github.com>`), with the agent credited
 only by its own `Co-Authored-By:` trailer (AGENTS.md §8).
 

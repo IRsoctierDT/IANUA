@@ -9,6 +9,11 @@ All notable changes to this project. Versions correspond to git tags.
   filters and remediation guidance in the Streamlit dashboard.
 - Baseline/current comparison with new, changed, unchanged, resolved, and
   incomplete-inspection-aware not-observed findings.
+- Release automation: `scripts/prepare_release.py` bumps every version
+  surface atomically (fail-closed, full rollback), and
+  `release-on-merge.yml` tags the CI-verified commit and dispatches the
+  signed release once a human approves the `release` environment
+  (runbook: `docs/RELEASING.md`).
 
 ### Documentation
 - Research record: 2026 security scanner landscape and ranked IANUA feature

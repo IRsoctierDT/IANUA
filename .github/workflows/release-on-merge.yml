@@ -1,0 +1,121 @@
+# release-on-merge.yml — IANUA
+# Turns a merged "release: prepare IANUA vX.Y.Z" PR into a published release.
+#
+# Flow (docs/RELEASING.md):
+#   1. `python scripts/prepare_release.py X.Y.Z --title "..."` → PR → review → merge.
+#   2. CI goes green on main → this workflow's `detect` job sees that
+#      pyproject.toml's version has no tag yet and that every version surface
+#      agrees (check_version_sync --tag).
+#   3. `publish` waits on the `release` environment's required reviewer — the
+#      human approval AGENTS.md §5.1 requires for anything externally visible.
+#   4. Once approved it creates tag vX.Y.Z at the exact CI-verified commit and
+#      dispatches release.yml, which rebuilds, re-validates, signs, and creates
+#      the GitHub Release with dists + SBOM + attestations + SHA256SUMS.
+#   GitHub Pages is published by pages.yml from the same green CI run on main
+#   (its own `github-pages` approval), so a release merge refreshes the site.
+#
+# Fail closed: no tag is created unless CI succeeded on a push to main, the
+# version surfaces are in sync, the tag does not exist, and the `release`
+# environment carries a required-reviewer rule (a missing environment would
+# otherwise be auto-created with no protection). Existing tags are never moved.
+#
+# Prerequisite (one-time): Settings → Environments → New environment `release`
+# → Required reviewers: the owner; Deployment branches: `main` only.
+
+name: Release on version bump
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Never cancel a release that is mid-flight or waiting for approval.
+concurrency:
+  group: release-on-merge
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect an untagged release version
+    runs-on: ubuntu-latest
+    # Only a green CI run for a push to main in this repository (never a PR or fork).
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0 # all tags, so an existing release is detected locally
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Resolve version and check for an existing tag
+        id: version
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::non-canonical version"; exit 1; }
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists — nothing to release."
+            exit 0
+          fi
+          # Every surface must agree before a release is even offered.
+          python scripts/check_version_sync.py --tag "$tag"
+          echo "Release candidate: $tag at $SHA"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Tag and publish (human approval)
+    needs: detect
+    if: needs.detect.outputs.tag != ''
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    permissions:
+      contents: write # create the tag ref
+      actions: write # dispatch release.yml (and read this environment's rules)
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.detect.outputs.tag }}
+      SHA: ${{ needs.detect.outputs.sha }}
+    steps:
+      - name: Require a human reviewer on the release environment
+        run: |
+          reviewers="$(gh api "repos/$GH_REPO/environments/release" \
+            --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')"
+          if [ "${reviewers:-0}" -lt 1 ]; then
+            echo "::error::The 'release' environment has no required reviewer; refusing to publish (AGENTS.md §5.1)."
+            exit 1
+          fi
+      - name: Create the tag at the CI-verified commit
+        # The API refuses to overwrite an existing ref, so a tag is never moved.
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::invalid tag or sha"; exit 1; }
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" --silent
+      - name: Build, sign and publish the release
+        # GITHUB_TOKEN-created tags/releases do not trigger workflows, but a
+        # workflow_dispatch does; release.yml checks out the tag it is given.
+        run: gh workflow run release.yml --ref main -f tag="$TAG"
+      - name: Summary
+        run: |
+          {
+            echo "### Release $TAG"
+            echo "Tagged \`$SHA\` and dispatched **Release assets** (release.yml)."
+            echo "Pages refreshes via **Deploy GitHub Pages** from the same CI run."
+          } >> "$GITHUB_STEP_SUMMARY"
