@@ -229,7 +229,8 @@ release PR merged ──► CI green (push, main) ──► release-on-merge.yml
 
 Invariants: a tag is created only at the `head_sha` of a successful CI push run on
 `main` and is never moved (an existing tag is accepted only if it already names
-that commit, which makes a failed dispatch resumable); `detect` holds read-only
+that commit, which makes a failed dispatch resumable, and a resumed tag must itself
+have a successful CI push run, with the version chain re-verified at that commit); `detect` holds read-only
 permissions, and write scopes (`contents`, `actions`) exist only in the approved
 job; inputs reach shell steps through `env`, never inline expressions;
 `release.yml` re-verifies the version chain and rebuilds from the tag instead of
