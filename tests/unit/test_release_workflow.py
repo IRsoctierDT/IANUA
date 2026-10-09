@@ -89,3 +89,25 @@ def test_release_on_merge_publication_is_human_gated_and_never_moves_tags() -> N
     assert 'gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG"' in scripts
     assert "PATCH" not in scripts and "force" not in scripts
     assert 'gh workflow run release.yml --ref main -f tag="$TAG"' in scripts
+
+
+def test_release_on_merge_resumes_without_moving_tags() -> None:
+    """A failed dispatch after tagging is resumable; a tag is never repointed."""
+    workflow = _on_merge()
+    detect = "\n".join(step.get("run", "") for step in workflow["jobs"]["detect"]["steps"])
+    assert 'gh api "repos/$GH_REPO/releases/tags/$tag"' in detect
+    assert 'grep -q "HTTP 404"' in detect  # only "no release" resumes; other errors fail
+    assert 'git rev-parse "refs/tags/$tag^{commit}"' in detect
+    # A resumed tag must have its own green CI push run, checked at that commit.
+    assert "actions/workflows/ci.yml/runs?head_sha=$target&event=push&status=success" in detect
+    assert 'git checkout -q --detach "$target"' in detect
+    assert detect.index('git checkout -q --detach "$target"') < detect.index(
+        "check_version_sync.py"
+    )
+    assert workflow["jobs"]["detect"]["permissions"] == {"contents": "read", "actions": "read"}
+    publish = workflow["jobs"]["publish"]["steps"]
+    tag_step = next(
+        s for s in publish if s.get("name") == "Create the tag at the CI-verified commit"
+    )
+    assert '[ "$existing" != "commit $SHA" ]' in tag_step["run"]
+    assert 'grep -q "HTTP 404" /tmp/ref.err' in tag_step["run"]

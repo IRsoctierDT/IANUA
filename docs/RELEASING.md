@@ -76,9 +76,10 @@ auto-create an unprotected environment.
 
 | Risk | Control |
 |---|---|
-| Version surfaces drift | One atomic script; `check_version_sync` in CI, in `detect`, and again in `release.yml` |
+| Version surfaces drift | One atomic script (partially generated output is rolled back too); `check_version_sync` in CI, in `detect`, and again in `release.yml` |
 | Tag on an unverified commit | Tag created only at the `head_sha` of a successful CI push run on `main` |
-| Tag moved or overwritten | Git refs API create-only; `release.yml` never force-updates |
+| Tag moved or overwritten | Git refs API create-only; a re-run accepts an existing tag only if it names the same commit; `release.yml` never force-updates |
+| Dispatch fails after tagging | `detect` re-offers a tagged version that has no GitHub Release, at the tagged commit, behind the same approval |
 | Unapproved publication | `release` environment with required reviewer, checked at runtime (fails closed) |
 | Malformed release title | Allowlisted characters; no Markdown control characters or parentheses |
 | A later commit lands before approval | The tag still pins the detected commit, not the branch head |

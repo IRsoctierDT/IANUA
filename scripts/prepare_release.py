@@ -22,7 +22,7 @@ the human-facing ones a release has always touched):
 * ``docs/PROJECT_STATUS.md`` current-version line
 * ``SECURITY.md`` supported-versions table (minor/major bumps only)
 * ``tests/unit/test_version_sync.py`` canonical-version pin
-* ``README.md`` generated sections, when ``scripts/build_readme.py`` exists
+* ``README.md`` generated sections (``scripts/build_readme.py``)
 
 Security considerations (AGENTS.md §3, §5):
     * **Validate, never repair** — the version must be canonical ``X.Y.Z`` and
@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import importlib
 import json
 import re
 import sys
@@ -238,27 +237,25 @@ def plan(version: str, title: str, date: str) -> dict[Path, tuple[str, str]]:
     return changes
 
 
-def _regenerate() -> dict[Path, str]:
-    """Rebuild derived pages in-process; return the originals of the files they own.
+def _regenerate(originals: dict[Path, str]) -> None:
+    """Rebuild the derived pages in-process.
 
-    The README generator ships separately (``scripts/build_readme.py``); it runs
-    only once present, so this script works on either side of that merge.
+    Each generator's outputs are snapshotted into the caller-owned ``originals``
+    *before* it runs, so a generator that writes one file and then fails is
+    still rolled back by :func:`apply`.
     """
-    from scripts import build_status_page
+    from scripts import build_readme, build_status_page
 
-    targets: list[tuple[Callable[[list[str]], int], tuple[str, ...]]] = [
+    targets: tuple[tuple[Callable[[list[str]], int], tuple[str, ...]], ...] = (
         (build_status_page.main, ("docs/status.html", "docs/status.json")),
-    ]
-    if (ROOT / "scripts" / "build_readme.py").exists():
-        build_readme = importlib.import_module("scripts.build_readme")
-        targets.append((build_readme.main, ("README.md",)))
-    originals: dict[Path, str] = {}
+        (build_readme.main, ("README.md",)),
+    )
     for generate, owned in targets:
         for rel in owned:
-            originals[ROOT / rel] = (ROOT / rel).read_text(encoding="utf-8")
+            path = ROOT / rel
+            originals.setdefault(path, path.read_text(encoding="utf-8"))
         if generate([]) != 0:
             raise ReleaseError(f"regenerating {', '.join(owned)} failed")
-    return originals
 
 
 def apply(changes: dict[Path, tuple[str, str]], version: str) -> None:
@@ -269,7 +266,7 @@ def apply(changes: dict[Path, tuple[str, str]], version: str) -> None:
     try:
         for path, (_original, updated) in changes.items():
             path.write_text(updated, encoding="utf-8")
-        regenerated = _regenerate()
+        _regenerate(regenerated)
         if check_version_sync.check(f"v{version}") != version:
             raise ReleaseError("version sync check returned an unexpected version")
     except BaseException:

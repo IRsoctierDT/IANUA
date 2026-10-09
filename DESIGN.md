@@ -210,6 +210,33 @@ clears stale results when an upload is removed or invalid. It cannot certify
 that free text is secret-free. Comparisons preserve incomplete-inspection
 signals and never infer resolution from an incomplete current report.
 
+### Release publication
+
+Publishing a release crosses from CI into externally visible state (a git tag, a
+GitHub Release with signed assets), so it sits behind a human boundary:
+
+```
+release PR merged ──► CI green (push, main) ──► release-on-merge.yml
+                                                  detect  (contents: read)
+                                                    │ untagged, or tagged-but-unreleased,
+                                                    │ and check_version_sync --tag passes
+                                                  publish (environment: release)
+                                                    │ ◄── HUMAN APPROVAL (required reviewer,
+                                                    │      verified at runtime; fails closed)
+                                                    ├─ tag vX.Y.Z → CI-verified commit (create-only)
+                                                    └─ dispatch release.yml (rebuild, test, sign, publish)
+```
+
+Invariants: a tag is created only at the `head_sha` of a successful CI push run on
+`main` and is never moved (an existing tag is accepted only if it already names
+that commit, which makes a failed dispatch resumable, and a resumed tag must itself
+have a successful CI push run, with the version chain re-verified at that commit); `detect` holds read-only
+permissions, and write scopes (`contents`, `actions`) exist only in the approved
+job; inputs reach shell steps through `env`, never inline expressions;
+`release.yml` re-verifies the version chain and rebuilds from the tag instead of
+trusting artifacts from the gating workflow. Pages publication keeps its own
+`github-pages` approval. Runbook: `docs/RELEASING.md`.
+
 ## 6. Security Architecture
 
 - **Least privilege** at every layer — tools request the minimum scope; processes run with
@@ -315,6 +342,8 @@ default.
 | 2026-08-21 | OCSF classification for normalized events keys off `(source_type, activity)`, and defaults are reported as defaults | The existing table maps the text classifier's `event_type`; multi-source records arrive already structured with a vendor-stable `activity`, which is a far better basis than re-deriving one from prose. `normalize_source_event()` reports `mapped: True` only for an explicit table entry or prefix rule — a domain default (cloud → API Activity, email → Email Activity) or a Base Event fallback reports `False`, so "we classified this" is never confused with "we defaulted". Endpoint, network, and identity get no domain default at all: their records span several OCSF classes, so an unmapped activity yields Base Event rather than a plausible-looking wrong answer. Parser `activity` values are therefore held to an enumerable vocabulary — a Suricata alert's signature name is carried verbatim in the message and *not* promoted into `activity`, which would make the field unbounded and the table meaningless. Two corrections shipped with it: OCSF 1008 is Event Log Activity (1001 is File System Activity — the uid was always right, the label was not), and `sigma_eval` gained `endswith`, the modifier nearly all published endpoint Sigma content is written against and whose absence made such a rule raise rather than match. |
 
 | 2026-08-21 | Defensive `containment` action class (auto-allowed, audited) + lab-scoped containment toolkit with MITRE ATT&CK mapping | The agents could not stop an active payload: containment actions classified as `destructive`/`unknown` and stalled at a human gate, which defeats the control against ransomware/extortion (encryption completes in minutes). On the repository owner's direction (recorded here as the standing human authorization, AGENTS.md §5.1), `agents/policies/` gains a `containment` class that is auto-allowed by default under three compensating controls: (1) the class covers only **reversible-by-design, lab-scoped** primitives in `agents/tools/containment.py` — quarantine⇄release (symlink-refusing path validation), suspend⇄resume, isolate⇄restore, block⇄unblock, disable⇄enable — with one narrow, labeled exception: `stop_process(force=True)` sends SIGKILL to halt active encryption (process-level, never data-destructive, separately deny-listable under its own `stop_process_force` label); irreversible eradication stays `destructive` and keeps its gate, and host/network/account actions run only through an injectable lab-scoped executor that fails closed when absent or unconfirmed; (2) classification order checks containment **after every gated class** (boundary/secret/destructive/deployment/dependency/external-network keywords), so hybrid phrasing ("quarantine and delete the backups", "quarantine the sample and upload it") keeps the more restrictive class and §5 denies are untouched — free-text keyword classification is best-effort by design, so unmatched text still fails closed to `unknown`, and the enforced surface at tool dispatch uses declared action classes; (3) every policy decision **and** execution outcome is recorded to the hash-chained audit trail through the toolkit's audit logger, and operators can re-gate the class or deny-list individual capabilities in `policy.json`. Each capability is mapped to the ATT&CK techniques it counters — resolved and validated **against the pinned corpus** (`attack/`, 19.2 at time of writing), failing closed on unknown/revoked/deprecated anchors — plus a curated mitigation reference, with descriptions (`agents/tools/attack_mapping.py`, complementing the detection-side Navigator layer); ransomware (T1486 + T1490) and extortion (T1657) rules land in the reviewed mapping store (`agents/mapping/rules/core.json`, digest-gated) with response steps that lead with the toolkit. **Relation to the plan-only decision above (same date):** this deliberately opens the *direct-invocation* half of the execution boundary that decision recorded as closed — by the owner's explicit direction, and with a different control design than the one that entry rejects: not an allow-list standing grant, but a dedicated action class decided and audited per invocation, per-capability deny-list labels, reversible primitives, and fail-closed executors. The plan→execution half **stays closed**: `agents/response/` still ships no executor, no code path consumes a `ResponsePlan` and executes it, and its security tests continue to enforce exactly that (§5 boundary 8 records the amended posture). |
+
+| 2026-10-09 | Releases publish from a merged release PR through a human-gated, create-only tagging workflow | Hand-cut releases touched a dozen version surfaces and drifted. `scripts/prepare_release.py` edits them atomically (full rollback on any failure, including partially written generator output), and `release-on-merge.yml` turns the merged PR into a tag + dispatch of the existing `release.yml` only after approval on the `release` environment, whose required-reviewer rule is checked at runtime because GitHub would otherwise auto-create the environment unprotected. Tags are create-only at the CI-verified commit; a tag that exists without a Release is offered for resumption at its own commit, so a transient dispatch failure cannot strand a version, and a tag naming any other commit fails closed. Rejected: release-please (cannot maintain this repository's Changelog format, SECURITY.md support table or status page), and automatic publication without approval (AGENTS.md §5.1). |
 
 > Append new architectural decisions here (date, decision, rationale) so the history stays
 > auditable.
