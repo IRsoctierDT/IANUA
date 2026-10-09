@@ -9,6 +9,10 @@ Every component is designed to demonstrate repeatable, documented, testable, and
 reviewable engineering — suitable for a portfolio, a client engagement, or a production
 security operation.
 
+<!-- BEGIN GENERATED: release -->
+**Current release: v2.1.0** — see [`docs/Changelog.md`](./docs/Changelog.md).
+<!-- END GENERATED: release -->
+
 ---
 
 ## What's built
@@ -36,26 +40,29 @@ security operation.
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |
 | **Dashboard** — Streamlit command center: SOC workflow (severity + KB grounding), batch processing, **Detection Intelligence** (corpus health, intel freshness, behavioral telemetry split, maintenance debt), KB search, system health, reports | Dashboard | Complete |
 
-**All eight agent blueprints are built.** Further work is enhancement, not new surface.
+**Every agent in the table above is built.** Further work is enhancement, not new surface.
 
 ### Case studies
 
-Ten portfolio-grade write-ups — one per component — each following the [AGENTS.md](./AGENTS.md)
+<!-- BEGIN GENERATED: case-studies -->
+Eleven portfolio-grade write-ups — one per component — each following the [AGENTS.md](./AGENTS.md)
 §9 standard with a worked example (real command output) and a reproduce-it-yourself section.
 Full index: [`docs/case-studies/`](./docs/case-studies/README.md).
 
 | Case study | Layer |
 |---|---|
-| [SOC Analyst Agent v0.2](./docs/case-studies/soc-analyst-v0.2.md) — raw log line → triaged, MITRE-mapped, human-reviewable incident, fully local | Agent |
-| [MITRE ATT&CK Mapper Agent](./docs/case-studies/mitre-mapper-agent.md) — deterministic event → tactic/technique with confidence & evidence | Agent |
-| [Threat Intelligence Agent](./docs/case-studies/threat-intel-agent.md) — indicator triage that returns `unknown` + "enrich first" instead of guessing | Agent |
-| [Vulnerability Assessment Agent](./docs/case-studies/vulnerability-assessment-agent.md) — ranks authorized scan findings into a defensible remediation order | Agent |
-| [Knowledge Base Agent](./docs/case-studies/knowledge-base-agent.md) — cited corpus grounding; deterministic lexical default, safe semantic fallback | Agent/RAG |
-| [Incident Report Agent](./docs/case-studies/incident-report-agent.md) — composes a safe Markdown report with an opt-in, fail-soft AI narrative | Agent |
-| [Detection Matcher & Orchestrator](./docs/case-studies/detection-matcher-and-orchestrator.md) — triage→Sigma detection loop + full multi-agent pipeline in one call | Agent |
-| [Local RAG Pipeline](./docs/case-studies/rag-pipeline.md) — confined ingest → chunk → embed → cited retrieval; fully offline mode | RAG |
-| [Policy-Gated MCP Tool Surface](./docs/case-studies/mcp-server.md) — allow-listed, self-validating, path-confined, policy-gated tool calls | MCP |
-| [Policy Engine & Tamper-Evident Audit Log](./docs/case-studies/policy-and-audit.md) — default-deny policy-as-code + hash-chained, verifiable audit trail | Governance |
+| [SOC Analyst Agent v0.2](./docs/case-studies/soc-analyst-v0.2.md) — Raw log line → triaged, scored, MITRE-mapped, human-reviewable incident | Agent |
+| [MITRE ATT&CK Mapper Agent](./docs/case-studies/mitre-mapper-agent.md) — Deterministic event → ATT&CK tactic/technique with confidence & evidence | Agent |
+| [Threat Intelligence Agent](./docs/case-studies/threat-intel-agent.md) — Indicator triage that returns `unknown` + "enrich first" instead of guessing | Agent |
+| [Vulnerability Assessment Agent](./docs/case-studies/vulnerability-assessment-agent.md) — Ranks authorized scan findings into a defensible remediation order | Agent |
+| [Knowledge Base Agent](./docs/case-studies/knowledge-base-agent.md) — Cited corpus grounding; deterministic lexical default, safe semantic fallback | Agent/RAG |
+| [Incident Report Agent](./docs/case-studies/incident-report-agent.md) — Composes a safe Markdown report; opt-in, fail-soft AI narrative | Agent |
+| [Detection Matcher & Orchestrator](./docs/case-studies/detection-matcher-and-orchestrator.md) — Triage→Sigma detection loop + full multi-agent pipeline in one call | Agent |
+| [Local RAG Pipeline](./docs/case-studies/rag-pipeline.md) — Confined ingest → chunk → embed → cited retrieval; fully offline mode | RAG |
+| [Policy-Gated MCP Tool Surface](./docs/case-studies/mcp-server.md) — Allow-listed, self-validating, path-confined, policy-gated tool calls | MCP |
+| [Policy Engine & Tamper-Evident Audit Log](./docs/case-studies/policy-and-audit.md) — Default-deny policy-as-code + hash-chained, verifiable audit trail | Governance |
+| [Agent Trust Broker Gate](./docs/case-studies/agent-trust-broker-gate.md) — Zero-Trust caller identity + per-action scope authorization layered on tool dispatch | MCP/Governance |
+<!-- END GENERATED: case-studies -->
 
 ---
 
@@ -169,13 +176,36 @@ page:
 
 ## Quality gates (must be green — [`AGENTS.md`](./AGENTS.md) §7)
 
+<!-- BEGIN GENERATED: quality-gates -->
 ```bash
+# 1. Everything compiles
 python -m compileall .
-python -m pytest                 # unit + integration + security; 85% coverage gate
+
+# 2. Full test suite (unit, integration, security) — CI adds an 85% coverage gate
+python -m pytest
+
+# 3. Lint & style (formatting is CI-enforced too: ruff format --check .)
 ruff check .
-mypy agents attack intel scripts tests dashboard mcp rag compliance
-bandit -c pyproject.toml -r agents attack intel scripts mcp
+
+# 4. Static type checking (full CI scope)
+mypy agents attack intel ingest scripts tests dashboard mcp rag compliance
+
+# 5. Security static analysis (SAST) — same config and scope as CI
+bandit -c pyproject.toml -r agents attack intel ingest scripts mcp
+
+# 6. Drift gates — derived artifacts must match their sources
+python scripts/check_locks.py           # exported pip locks ↔ uv.lock
+python scripts/build_status_page.py --check   # status page ↔ status.data.json
+python scripts/build_trust_page.py --check    # trust page ↔ trust.data.json
+python scripts/build_readme.py --check        # README generated sections ↔ their sources
+python scripts/rename_to_ianua.py --check     # no legacy pre-IANUA identifiers
+python scripts/build_attack_navigator.py --check  # Navigator layer ↔ Sigma corpus + attack/ pin
+python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; revocation invariants
+python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; techniques resolve in the pin
+python scripts/check_intel_store.py --check   # intel library ↔ digest; licenses, TLP, anchors validate
+python scripts/build_behavior_index.py --check # behavioral index ↔ corpus; anchors resolve active
 ```
+<!-- END GENERATED: quality-gates -->
 
 ---
 

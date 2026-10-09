@@ -5,7 +5,10 @@
 3. **Build small:** scope the change; preserve conventions and security controls.
 4. **Test:** add/extend tests; include a `tests/security` case when a boundary is touched.
 5. **Gate locally:** `pre-commit run --all-files` and the §7 checks must pass.
-6. **Document:** update docstrings and `DESIGN.md` if architecture changed.
+6. **Document:** update docstrings and `DESIGN.md` if architecture changed. The README's
+   release line, case-study table and quality-gate block are **generated**: edit their
+   sources (`pyproject.toml`, `docs/case-studies/README.md`, `AGENTS.md` §7), then run
+   `python scripts/build_readme.py`. CI fails if they drift.
 7. **Definition of Done:** AGENTS.md §6.2 checklist satisfied; approval gates (§5.1) recorded.
 
 Agent commits are authored as the owner (`IDRozenblad <44316408+IRsoctierDT@users.noreply.github.com>`), with the agent credited

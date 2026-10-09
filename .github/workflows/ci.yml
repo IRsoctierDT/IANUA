@@ -271,6 +271,10 @@ jobs:
       - name: docs/trust.html and trust.json match docs/trust.data.json
         # Same drift-gate pattern for the compliance trust page.
         run: python scripts/build_trust_page.py --check
+      - name: README.md generated sections match their sources
+        # Release line, case-study table and the AGENTS.md §7 quality-gate block
+        # are generated (scripts/build_readme.py); fail closed if stale.
+        run: python scripts/build_readme.py --check
       - name: Install PyYAML for the Sigma-corpus drift gate
         # The status/trust generators are stdlib-only, but the ATT&CK Navigator
         # layer is parsed from Sigma YAML — the one gate here that needs a real
