@@ -10,6 +10,10 @@ All notable changes to this project. Versions correspond to git tags.
 - Baseline/current comparison with new, changed, unchanged, resolved, and
   incomplete-inspection-aware not-observed findings.
 
+### Documentation
+- Research record: 2026 security scanner landscape and ranked IANUA feature
+  backlog (`research/2026-10-09-security-scanner-landscape.md`).
+
 ### Fixed
 - Add an explicit release-assets dispatch that builds and validates before
   creating a release, supports repair of existing releases without moving tags,
