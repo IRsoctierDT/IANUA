@@ -351,6 +351,10 @@ in the pipeline."
 - At least one human review on any change touching `agents/`, `mcp/`, `infra/`, or §5
   boundaries.
 - Signed commits where supported; linear history; no force-push to protected branches.
+- **Owner attribution (required):** every commit an agent authors must end with the
+  owner's co-author trailer, alongside the agent's own attribution:
+  `Co-authored-by: IDRozenblad <44316408+IRsoctierDT@users.noreply.github.com>`
+  (GitHub's private noreply address, never a personal email).
 - Secrets live only in the CI secret store — never in the repo, never echoed in logs.
 
 **Pre-commit** (`.pre-commit-config.yaml`) runs the fast subset (ruff, mypy on changed

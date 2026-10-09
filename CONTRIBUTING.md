@@ -8,6 +8,10 @@
 6. **Document:** update docstrings and `DESIGN.md` if architecture changed.
 7. **Definition of Done:** AGENTS.md §6.2 checklist satisfied; approval gates (§5.1) recorded.
 
+Agent commits always carry the owner's trailer
+`Co-authored-by: IDRozenblad <44316408+IRsoctierDT@users.noreply.github.com>`
+(AGENTS.md §8).
+
 Agents additionally announce their active role (Planner/Builder/Reviewer/Security) and stop
 to ask the human at any approval gate or security boundary.
 
