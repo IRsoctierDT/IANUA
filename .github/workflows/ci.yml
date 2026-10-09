@@ -161,7 +161,11 @@ jobs:
   # ------------------------------------------- Stage 3c (real-container sandbox)
   sandbox-enforce:
     name: Sandbox enforcement (Linux container)
-    runs-on: ubuntu-latest
+    # Pinned ahead of the ubuntu-latest -> Ubuntu 26.04 migration (from
+    # 2026-10-19, actions/runner-images#14748): this job depends on the image's
+    # podman/crun pair, the component most likely to change. Unpin once the
+    # Ubuntu 26.04 canary (runner-canary.yml) shows this job green.
+    runs-on: ubuntu-24.04
     needs: static-analysis
     permissions:
       contents: read
