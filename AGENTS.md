@@ -343,6 +343,10 @@ in the pipeline."
 7. **Deploy (GitHub Pages)** — **human approval gate on the `github-pages`
    environment, kept by design**; deploys are never automatic, and the gate is
    never to be weakened or bypassed.
+8. **Release** — after a `release: prepare` PR (built by `scripts/prepare_release.py`)
+   merges and CI is green, `release-on-merge.yml` tags the CI-verified commit and
+   dispatches `release.yml` — **only after human approval on the `release`
+   environment**; tags are never moved. Runbook: `docs/RELEASING.md`.
 
 **Branch protection (recommended):**
 
