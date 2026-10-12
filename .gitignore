@@ -19,6 +19,7 @@ htmlcov/
 .claude/agents/
 .claude/launch.json
 .claude/ai-command-center.code-workspace
+.codex/
 
 # Secrets & local data (AGENTS.md §5)
 .env

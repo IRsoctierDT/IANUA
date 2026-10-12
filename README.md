@@ -45,7 +45,7 @@ security operation.
 ### Case studies
 
 <!-- BEGIN GENERATED: case-studies -->
-Eleven portfolio-grade write-ups — one per component — each following the [AGENTS.md](./AGENTS.md)
+Twelve portfolio-grade write-ups — one per component — each following the [AGENTS.md](./AGENTS.md)
 §9 standard with a worked example (real command output) and a reproduce-it-yourself section.
 Full index: [`docs/case-studies/`](./docs/case-studies/README.md).
 
@@ -62,6 +62,7 @@ Full index: [`docs/case-studies/`](./docs/case-studies/README.md).
 | [Policy-Gated MCP Tool Surface](./docs/case-studies/mcp-server.md) — Allow-listed, self-validating, path-confined, policy-gated tool calls | MCP |
 | [Policy Engine & Tamper-Evident Audit Log](./docs/case-studies/policy-and-audit.md) — Default-deny policy-as-code + hash-chained, verifiable audit trail | Governance |
 | [Agent Trust Broker Gate](./docs/case-studies/agent-trust-broker-gate.md) — Zero-Trust caller identity + per-action scope authorization layered on tool dispatch | MCP/Governance |
+| [Repository Branch Hygiene](./docs/case-studies/repository-branch-hygiene.md) — Safe bulk pruning of stale merged branches; PR state beats Git's squash-blind merge detection | Ops |
 <!-- END GENERATED: case-studies -->
 
 ---
