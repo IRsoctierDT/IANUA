@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:932f8505-6f3b-5ec1-bd09-7b6ff0e63a83",
+  "serialNumber": "urn:uuid:22635e36-0f6d-5ba1-8707-555c016c9b02",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-05T18:37:39Z",
+    "timestamp": "2026-10-13T17:12:21Z",
     "tools": {
       "components": [
         {
@@ -280,11 +280,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.168.3",
+      "bom-ref": "pkg:pypi/hypothesis@6.168.5",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.168.3",
-      "purl": "pkg:pypi/hypothesis@6.168.3"
+      "version": "6.168.5",
+      "purl": "pkg:pypi/hypothesis@6.168.5"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -784,11 +784,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.16.10",
+      "bom-ref": "pkg:pypi/ruff@0.17.0",
       "name": "ruff",
       "type": "library",
-      "version": "0.16.10",
-      "purl": "pkg:pypi/ruff@0.16.10"
+      "version": "0.17.0",
+      "purl": "pkg:pypi/ruff@0.17.0"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -861,11 +861,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.64.0",
+      "bom-ref": "pkg:pypi/streamlit@1.65.0",
       "name": "streamlit",
       "type": "library",
-      "version": "1.64.0",
-      "purl": "pkg:pypi/streamlit@1.64.0"
+      "version": "1.65.0",
+      "purl": "pkg:pypi/streamlit@1.65.0"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
