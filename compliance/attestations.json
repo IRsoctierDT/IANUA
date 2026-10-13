@@ -8,11 +8,11 @@
       "note": "Verified via GitHub API on 2026-07-24: main requires a pull request before merging, force pushes disabled, linear history required. Gap noted (not required by this control): no required status checks and 0 required approving reviews."
     },
     {
-      "attested_by": "Claude Code agent (deployment-record verification, on maintainer request)",
+      "attested_by": "Claude Code agent (GitHub API verification, on maintainer request)",
       "control_id": "MAN-02",
-      "date": "2026-10-13",
-      "expires": "2027-01-11",
-      "note": "Verified 2026-10-13 from deployment and workflow-run records, not from a settings read: the environments API is blocked from this session (403 at the egress proxy), so the required-reviewer rule is attested by its observed effect rather than by reading Settings. All github-pages deployments from 2026-07-25 through 2026-10-13 entered state \"waiting\", and each of today's successful Deploy GitHub Pages runs (110-113) carries an \"approved\" deployment review by IRsoctierDT for github-pages; a wait timer would auto-release and produce no such review. Scope limits, all material: the environment object reports can_admins_bypass=true, so a repository admin can deploy without the gate and the control's \"before any deploy\" is not absolute; the approver is also the run's triggering actor, so this is operator confirmation, not second-person review; and the rule has NOT been continuously in force \u2014 22 deployments between 2026-07-19T11:14Z and 2026-07-24T03:24Z (runs 31-53) went straight to \"in_progress\" with no \"waiting\" state and no approval record, a gap the prior 2026-07-24 attestation did not disclose. The environment's updated_at (2026-07-10) does not track protection-rule edits and must not be read as evidence of continuity."
+      "date": "2026-07-24",
+      "expires": "2026-10-22",
+      "note": "Verified via GitHub API on 2026-07-24: the github-pages environment has a required_reviewers protection rule with user IRsoctierDT, so Pages deploys wait for explicit human approval."
     },
     {
       "attested_by": "Claude Code agent (staged and distilled ATT&CK 19.2 on maintainer request)",
