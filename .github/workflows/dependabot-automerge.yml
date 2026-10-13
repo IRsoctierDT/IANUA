@@ -27,9 +27,41 @@ permissions:
 jobs:
   automerge:
     name: Enable auto-merge (low-risk groups, patch/minor)
-    # Actor check: only genuine Dependabot PRs; a human pushing to a
-    # dependabot/* branch re-titles the actor and is excluded.
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    # Three identities, all of which must be Dependabot. Each closes a
+    # different hole, and the first one alone does NOT imply the others.
+    #
+    #   pull_request.user.login  the PR's AUTHOR. Upstream's recommended check
+    #                            (dependabot/fetch-metadata README). Keeps the
+    #                            job off non-Dependabot PRs entirely.
+    #   github.actor             who initiated THIS run. A human pushing to a
+    #                            dependabot/* branch becomes the actor while
+    #                            the author stays dependabot[bot].
+    #   github.triggering_actor  who re-ran it, if it was re-run. Diverges from
+    #                            actor when a human re-runs a Dependabot run.
+    #
+    # Measured, not assumed — two runs of THIS workflow on PR #189, same
+    # branch (dependabot/uv/runtime-5c15cd8769):
+    #
+    #                        run 166 (Dependabot)   run 173 (human push)
+    #   actor                dependabot[bot]        the maintainer
+    #   triggering_actor     dependabot[bot]        the maintainer
+    #   user.login gate      passed                 PASSED
+    #   metadata outputs     populated              POPULATED
+    #
+    # So author-only was not the exclusion its previous comment claimed, and
+    # fetch-metadata's commit verification did not supply one either: run 173
+    # ran with skip-commit-verification=false and still emitted a full
+    # dependency-group. Both runs stopped at the step gate below only because
+    # the group was `runtime`. Now that `dev-toolchain` actually matches
+    # packages, that step is reachable — hence this gate.
+    #
+    # Fail-closed: requiring all three means a human-touched Dependabot PR
+    # simply does not auto-merge. The human merges it themselves, which is the
+    # documented policy for anything a human has had a hand in.
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.actor == 'dependabot[bot]' &&
+      github.triggering_actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Fetch Dependabot metadata
@@ -37,6 +69,12 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
+          # Defaults, stated explicitly: the action still verifies that the
+          # metadata it parses came from a signed Dependabot commit. It is a
+          # weaker guarantee than it reads as (see the job gate above), so it
+          # is a second layer here, never the actor check.
+          skip-commit-verification: false
+          skip-verification: false
       - name: Enable auto-merge for dev-toolchain / actions-all (non-major)
         if: >-
           (steps.meta.outputs.dependency-group == 'dev-toolchain' ||

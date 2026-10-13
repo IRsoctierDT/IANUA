@@ -20,6 +20,12 @@ Pattern matching here is modelled with ``fnmatch``. Dependabot's own matcher is
 not specified in a form this repository can execute, so these tests pin the
 *config's internal consistency*, which is what drifts, rather than claiming to
 reproduce GitHub's engine.
+
+The last two tests cover *who* may auto-merge rather than *what*. They belong
+here because populating ``dev-toolchain`` is what first made the merge step
+reachable for Python bumps. The job itself always ran; it was the step behind
+it that no uv update could reach, so the identity gate's comment could drift
+into claiming an exclusion it did not implement without that ever showing.
 """
 
 from __future__ import annotations
@@ -45,6 +51,18 @@ NEVER_AUTO_MERGE = {"pyyaml", "reportlab", "cryptography", "packaging"}
 #: without renaming it there silently disables auto-merge.
 AUTO_MERGE_GROUP = "dev-toolchain"
 
+#: Every identity that must resolve to Dependabot before auto-merge is enabled.
+#: They are not redundant: ``user.login`` is the PR's author and stays
+#: ``dependabot[bot]`` after a human pushes to the branch, while ``actor``
+#: becomes that human. Measured on two runs of the workflow against PR #189 —
+#: the author gate passed and metadata outputs populated on the human-pushed
+#: run, so the author check alone excludes nothing.
+REQUIRED_DEPENDABOT_IDENTITIES = (
+    "github.event.pull_request.user.login",
+    "github.actor",
+    "github.triggering_actor",
+)
+
 
 def _dependabot() -> dict[str, Any]:
     # Narrowed rather than cast: yaml.safe_load returns Any, and a malformed
@@ -61,6 +79,16 @@ def _uv_groups() -> dict[str, Any]:
     groups = uv[0]["groups"]
     assert isinstance(groups, dict), "the uv block must declare a groups mapping"
     return groups
+
+
+def _automerge_job() -> dict[str, Any]:
+    """The parsed ``automerge`` job, so the gate is read as YAML not as text."""
+    raw = (_REPO / ".github" / "workflows" / "dependabot-automerge.yml").read_text(encoding="utf-8")
+    data = yaml.safe_load(raw)
+    assert isinstance(data, dict), "dependabot-automerge.yml must parse to a mapping"
+    job = data["jobs"]["automerge"]
+    assert isinstance(job, dict), "the automerge job must parse to a mapping"
+    return job
 
 
 def _declared_packages() -> set[str]:
@@ -164,4 +192,49 @@ def test_dependency_type_is_not_used_for_the_uv_ecosystem() -> None:
             f"group {name!r} uses dependency-type, which classifies this "
             "project's [project.optional-dependencies] tools as production — "
             "match them by name instead (see .github/dependabot.yml)"
+        )
+
+
+@pytest.mark.unit
+def test_auto_merge_requires_dependabot_for_every_identity() -> None:
+    """Author, actor and triggering actor must all be Dependabot.
+
+    The gate previously checked the PR *author* only, under a comment claiming
+    "a human pushing to a dependabot/* branch re-titles the actor and is
+    excluded". It does not: the author stays ``dependabot[bot]`` no matter who
+    pushes. Verified on PR #189, where a human commit landed on
+    ``dependabot/uv/runtime-5c15cd8769``, the job gate passed, and
+    ``fetch-metadata`` emitted a full ``dependency-group`` with commit
+    verification enabled. Only the group being ``runtime`` stopped the merge.
+
+    So this is asserted per identity rather than as one opaque string: dropping
+    any single one reopens a distinct path, and the failure should name which.
+    """
+    condition = " ".join(str(_automerge_job()["if"]).split())
+    missing = [
+        context
+        for context in REQUIRED_DEPENDABOT_IDENTITIES
+        if f"{context} == 'dependabot[bot]'" not in condition
+    ]
+    assert not missing, (
+        f"the auto-merge job no longer requires {missing} to be dependabot[bot]; "
+        "a human push to a dependabot/* branch would auto-merge once CI is green"
+    )
+
+
+@pytest.mark.unit
+def test_auto_merge_does_not_disable_commit_verification() -> None:
+    """The weaker second layer must stay on.
+
+    ``skip-verification: true`` would let the workflow act on metadata from an
+    unsigned commit. It is not sufficient on its own — that is why the identity
+    gate above exists — but turning it off removes a layer for no benefit, and
+    it reads like a harmless debugging flag.
+    """
+    steps = _automerge_job()["steps"]
+    meta = next(s for s in steps if str(s.get("uses", "")).startswith("dependabot/fetch-metadata"))
+    for flag in ("skip-commit-verification", "skip-verification"):
+        assert meta["with"][flag] is False, (
+            f"{flag} must stay false: the auto-merge workflow would otherwise "
+            "act on Dependabot metadata it has not verified"
         )
