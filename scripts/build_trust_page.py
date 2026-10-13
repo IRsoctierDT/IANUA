@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -401,6 +402,14 @@ def build(
     return report
 
 
+#: How many days before an attestation lapses the gate starts warning. A
+#: lapse fails the build (see ``check``); the approach to one must not, or the
+#: pressure is to bulk-extend expiry dates — the exact failure DESIGN.md §11
+#: records for time-dependent gates. 30 days against ~90-day windows gives a
+#: month of notice without crying wolf.
+ATTESTATION_WARNING_DAYS = 30
+
+
 def _utc_today() -> str:
     """Today's UTC date as ISO ``yyyy-mm-dd``.
 
@@ -463,6 +472,60 @@ def check(
     return problems
 
 
+def expiring_soon(
+    *,
+    within_days: int = ATTESTATION_WARNING_DAYS,
+    clock: Callable[[], str] | None = None,
+) -> list[str]:
+    """Advisory notices for attestations still valid but lapsing within ``within_days``.
+
+    A deliberately separate channel from :func:`check`. Warnings must never be
+    able to fail the build — returning them in the same list as drift problems
+    would make that one careless ``if messages:`` away, and a gate that goes
+    red a month early teaches people to bulk-extend expiry dates rather than
+    re-attest.
+
+    Lapsed attestations are *absent* here: those are `check`'s problems, so the
+    two channels never double-report the same control.
+    """
+    from datetime import date
+
+    if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
+        sys.path.insert(0, str(REPO_ROOT))
+    from compliance.attestations import load, store_path
+
+    today = clock() if clock is not None else _utc_today()
+    today_date = date.fromisoformat(today)
+    notices: list[str] = []
+    for attestation in load(store_path(REPO_ROOT)).values():
+        if not attestation.valid_on(today):
+            continue  # lapsed or post-dated — check() owns it
+        remaining = (date.fromisoformat(attestation.expires) - today_date).days
+        if remaining > within_days:
+            continue
+        when = "expires today" if remaining == 0 else f"expires in {remaining} day(s)"
+        notices.append(
+            f"attestation for {attestation.control_id} {when} "
+            f"({attestation.expires}) — re-attest before it lapses, then refresh the "
+            "snapshot with `python scripts/build_trust_page.py --snapshot`"
+        )
+    return notices
+
+
+def _emit_warnings(notices: list[str]) -> None:
+    """Print advisory notices, as a CI annotation when running in Actions.
+
+    A warning buried in a green job's log is not a warning. Under GitHub
+    Actions these surface on the Checks tab via the ``::warning::`` workflow
+    command the release workflow already uses; elsewhere they are plain stderr.
+    """
+    if not notices:
+        return
+    in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+    for msg in notices:
+        print(f"::warning::{msg}" if in_actions else f"warning: {msg}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -484,6 +547,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.check:
             problems = check(data_path=args.data, html_path=args.out_html, json_path=args.out_json)
+            # Emitted before the early return so a drifted page still reports
+            # an approaching lapse — the two are independent.
+            _emit_warnings(expiring_soon())
             if problems:
                 print("Trust page has drifted from its snapshot:", file=sys.stderr)
                 for msg in problems:
@@ -502,6 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not found: {exc}", file=sys.stderr)
         return 2
 
+    _emit_warnings(expiring_soon())
     print(
         f"Wrote {args.out_html.name} and {args.out_json.name} "
         f"({len(report.controls)} controls, score {report.score}%)."

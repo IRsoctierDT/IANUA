@@ -6,9 +6,12 @@ from typing import TypedDict
 
 import pytest
 from scripts.build_trust_page import (
+    ATTESTATION_WARNING_DAYS,
     TrustDataError,
+    _emit_warnings,
     build,
     check,
+    expiring_soon,
     main,
     parse_report,
     render_html,
@@ -141,6 +144,93 @@ def test_expiry_gate_reads_a_real_clock_by_default(tmp_path: Path) -> None:
     build(**paths)
     # Same verdict with the default clock as with today injected explicitly.
     assert check(**paths) == check(**paths, clock=lambda: today)
+
+
+@pytest.mark.parametrize(
+    "day,expect_warning",
+    [
+        ("2026-09-21", False),  # 31 days out — outside the window, stay quiet
+        ("2026-09-22", True),  # exactly 30 days — inclusive edge
+        ("2026-10-21", True),  # 1 day out
+        ("2026-10-22", True),  # the expiry date itself: still valid, warn loudly
+    ],
+)
+def test_warning_window_boundaries(day: str, expect_warning: bool) -> None:
+    """MAN-01/MAN-02 expire 2026-10-22; the window is inclusive at both ends."""
+    notices = expiring_soon(clock=lambda: day)
+    assert bool(notices) is expect_warning
+    if expect_warning:
+        assert any("MAN-01" in msg for msg in notices)
+        assert all("re-attest before it lapses" in msg for msg in notices)
+
+
+def test_expiry_date_itself_warns_rather_than_fails(tmp_path: Path) -> None:
+    """``expires`` is inclusive, so the control is still attested that day."""
+    paths = _paths(tmp_path)
+    build(**paths)
+    on_expiry = "2026-10-22"
+    assert [m for m in check(**paths, clock=lambda: on_expiry) if "attestation" in m] == []
+    assert any("expires today" in msg for msg in expiring_soon(clock=lambda: on_expiry))
+
+
+def test_a_lapse_is_a_problem_and_never_also_a_warning(tmp_path: Path) -> None:
+    """The channel-separation invariant: no control appears in both.
+
+    Warnings exist in their own return value precisely so they can never fail
+    the build. If a lapsed attestation also showed up as a warning, the two
+    would double-report and the distinction would be cosmetic.
+    """
+    paths = _paths(tmp_path)
+    build(**paths)
+    lapsed = "2026-10-23"
+    problems = [m for m in check(**paths, clock=lambda: lapsed) if "attestation" in m]
+    notices = expiring_soon(clock=lambda: lapsed)
+    assert problems, "a lapsed attestation must be a problem"
+    assert notices == [], "a lapsed attestation must not also be a warning"
+
+
+def test_warnings_never_change_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An approaching lapse is advisory — it must not fail the gate."""
+    monkeypatch.setattr(
+        "scripts.build_trust_page.expiring_soon", lambda **_: ["MAN-99 expires in 1 day(s)"]
+    )
+    paths = _paths(tmp_path)
+    argv = [
+        "--data",
+        str(paths["data_path"]),
+        "--out-html",
+        str(paths["html_path"]),
+        "--out-json",
+        str(paths["json_path"]),
+    ]
+    assert main(argv) == 0
+    assert main([*argv, "--check"]) == 0, "a warning must not fail --check"
+    paths["json_path"].write_text("stale", encoding="utf-8")
+    assert main([*argv, "--check"]) == 1, "real drift must still fail"
+
+
+def test_warning_surfaces_as_a_ci_annotation_under_actions(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A warning buried in a green log is not a warning."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    _emit_warnings(["MAN-99 expires in 1 day(s)"])
+    assert capsys.readouterr().err.startswith("::warning::")
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    _emit_warnings(["MAN-99 expires in 1 day(s)"])
+    assert capsys.readouterr().err.startswith("warning: ")
+
+    _emit_warnings([])
+    assert capsys.readouterr().err == "", "no notices must print nothing"
+
+
+def test_warning_window_is_a_reviewed_constant() -> None:
+    """The threshold is committed data, not a magic number buried in a branch."""
+    assert ATTESTATION_WARNING_DAYS == 30
+    assert expiring_soon(clock=lambda: "2026-09-22", within_days=0) == []
 
 
 def test_render_json_carries_disclaimer_and_summary() -> None:
