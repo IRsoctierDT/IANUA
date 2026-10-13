@@ -55,6 +55,17 @@ prepare_release.py ──► PR "release: prepare IANUA vX.Y.Z" ──► review
    `docs/status.data.json`, `docs/Changelog.md`, `docs/PROJECT_STATUS.md`, `SECURITY.md` (minor and
    major bumps only) and the version-sync test pin. It then regenerates the status page and README
    and runs `check_version_sync`. Any failure restores every file to its original bytes.
+
+   **Then rewrite the prose it could not.** The script substitutes the version and title in
+   `docs/PROJECT_STATUS.md`'s current-version line and leaves the editorial sentences after it, so
+   they still describe the *previous* release. It prints an `ACTION NEEDED` notice naming the file
+   for exactly this reason — v2.2.0 shipped with a "Release Automation & Control Integrity" heading
+   above a paragraph about the v2.0 rename era, caught only because a human read the diff. Check
+   the same for any hand-written release summary.
+
+   Also confirm `## Unreleased` actually covers everything merged since the last tag. Promotion is
+   one-way: whatever is in that section becomes the permanent `## vX.Y.Z` record **and** the
+   published release body (step 5).
 3. **Run the full gate** (AGENTS.md §7), then open the PR titled `release: prepare IANUA v2.2.0`.
 4. **Merge** once CI and review pass.
 5. **Approve two deployments** when they appear in the Actions tab:
@@ -82,6 +93,7 @@ auto-create an unprotected environment.
 | Dispatch fails after tagging | `detect` re-offers a tagged version that has no GitHub Release, at the tagged commit, behind the same approval |
 | Unapproved publication | `release` environment with required reviewer, checked at runtime (fails closed) |
 | Malformed release title | Allowlisted characters; no Markdown control characters or parentheses |
+| Release notes that ignore the curated changelog | `scripts/release_notes.py` composes the body from the promoted `## vX.Y.Z` section; a missing or empty section fails the publish rather than shipping blank notes |
 | A later commit lands before approval | The tag still pins the detected commit, not the branch head |
 
 ## Cost Considerations
@@ -91,5 +103,6 @@ Free on GitHub-hosted runners. A release adds about two short jobs plus the exis
 
 ## Future Enhancements
 
-- Generate release notes from the promoted Changelog section instead of `--generate-notes`.
 - Signed tags, once a signing identity is available to Actions.
+- Restore merged-PR attribution alongside the curated notes (the compare link carries the full
+  commit record today, but not the contributor list `--generate-notes` used to produce).
