@@ -45,6 +45,7 @@ import argparse
 import html
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -400,35 +401,65 @@ def build(
     return report
 
 
+def _utc_today() -> str:
+    """Today's UTC date as ISO ``yyyy-mm-dd``.
+
+    Mirrors ``compliance.engine``'s clock handling so the gate and the engine
+    agree on what day it is. Injectable via ``check(clock=...)`` for tests.
+    """
+    from datetime import UTC, datetime
+
+    return datetime.now(tz=UTC).date().isoformat()
+
+
 def check(
     *,
     data_path: Path = DEFAULT_DATA,
     html_path: Path = DEFAULT_HTML,
     json_path: Path = DEFAULT_JSON,
+    clock: Callable[[], str] | None = None,
 ) -> list[str]:
-    """Return drift messages if committed outputs are stale (empty = in sync)."""
+    """Return drift messages if committed outputs are stale (empty = in sync).
+
+    Also enforces attestation validity **against the current date**. That is a
+    deliberate clock read in a `--check` gate: unlike the ATT&CK freshness
+    report (advisory by design, because a time-dependent gate that turns `main`
+    red invites bulk-extended expiry dates), a lapsed attestation means a
+    manual control is no longer attested *now*, and the published page says it
+    is. Going red is the control, not a side effect.
+    """
     report = load_report(data_path)
     problems: list[str] = []
     for path, expected in ((html_path, render_html(report)), (json_path, render_json(report))):
         actual = path.read_text(encoding="utf-8") if path.is_file() else None
         if actual != expected:
             problems.append(f"{path.name} is stale — run `python scripts/build_trust_page.py`")
-    # The published page is a frozen snapshot: the compliance engine runs only
-    # in --snapshot mode, so an attestation expiring after the snapshot was
-    # taken would change nothing published. This assertion is MAN-0x's teeth
-    # in CI — an expired attestation fails the gate until the human re-attests
-    # (or the control honestly shows "attestation due" in a fresh snapshot).
+    # MAN-0x's teeth in CI. This compares against TODAY, not against
+    # ``report.as_of``: as_of is the frozen snapshot date and only moves when a
+    # human runs --snapshot, so comparing to it could never fail for an
+    # attestation that expires after the snapshot was taken — which is every
+    # attestation, by construction. Delegated to Attestation.valid_on so the
+    # gate and compliance/engine.py apply one definition of "current", and so
+    # the window's lower bound is checked too (a post-dated attestation must
+    # not pass either).
     if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
         sys.path.insert(0, str(REPO_ROOT))
     from compliance.attestations import load, store_path
 
+    today = clock() if clock is not None else _utc_today()
     for attestation in load(store_path(REPO_ROOT)).values():
-        if attestation.expires < report.as_of:
-            problems.append(
-                f"attestation for {attestation.control_id} expired {attestation.expires} "
-                f"(snapshot as_of {report.as_of}) — re-attest, then refresh the snapshot "
-                "with `python scripts/build_trust_page.py --snapshot`"
-            )
+        if attestation.valid_on(today):
+            continue
+        lapsed = attestation.expires < today
+        reason = (
+            f"expired {attestation.expires}"
+            if lapsed
+            else f"not yet in force (begins {attestation.date})"
+        )
+        problems.append(
+            f"attestation for {attestation.control_id} {reason} (today {today}) — re-attest, "
+            "then refresh the snapshot with `python scripts/build_trust_page.py --snapshot`"
+        )
     return problems
 
 
