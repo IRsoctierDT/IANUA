@@ -4,6 +4,8 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+## v2.2.0 — Release Automation & Control Integrity — 2026-10-13
+
 ### Added
 - Session-only review of redacted IANUA-Broker JSON scan reports with finding
   filters and remediation guidance in the Streamlit dashboard.
@@ -14,10 +16,20 @@ All notable changes to this project. Versions correspond to git tags.
   `release-on-merge.yml` tags the CI-verified commit and dispatches the
   signed release once a human approves the `release` environment
   (runbook: `docs/RELEASING.md`).
+- **30-day attestation warning window** — `scripts/build_trust_page.py` warns
+  on a separate advisory channel 30 days before a manual-control attestation
+  lapses, emitted as a `::warning::` workflow command so it lands on the
+  Checks tab. Lapsed attestations are reported only by the failing gate, never
+  through both channels.
 
 ### Documentation
 - Research record: 2026 security scanner landscape and ranked IANUA feature
   backlog (`research/2026-10-09-security-scanner-landscape.md`).
+- **Path and assertion reconciliation audit**
+  (`docs/PATH_RECONCILIATION_AUDIT.md`) — a repo-wide audit of drift between
+  what this repository asserts about itself and what is true, with a per-stage
+  remediation tracker. Its structural finding: derived artifacts are gated by
+  eleven `--check` scripts, the repository's self-description by none.
 
 ### Removed
 - **`.github/SECURITY.md`** — GitHub resolves a security policy from `.github/`
@@ -33,6 +45,27 @@ All notable changes to this project. Versions correspond to git tags.
 - Add an explicit release-assets dispatch that builds and validates before
   creating a release, supports repair of existing releases without moving tags,
   and retains assets with SHA-256 checksums for publication recovery.
+- **Attestation-expiry gate was inert** — it compared expiry against the frozen
+  committed snapshot date, which only moves on `--snapshot`, so the comparison
+  stayed false past the expiry date and no lapse could turn CI red. It now
+  evaluates `Attestation.valid_on` against the current UTC date, sharing one
+  definition of "current" with the compliance engine, and checks the window's
+  lower bound so a post-dated attestation no longer passes.
+- **Dependabot tool bumps routed to the wrong group** — `dependency-type:
+  "development"` matched nothing, because everything in
+  `[project.optional-dependencies]` classifies as production, so every ruff,
+  mypy and pytest bump fell through to the human-review-only `runtime` group.
+  Tools are now matched by name, with the groups disjoint by construction so
+  no reordering can reroute a bump.
+
+### Security
+- **Dependabot auto-merge gated on the pushing actor, not just the author** —
+  the job checked `pull_request.user.login`, which stays `dependabot[bot]`
+  whoever pushes, so a human push to a `dependabot/*` branch was never
+  excluded as the control's own comment claimed, and `fetch-metadata`'s commit
+  verification did not supply the exclusion either. Auto-merge now requires the
+  author, `github.actor` and `github.triggering_actor` to all be Dependabot,
+  failing closed so a human-touched bump is merged by a human.
 
 ## v2.1.0 — Detection Intelligence & XDR Foundation — 2026-10-05
 
