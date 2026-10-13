@@ -2,6 +2,16 @@
 
 All notable changes to this project. Versions correspond to git tags.
 
+### Removed
+- **`.github/SECURITY.md`** — GitHub resolves a security policy from `.github/`
+  before the repository root, so the 18-line stub was the policy the Security
+  tab served while the detailed 83-line root `SECURITY.md` sat shadowed. The
+  stub described itself as "a pointer so the two can never diverge" and was in
+  fact a partial copy of five substantive items, which is how it diverged.
+  Deleting it makes the root policy the served one. Nothing unique was lost;
+  no generator emits the path; nothing linked into it; and both gates that
+  read `SECURITY.md` resolve the repository root, so neither is affected.
+
 ## Unreleased
 
 ### Added

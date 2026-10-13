@@ -19,7 +19,7 @@ checkable. `—` means not started. A stage is only `done` when every item under
 
 | Stage | Scope | Status | Evidence |
 |---|---|---|---|
-| 0 | Maintainer-only: repo settings, externally visible deletes, secrets, account routines | — | |
+| 0 | Maintainer-only: repo settings, externally visible deletes, secrets, account routines | **partial** | `.github/SECURITY.md` deleted (PR #190); repo settings still open |
 | 1.1 | Attestation-expiry gate compares against the current date | **done** | PR #190 |
 | 1.2 | Pre-commit hook versions reconciled with the project toolchain | — | |
 | 1.3 | §7 ↔ CI gate-list reconciliation + parity test covers the gate list | — | |
@@ -159,8 +159,15 @@ AGENTS.md §5.1 approval gates, or outside this repository entirely:
   `OWNER/REPO` fix below produces a working-looking link to a disabled feature; **Issues are
   currently disabled**, which makes all four issue templates inert regardless; branch-protection
   required-reviewer count.
-- **Externally visible**: deleting `.github/SECURITY.md` changes what GitHub serves in the
-  Security tab. Propose, do not do.
+- **Externally visible**: ~~deleting `.github/SECURITY.md` changes what GitHub serves in the
+  Security tab. Propose, do not do.~~ **Done on maintainer instruction (PR #190).** The stub
+  held nothing the root policy lacks — every substantive item in it (no public issue, private
+  advisory preferred, the contact address, the 5-business-day acknowledgement, the 30-day
+  coordinated-disclosure window) also appears in `SECURITY.md`, so it was a partial copy rather
+  than the pointer it claimed to be. GitHub now serves the 83-line root policy. Verified
+  beforehand: no generator emits the path, nothing links into it, and the two gates that read
+  `SECURITY.md` resolve the repository root — `compliance/controls.py:286` via
+  `_resolve_inside(root, …)` and `scripts/check_version_sync.py:76` via `ROOT / "SECURITY.md"`.
 - **Secrets**: the Ed25519 pin-signing ceremony (`attack/README.md`) — maintainer only.
 - **Dependency addition**: a `dashboard-min` extra would need §5.1 justification.
 - **Account-level routines**: the Pages-deploy watcher whose prompt names the
