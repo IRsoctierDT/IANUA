@@ -118,6 +118,15 @@ jobs:
       SHA: ${{ needs.detect.outputs.sha }}
     steps:
       - name: Require a human reviewer on the release environment
+        # Verified, because the message reads as if it could misdiagnose: if
+        # the gh api call FAILS, does this report "no required reviewer"?
+        # No. GitHub runs `run:` under `bash -e {0}`, so a non-zero command
+        # inside the assignment's substitution aborts the step then and there,
+        # surfacing gh's own stderr — the `if` is never reached and the
+        # ${reviewers:-0} default is unreachable for that path. Both outcomes
+        # fail closed, and the message only ever prints when the API genuinely
+        # returned zero required reviewers. Tested with `bash -e` directly
+        # before concluding it; do not "fix" this on the assumption.
         run: |
           reviewers="$(gh api "repos/$GH_REPO/environments/release" \
             --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')"
