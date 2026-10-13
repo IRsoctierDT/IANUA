@@ -24,6 +24,7 @@ Security tooling documented here is for **defensive, authorized-lab use only** â
 | 9 | [Policy-Gated MCP Tool Surface](./mcp-server.md) | MCP | Allow-listed, self-validating, path-confined, policy-gated tool calls |
 | 10 | [Policy Engine & Tamper-Evident Audit Log](./policy-and-audit.md) | Governance | Default-deny policy-as-code + hash-chained, verifiable audit trail |
 | 11 | [Agent Trust Broker Gate](./agent-trust-broker-gate.md) | MCP/Governance | Zero-Trust caller identity + per-action scope authorization layered on tool dispatch |
+| 12 | [Repository Branch Hygiene](./repository-branch-hygiene.md) | Ops | Safe bulk pruning of stale merged branches; PR state beats Git's squash-blind merge detection |
 
 ## Reading order
 
@@ -36,3 +37,5 @@ Security tooling documented here is for **defensive, authorized-lab use only** â
   [Agent Trust Broker Gate](./agent-trust-broker-gate.md).
 - **Interested in the knowledge systems?** Read the
   [RAG Pipeline](./rag-pipeline.md) and the [Knowledge Base Agent](./knowledge-base-agent.md).
+- **Maintaining the repository?** Read [Repository Branch Hygiene](./repository-branch-hygiene.md)
+  for the safe, fail-closed method for pruning stale merged branches.
