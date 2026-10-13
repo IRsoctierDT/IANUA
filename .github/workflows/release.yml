@@ -144,6 +144,18 @@ jobs:
           name: release-assets-${{ github.event.release.tag_name || inputs.tag }}
           path: release-assets/
           if-no-files-found: error
+      - name: Compose release notes from the curated changelog section
+        # --generate-notes lists the merged pull requests, which is a commit
+        # record rather than release notes: the `## vX.Y.Z` section in
+        # docs/Changelog.md — written when the release was prepared and
+        # reviewed on the release PR — was never published. This composes the
+        # body from that section and appends a compare link, so the full
+        # commit record is still one click away. Fail-closed: a missing or
+        # empty section fails the job rather than publishing blank notes.
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/release_notes.py --tag "$TAG" --repo "$GH_REPO" --output /tmp/notes.md
       - name: Create release with assets or repair existing release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -156,8 +168,11 @@ jobs:
           else
             # GITHUB_TOKEN-created releases do not trigger another workflow;
             # all assets are already built, tested, and signed in this run.
+            # Repairing an existing release deliberately leaves its notes
+            # alone; only a first publication writes them.
             gh release create "$TAG" release-assets/* \
-              --target "$(git rev-parse HEAD)" --title "IANUA $TAG" --generate-notes
+              --target "$(git rev-parse HEAD)" --title "IANUA $TAG" \
+              --notes-file /tmp/notes.md
           fi
           gh release view "$TAG" --json assets --jq '.assets[].name' > /tmp/release-assets.txt
           for asset in release-assets/*; do

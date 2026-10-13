@@ -294,3 +294,41 @@ def test_sandbox_is_independent_of_the_live_release_state(sandbox: Path) -> None
     # And it is genuinely promotable — the operation that used to fail.
     promoted = prepare_release.promote_changelog(text, "99.0.0", "Guard", "2026-11-02")
     assert "## v99.0.0 — Guard — 2026-11-02\n" in promoted
+
+
+@pytest.mark.unit
+def test_success_names_the_prose_the_bump_invalidated(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A silent stale paragraph is the defect; the run has to say so.
+
+    The transforms substitute the version and title in PROJECT_STATUS's
+    current-version line and leave the editorial sentences after it. v2.2.0
+    shipped with a "Release Automation & Control Integrity" heading above a
+    paragraph describing the v2.0 rename era, caught only because a human read
+    the diff. The script cannot know whether the prose is stale, but it always
+    knows the bump made it suspect — so it names the file, the version the
+    prose is stale against, and the version to rewrite it for.
+    """
+    version = _next_minor()
+    monkeypatch.setattr(prepare_release, "_regenerate", _stub_regenerate(sandbox, version))
+    previous = prepare_release.current_version()
+    assert prepare_release.main([version, "--title", "Valid Title"]) == 0
+    captured = capsys.readouterr()
+    assert "prepare-release: OK" in captured.out
+    # Advisory channel: it must never be mistaken for a failure.
+    assert "ACTION NEEDED" in captured.err
+    assert "docs/PROJECT_STATUS.md" in captured.err
+    assert f"v{previous}" in captured.err, (
+        "the notice must name the version the prose is stale against"
+    )
+    assert f"v{version}" in captured.err, "the notice must name the version to rewrite it for"
+
+
+@pytest.mark.unit
+def test_dry_run_stays_silent_about_prose(
+    sandbox: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing was written, so nothing is stale yet."""
+    assert prepare_release.main([_next_minor(), "--title", "Valid Title", "--dry-run"]) == 0
+    assert "ACTION NEEDED" not in capsys.readouterr().err
