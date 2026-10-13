@@ -12,6 +12,28 @@
 
 ---
 
+## 0. Remediation Status
+
+Update the Status cell as each stage lands; keep the PR or commit in Evidence so the claim is
+checkable. `—` means not started. A stage is only `done` when every item under it has landed.
+
+| Stage | Scope | Status | Evidence |
+|---|---|---|---|
+| 0 | Maintainer-only: repo settings, externally visible deletes, secrets, account routines | — | |
+| 1.1 | Attestation-expiry gate compares against the current date | — | |
+| 1.2 | Pre-commit hook versions reconciled with the project toolchain | — | |
+| 1.3 | §7 ↔ CI gate-list reconciliation + parity test covers the gate list | — | |
+| 1.4 | MAN-01's false attestation note | — | |
+| 1.5 | `ALLOWED_EGRESS_HOSTS` wired or marked documentation-only | — | |
+| 2 | Public landing-page claims (version, test count, agent count, gate block) | — | |
+| 3 | Stale one-liners, batched | — | |
+| 4 | `generate_docs_from_design.py` fixed, then regenerated; `--check` added | — | |
+| 5 | Structure map + `cli/` into the gates + §8 scope pointer | — | |
+| 6 | Lower-consequence prose | — | |
+| — | Orphaned dashboard mockups: document, move, or delete | — | |
+
+---
+
 ## 1. Executive Summary
 
 The repository's **content** is in good shape. Every relative Markdown link in every non-
@@ -20,8 +42,9 @@ The repository's **content** is in good shape. Every relative Markdown link in e
 symlink to `AGENTS.md`; and the legacy repository name survives in exactly two deliberate,
 documented places.
 
-What has drifted is the repository's **claims about itself** — and in four cases a claim is a
-guarantee that is not in force. The most urgent is a compliance gate documented as having
+What has drifted is the repository's **claims about itself** — and in three cases a claim is a
+guarantee that is not in force. A fourth, CodeQL, turned out on review to be unverifiable
+rather than untrue; it is recorded below as such. The most urgent is a compliance gate documented as having
 "teeth in CI" that cannot fire, with a nine-day fuse.
 
 The causal story is simple and worth stating plainly: this repository invested heavily in drift
@@ -32,14 +55,42 @@ every generated artifact stayed pinned. Roughly a third of the findings trace to
 `scripts/generate_docs_from_design.py`, which overwrites sixteen files unconditionally and has
 no `--check` gate.
 
-### The four guarantees not in force
+### The guarantees not in force
 
 | # | Guarantee as written | Reality | Where |
 |---|---|---|---|
-| G1 | "This assertion is MAN-0x's teeth in CI — an expired attestation fails the gate until the human re-attests" | The comparison is `attestation.expires < report.as_of`, where `as_of` is the **frozen committed snapshot date** (`2026-08-21`). MAN-01/MAN-02 expire `2026-10-22`, so the test is `"2026-10-22" < "2026-08-21"` → `False`. It stays `False` after expiry, because `as_of` only moves when a human runs `--snapshot`. The correct predicate, `Attestation.is_current(day)`, exists and is called **nowhere**. | `scripts/build_trust_page.py:417-430`; `compliance/attestations.py:53` |
-| G2 | "Local checks (§7) are mirrored exactly in CI so that 'passes on my machine' equals 'passes in the pipeline'" | Pre-commit pins `ruff` **v0.6.9** and `mypy` **v1.11.2** as remote hook repos (own isolated envs, never the project venv). CI installs `ruff==0.16.10` and `mypy>=2.4.0`. Across that gap the formatter's output changed and mypy went through a major version, so `ruff-format` can rewrite a file that `ruff format --check .` then rejects. | `AGENTS.md:328`; `.pre-commit-config.yaml:3,36,38,40,44`; `pyproject.toml:40-41`; `.github/workflows/ci.yml:53,57` |
+| G1 | "This assertion is MAN-0x's teeth in CI — an expired attestation fails the gate until the human re-attests" | The comparison is `attestation.expires < report.as_of`, where `as_of` is the **frozen committed snapshot date** (`2026-08-21`). MAN-01/MAN-02 expire `2026-10-22`, so the test is `"2026-10-22" < "2026-08-21"` → `False`. It stays `False` after expiry, because `as_of` only moves when a human runs `--snapshot`. The codebase already has the right predicate — `Attestation.valid_on(day)`, `self.date <= day <= self.expires` — and `compliance/engine.py:101` calls it correctly against `today`. This gate simply never does. | `scripts/build_trust_page.py:417-430`; `compliance/attestations.py:49`; `compliance/engine.py:101` |
+| G2 | `.pre-commit-config.yaml` annotates its ruff hooks "mirrors `ruff check .`" and "mirrors `ruff format --check .`", and its header claims it mirrors the CI pipeline | Pre-commit pins `ruff` **v0.6.9** and `mypy` **v1.11.2** as *remote hook repos*, built in pre-commit's own isolated environments — they never see the project venv. CI installs `ruff==0.16.10` and a `mypy>=2.4.0` floor. Across that gap the formatter's output changed and mypy took a major version, so the `ruff-format` hook can rewrite a file that `ruff format --check .` in CI then rejects. **Scoped deliberately**: AGENTS.md:365-366 licenses pre-commit as "the fast subset", so this falsifies the hooks' own mirror comments — not §7-vs-CI parity, which runs in the project environment and is a separate question (G3). | `.pre-commit-config.yaml:3,36,38,40,44`; `pyproject.toml:40-41`; `.github/workflows/ci.yml:53,57` |
 | G3 | §7 is the complete required-check list | CI's `static-analysis` job — a required status check — also runs `uv lock --check` and `python scripts/check_version_sync.py`. Neither string appears anywhere in `AGENTS.md`, `README.md`, or `.pre-commit-config.yaml`. Conversely §7 step 1, `python -m compileall .`, runs in **zero** workflows. A contributor can run all of §7 green and still be blocked. | `.github/workflows/ci.yml:46,48`; `AGENTS.md:273-274` |
-| G4 | SECURITY.md: "**SAST**: `bandit` on every push/PR; **CodeQL** analysis on the repository", restated in §8 as a merge gate | No CodeQL configuration exists in-repo; `grep -rniI codeql .github/` returns zero. §7's own gate list never mentions it. **Nuance that survived verification**: a captured 2026-06-16 CI log shows a Dependabot `github/codeql-action-4` branch, which Dependabot opens only for an action referenced in a default-branch workflow — so CodeQL once ran and was removed without updating five documents. Whether GitHub's repo-level *default setup* now covers it cannot be determined from a clone. | `SECURITY.md:59`; `AGENTS.md:336`; `scripts/generate_docs_from_design.py:251,328` |
+| ~~G4~~ | *Withdrawn. See "CodeQL — unverified, not absent" immediately below.* | |
+
+#### CodeQL — unverified, not absent
+
+The first draft of this audit called CodeQL a control that had been **removed** without updating
+its documentation. That was wrong, and the repository's own history says so:
+commit `b05139f` (2026-06-18, *"ci(codeql): remove custom workflow — default setup supersedes
+it"*) removed `.github/workflows/codeql.yml` **because** GitHub's CodeQL *default setup* had been
+enabled, and GitHub rejects SARIF from an advanced-configuration workflow while default setup is
+on. Default setup deliberately has no in-repo workflow file, so `grep -rniI codeql .github/`
+returning zero is exactly what a correctly-migrated repository looks like. It proves nothing.
+
+What can be said from outside the settings page, stated as observation rather than conclusion:
+
+- CodeQL default setup **was** running as recently as 2026-08-21 — PR #159's check list
+  included both `CodeQL` and `Analyze (actions)`.
+- It does **not** appear on recent pull requests: neither PR #185 (merged 2026-10-09) nor
+  PR #187 shows a `CodeQL` or `Analyze` check among its eleven.
+
+That gap is worth a look, but it is not evidence of a false claim — default setup can be scoped
+by path or event, and a draft PR may be treated differently. **SECURITY.md:59 is therefore
+presumed accurate and is not a finding.** Resolving it needs the Settings → Code security page,
+or the `code-scanning/default-setup` API with a `security_events`-scoped token (this session's
+token gets 403). Stage 0 carries it as a question, not a defect.
+
+What *does* survive, much narrower: AGENTS.md:336 lists CodeQL inside §8's CI Security stage
+under the heading that local §7 checks are "mirrored exactly in CI", while §7's own gate list
+never mentions it — and it cannot, because default setup has nothing to run locally. That is a
+G3-shaped documentation gap, not a missing control.
 
 ### The public landing page is two minor versions stale and understates the suite by 50×
 
@@ -74,9 +125,11 @@ Two structural blind spots, both verified:
 **Eligibility.** `scripts/rename_to_ianua.py` only scans files whose suffix is in
 `TEXT_SUFFIXES`. `.gitignore` has suffix `''`, so it is never scanned — which is why
 `.claude/ai-command-center.code-workspace` (`.gitignore:21`) survives while the gate reports
-clean. Four tracked files are suffixless and therefore invisible to it: `.gitignore`,
-`.github/CODEOWNERS`, `LICENSE`, `NOTICE`, plus
-`mcp/sandbox/profiles/apparmor-mcp-tool`. That line is also a case mismatch: the
+clean. **Nine** tracked paths are suffixless and therefore invisible to it, six of them
+content-bearing — `.github/CODEOWNERS`, `.gitignore`, `.gitleaksignore`, `LICENSE`, `NOTICE`,
+`mcp/sandbox/profiles/apparmor-mcp-tool` — plus three empty markers (`detections/.gitkeep`,
+`docs/.gitkeep`, `docs/.nojekyll`). Note that Python treats a leading-dot name as having no
+suffix, which is why every dotfile here is ineligible. That line is also a case mismatch: the
 `REPLACEMENTS` table carries the capitalised hyphenated spelling of one legacy identifier while
 the file uses the all-lowercase spelling, and the comparison is case-sensitive. So the line is
 doubly invisible — ineligible by suffix *and* unmatched by case.
@@ -123,7 +176,7 @@ AGENTS.md §5.1 approval gates, or outside this repository entirely:
 
 | # | Change | Why its own commit |
 |---|---|---|
-| 1.1 | **G1**: compare attestation expiry against the current date via `Attestation.is_current()`; add a test that fails on a lapsed attestation | Compliance control behaviour. **Nine-day fuse** — MAN-01/MAN-02 lapse 2026-10-22 |
+| 1.1 | **G1**: have the trust-page check call `Attestation.valid_on(current_day)` instead of comparing against `report.as_of`; add a test that fails on a lapsed attestation | Compliance control behaviour. **Nine-day fuse** — MAN-01/MAN-02 lapse 2026-10-22 |
 | 1.2 | **G2**: bump `.pre-commit-config.yaml:36,44` to the `pyproject.toml` pins, then run `pre-commit run --all-files` in the same change | A formatter bump will itself produce a wide diff |
 | 1.3 | **G3**: add `uv lock --check` and `check_version_sync.py` to §7; either wire `compileall` into CI or drop the §7 claim; extend `tests/unit/test_gate_scope_parity.py` to assert the gate **list**, not only scopes | Changes the contributor contract |
 | 1.4 | MAN-01 passes on an attestation whose own note records half the control unmet (`compliance/controls.py:509`) | Pairs with 1.1 |
@@ -164,13 +217,17 @@ v2.0.0 completeness claims at `:53-87`, `:356-396`. Then one regeneration run.
 **4.x — add `--check` to this generator and wire it into §7.** This is the single highest-leverage
 structural fix in the plan: it is what makes Stage 4 stick.
 
-Also: delete `package.json:8-9` — the `>` redirect truncates `theme.css` and
-`tailwind.theme.json` before the tool runs.
+Also `package.json:8-9`: the shell `>` redirect truncates `theme.css` and
+`tailwind.theme.json` before `npx` runs, so a failed export leaves an empty committed artifact.
+These two scripts are **not** spurious — `docs/DESIGN_MD_IMPLEMENTATION.md:28-32` documents
+exactly this export mechanism — so do not delete them. Wrap each in a write-to-temp-then-rename
+so a failure leaves the previous artifact intact.
 
 ### Stage 5 — map and scope reconciliation. One commit each; mechanical but wide.
 
 AGENTS.md §4 tree, DESIGN.md §4 table, and the README Layout block each publish a *different*
-layout, and §4 calls itself "the canonical map" while omitting seven of 23 real top-level
+layout, and §4 calls itself "the canonical map" while omitting seven of the 24 non-hidden
+real tracked top-level
 directories: `architecture/`, `cli/`, `dashboards/`, `prompts/`, `reports/`, `research/`,
 `workflows/`. Consequence is concrete — AGENTS.md §2 pre-flight tells an agent to "confirm the
 change belongs where you intend to put it" against this map.
@@ -213,8 +270,11 @@ They assert live operational state — `agent_roster.html:252` reads
 `12 agents · 9 active · 3 idle`, with hardcoded rows including `Scanning prod-cluster` and
 `Enriching IOCs across 14 feeds` — and brand themselves `SENTINEL` with no IANUA, outside the
 carve-out `docs/Changelog.md:342` records ("SENTINEL remains the landing page's design wordmark
-only"). They are also the **only** files in the repository that fetch external resources at
-render time (`fonts.googleapis.com`, `fonts.gstatic.com`).
+only"). They fetch external resources at render time (`fonts.googleapis.com`,
+`fonts.gstatic.com`) — though **not uniquely**: `docs/index.html`, `docs/status.html` and
+`docs/trust.html` load the same hosts, and unlike these mockups those three are actually
+published. If third-party font fetching from the Pages site matters, it is those three that
+matter.
 
 Two accuracy notes so this is not overstated: they do **not** ship in the wheel
 (`[tool.setuptools.package-data]` declares no dashboard HTML), and nothing serves them. Options:
@@ -227,9 +287,9 @@ document them as mockups, move them out of `dashboard/`, or delete them.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | G1 left unfixed past 2026-10-22 | Two manual compliance controls lapse and **nothing goes red**; the trust page keeps publishing them as attested | Stage 1.1, inside nine days |
-| A reader trusts the security-control inventory | SECURITY.md promises a second SAST engine; the only one running is bandit over 6 of 23 top-level dirs | Stage 0 verification, then G4 either way |
+| A reader trusts the security-control inventory | SECURITY.md promises CodeQL alongside bandit. In-repo evidence says it was migrated to GitHub default setup and was running in August; it is absent from recent PR check lists. Bandit itself covers 6 of 24 non-hidden top-level dirs | Stage 0: confirm default setup in Settings. Do **not** restate the claim either way until then |
 | A vulnerability reporter follows the issue chooser | Lands on a 404 (`OWNER/REPO`); even once fixed, private reporting is off and Issues are disabled | Stage 0 + 2.x together, never separately |
-| An agent trusts AGENTS.md §4 during pre-flight | Writes code into the wrong directory, or into one of the four single-file dirs that look like packages | Stage 5 |
+| An agent trusts AGENTS.md §4 during pre-flight | Writes code into the wrong directory, or into one of the four single-file dirs that look like packages. Seven of the 24 non-hidden tracked top-level directories are unmapped (27 including `.devcontainer/`, `.github/`, `.streamlit/`) | Stage 5 |
 | Generated files edited before the generator | Edits silently self-revert on the next run; reviewers see a correct diff that does not survive | Stage 4 ordering is mandatory |
 | `REPLACEMENTS` entries added without their content fixes | `--check` fails immediately; CI goes red | Each table entry and its edits in the **same** commit |
 | Fixing by `rename_to_ianua.py --apply` | Produces `ianua-mcp-stub` — keeps "stub", changes only the prefix | Edit `mcp/transport.py:32` by hand |
@@ -297,3 +357,30 @@ summary line in AGENTS.md §7 claims.
 
 To inspect the literals, read the cited lines directly: `mcp/transport.py:32` and
 `.gitignore:21`.
+
+---
+
+## Appendix C — corrections after review
+
+An audit's only value is that its claims hold, so the review round that corrected it belongs in
+it. Codex reviewed commit `a2a4148` and raised eight findings; seven were correct and are fixed
+above. Recorded because the pattern is instructive — most were *overreach*, not invention: a
+real defect described one notch more strongly than the evidence supported.
+
+| # | Claim as first written | Correction |
+|---|---|---|
+| 1 | CodeQL is a **removed** control with stale docs (P1) | Wrong. Commit `b05139f` shows it was *migrated* to GitHub default setup, which deliberately has no in-repo file. Reclassified to unverifiable-from-a-clone; SECURITY.md:59 presumed accurate |
+| 2 | `Attestation.is_current(day)` exists and is called nowhere | Wrong on both counts. The predicate is `valid_on(day)`, and `compliance/engine.py:101` plus four tests call it. The frozen-`as_of` defect itself stands |
+| 3 | The toolchain gap disproves §8's "mirrored exactly in CI" | Overreach. AGENTS.md:365-366 licenses pre-commit as "the fast subset", so it falsifies the hooks' own mirror comments, not §7-vs-CI parity. `mypy>=2.4.0` is also a floor, not a pin |
+| 4 | "Four tracked files are suffixless" | Wrong, and internally inconsistent — it then listed five. There are **nine**, six content-bearing, and `.gitleaksignore` was missed entirely |
+| 5 | The mockups are the **only** files fetching external resources | False. `docs/index.html`, `docs/status.html` and `docs/trust.html` load the same font hosts and are actually published — the more consequential instances |
+| 6 | Seven of **23** top-level directories unmapped | Wrong denominator: 24 non-hidden tracked, 27 including dotted. The seven named were correct |
+| 7 | Delete `package.json:8-9` | Wrong prescription. `docs/DESIGN_MD_IMPLEMENTATION.md:28-32` documents those `>` redirects as the intended export mechanism. The real defect is the empty artifact a failed `npx` leaves; fix is write-to-temp-then-rename |
+| 8 | (no status column) | Correct — the header promised one and none existed. Added as §0 |
+
+Two of these were self-inflicted in a way worth naming. The predicate name came from a survey
+agent and was never checked against the `def` line, even though the surrounding lines were read.
+And the CodeQL conclusion was reached despite this same session having earlier observed a green
+check literally named `CodeQL` on PR #159 — evidence already in hand and not reconciled. The
+adversarial pass that caught the finding's *other* overstatement did not catch either, which is
+the honest limit of three verifiers who share the finding's framing.
