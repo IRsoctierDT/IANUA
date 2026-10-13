@@ -427,6 +427,7 @@ def check(
     html_path: Path = DEFAULT_HTML,
     json_path: Path = DEFAULT_JSON,
     clock: Callable[[], str] | None = None,
+    root: Path | None = None,
 ) -> list[str]:
     """Return drift messages if committed outputs are stale (empty = in sync).
 
@@ -456,7 +457,8 @@ def check(
     from compliance.attestations import load, store_path
 
     today = clock() if clock is not None else _utc_today()
-    for attestation in load(store_path(REPO_ROOT)).values():
+    store = store_path(root if root is not None else REPO_ROOT)
+    for attestation in load(store).values():
         if attestation.valid_on(today):
             continue
         lapsed = attestation.expires < today
@@ -476,6 +478,7 @@ def expiring_soon(
     *,
     within_days: int = ATTESTATION_WARNING_DAYS,
     clock: Callable[[], str] | None = None,
+    root: Path | None = None,
 ) -> list[str]:
     """Advisory notices for attestations still valid but lapsing within ``within_days``.
 
@@ -487,6 +490,13 @@ def expiring_soon(
 
     Lapsed attestations are *absent* here: those are `check`'s problems, so the
     two channels never double-report the same control.
+
+    ``root`` is injectable so tests can pin a fixture store. A date-sensitive
+    test that reads the committed ``compliance/attestations.json`` would break
+    the moment a control is re-attested — turning the very maintenance action
+    this gate exists to prompt into a red build. It defaults to ``None`` rather
+    than to ``REPO_ROOT`` because a default argument binds at definition time,
+    so a literal default could not be reached by patching the module attribute.
     """
     from datetime import date
 
@@ -497,7 +507,8 @@ def expiring_soon(
     today = clock() if clock is not None else _utc_today()
     today_date = date.fromisoformat(today)
     notices: list[str] = []
-    for attestation in load(store_path(REPO_ROOT)).values():
+    store = store_path(root if root is not None else REPO_ROOT)
+    for attestation in load(store).values():
         if not attestation.valid_on(today):
             continue  # lapsed or post-dated — check() owns it
         remaining = (date.fromisoformat(attestation.expires) - today_date).days

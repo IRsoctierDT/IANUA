@@ -53,6 +53,41 @@ def _paths(tmp_path: Path) -> _Paths:
     }
 
 
+#: A synthetic attestation window, fixed forever. Every date-sensitive test
+#: below is written against THIS, never against compliance/attestations.json —
+#: a regression test that reads the live store breaks the moment a control is
+#: re-attested, which would turn the maintenance action this gate exists to
+#: prompt into a red build.
+_FIXTURE_OPENS = "2026-01-01"
+_FIXTURE_EXPIRES = "2026-06-30"
+
+
+def _attestation_root(
+    tmp_path: Path, *, opens: str = _FIXTURE_OPENS, expires: str = _FIXTURE_EXPIRES
+) -> Path:
+    """Write an isolated attestation store and return its repository root."""
+    store = tmp_path / "compliance"
+    store.mkdir(exist_ok=True)
+    (store / "attestations.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "attestations": [
+                    {
+                        "control_id": "FIX-01",
+                        "attested_by": "test fixture",
+                        "date": opens,
+                        "expires": expires,
+                        "note": "synthetic attestation for deterministic expiry tests",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
 def test_parse_valid_report() -> None:
     report = parse_report(_VALID)
     assert report.score == 92
@@ -78,14 +113,16 @@ def test_bad_snapshot_fails_closed(mutation: dict[str, object]) -> None:
 def test_build_then_check_is_in_sync(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     build(**paths)
-    assert check(**paths) == []
+    # root= pins an isolated store: check() consults the clock now, so reading
+    # the committed attestations would make this pass or fail by calendar date.
+    assert check(**paths, root=_attestation_root(tmp_path), clock=lambda: "2026-03-01") == []
 
 
 def test_check_detects_drift(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     build(**paths)
     paths["html_path"].write_text("tampered", encoding="utf-8")
-    problems = check(**paths)
+    problems = check(**paths, root=_attestation_root(tmp_path), clock=lambda: "2026-03-01")
     assert problems and "trust.html" in problems[0]
 
 
@@ -101,12 +138,13 @@ def test_expiry_gate_fires_on_a_lapsed_attestation(tmp_path: Path) -> None:
     """
     paths = _paths(tmp_path)
     build(**paths)
-    # Inside every committed window: in sync, no complaints.
-    assert check(**paths, clock=lambda: "2026-10-13") == []
-    # Past MAN-01/MAN-02's 2026-10-22 expiry: the gate must go red.
-    lapsed = check(**paths, clock=lambda: "2027-01-01")
+    root = _attestation_root(tmp_path)
+    # Inside the fixture window: in sync, no complaints.
+    assert check(**paths, root=root, clock=lambda: "2026-03-01") == []
+    # One day past the inclusive expiry: the gate must go red.
+    lapsed = check(**paths, root=root, clock=lambda: "2026-07-01")
     assert lapsed, "a lapsed attestation must fail the gate"
-    assert any("MAN-01" in msg and "expired" in msg for msg in lapsed)
+    assert any("FIX-01" in msg and "expired" in msg for msg in lapsed)
     assert all("re-attest" in msg for msg in lapsed)
 
 
@@ -119,7 +157,7 @@ def test_expiry_gate_does_not_depend_on_the_snapshot_date(tmp_path: Path) -> Non
     paths = _paths(tmp_path)
     paths["data_path"].write_text(json.dumps({**_VALID, "as_of": "2020-01-01"}), encoding="utf-8")
     build(**paths)
-    problems = check(**paths, clock=lambda: "2027-01-01")
+    problems = check(**paths, root=_attestation_root(tmp_path), clock=lambda: "2026-07-01")
     assert any("expired" in msg for msg in problems), "as_of must not be able to suppress a lapse"
 
 
@@ -127,7 +165,7 @@ def test_expiry_gate_rejects_a_post_dated_attestation(tmp_path: Path) -> None:
     """The window's lower bound is checked too, which the old comparison ignored."""
     paths = _paths(tmp_path)
     build(**paths)
-    problems = check(**paths, clock=lambda: "2020-01-01")
+    problems = check(**paths, root=_attestation_root(tmp_path), clock=lambda: "2025-12-31")
     assert problems
     assert all("not yet in force" in msg for msg in problems)
 
@@ -142,25 +180,26 @@ def test_expiry_gate_reads_a_real_clock_by_default(tmp_path: Path) -> None:
     assert today == datetime.now(tz=UTC).date().isoformat()
     paths = _paths(tmp_path)
     build(**paths)
+    root = _attestation_root(tmp_path)
     # Same verdict with the default clock as with today injected explicitly.
-    assert check(**paths) == check(**paths, clock=lambda: today)
+    assert check(**paths, root=root) == check(**paths, root=root, clock=lambda: today)
 
 
 @pytest.mark.parametrize(
     "day,expect_warning",
     [
-        ("2026-09-21", False),  # 31 days out — outside the window, stay quiet
-        ("2026-09-22", True),  # exactly 30 days — inclusive edge
-        ("2026-10-21", True),  # 1 day out
-        ("2026-10-22", True),  # the expiry date itself: still valid, warn loudly
+        ("2026-05-30", False),  # 31 days out — outside the window, stay quiet
+        ("2026-05-31", True),  # exactly 30 days — inclusive edge
+        ("2026-06-29", True),  # 1 day out
+        ("2026-06-30", True),  # the expiry date itself: still valid, warn loudly
     ],
 )
-def test_warning_window_boundaries(day: str, expect_warning: bool) -> None:
-    """MAN-01/MAN-02 expire 2026-10-22; the window is inclusive at both ends."""
-    notices = expiring_soon(clock=lambda: day)
+def test_warning_window_boundaries(tmp_path: Path, day: str, expect_warning: bool) -> None:
+    """The fixture window closes 2026-06-30; the warning window is inclusive."""
+    notices = expiring_soon(root=_attestation_root(tmp_path), clock=lambda: day)
     assert bool(notices) is expect_warning
     if expect_warning:
-        assert any("MAN-01" in msg for msg in notices)
+        assert any("FIX-01" in msg for msg in notices)
         assert all("re-attest before it lapses" in msg for msg in notices)
 
 
@@ -168,9 +207,11 @@ def test_expiry_date_itself_warns_rather_than_fails(tmp_path: Path) -> None:
     """``expires`` is inclusive, so the control is still attested that day."""
     paths = _paths(tmp_path)
     build(**paths)
-    on_expiry = "2026-10-22"
-    assert [m for m in check(**paths, clock=lambda: on_expiry) if "attestation" in m] == []
-    assert any("expires today" in msg for msg in expiring_soon(clock=lambda: on_expiry))
+    root = _attestation_root(tmp_path)
+    on_expiry = _FIXTURE_EXPIRES
+    assert check(**paths, root=root, clock=lambda: on_expiry) == []
+    notices = expiring_soon(root=root, clock=lambda: on_expiry)
+    assert any("expires today" in msg for msg in notices)
 
 
 def test_a_lapse_is_a_problem_and_never_also_a_warning(tmp_path: Path) -> None:
@@ -182,11 +223,29 @@ def test_a_lapse_is_a_problem_and_never_also_a_warning(tmp_path: Path) -> None:
     """
     paths = _paths(tmp_path)
     build(**paths)
-    lapsed = "2026-10-23"
-    problems = [m for m in check(**paths, clock=lambda: lapsed) if "attestation" in m]
-    notices = expiring_soon(clock=lambda: lapsed)
+    root = _attestation_root(tmp_path)
+    lapsed = "2026-07-01"
+    problems = [m for m in check(**paths, root=root, clock=lambda: lapsed) if "attestation" in m]
+    notices = expiring_soon(root=root, clock=lambda: lapsed)
     assert problems, "a lapsed attestation must be a problem"
     assert notices == [], "a lapsed attestation must not also be a warning"
+
+
+def test_expiry_tests_are_isolated_from_the_committed_store(tmp_path: Path) -> None:
+    """Re-attesting a real control must never break these tests.
+
+    The prescribed remedy for a lapse is to re-attest and refresh the
+    snapshot. If the date-sensitive tests read compliance/attestations.json,
+    that remedy would shift the live dates out from under their fixed clocks
+    and keep CI red — the gate punishing the maintenance it exists to prompt.
+    So the fixture root must genuinely override the committed store.
+    """
+    root = _attestation_root(tmp_path)
+    fixture_only = expiring_soon(root=root, clock=lambda: "2026-05-31")
+    assert fixture_only and all("FIX-01" in msg for msg in fixture_only)
+    assert not any("MAN-0" in msg for msg in fixture_only), "live store leaked into the fixture"
+    # And an empty root yields nothing at all, rather than silently falling back.
+    assert expiring_soon(root=tmp_path / "empty", clock=lambda: "2026-05-31") == []
 
 
 def test_warnings_never_change_the_exit_code(
@@ -194,8 +253,10 @@ def test_warnings_never_change_the_exit_code(
 ) -> None:
     """An approaching lapse is advisory — it must not fail the gate."""
     monkeypatch.setattr(
-        "scripts.build_trust_page.expiring_soon", lambda **_: ["MAN-99 expires in 1 day(s)"]
+        "scripts.build_trust_page.expiring_soon", lambda **_: ["FIX-01 expires in 1 day(s)"]
     )
+    monkeypatch.setattr("scripts.build_trust_page.REPO_ROOT", _attestation_root(tmp_path))
+    monkeypatch.setattr("scripts.build_trust_page._utc_today", lambda: "2026-03-01")
     paths = _paths(tmp_path)
     argv = [
         "--data",
@@ -216,21 +277,22 @@ def test_warning_surfaces_as_a_ci_annotation_under_actions(
 ) -> None:
     """A warning buried in a green log is not a warning."""
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    _emit_warnings(["MAN-99 expires in 1 day(s)"])
+    _emit_warnings(["FIX-01 expires in 1 day(s)"])
     assert capsys.readouterr().err.startswith("::warning::")
 
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
-    _emit_warnings(["MAN-99 expires in 1 day(s)"])
+    _emit_warnings(["FIX-01 expires in 1 day(s)"])
     assert capsys.readouterr().err.startswith("warning: ")
 
     _emit_warnings([])
     assert capsys.readouterr().err == "", "no notices must print nothing"
 
 
-def test_warning_window_is_a_reviewed_constant() -> None:
+def test_warning_window_is_a_reviewed_constant(tmp_path: Path) -> None:
     """The threshold is committed data, not a magic number buried in a branch."""
     assert ATTESTATION_WARNING_DAYS == 30
-    assert expiring_soon(clock=lambda: "2026-09-22", within_days=0) == []
+    root = _attestation_root(tmp_path)
+    assert expiring_soon(root=root, clock=lambda: "2026-05-31", within_days=0) == []
 
 
 def test_render_json_carries_disclaimer_and_summary() -> None:
@@ -255,7 +317,9 @@ def test_snapshot_carries_no_detail_fields(tmp_path: Path) -> None:
     assert all("detail" not in control for control in written["controls"])
 
 
-def test_main_check_exit_codes(tmp_path: Path) -> None:
+def test_main_check_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scripts.build_trust_page.REPO_ROOT", _attestation_root(tmp_path))
+    monkeypatch.setattr("scripts.build_trust_page._utc_today", lambda: "2026-03-01")
     paths = _paths(tmp_path)
     argv_common = [
         "--data",
@@ -269,6 +333,31 @@ def test_main_check_exit_codes(tmp_path: Path) -> None:
     assert main([*argv_common, "--check"]) == 0
     paths["json_path"].write_text("stale", encoding="utf-8")
     assert main([*argv_common, "--check"]) == 1
+
+
+def test_main_check_fails_on_a_lapsed_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: a lapsed attestation fails `--check` through main().
+
+    Patching REPO_ROOT is the only lever here, since main() takes no --root —
+    which is precisely why `check`/`expiring_soon` default root to None.
+    """
+    monkeypatch.setattr("scripts.build_trust_page.REPO_ROOT", _attestation_root(tmp_path))
+    paths = _paths(tmp_path)
+    argv = [
+        "--data",
+        str(paths["data_path"]),
+        "--out-html",
+        str(paths["html_path"]),
+        "--out-json",
+        str(paths["json_path"]),
+    ]
+    monkeypatch.setattr("scripts.build_trust_page._utc_today", lambda: "2026-03-01")
+    assert main(argv) == 0
+    assert main([*argv, "--check"]) == 0, "inside the window the gate passes"
+    monkeypatch.setattr("scripts.build_trust_page._utc_today", lambda: "2026-07-01")
+    assert main([*argv, "--check"]) == 1, "past the window the gate must fail"
 
 
 def test_main_bad_input_exit_code(tmp_path: Path) -> None:
