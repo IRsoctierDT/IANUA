@@ -19,8 +19,8 @@ checkable. `—` means not started. A stage is only `done` when every item under
 
 | Stage | Scope | Status | Evidence |
 |---|---|---|---|
-| 0 | Maintainer-only: repo settings, externally visible deletes, secrets, account routines | — | |
-| 1.1 | Attestation-expiry gate compares against the current date | — | |
+| 0 | Maintainer-only: repo settings, externally visible deletes, secrets, account routines | **partial** | `.github/SECURITY.md` deleted (PR #190); repo settings still open |
+| 1.1 | Attestation-expiry gate compares against the current date | **done** | PR #190 |
 | 1.2 | Pre-commit hook versions reconciled with the project toolchain | — | |
 | 1.3 | §7 ↔ CI gate-list reconciliation + parity test covers the gate list | — | |
 | 1.4 | MAN-01's false attestation note | — | |
@@ -59,7 +59,7 @@ no `--check` gate.
 
 | # | Guarantee as written | Reality | Where |
 |---|---|---|---|
-| G1 | "This assertion is MAN-0x's teeth in CI — an expired attestation fails the gate until the human re-attests" | The comparison is `attestation.expires < report.as_of`, where `as_of` is the **frozen committed snapshot date** (`2026-08-21`). MAN-01/MAN-02 expire `2026-10-22`, so the test is `"2026-10-22" < "2026-08-21"` → `False`. It stays `False` after expiry, because `as_of` only moves when a human runs `--snapshot`. The codebase already has the right predicate — `Attestation.valid_on(day)`, `self.date <= day <= self.expires` — and `compliance/engine.py:101` calls it correctly against `today`. This gate simply never does. | `scripts/build_trust_page.py:417-430`; `compliance/attestations.py:49`; `compliance/engine.py:101` |
+| ~~G1~~ *(fixed, PR #190)* | "This assertion is MAN-0x's teeth in CI — an expired attestation fails the gate until the human re-attests" | The comparison is `attestation.expires < report.as_of`, where `as_of` is the **frozen committed snapshot date** (`2026-08-21`). MAN-01/MAN-02 expire `2026-10-22`, so the test is `"2026-10-22" < "2026-08-21"` → `False`. It stays `False` after expiry, because `as_of` only moves when a human runs `--snapshot`. The codebase already has the right predicate — `Attestation.valid_on(day)`, `self.date <= day <= self.expires` — and `compliance/engine.py:101` calls it correctly against `today`. This gate simply never does. | `scripts/build_trust_page.py:417-430`; `compliance/attestations.py:49`; `compliance/engine.py:101` |
 | G2 | `.pre-commit-config.yaml` annotates its ruff hooks "mirrors `ruff check .`" and "mirrors `ruff format --check .`", and its header claims it mirrors the CI pipeline | Pre-commit pins `ruff` **v0.6.9** and `mypy` **v1.11.2** as *remote hook repos*, built in pre-commit's own isolated environments — they never see the project venv. CI installs `ruff==0.16.10` and a `mypy>=2.4.0` floor. Across that gap the formatter's output changed and mypy took a major version, so the `ruff-format` hook can rewrite a file that `ruff format --check .` in CI then rejects. **Scoped deliberately**: AGENTS.md:365-366 licenses pre-commit as "the fast subset", so this falsifies the hooks' own mirror comments — not §7-vs-CI parity, which runs in the project environment and is a separate question (G3). | `.pre-commit-config.yaml:3,36,38,40,44`; `pyproject.toml:40-41`; `.github/workflows/ci.yml:53,57` |
 | G3 | §7 is the complete required-check list | CI's `static-analysis` job — a required status check — also runs `uv lock --check` and `python scripts/check_version_sync.py`. Neither string appears anywhere in `AGENTS.md`, `README.md`, or `.pre-commit-config.yaml`. Conversely §7 step 1, `python -m compileall .`, runs in **zero** workflows. A contributor can run all of §7 green and still be blocked. | `.github/workflows/ci.yml:46,48`; `AGENTS.md:273-274` |
 | ~~G4~~ | *Withdrawn. See "CodeQL — unverified, not absent" immediately below.* | |
@@ -159,8 +159,15 @@ AGENTS.md §5.1 approval gates, or outside this repository entirely:
   `OWNER/REPO` fix below produces a working-looking link to a disabled feature; **Issues are
   currently disabled**, which makes all four issue templates inert regardless; branch-protection
   required-reviewer count.
-- **Externally visible**: deleting `.github/SECURITY.md` changes what GitHub serves in the
-  Security tab. Propose, do not do.
+- **Externally visible**: ~~deleting `.github/SECURITY.md` changes what GitHub serves in the
+  Security tab. Propose, do not do.~~ **Done on maintainer instruction (PR #190).** The stub
+  held nothing the root policy lacks — every substantive item in it (no public issue, private
+  advisory preferred, the contact address, the 5-business-day acknowledgement, the 30-day
+  coordinated-disclosure window) also appears in `SECURITY.md`, so it was a partial copy rather
+  than the pointer it claimed to be. GitHub now serves the 83-line root policy. Verified
+  beforehand: no generator emits the path, nothing links into it, and the two gates that read
+  `SECURITY.md` resolve the repository root — `compliance/controls.py:286` via
+  `_resolve_inside(root, …)` and `scripts/check_version_sync.py:76` via `ROOT / "SECURITY.md"`.
 - **Secrets**: the Ed25519 pin-signing ceremony (`attack/README.md`) — maintainer only.
 - **Dependency addition**: a `dashboard-min` extra would need §5.1 justification.
 - **Account-level routines**: the Pages-deploy watcher whose prompt names the

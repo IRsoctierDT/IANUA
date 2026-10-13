@@ -25,11 +25,52 @@ updates:
     commit-message:
       prefix: "deps"
     groups:
+      # Matched by explicit name, NOT by dependency-type: "development".
+      # Dependabot classifies everything in pyproject.toml's
+      # [project.optional-dependencies] as PRODUCTION — only PEP 735
+      # [dependency-groups] / [tool.uv] dev-dependencies read as development,
+      # and this project declares its tools in the `dev` extra so they install
+      # with `pip install -e ".[dev]"`. So "development" matched nothing and
+      # every tool bump fell into `runtime`, which is human-review-only: a ruff
+      # bump took the slow path the dev-toolchain group exists to avoid
+      # (dependabot-core#10606, #13202).
+      #
+      # Scope is deliberately TOOLS ONLY — linters, type checkers, test
+      # runners, scanners. A bad bump here breaks CI loudly and ships to
+      # nobody. Libraries that shipped code imports (pyyaml, reportlab,
+      # cryptography, packaging) live in the same `dev` extra but are NOT
+      # listed: they change runtime behaviour, so they stay human-reviewed.
+      # Keep this list in step with pyproject.toml's [dev] extra, and keep the
+      # group NAME `dev-toolchain` — dependabot-automerge.yml matches on it.
       dev-toolchain:
-        # ruff, mypy, pytest, bandit, pip-audit, ... — low-risk, batch together.
-        dependency-type: "development"
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest"
+          - "pytest-cov"
+          - "hypothesis"
+          - "bandit"
+          - "pip-audit"
+          - "detect-secrets"
+          - "pre-commit"
+      # Everything else, including the dashboard extra and the imported
+      # libraries above. exclude-patterns repeats the list rather than relying
+      # on group order: GitHub documents that order matters, but making the two
+      # groups disjoint by construction means a reordering cannot silently
+      # route a tool bump into the human-review group (or the reverse).
       runtime:
-        dependency-type: "production"
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "ruff"
+          - "mypy"
+          - "pytest"
+          - "pytest-cov"
+          - "hypothesis"
+          - "bandit"
+          - "pip-audit"
+          - "detect-secrets"
+          - "pre-commit"
 
   # --- JavaScript: package-lock.json (dashboard/build tooling) ---------------
   - package-ecosystem: "npm"
