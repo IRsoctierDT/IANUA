@@ -438,7 +438,12 @@ def test_a_run_is_audited_in_the_pipeline_directory(tmp_path: Path) -> None:
         "expected a gate record and an outcome record, both attributed"
     )
     assert records[-1]["action"].startswith("pipeline_cycle:")
-    assert "cursor advanced" in records[-1]["reason"]
+    # Future tense, deliberately: the record is written BEFORE the save that
+    # decides it, so a past-tense claim would be falsified by a failed save.
+    assert "advancing cursor to" in records[-1]["reason"]
+    assert "cursor advanced" not in records[-1]["reason"], (
+        "the record must not assert an outcome the save has not yet decided"
+    )
 
 
 @pytest.mark.unit
@@ -476,3 +481,84 @@ def test_json_output_is_parseable_and_names_the_incident(
     assert payload["cursor_advanced"] is True
     assert payload["idle"] is False
     assert len(payload["incidents"][0]["reference"]) == 16
+
+
+# --------------------------------------------------------------------------
+# The cursor actually reaches the cycle
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_the_cli_applies_the_cursor_it_loaded(tmp_path: Path) -> None:
+    """The single most important thing the CLI does, and it was untested.
+
+    Every other test here passed with ``cursor=cursor`` deleted from the
+    ``run_cycle`` call — which would make the pipeline re-read the entire store
+    on every invocation, forever, while still exiting 0 and reporting
+    "cursor advanced". Asserted on the audit record's event count rather than
+    on stdout, because that count is what the cycle actually read.
+    """
+    _seed(tmp_path, (_CLOUD, _IDENTITY, _ENDPOINT), at=1000.0)
+    main = _cli_main()
+    assert main(["--root", str(tmp_path)]) == 0
+    _seed(tmp_path, (_LATER,), at=2000.0)
+    assert main(["--root", str(tmp_path)]) == 0
+
+    log = cursor_path(tmp_path).parent / "audit.log"
+    outcomes = [
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["action"].startswith("pipeline_cycle:")
+    ]
+    counts = [int(record["action"].split(":")[1]) for record in outcomes]
+    assert counts == [3, 1], (
+        f"second cycle read {counts[1:]} events; with the cursor applied it must "
+        "read only the one appended after it"
+    )
+
+
+@pytest.mark.unit
+def test_a_blocked_policy_exits_three_and_still_records_the_decision(
+    tmp_path: Path,
+) -> None:
+    """The fail-closed claim, which had no test at all.
+
+    Swallowing ``ToolBlockedError`` instead of returning 3 kept every test
+    green. The gate decision must still be recorded: a refusal nobody can see
+    afterwards is not a control.
+    """
+    bundle = tmp_path / "deny.json"
+    bundle.write_text(json.dumps({"version": 1, "policy": {"read_only": "deny"}}), encoding="utf-8")
+    assert _cli_main()(["--root", str(tmp_path), "--policy", str(bundle)]) == 3
+    log = cursor_path(tmp_path).parent / "audit.log"
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert records, "a blocked cycle must still leave the gate decision in the chain"
+    assert records[-1]["decision"] == "deny"
+    assert load_cursor(cursor_path(tmp_path)) is None, "a blocked cycle advanced the cursor"
+
+
+@pytest.mark.unit
+def test_a_cycle_reads_no_more_than_assemble_will_look_at(tmp_path: Path) -> None:
+    """``assemble`` truncates its input silently, so the read must be clamped.
+
+    With ``max_events`` below ``batch``, a cycle that read the full batch would
+    advance the cursor over events ``assemble`` discarded — a blind spot with
+    no signal. Every event must eventually be correlated, across however many
+    cycles that takes.
+    """
+    records = tuple(
+        {"type": "SYSCALL", "node": f"web-{index:02d}", "auid": "svc-deploy", "comm": "bash"}
+        for index in range(10)
+    )
+    _seed(tmp_path, records, at=1000.0)
+    thresholds = Thresholds(max_events=3)
+    seen, cursor = 0, None
+    with EventStore.open(tmp_path) as store:
+        for _ in range(10):
+            page = run_cycle(store, cursor=cursor, batch=10, thresholds=thresholds)
+            if page.idle:
+                break
+            assert page.events_read <= 3, "read past the correlation ceiling"
+            seen += page.events_read
+            cursor = page.cursor
+    assert seen == 10, f"only {seen} of 10 events were ever correlated"

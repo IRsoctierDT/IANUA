@@ -123,6 +123,7 @@ ianua/
 │   └── parsers/               # One module per domain: endpoint, network, cloud, identity, email
 ├── store/                     # Durable append-only event store (SOC memory; stdlib sqlite3)
 ├── correlation/               # Entity resolution across domains + incident assembly
+├── pipeline/                  # Scheduled detection cycle (at-least-once, resumable cursor)
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
 ├── mcp/                       # MCP server + sandboxed tool execution

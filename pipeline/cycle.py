@@ -90,11 +90,22 @@ def run_cycle(
     """
     if batch < 1:
         raise ValueError(f"batch must be >= 1, got {batch}")
+    # Read no more than will actually be correlated. ``assemble`` truncates its
+    # input silently (``stored[: thresholds.max_events]``), so a cycle that
+    # read past that ceiling would advance the cursor over events nothing ever
+    # looked at — a blind spot with no signal, which is the exact failure this
+    # stage exists to prevent. Taking the minimum makes the window the cursor
+    # advances over identical to the window ``assemble`` saw.
+    #
+    # ``MAX_QUERY_LIMIT`` is the store's own ceiling and clamps rather than
+    # refuses, because asking for more than the store will serve is a cap, not
+    # a caller error.
+    limit = min(batch, thresholds.max_events, MAX_QUERY_LIMIT)
     window = store.query(
         Query(
             ingested_after=cursor.as_keyset() if cursor is not None else None,
             newest_first=False,
-            limit=min(batch, MAX_QUERY_LIMIT),
+            limit=limit,
         )
     )
     if not window:

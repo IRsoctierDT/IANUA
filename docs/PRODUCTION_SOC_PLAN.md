@@ -97,6 +97,16 @@ python scripts/run_pipeline.py --root /srv/ianua --json
     >> /srv/ianua/data/pipeline/run.log 2>&1
 ```
 
+The redirect target lives in a directory the pipeline creates on its first
+run — but the shell opens the redirect *before* the program runs, so on a
+fresh deployment the very first firing dies with "No such file or directory"
+and never gets the chance to create it. Create it once, owned by the account
+that will run the cycle:
+
+```bash
+install -d -m 700 -o ianua -g ianua /srv/ianua/data/pipeline
+```
+
 **systemd** — preferred, and not only for tidiness. `Persistent=true` runs a
 window missed while the host was down, which cron drops silently; and the unit
 is where the pipeline's least-privilege posture is actually expressed, since
@@ -118,9 +128,15 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
+# Must already exist: under ProtectSystem=strict a ReadWritePaths entry that
+# is missing makes the unit fail to start rather than creating it. The
+# StateDirectory= directive is the systemd-native alternative if you move the
+# data root under /var/lib.
 ReadWritePaths=/srv/ianua/data
 # The cycle makes no outbound connection; the AST tests assert the package
-# cannot, and this makes the kernel agree.
+# cannot, and this makes the kernel agree. Note this also cuts off loopback,
+# so do not add anything to this unit that talks to a local model or database
+# over a socket — give that its own unit instead.
 PrivateNetwork=true
 
 # /etc/systemd/system/ianua-pipeline.timer
@@ -133,6 +149,12 @@ Persistent=true
 WantedBy=timers.target
 ```
 
+Before enabling the timer, create the data root with the ownership the unit's
+`User=` expects (`install -d -m 700 -o ianua -g ianua /srv/ianua/data`), and
+confirm that account can read the checkout. Both were verified by reading the
+unit against the code rather than assumed: a `ReadWritePaths` entry that does
+not exist is a start failure, not an auto-create.
+
 **Exit codes**, which are the whole interface a scheduler sees: `0` the cycle
 ran (including the common idle case — a non-zero exit for "nothing new" would
 page someone nightly), `1` the cycle or a persisted cursor failed, `2` bad
@@ -144,6 +166,23 @@ permitted attempt with no outcome, which is the signal worth alerting on. A
 corrupt cursor exits `1` and stops the pipeline rather than reprocessing all
 of history or silently skipping it — that is deliberate, and it needs an
 operator.
+
+A cycle holds an exclusive lock (`data/pipeline/cycle.lock`) for its whole
+run. If the timer fires while one is still going, the new invocation prints
+`skipped: another cycle holds the lock` and exits `0`. Occasional skips are
+the schedule being tighter than the work; *persistent* skips mean a cycle is
+taking longer than the interval, and the batch size or the interval needs
+changing. The lock is not tidiness — two cycles appending to the hash-chained
+audit log at once fork the chain and break `verify()` permanently, which would
+put a false positive into a tamper detector.
+
+**Known limitation — ingestion order.** The cursor is a keyset over
+`ingested_at`, so a collector that stamps an *earlier* `ingested_at` than the
+cursor has already passed will have those events skipped permanently. Nothing
+writes events yet (collection is Stage 5), so this is a contract on whatever
+does: `ingested_at` must be non-decreasing across calls. Making it
+unconditionally safe needs a monotonic sequence column, which is a schema
+change and belongs to Stage 5 when the collector lands.
 
 ### Why this order
 

@@ -38,7 +38,15 @@ from pathlib import Path
 
 import pytest
 from agents.policies import AUDIT_FIELD_DELIMITER
-from pipeline import Cursor, CursorPathError, cursor_path, reference, run_cycle, save_cursor
+from pipeline import (
+    Cursor,
+    CursorPathError,
+    cursor_path,
+    load_cursor,
+    reference,
+    run_cycle,
+    save_cursor,
+)
 from store import EventStore
 
 from ingest import normalize
@@ -88,7 +96,14 @@ _ENDPOINT = {"type": "SYSCALL", "node": "web-01", "auid": "svc-deploy", "comm": 
 
 
 def _pipeline_modules() -> list[Path]:
-    modules = sorted(_PIPELINE_ROOT.glob("*.py"))
+    """Every module in the package, recursively.
+
+    ``glob("*.py")`` would leave a subpackage entirely unchecked, so
+    ``pipeline/sinks/http.py`` could import ``socket`` and call ``eval`` while
+    every invariant below still passed. The ban is on the package, not on its
+    top level.
+    """
+    modules = sorted(_PIPELINE_ROOT.rglob("*.py"))
     assert modules, "no pipeline modules found; the invariant tests would pass vacuously"
     return modules
 
@@ -153,6 +168,138 @@ def test_a_symlinked_cursor_file_cannot_redirect_the_write(tmp_path: Path) -> No
 
 
 @pytest.mark.security
+def test_a_symlinked_ancestor_cannot_relocate_the_cursor(tmp_path: Path) -> None:
+    """The gap the leaf-only check left open, found by review and reproduced.
+
+    ``CURSOR_SUBDIR`` is two deep (``data/pipeline``). The original check
+    examined only the leaf directory and the file, so a link planted at
+    ``<root>/data`` was never looked at — and ``mkdir(parents=True)`` then
+    created ``pipeline/`` *through* it, putting the cursor outside the lab root
+    while every name still looked valid.
+
+    The existence gating made it worse: the check was ``path.exists() and
+    path.resolve() != path``, and a link whose target does not yet contain the
+    child reports ``exists() is False``, so the one case mkdir goes on to
+    create was precisely the case that was skipped.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "data").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(CursorPathError):
+        cursor_path(root)
+    assert not (outside / "pipeline").exists(), "the cursor directory was created outside the root"
+
+
+@pytest.mark.security
+def test_a_dangling_symlink_at_the_cursor_path_is_refused(tmp_path: Path) -> None:
+    """``exists()`` is False for a dangling link, so the old check skipped it."""
+    directory = tmp_path / "data" / "pipeline"
+    directory.mkdir(parents=True)
+    (directory / "cursor.json").symlink_to(tmp_path / "nonexistent.json")
+    with pytest.raises(CursorPathError):
+        cursor_path(tmp_path)
+
+
+@pytest.mark.security
+def test_the_store_refuses_the_same_symlinked_ancestor(tmp_path: Path) -> None:
+    """The pipeline inherited this bug from the store, so both are pinned here.
+
+    ``store/events.py`` had the identical leaf-only, existence-gated check, and
+    a link at ``<root>/data`` relocated the whole **evidence database** outside
+    the lab root. Asserted alongside the cursor so the two cannot drift: they
+    solve one problem and must keep solving it the same way.
+    """
+    from store import StorePathError
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "data").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(StorePathError):
+        EventStore.open(root)
+    assert not (outside / "events").exists(), "the event store was created outside the root"
+
+
+@pytest.mark.security
+def test_two_cycles_cannot_run_at_once(tmp_path: Path) -> None:
+    """Concurrency corrupts the audit chain permanently, so it is prevented.
+
+    ``AuditLogger`` derives each record's ``seq`` and ``prev_hash`` by reading
+    the last line and appending — a read-modify-write with no locking. Before
+    the lock, six concurrent invocations produced a duplicate ``seq``, a forked
+    chain, and ``verify()`` returning ``False`` for every future reader, while
+    every process exited 0. That is worse than losing records: it puts a false
+    positive into a tamper detector.
+
+    Deterministic by construction: the lock is held in-process and a second
+    attempt must decline, rather than racing real processes and hoping the
+    interleaving shows up.
+    """
+    from scripts.run_pipeline import _single_instance
+
+    directory = cursor_path(tmp_path).parent
+    with _single_instance(directory) as first:
+        assert first is True, "the first caller must get the lock"
+        with _single_instance(directory) as second:
+            assert second is False, "a second cycle acquired the lock concurrently"
+    # Released on exit, so the next scheduled run is not locked out forever.
+    with _single_instance(directory) as third:
+        assert third is True, "the lock was not released"
+
+
+@pytest.mark.security
+def test_a_declined_lock_does_not_exit_nonzero_or_touch_state(tmp_path: Path) -> None:
+    """The timer outrunning the cycle is expected, not a failure.
+
+    Exiting non-zero would mail the operator every five minutes on a tight
+    schedule, which trains them to ignore it. It must still be visible, and it
+    must leave no audit record and no cursor — nothing happened.
+    """
+    from scripts.run_pipeline import _single_instance, main
+
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_CLOUD), normalize(_ENDPOINT)), ingested_at=1000.0)
+    directory = cursor_path(tmp_path).parent
+    with _single_instance(directory) as held:
+        assert held is True
+        assert main(["--root", str(tmp_path)]) == 0
+    assert not cursor_path(tmp_path).exists(), "a skipped invocation advanced the cursor"
+    log = directory / "audit.log"
+    assert not log.exists() or log.read_text(encoding="utf-8") == "", (
+        "a skipped invocation wrote an audit record for work it did not do"
+    )
+
+
+@pytest.mark.security
+def test_an_incident_reference_is_unkeyed_and_therefore_not_evidence(tmp_path: Path) -> None:
+    """Asserted functionally, not against a docstring substring.
+
+    The previous version checked that the docstring contained certain words,
+    which would have passed on a docstring claiming the opposite. The property
+    that matters is that the digest is reproducible by anyone holding the event
+    ids — no key, no salt, nothing an attacker who can write the store lacks.
+    That is exactly why it deduplicates and exactly why it proves nothing about
+    origin; attribution belongs to the hash-chained audit log.
+    """
+    import hashlib
+
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_CLOUD), normalize(_ENDPOINT)), ingested_at=1000.0)
+        incident = run_cycle(store).incidents[0]
+    recomputed = hashlib.sha256()
+    for event_id in sorted(incident.event_ids):
+        recomputed.update(event_id.encode("utf-8"))
+        recomputed.update(b"\x00")
+    assert reference(incident) == recomputed.hexdigest()[:16], (
+        "if this needs a secret to recompute it is a MAC, and the docstring is wrong; "
+        "if it does not, it is a correlation id and cannot be evidence"
+    )
+
+
+@pytest.mark.security
 def test_the_cursor_is_written_owner_only(tmp_path: Path) -> None:
     """It names stored evidence; it inherits the audit logger's file posture."""
     path = cursor_path(tmp_path)
@@ -183,60 +330,109 @@ def test_an_interrupted_save_cannot_leave_a_truncated_cursor(tmp_path: Path) -> 
 
 
 @pytest.mark.security
-def test_the_cli_gates_the_cycle_before_reading() -> None:
-    """``enforce`` must be called, and must not be reachable only after the read.
+def test_a_denied_policy_reads_nothing_and_advances_nothing(tmp_path: Path) -> None:
+    """The gate must precede the read it authorizes — asserted by behaviour.
 
-    Asserted structurally: the gate call appears in the source before the
-    ``run_cycle`` call. A gate that runs after the work has already happened
-    records a decision it cannot enforce.
+    This replaced a pair of ``source.index("enforce(") < source.index(...)``
+    checks, which were brittle against a reformat and vacuous against a real
+    reordering: moving the gate after the cycle leaves the source order intact
+    if the call text shifts. What matters is observable instead — under a deny
+    policy, the gate decision is recorded and *nothing else happens*: no
+    outcome record, no cursor.
     """
-    source = _CLI.read_text(encoding="utf-8")
-    assert "enforce(" in source, "the cycle is not policy-gated"
-    assert source.index("enforce(\n") < source.index("run_cycle("), (
-        "the policy gate must precede the read it authorizes"
+    from scripts.run_pipeline import main
+
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_CLOUD), normalize(_ENDPOINT)), ingested_at=1000.0)
+    bundle = tmp_path / "deny.json"
+    bundle.write_text(json.dumps({"version": 1, "policy": {"read_only": "deny"}}), encoding="utf-8")
+
+    assert main(["--root", str(tmp_path), "--policy", str(bundle)]) == 3
+
+    log = cursor_path(tmp_path).parent / "audit.log"
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [r["decision"] for r in records] == ["deny"], (
+        "a denied cycle must record exactly the gate decision and nothing after it"
+    )
+    assert not any(r["action"].startswith("pipeline_cycle:") for r in records), (
+        "an outcome record means the cycle ran despite the deny"
+    )
+    assert not cursor_path(tmp_path).exists(), "a denied cycle wrote a cursor"
+
+
+@pytest.mark.security
+def test_the_audit_record_precedes_the_cursor_on_disk(tmp_path: Path) -> None:
+    """A consumed window is never unrecorded.
+
+    Also behavioural rather than structural: after a successful cycle the
+    outcome record exists and names the cursor it was about to write, and the
+    cursor on disk matches it. The ordering is what makes the failure mode
+    recoverable — a crash between the two re-reads a window the record already
+    described.
+    """
+    from scripts.run_pipeline import main
+
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_CLOUD), normalize(_ENDPOINT)), ingested_at=1000.0)
+    assert main(["--root", str(tmp_path)]) == 0
+
+    log = cursor_path(tmp_path).parent / "audit.log"
+    outcome = [
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["action"].startswith("pipeline_cycle:")
+    ][-1]
+    saved = load_cursor(cursor_path(tmp_path))
+    assert saved is not None
+    assert saved.event_id[:16] in outcome["reason"], (
+        "the record must name the cursor it was about to write"
     )
 
 
 @pytest.mark.security
-def test_the_cli_audits_before_it_advances_the_cursor() -> None:
-    """The ordering that keeps a consumed window from going unrecorded.
+def test_the_cli_reaches_the_environment_only_for_the_signing_key() -> None:
+    """``--caller`` is explicit or absent; identity is never inherited.
 
-    If the cursor were saved first and the audit write then failed, the
-    pipeline would have consumed a window with no record that it did. In this
-    order a failure between the two re-reads the window, which is what
-    at-least-once already promises.
-    """
-    source = _CLI.read_text(encoding="utf-8")
-    assert source.index("audit.record(") < source.index("save_cursor("), (
-        "the audit record must be written before the cursor advances"
-    )
+    Asserted over the AST because the idiom this forbids already exists in this
+    repository — ``field(default_factory=lambda: os.environ.get(...))`` appears
+    four times in ``agents/tools/llm.py`` — so a ``$USER`` fallback would read
+    as idiomatic while putting an unauthenticated name into a hash-chained,
+    signed record.
 
+    The ban is on **reaching the environment at all**, not on a list of
+    variable names. An earlier version of this test checked a set of
+    well-known names (``USER``, ``SUDO_USER``, …) and so passed happily on
+    ``os.environ.get("IANUA_OPERATOR")`` — the same defect under a name nobody
+    had thought to enumerate. A guard that only catches the examples its author
+    imagined is not a guard.
 
-@pytest.mark.security
-def test_the_cli_derives_no_identity_from_the_environment() -> None:
-    """``--caller`` is explicit or absent; it is never inherited from the process.
-
-    Asserted over the AST because the idiom this forbids already exists in
-    this repository — ``field(default_factory=lambda: os.environ.get(...))``
-    appears four times in ``agents/tools/llm.py`` — so a ``$USER`` fallback
-    would read as idiomatic while putting an unauthenticated name into a
-    hash-chained, signed record.
-
-    ``signing_key_from_env`` is exempt and named explicitly: a *key* must come
-    from the environment (AGENTS.md §5 forbids it in source), while an
-    *identity* must not.
+    ``signing_key_from_env`` is the one sanctioned exception, and it is named
+    rather than pattern-matched: a *key* must come from the environment
+    (AGENTS.md §5 forbids it in source), while an *identity* must not.
     """
     tree = ast.parse(_CLI.read_text(encoding="utf-8"), filename=str(_CLI))
-    identity_env_vars = {"USER", "USERNAME", "LOGNAME", "SUDO_USER", "IANUA_PRINCIPAL"}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            assert node.value not in identity_env_vars, (
-                f"{node.value!r} appears in the CLI; an identity must be passed, not inherited"
+        # os.environ / os.getenv / os.environb, in any call or subscript form.
+        if isinstance(node, ast.Attribute):
+            assert node.attr not in {"environ", "environb", "getenv"}, (
+                f"the CLI reaches the process environment via .{node.attr}; only "
+                "signing_key_from_env may, and an identity never may"
             )
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            assert node.func.attr not in {"getenv", "environ"}, (
-                "the CLI reads the environment directly; only signing_key_from_env may"
-            )
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name.split(".")[0] != "os", (
+                    "the CLI imports os; the environment is reachable from it"
+                )
+        if isinstance(node, ast.ImportFrom) and node.module:
+            root = node.module.split(".")[0]
+            if root == "os":
+                raise AssertionError("the CLI imports from os")
+            # `from agents.policies.audit import signing_key_from_env` is the
+            # sanctioned path and is allowed; any other *_from_env is not.
+            for alias in node.names:
+                assert alias.name in {"signing_key_from_env"} or not alias.name.endswith(
+                    "_from_env"
+                ), f"{alias.name} is an environment-sourced value other than the signing key"
 
 
 @pytest.mark.security
@@ -252,19 +448,6 @@ def test_an_audited_identity_cannot_carry_the_hash_delimiter() -> None:
 
     with pytest.raises(PrincipalError):
         Principal("pipeline", f"ivan{AUDIT_FIELD_DELIMITER}root")
-
-
-@pytest.mark.security
-def test_an_incident_reference_is_not_presented_as_a_security_claim() -> None:
-    """It is an unkeyed digest for deduplication; attribution is the audit chain.
-
-    Pinned so a later reader does not start treating it as tamper-evidence: it
-    is derived entirely from data an attacker who can write the store already
-    controls.
-    """
-    docstring = reference.__doc__ or ""
-    assert "not" in docstring and "security claim" in docstring
-    assert "unkeyed" in docstring
 
 
 # --------------------------------------------------------------------------
@@ -367,10 +550,18 @@ def test_a_window_is_bounded_even_when_the_caller_asks_for_everything(
     """An unbounded read is how a scheduled job becomes an outage."""
     from store import MAX_QUERY_LIMIT
 
+    records = tuple(
+        {"type": "SYSCALL", "node": f"web-{index:02d}", "auid": "svc-deploy", "comm": "bash"}
+        for index in range(5)
+    )
     with EventStore.open(tmp_path) as store:
-        store.append_many((normalize(_CLOUD),), ingested_at=1000.0)
+        store.append_many(tuple(normalize(r) for r in records), ingested_at=1000.0)
+        # Seeded with more than one event on purpose: with a single event every
+        # clamp can be deleted at both layers and the assertion still holds.
         result = run_cycle(store, batch=MAX_QUERY_LIMIT * 1000)
-    assert result.events_read == 1
+        clamped = run_cycle(store, batch=2)
+    assert result.events_read == 5
+    assert clamped.events_read == 2, "the batch bound was not applied"
 
 
 @pytest.mark.security

@@ -79,13 +79,28 @@ def resolve(root: Path, *, filename: str = DEFAULT_FILENAME) -> Path:
         )
     # Resolve the ROOT then append, so a symlink planted at the pipeline
     # directory cannot resolve to its own target and pass the check.
-    directory = root.resolve() / CURSOR_SUBDIR
+    base = root.resolve()
+    directory = base / CURSOR_SUBDIR
     candidate = directory / filename
-    for path in (directory, candidate):
-        if path.exists() and path.resolve() != path:
+    # EVERY component between the root and the file, not just the leaf
+    # directory: ``CURSOR_SUBDIR`` is two deep, so checking only
+    # ``data/pipeline`` leaves ``data`` unexamined, and ``mkdir(parents=True)``
+    # then creates the leaf *through* a link planted there — putting the cursor
+    # outside the lab root while every name still looks valid.
+    #
+    # ``is_symlink`` rather than ``exists() and resolve() != path``: a link
+    # whose target does not exist yet reports ``exists() is False``, so the
+    # existence-gated form skipped precisely the case that mkdir goes on to
+    # create. Refused rather than followed — relocating the pipeline's state
+    # to another volume is a deployment decision (``docs/PRODUCTION_SOC_PLAN``
+    # stage 9), not something a planted link should accomplish silently.
+    walked = base
+    for part in (*CURSOR_SUBDIR.parts, filename):
+        walked = walked / part
+        if walked.is_symlink():
             raise CursorPathError(
-                f"{path} resolves to {path.resolve()}; refusing to follow a symlink "
-                "out of the lab-data root"
+                f"{walked} is a symlink (-> {walked.readlink()}); refusing to "
+                "follow it out of the lab-data root"
             )
     if not candidate.is_relative_to(directory):  # pragma: no cover
         # Unreachable while _SAFE_FILENAME holds; kept so loosening that regex
@@ -134,10 +149,17 @@ def save(path: Path, cursor: Cursor) -> None:
       evidence, so it carries the 0o600 posture the audit log and the
       compliance evidence chain already use. Permissions are set on the
       temporary file *before* it is renamed into place, so the cursor never
-      exists at its real path in a wider mode — a ``chmod`` after the rename
-      would leave exactly that window. ``chmod`` rather than a creation mode
-      because a creation mode is masked by ``umask`` and this must not depend
-      on how the scheduler was configured.
+      exists **at its real path** in a wider mode — a ``chmod`` after the
+      rename would leave exactly that window. ``chmod`` rather than a creation
+      mode, because a creation mode is masked by ``umask`` and this must not
+      depend on how the scheduler was configured.
+
+      Stated precisely, because the obvious stronger claim would be false: the
+      temporary file is created by ``write_text`` at the umask default, so for
+      the moment between the write and the ``chmod`` *that* file may be
+      group-readable. What makes the contents unreachable throughout is the
+      enclosing directory being ``0o700`` — the file mode is defence in depth
+      on top of it, not the thing doing the work.
     * **A temp name derived from the payload.** Two overlapping runs — a slow
       cycle and a five-minute timer — would otherwise interleave writes to one
       fixed temp path and could rename a half-written file into place, halting

@@ -52,24 +52,51 @@ Schedule examples::
     # being lost) and the unit's own sandboxing (ProtectSystem, ReadWritePaths
     # limited to the data root).
 
-Exit codes: ``0`` cycle ran (including the idle case) · ``1`` the cycle or a
-persisted cursor failed · ``2`` bad arguments · ``3`` blocked by policy.
+**One cycle at a time.** An exclusive lock is held for the whole cycle. Two
+cycles appending to the hash-chained audit log at once fork the chain and break
+``verify()`` permanently, which would put a false positive into a tamper
+detector — see :func:`_single_instance`. A declined lock exits ``0``: the timer
+outrunning the cycle is expected on a tight schedule, not a failure.
+
+Exit codes:
+
+* ``0`` — a cycle ran (including the idle case), or was skipped because another
+  cycle held the lock. The output distinguishes the three.
+* ``1`` — the cycle, the audit write, or the cursor save failed. The window was
+  not consumed; the next invocation re-reads it.
+* ``2`` — bad arguments, an unreadable or unsafe ``--root``, or an unusable
+  policy bundle. Nothing ran and nothing was recorded.
+* ``3`` — blocked by policy. The gate decision *is* recorded.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
+import sqlite3
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
     sys.path.insert(0, str(REPO_ROOT))
 
-from agents.policies import ActionClass, Principal, PrincipalError  # noqa: E402
-from agents.policies.audit import AuditLogger, signing_key_from_env  # noqa: E402
+from agents.policies import (  # noqa: E402
+    ActionClass,
+    PolicyEngine,
+    Principal,
+    PrincipalError,
+    escape_delimiter,
+)
+from agents.policies.audit import (  # noqa: E402
+    AuditFieldError,
+    AuditLogger,
+    signing_key_from_env,
+)
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle  # noqa: E402
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
 from correlation import ThresholdError, Thresholds  # noqa: E402
@@ -97,6 +124,63 @@ AUDIT_FILE = "audit.log"
 #: credential.
 ACTION_CLASS: ActionClass = "read_only"
 ACTION_NAME = "pipeline_cycle"
+
+#: Single-instance lock, beside the cursor. A correctness control, not an
+#: optimization — see :func:`_single_instance`.
+LOCK_FILE = "cycle.lock"
+
+#: Owner-only, matching the cursor and the audit log.
+_FILE_MODE = 0o600
+
+
+@contextlib.contextmanager
+def _single_instance(directory: Path) -> Iterator[bool]:
+    """Hold an exclusive lock for the duration of one cycle.
+
+    **A correctness control, not a performance one.** Two cycles running at
+    once corrupt the audit log *permanently*: :class:`AuditLogger` derives each
+    record's ``seq`` and ``prev_hash`` by reading the last line of the file and
+    then appending — a read-modify-write with no locking. Two appenders
+    interleave, produce a duplicate ``seq`` and a forked chain, and
+    ``verify()`` returns ``False`` from then on, for every future reader. That
+    is worse than losing records: it puts a false positive into a tamper
+    detector, so an operator can no longer tell overlapping timer firings from
+    someone editing the log. Reproduced with six concurrent invocations before
+    this lock existed: twelve records, a duplicate ``seq``, ``verify()``
+    ``False``, and every process exiting ``0``.
+
+    Overlap is not hypothetical. ``docs/PRODUCTION_SOC_PLAN.md`` documents a
+    ``*/5 * * * *`` schedule, so it happens the first time a cycle takes more
+    than five minutes — a backlog, a slow disk, a large batch.
+
+    It also removes a milder race: two cycles reading the same window and the
+    slower one writing its older cursor last, losing the newer one.
+    At-least-once makes that safe rather than wrong, but there is no reason to
+    keep it.
+
+    Yields ``True`` when the lock was taken, ``False`` when another cycle holds
+    it. A declined lock is **not an error** — it is the timer outrunning the
+    cycle, which a tight schedule is expected to do occasionally — so it must
+    not exit non-zero and mail the operator every five minutes. It is still
+    printed, because a cycle that silently did nothing is the failure mode this
+    whole stage exists to avoid.
+    """
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / LOCK_FILE
+    # Opened for append so an existing lock file is never truncated: the open
+    # file handle carries the lock, not the contents.
+    with path.open("a", encoding="utf-8") as handle:
+        path.chmod(_FILE_MODE)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # BlockingIOError on Linux; OSError covers the platform variants.
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -226,14 +310,50 @@ def main(argv: list[str] | None = None) -> int:
         # a missing or malformed bundle stops the pipeline rather than falling
         # back to an implicit allow.
         engine = load_bundle(args.policy)
-    except (PrincipalError, ThresholdError, CursorError, PolicyBundleError, ValueError) as exc:
+    except (
+        PrincipalError,
+        ThresholdError,
+        CursorError,
+        PolicyBundleError,
+        ValueError,
+        OSError,
+    ) as exc:
+        # OSError covers PermissionError from cursor_path's resolve() and from
+        # the readlink in its containment check: an unreadable root is a bad
+        # argument, not a failed cycle, and must not reach an unattended
+        # operator as a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    audit = AuditLogger(
-        path.parent / AUDIT_FILE,
-        signing_key=signing_key_from_env(),
-    )
+    with _single_instance(path.parent) as acquired:
+        if not acquired:
+            print("skipped: another cycle holds the lock; this invocation did nothing.")
+            return 0
+        return _run(
+            args,
+            principal=principal,
+            thresholds=thresholds,
+            path=path,
+            engine=engine,
+            started_at=started_at,
+        )
+
+
+def _run(
+    args: argparse.Namespace,
+    *,
+    principal: Principal,
+    thresholds: Thresholds,
+    path: Path,
+    engine: PolicyEngine,
+    started_at: float,
+) -> int:
+    """One cycle, under the lock. Split out so the lock's scope is unmissable."""
+    try:
+        audit = AuditLogger(path.parent / AUDIT_FILE, signing_key=signing_key_from_env())
+    except (OSError, ValueError) as exc:
+        print(f"error: audit log unusable, refusing to run: {exc}", file=sys.stderr)
+        return 1
 
     try:
         enforce(
@@ -246,20 +366,31 @@ def main(argv: list[str] | None = None) -> int:
     except ToolBlockedError as exc:
         print(f"blocked: {exc}", file=sys.stderr)
         return 3
+    except (AuditFieldError, OSError, ValueError) as exc:
+        # enforce() writes the gate record itself, so an audit failure surfaces
+        # from inside it. Caught because an unattended cycle must fail with an
+        # exit code the scheduler can act on, not a traceback in cron mail.
+        print(f"error: could not record the gate decision: {exc}", file=sys.stderr)
+        return 1
 
     try:
         cursor = load_cursor(path)
         with EventStore.open(args.root) as store:
             result = run_cycle(store, cursor=cursor, thresholds=thresholds, batch=args.batch)
-    except (CursorError, StoreError, ValueError, OSError) as exc:
+    except (CursorError, StoreError, sqlite3.Error, ValueError, OSError) as exc:
+        # sqlite3.Error is neither an OSError nor a StoreError, so a corrupt or
+        # externally-locked database would otherwise escape as a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
     elapsed = time.monotonic() - started_at
-    advanced = result.cursor is not None and not args.dry_run
+    advancing = result.cursor is not None and not args.dry_run
 
-    # Audit first, then advance — see the module docstring. A dry run says so
-    # in the record rather than looking like a cycle that consumed a window.
+    # Audit first, then advance — see the module docstring. The record states
+    # what this cycle DECIDED, in the future tense where the outcome is not yet
+    # known: writing "cursor advanced" before the save that decides it would put
+    # a claim in a tamper-evident chain that a failed save then falsifies, and a
+    # chain whose records can be false is not evidence.
     try:
         audit.record(
             actor=principal.render(),
@@ -268,16 +399,41 @@ def main(argv: list[str] | None = None) -> int:
             decision="allow",
             reason=(
                 f"read {result.events_read} event(s), assembled "
-                f"{len(result.incidents)} incident(s), cursor "
-                f"{'advanced' if advanced else 'held'}"
-                f"{' (dry run)' if args.dry_run else ''}"
+                f"{len(result.incidents)} incident(s), "
+                + (
+                    f"advancing cursor to {result.cursor.event_id[:16]}"
+                    if advancing and result.cursor is not None
+                    else "holding cursor"
+                )
+                + (" (dry run)" if args.dry_run else "")
             ),
         )
-        if advanced and result.cursor is not None:
-            save_cursor(path, result.cursor)
-    except (CursorError, OSError, ValueError) as exc:
-        print(f"error: cycle ran but was not committed: {exc}", file=sys.stderr)
+    except (AuditFieldError, OSError, ValueError) as exc:
+        print(f"error: cycle ran but could not be recorded: {exc}", file=sys.stderr)
         return 1
+
+    advanced = False
+    if advancing and result.cursor is not None:
+        try:
+            save_cursor(path, result.cursor)
+            advanced = True
+        except (CursorError, OSError, ValueError) as exc:
+            # The window will be re-read, which is what at-least-once promises.
+            # Recorded as well as printed, so the chain does not end on a record
+            # saying the cursor was advancing when it did not.
+            print(f"error: cycle ran but the cursor was not advanced: {exc}", file=sys.stderr)
+            with contextlib.suppress(AuditFieldError, OSError, ValueError):
+                audit.record(
+                    actor=principal.render(),
+                    action=f"{ACTION_NAME}:cursor_not_advanced",
+                    action_class=ACTION_CLASS,
+                    decision="allow",
+                    reason=(
+                        "cursor save failed, window will be re-read: "
+                        + escape_delimiter(str(exc)[:160])
+                    ),
+                )
+            return 1
 
     if args.json:
         print(json.dumps(_report(result, elapsed=elapsed, advanced=advanced), sort_keys=True))

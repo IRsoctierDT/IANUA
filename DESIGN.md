@@ -312,7 +312,11 @@ a more-trusted one. Crossing one requires validation and (often) an approval gat
     in `agents/tools/llm.py` and a `$USER` fallback would put an unauthenticated name into a
     hash-chained, signed record. The cursor itself is treated as evidence metadata: 0o600 in a
     0o700 directory under gitignored `data/pipeline/`, written to a content-keyed temporary file
-    that is chmodded *before* the rename so it never exists at its real path in a wider mode,
+    that is chmodded *before* the rename, so the cursor never exists **at its real
+    path** in a wider mode (the temporary file itself is created at the umask default
+    and tightened before the rename; it is unreadable to other users throughout
+    because the enclosing directory is `0o700`, which is where that guarantee actually
+    comes from),
     and confined by resolving the root then appending — so a symlink planted where the pipeline
     directory should be is refused rather than followed.
 

@@ -207,18 +207,30 @@ class EventStore:
         # there and then happily confirm the database sits inside its own
         # target. The containment check has to be made against where the
         # directory is *supposed* to be.
-        events_dir = root.resolve() / EVENTS_SUBDIR
+        base = root.resolve()
+        events_dir = base / EVENTS_SUBDIR
         candidate = events_dir / filename
-        # A symlinked events directory, or a symlinked database file, relocates
-        # the evidence outside the lab root while every filename still looks
-        # valid. Refused rather than followed: moving an event store to another
-        # volume is a deployment decision (see docs/PRODUCTION_SOC_PLAN.md
-        # stage 9), not something a planted link should accomplish silently.
-        for path in (events_dir, candidate):
-            if path.exists() and path.resolve() != path:
+        # A symlinked events directory, a symlinked *ancestor* of it, or a
+        # symlinked database file all relocate the evidence outside the lab
+        # root while every filename still looks valid. Refused rather than
+        # followed: moving an event store to another volume is a deployment
+        # decision (see docs/PRODUCTION_SOC_PLAN.md stage 9), not something a
+        # planted link should accomplish silently.
+        #
+        # EVERY component is walked, not just the leaf directory and the file.
+        # ``EVENTS_SUBDIR`` is two deep, so checking only ``data/events`` left
+        # ``data`` unexamined and ``mkdir(parents=True)`` created the leaf
+        # *through* a link planted there. ``is_symlink`` rather than
+        # ``exists() and resolve() != path``, because a link whose target does
+        # not exist yet reports ``exists() is False`` — skipping exactly the
+        # case mkdir then goes on to create.
+        walked = base
+        for part in (*EVENTS_SUBDIR.parts, filename):
+            walked = walked / part
+            if walked.is_symlink():
                 raise StorePathError(
-                    f"{path} resolves to {path.resolve()}; refusing to relocate the "
-                    "event store outside the lab-data root"
+                    f"{walked} is a symlink (-> {walked.readlink()}); refusing to "
+                    "relocate the event store outside the lab-data root"
                 )
         if not candidate.is_relative_to(events_dir):  # pragma: no cover
             # Unreachable while _SAFE_FILENAME holds: a name with no separator
