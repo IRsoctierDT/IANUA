@@ -744,3 +744,31 @@ def test_the_cli_accepts_a_lookback_and_refuses_a_negative_one(tmp_path: Path) -
     main = _cli_main()
     assert main(["--root", str(tmp_path), "--lookback", "60"]) == 0
     assert main(["--root", str(tmp_path), "--lookback", "-5"]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("suffix", ["typo", "not/created/yet"])
+def test_a_root_that_does_not_exist_is_refused(tmp_path: Path, suffix: str) -> None:
+    """A mistyped --root is a silent blind spot, so it must be loud instead.
+
+    Reproduced before this check existed: a one-character typo in a cron line
+    built an entire shadow data tree, found an empty store, printed
+    "idle: no new events" and exited 0 — forever. Every signal reads healthy
+    while the SOC sees nothing, which is the same class of failure as a cycle
+    that correlates nothing.
+
+    The pipeline creates its subdirectories but never the root, which is what
+    makes the distinction possible: an operator deploys to a directory that
+    exists, so a missing root is a misconfiguration and not a fresh install.
+    """
+    missing = tmp_path / suffix
+    assert _cli_main()(["--root", str(missing)]) == 2
+    assert not (missing / "data").exists(), "a refused root still built a shadow tree"
+
+
+@pytest.mark.unit
+def test_a_root_that_is_a_file_is_refused(tmp_path: Path) -> None:
+    """``exists()`` would accept it and the first mkdir would then traceback."""
+    not_a_dir = tmp_path / "root"
+    not_a_dir.write_text("", encoding="utf-8")
+    assert _cli_main()(["--root", str(not_a_dir)]) == 2

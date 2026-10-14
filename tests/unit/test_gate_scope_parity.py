@@ -131,6 +131,26 @@ def test_ci_mypy_and_bandit_lines_match() -> None:
 
 
 @pytest.mark.unit
+def test_release_workflow_mypy_scope_matches() -> None:
+    """release.yml derives its scope from a list, and that list must not drift.
+
+    This file asserted ci.yml's scope but never release.yml's, so the release
+    job's copy was free to fall behind — the same by-omission gap that left
+    ``cli/`` in no gate at all. The release job builds its scope by looping over
+    directory names and skipping any absent at the tag (it runs against a
+    detached tag, and a hard-coded list breaks release repair for every tag
+    predating the newest package), so the literal list is what this checks.
+    """
+    release = (_REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    loop = re.search(r"for dir in ([^\n]*(?:\\\n[^\n]*)*?); do", release)
+    assert loop is not None, "release.yml must build its mypy scope from a directory list"
+    listed = set(loop.group(1).replace("\\", " ").split())
+    assert listed == MYPY_SCOPE, (
+        f"release.yml mypy scope {sorted(listed)} drifted from the canonical scope"
+    )
+
+
+@pytest.mark.unit
 def test_precommit_scopes_match() -> None:
     config = (_REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
     mypy_files = re.search(r"files: \^\(([a-z|]+)\)/", config)

@@ -179,6 +179,14 @@ confirm that account can read the checkout. Both were verified by reading the
 unit against the code rather than assumed: a `ReadWritePaths` entry that does
 not exist is a start failure, not an auto-create.
 
+**`--root` must already exist.** The pipeline creates `data/events/` and
+`data/pipeline/` beneath the root but never the root itself, and that asymmetry
+is deliberate: a mistyped root in a cron line would otherwise build a complete
+shadow data tree, find an empty store, print `idle: no new events` and exit `0`
+forever — every signal reading healthy while the SOC sees nothing. A missing
+root now exits `2`. Create it as part of deployment, not by running the
+pipeline.
+
 **Exit codes**, which are the whole interface a scheduler sees: `0` the cycle
 ran (including the common idle case — a non-zero exit for "nothing new" would
 page someone nightly), `1` the cycle or a persisted cursor failed, `2` bad

@@ -199,7 +199,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--root",
         type=Path,
         default=REPO_ROOT,
-        help="Lab-data root holding data/events/ and data/pipeline/ (default: repo root).",
+        help=(
+            "Lab-data root holding data/events/ and data/pipeline/ (default: repo "
+            "root). Must already exist: the pipeline creates data/ beneath it but "
+            "never the root itself, so a typo fails loudly instead of building a "
+            "shadow tree and reporting idle forever."
+        ),
     )
     parser.add_argument(
         "--batch",
@@ -326,6 +331,22 @@ def main(argv: list[str] | None = None) -> int:
     started_at = time.monotonic()
 
     try:
+        # The root must already exist. The pipeline creates its *subdirectories*
+        # (``data/events``, ``data/pipeline``) but never the root itself, and the
+        # difference is what makes a typo loud. A mistyped ``--root`` in a cron
+        # line otherwise builds an entire shadow data tree, finds an empty store,
+        # prints "idle: no new events" and exits 0 — forever. Every signal says
+        # healthy while the SOC is blind, which is the same class of failure as a
+        # cycle that correlates nothing: reproduced before this check existed.
+        #
+        # An operator deploys to a directory that exists, so a missing root is a
+        # misconfiguration rather than a fresh install.
+        if not args.root.is_dir():
+            raise ValueError(
+                f"--root {args.root} is not an existing directory; the pipeline creates "
+                "data/ beneath the root but never the root itself, so this is a typo or "
+                "an unmounted volume rather than a fresh deployment"
+            )
         if args.lookback < 0:
             raise ValueError(f"lookback must be >= 0 seconds, got {args.lookback}")
         if args.batch < 1:
