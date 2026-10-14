@@ -37,6 +37,7 @@ from ingest._coerce import depth_within, observables, text
 from ingest.errors import UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
 from ingest.schema import (
+    MAX_FIELD_LEN,
     MAX_NESTING_DEPTH,
     MAX_RAW_BYTES,
     MAX_RAW_EXCERPT,
@@ -200,17 +201,40 @@ def _excerpt_of(payload: Mapping[str, Any]) -> str:
 
 
 def _unrecognized(raw: str, *, notes: tuple[str, ...] = ()) -> NormalizedEvent:
-    """The honest fallback: carried, labelled, and never mis-attributed."""
-    message = text(raw, limit=MAX_RAW_EXCERPT) or ""
+    """The honest fallback: carried, labelled, and never mis-attributed.
+
+    ``message`` is bounded at :data:`MAX_FIELD_LEN`, like every other field,
+    **not** at :data:`MAX_RAW_EXCERPT`. It used to be the latter, and that one
+    constant made a line of 2049-4096 characters writable and then permanently
+    unreadable: ``from_dict`` validates ``message`` at ``MAX_FIELD_LEN``, so
+    ``append`` accepted the event and every subsequent ``query`` raised
+    ``MalformedProjectionError`` — which ``run_cycle`` does not catch, so **every
+    later detection cycle on that store failed**. One long log line, a padded
+    username in a brute force or a URL in an application log, stopped the SOC.
+    Reproduced end to end before the fix. Found by review.
+
+    Only ``raw_excerpt`` carries the wider bound, which is what it is for: it is
+    declared at ``MAX_RAW_EXCERPT`` on both sides (``schema.from_dict`` validates
+    it there), so the fuller text is still retained as evidence.
+
+    Observables are extracted from the *excerpt* rather than from the truncated
+    message, which keeps this change behaviour-neutral for detection. It does
+    not widen it: :func:`observables` coerces each input through ``text()`` at
+    the default ``MAX_FIELD_LEN``, so an indicator appearing only past character
+    2048 of a single line is not extracted either way. That is a pre-existing
+    bound, measured on the unfixed code and recorded here rather than changed
+    under cover of this fix.
+    """
+    cleaned = text(raw, limit=MAX_RAW_EXCERPT) or ""
     return NormalizedEvent(
         source_type="unknown",
         vendor="unrecognized",
         vendor_event_id=None,
         timestamp=None,
-        message=message,
+        message=cleaned[:MAX_FIELD_LEN],
         activity=None,
         parse_status="partial" if notes else "text",
-        observables=observables(message),
+        observables=observables(cleaned),
         raw_excerpt=raw[:MAX_RAW_EXCERPT],
         notes=notes,
     )

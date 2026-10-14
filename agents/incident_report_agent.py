@@ -269,6 +269,45 @@ _PROVENANCE = (
 )
 
 
+#: The repository working tree. ``/data/`` beneath it is the only gitignored
+#: place an incident report may be written.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_LAB_ROOT = _REPO_ROOT / "data"
+
+
+def _refuse_tracked_destination(target: Path) -> None:
+    """Refuse a report destination inside the repository but outside ``data/``.
+
+    An incident report contains event content — the hostname, the account, the
+    source address and the raw log message — and the default destination used
+    to be ``reports/markdown/orchestrated_incident.md``, which is a **tracked
+    file**. Both shipped entry points (``cli/run_incident.py`` and
+    ``cli/batch_run_incidents.py``) call ``process_log`` without a path, so
+    running either over a real log line wrote real telemetry into the working
+    tree, one ``git add -A`` away from being published. AGENTS.md §5 forbids
+    committing logs and client information; nothing stopped it. Found by
+    review.
+
+    The default now points under the gitignored lab root, and this refuses the
+    rest: a caller may still write anywhere *outside* the repository — which is
+    what tests and operators legitimately do — but not back into it, except
+    under ``data/``. The check is on the resolved path, so a relative path, a
+    ``..`` traversal and a symlink all land where they actually point.
+    """
+    resolved = target.resolve()
+    if not resolved.is_relative_to(_REPO_ROOT):
+        return
+    if resolved.is_relative_to(_LAB_ROOT):
+        return
+    raise ValidationError(
+        f"refusing to write an incident report to {resolved}: it is inside the "
+        f"repository ({_REPO_ROOT}) but outside the gitignored {_LAB_ROOT}. A report "
+        "carries event content — hostnames, accounts, addresses and the raw message — "
+        "and AGENTS.md §5 forbids committing that. Write it under data/, or outside "
+        "the repository entirely."
+    )
+
+
 class IncidentReportAgent:
     def __init__(self) -> None:
         self.soc_agent = SocAnalystAgent()
@@ -327,6 +366,7 @@ class IncidentReportAgent:
             )
 
         target = Path(output_path)
+        _refuse_tracked_destination(target)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         indicators = soc_result.get("indicators", [])

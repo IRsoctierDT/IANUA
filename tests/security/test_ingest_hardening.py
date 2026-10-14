@@ -375,3 +375,77 @@ def _load(name: str) -> dict:
     record = fixtures[name]["record"]
     assert isinstance(record, dict)
     return record
+
+
+# --------------------------------------------------------------------------
+# What is writable must be readable back
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("length", [2049, 2500, 3047, 4096, 5000])
+def test_an_unrecognized_line_of_any_length_survives_a_round_trip(
+    tmp_path: Path, length: int
+) -> None:
+    """A line of 2049-4096 chars was writable and then permanently unreadable.
+
+    ``_unrecognized`` bounded ``message`` at ``MAX_RAW_EXCERPT`` (4096) while
+    ``from_dict`` validates it at ``MAX_FIELD_LEN`` (2048), so ``append``
+    accepted the event and every later ``query`` raised
+    ``MalformedProjectionError`` — which ``run_cycle`` does not catch, so
+    **every subsequent detection cycle on that store failed**. One long log
+    line stopped the SOC. Found by review and reproduced end to end.
+
+    Parametrized across the window and past it, because the failure was only
+    in the band between the two constants: 2048 and below always worked, and
+    above 4096 the excerpt truncation happened to bring it back under.
+    """
+    from store import EventStore
+
+    event = normalize("Failed password for " + "u" * length + " from 203.0.113.9 port 22")
+    assert len(event.message) <= MAX_FIELD_LEN
+
+    with EventStore.open(tmp_path) as store:
+        assert store.append_many((event,), ingested_at=1_000.0) == 1
+        # The assertion that actually matters: it reads back.
+        assert len(store.query()) == 1
+
+
+@pytest.mark.security
+def test_every_field_the_schema_validates_is_written_within_its_own_bound() -> None:
+    """The structural version of the test above, against fixed literals.
+
+    ``message`` is validated at ``MAX_FIELD_LEN`` and only ``raw_excerpt`` at
+    ``MAX_RAW_EXCERPT``, so only ``raw_excerpt`` may be written at the wider
+    bound. Pinned against the literals rather than the constants, because
+    scaling an assertion from the constant under test cannot fail.
+    """
+    assert MAX_FIELD_LEN == 2048
+    assert MAX_RAW_EXCERPT == 4096
+    long_line = "x" * 9000
+    event = normalize(long_line)
+    assert len(event.message) <= 2048, "message was written past the bound from_dict enforces"
+    assert len(event.raw_excerpt) <= 4096
+
+
+@pytest.mark.security
+def test_a_poisoned_store_does_not_break_every_later_cycle(tmp_path: Path) -> None:
+    """The consequence, asserted through the pipeline rather than argued.
+
+    The defect's blast radius was not one bad event: ``query`` raises for the
+    whole result set, so one 3047-character line in ``auth.log`` broke every
+    firing of the scheduled cycle from then on.
+    """
+    from pipeline import cursor_path, load_cursor, run_cycle
+    from store import EventStore
+
+    with EventStore.open(tmp_path) as store:
+        store.append(
+            normalize("Failed password for svc from 10.0.0.9 port 22 ssh2"), ingested_at=1_000.0
+        )
+        store.append(
+            normalize("Failed password for " + "u" * 3000 + " from 10.0.0.9 port 22"),
+            ingested_at=2_000.0,
+        )
+        result = run_cycle(store, cursor=load_cursor(cursor_path(tmp_path)))
+    assert result.events_read == 2, "a long line still breaks the detection cycle"
