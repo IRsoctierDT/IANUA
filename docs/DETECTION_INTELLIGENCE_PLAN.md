@@ -74,11 +74,11 @@ typed surfaces; nothing in these packages reads a clock or opens a socket
 | P4 | `agents/mapping/`: data-driven engine, multi-technique output, digest gate | **DONE** — PR #155 |
 | P5 | `intel/`: behavioral library, synthetic seed, decay, corroboration, agent upgrade | **DONE** — this PR |
 | P6 | `detections/behaviors/`: behavioral TTP corpus, reference-gated index, matcher + report wiring | **DONE** — this PR |
-| P7 | `correlation/` wiring: scenario rules carry validated ATT&CK, incidents stamp coverage | Planned (waits on XDR-2; XDR-1 has landed) |
+| P7 | `correlation/` wiring: scenario rules carry validated ATT&CK, incidents stamp coverage | Planned — **unblocked** (XDR-1 and XDR-2 have landed) |
 | P8 | `agents/response/`: plan-only containment; security tests prove no executor exists | **DONE** — this PR |
 | P9 | Dashboard: Detection Intelligence tab — corpus health, intel freshness, behavioral telemetry split, maintenance debt, plan-only response notice | **DONE** — this PR |
 | XDR-1 | `ingest/`: canonical `NormalizedEvent`, ten parsers across five domains, fail-closed source recognition, OCSF classification for structured events | **DONE** — this PR |
-| XDR-2 | `correlation/`: entity resolution across domains, incident assembly, cross-source scoring | Planned (unblocks P7) |
+| XDR-2 | `correlation/`: entity resolution across domains, incident assembly, cross-source scoring | **DONE** — declared-exact merges, fan-out suppression, explainable scoring |
 
 ## Trust boundaries added (DESIGN.md §5)
 
@@ -117,8 +117,13 @@ the corpus to that budget deliberately.
 
 ## Future Enhancements
 
-- P7 and XDR-2 above: `correlation/` (entity resolution across domains,
-  incident assembly), which is the remaining half of the XDR path.
+- P7 above: stamp validated ATT&CK coverage onto assembled incidents. XDR-2
+  has landed (`correlation/`: entity resolution and incident assembly), so
+  the remaining half of the XDR path is the mapping wiring, not the
+  correlation engine.
+- Host-qualified principals in `correlation/` (`root@web-01`), which would
+  recover the links the host-scoping rule conservatively drops; it needs
+  host resolution to run first, so it is deferred rather than approximated.
 - Unit 42 integration tiers: distill the MIT-licensed Adversary Playbooks
   (STIX 2.0, archived corpus) into `intel/behaviors/` via the human-staged
   pattern; `pan-unit42/iocs` snapshots stay gitignored under `data/intel/`;

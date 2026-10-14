@@ -40,7 +40,8 @@ from store import (
 
 from ingest import normalize
 
-_STORE_ROOT = Path(__file__).resolve().parents[2] / "store"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_STORE_ROOT = _REPO_ROOT / "store"
 
 #: The store needs sqlite3, hashlib, json, re and pathlib. It must not be able
 #: to reach the network, spawn anything, or import code dynamically.
@@ -275,15 +276,28 @@ def test_store_reads_no_clock() -> None:
 
 @pytest.mark.security
 def test_store_adds_no_runtime_dependency() -> None:
-    """``dependencies = []`` is a load-bearing repository property."""
+    """``dependencies = []`` is a load-bearing repository property.
+
+    Read from ``pyproject.toml``, not installed metadata, so this runs
+    everywhere rather than skipping wherever the package is not pip-installed.
+    Installed metadata is checked too when available, since that would also
+    catch a dependency the build backend injected rather than one declared
+    here.
+    """
+    import tomllib
+
+    config = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = config["project"]["dependencies"]
+    assert declared == [], f"store must not introduce runtime dependencies: {declared}"
+
     import importlib.metadata as metadata
 
     try:
-        declared = metadata.requires("ianua") or []
-    except metadata.PackageNotFoundError:  # pragma: no cover - env dependent
-        pytest.skip("ianua is not installed in this environment; no metadata to read")
-    runtime = [req for req in declared if "extra ==" not in req]
-    assert runtime == [], f"store must not introduce runtime dependencies: {runtime}"
+        installed = metadata.requires("ianua") or []
+    except metadata.PackageNotFoundError:
+        return  # not installed here; the committed declaration is the contract
+    runtime = [req for req in installed if "extra ==" not in req]
+    assert runtime == [], f"installed metadata declares runtime dependencies: {runtime}"
 
 
 # --------------------------------------------------------------------------

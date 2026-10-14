@@ -48,8 +48,8 @@ Assessed 2026-10-14 against `DESIGN.md`, the Decision Log, and the tree.
 | Containment | **Built (direct-invocation)** | `agents/tools/containment.py`, policy-gated per call, audited |
 | Policy + audit | **Built** | `agents/policies/`: default-deny, hash-chained |
 | Compliance | **Built** | `compliance/` + published trust page |
-| **Persistence** | **Stage 1 — this program** | Postgres provisioned in compose but "not yet used by application code"; zero DB imports repo-wide |
-| **Correlation** | Absent | `correlation/` planned as XDR-2, blocking P7 |
+| Persistence | **Stage 1 — done** | `store/`: append-only, content-addressed, tamper-evident |
+| Correlation | **Stage 2 — done** | `correlation/`: declared-exact entity merges, fan-out suppression, explainable scoring |
 | **Collection** | Absent | `ingest/` takes records from a caller; no forwarder, listener, or poller exists |
 | **Scheduling** | Absent | No scheduler in `agents/`, `ingest/`, `dashboard/`, `mcp/` |
 | **Identity** | Absent | Decision Log, 2026-08-21: "the repository has no caller identity at all" |
@@ -65,7 +65,7 @@ and run against lab telemetry before any charter amendment is argued.
 | # | Stage | Charter crossing required | Status |
 |---|---|---|---|
 | 1 | **`store/`** — durable append-only event store | None (lab data under gitignored `data/`) | **DONE** — this PR |
-| 2 | **`correlation/`** — entity resolution across domains, incident assembly (XDR-2) | None | Planned |
+| 2 | **`correlation/`** — entity resolution across domains, incident assembly (XDR-2) | None | **DONE** |
 | 3 | **Caller identity** — a principal on every request; authz decided per caller; approval bound to a person | None to build; unblocks Stage 7 | Planned |
 | 4 | **Scheduled execution** — continuous detection over the store rather than on demand | None | Planned |
 | 5 | **Collection** — agents/forwarders shipping real telemetry | **Yes**: `ingest/`'s no-network invariant stays (collection is a separate package); default-deny egress must admit collection endpoints (`DESIGN.md` Decision Log, initial) | Planned |

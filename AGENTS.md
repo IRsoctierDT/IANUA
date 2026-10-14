@@ -122,6 +122,7 @@ ianua/
 ├── ingest/                    # Multi-source telemetry normalization (XDR front door)
 │   └── parsers/               # One module per domain: endpoint, network, cloud, identity, email
 ├── store/                     # Durable append-only event store (SOC memory; stdlib sqlite3)
+├── correlation/               # Entity resolution across domains + incident assembly
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
 ├── mcp/                       # MCP server + sandboxed tool execution
@@ -281,10 +282,10 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest store scripts tests dashboard mcp rag compliance
+mypy agents attack intel ingest store correlation scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack intel ingest store scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest store correlation scripts mcp
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
