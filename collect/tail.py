@@ -169,11 +169,29 @@ def read_new(
 
         if cut == -1:
             if len(chunk) > max_line:
-                # No newline, and already longer than one record may be. Holding is
-                # what wedged the source, so emit what fits — counted as truncated,
-                # which is visible — and advance past it. The remainder may arrive
-                # as further truncated records; that is degradation, not loss.
-                end = start + len(chunk)
+                # No newline, and already longer than one record may be. Holding
+                # is what wedged the source, so emit what fits — counted as
+                # truncated, which is visible — and advance.
+                #
+                # Advance by ``max_line``, **not** by ``len(chunk)``. Advancing
+                # past the whole chunk made the comment that used to sit here
+                # ("the remainder may arrive as further truncated records; that
+                # is degradation, not loss") false: the offset passed those
+                # bytes, so nothing could ever re-read them. With the shipped
+                # caps that discarded up to 8 MiB minus 64 KiB *per pass* while the
+                # report said ``truncated: 1``, indistinguishable from an
+                # ordinary backlog. Measured at 4505 of 5410 bytes gone.
+                #
+                # It also fused records. When the no-newline run ended partway
+                # through a budget window, the leftover bytes were concatenated
+                # with the next genuine line by the ``split`` below, so a real
+                # auth record arrived as ``Xtype=USER_AUTH …`` — recognition
+                # missed it and it landed ``unrecognized``/``partial`` with no
+                # user and no address. Advancing by exactly what was emitted
+                # makes the remainder arrive as further truncated records, which
+                # is what the claim always said, and leaves no partial window to
+                # fuse onto the next line.
+                end = start + max_line
                 return TailResult(
                     lines=(chunk[:max_line],),
                     position=Position(

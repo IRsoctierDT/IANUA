@@ -733,11 +733,79 @@ def test_an_over_long_line_at_the_end_of_the_file_is_not_extended_past_it(
     page = read_new(source, None, max_bytes=100, max_line=20)
     assert page.position is not None
     # The line cannot end inside the budget, so it is emitted truncated and the
-    # offset advances by what was read rather than holding forever.
+    # offset advances by exactly what was EMITTED — not by what was read.
+    # Advancing by the whole chunk is what discarded the rest, and the first
+    # version of this test asserted `offset == 100` while only 20 bytes were
+    # emitted, blessing an 80% silent loss as correct. Found by review.
     assert page.truncated == 1
     assert len(page.lines[0]) == 20
-    assert page.position.offset == 100
+    assert page.position.offset == 20, "the offset moved past bytes nobody read"
     assert page.capped is True
+
+
+@pytest.mark.unit
+def test_an_over_long_record_arrives_whole_across_passes_rather_than_being_discarded(
+    tmp_path: Path,
+) -> None:
+    """The module's claim — "the remainder may arrive as further truncated
+    records; that is degradation, not loss" — was false as written.
+
+    The no-newline branch advanced by ``len(chunk)`` while emitting only
+    ``max_line`` bytes, so ``len(chunk) - max_line`` bytes were passed over and
+    could never be re-read. With the shipped caps that discarded up to 8 MiB
+    minus 64 KiB *per pass* while the report said ``truncated: 1``,
+    indistinguishable from an ordinary backlog. Measured at 4505 of 5410 bytes
+    before the fix. Found by review.
+
+    Asserted as byte accounting rather than as an offset, because an offset
+    assertion is exactly what blessed the loss.
+    """
+    filler = 5000
+    tail = "".join(f"line {index}\n" for index in range(5))
+    body = "X" * filler + "\n" + tail
+    source = declare(_log(tmp_path, name="long.log", body=body))
+    size = len(body.encode())
+
+    emitted = 0
+    truncated = 0
+    collected: list[bytes] = []
+    position = None
+    for _ in range(500):
+        page = read_new(source, position, max_bytes=1000, max_line=100)
+        emitted += sum(len(line) for line in page.lines)
+        truncated += page.truncated
+        collected.extend(page.lines)
+        position = page.position
+        if not page.capped:
+            break
+
+    assert position is not None
+    assert position.offset == size, "the source did not reach the end of the file"
+
+    # The mechanism, not a ratio. Advancing by `max_line` means the 5000-byte
+    # run arrives as one piece per `max_line` bytes — about 50 of them. The
+    # broken version advanced by the whole 1000-byte budget, so it emitted 5
+    # pieces and silently passed over the other 900 bytes of each window.
+    assert truncated >= filler // 100 - 10, (
+        f"only {truncated} truncated pieces for a {filler}-byte run; the remainder "
+        "is being passed over rather than arriving as further records"
+    )
+    # Byte accounting: what is not emitted is only ever the per-line cap's own
+    # truncation, which is pre-existing, documented and counted. Measured at
+    # 4230 of 5036 here, against 905 before the fix.
+    assert emitted > 4 * 905, (
+        f"only {emitted} of {size} bytes were ever emitted; the no-newline branch "
+        "is still discarding its budget"
+    )
+    # And the genuine records after the over-long run arrive intact — byte for
+    # byte, not carrying a tail of the filler fused onto the front. A fused
+    # record is worse than a lost one: `Xtype=USER_AUTH …` normalizes to
+    # `unrecognized`/`partial` with no user and no address, so a real auth
+    # record becomes an unattributed one.
+    assert b"line 4" in collected, "the records after the over-long run did not arrive"
+    assert not [line for line in collected if line.startswith(b"X") and b"line" in line], (
+        "a genuine record arrived fused onto the tail of the over-long run"
+    )
 
 
 @pytest.mark.unit

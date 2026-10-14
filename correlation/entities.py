@@ -80,6 +80,15 @@ NEVER_JOIN = frozenset(
         "none",
         "nil",
         "unknown",
+        # auditd writes "?" for a field it has no value for, and every
+        # pre-authentication sshd record carries `hostname=?` and
+        # `terminal=?`. Collecting audit.log therefore produces a stream of
+        # events all sharing that "host", which would merge unrelated hosts'
+        # authentication activity into one entity. Reachable only once the
+        # nested `msg=` payload was extracted, which is why it arrives with
+        # that fix rather than before it.
+        "?",
+        "(none)",
         "localhost",
         "localhost.localdomain",
         "127.0.0.1",
