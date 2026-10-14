@@ -126,9 +126,11 @@ python scripts/run_pipeline.py --root /srv/ianua --json
 **cron** — simplest, adequate for a single node:
 
 ```cron
-*/5 * * * *  cd /srv/ianua && /srv/ianua/.venv/bin/python \
-    scripts/run_pipeline.py --root /srv/ianua --caller soc-timer \
-    >> /srv/ianua/data/pipeline/run.log 2>&1
+# One line. A crontab entry is five schedule fields followed by a command that
+# runs to the end of the line; the backslash continuations used in the systemd
+# units below are a unit-file convention and do not carry over here. Wrapping a
+# cron command across lines does not do what it looks like it does.
+*/5 * * * *  cd /srv/ianua && /srv/ianua/.venv/bin/python scripts/run_pipeline.py --root /srv/ianua --caller soc-timer >> /srv/ianua/data/pipeline/run.log 2>&1
 ```
 
 The redirect target lives in a directory the pipeline creates on its first
@@ -262,9 +264,9 @@ service to log JSON, or to treat that parser as its own reviewed change.
 # Every minute. Not tidiness: the tail of a file rotated away BETWEEN runs is
 # unreachable by name, because a one-shot process holds no descriptor across
 # invocations. Running often is what bounds that gap.
-* * * * *  cd /srv/ianua && /srv/ianua/.venv/bin/python \
-    scripts/run_collector.py --root /srv/ianua --caller soc-collector \
-    --source /var/log/audit/audit.log >> /srv/ianua/data/collect/run.log 2>&1
+#
+# One line, as above — no backslash continuations in a crontab.
+* * * * *  cd /srv/ianua && /srv/ianua/.venv/bin/python scripts/run_collector.py --root /srv/ianua --caller soc-collector --source /var/log/audit/audit.log >> /srv/ianua/data/collect/run.log 2>&1
 ```
 
 As with the pipeline, create the directory first — the shell opens the redirect before the
@@ -322,9 +324,30 @@ delete-and-recreate — and the source was re-read from the beginning, so expect
 
 **`--max-bytes` has a floor worth respecting.** A value below the 64 KiB line cap means a
 single longer line cannot fit in one read. That no longer wedges the source — the read is
-extended just far enough to hold one legal line, and a line that still cannot end is
-emitted truncated and counted so the offset advances — but every such line then costs an
+extended just far enough to hold one legal line — but every such line then costs an
 over-budget read. Leave the flag alone unless a backlog is genuinely not draining.
+
+**A record longer than the line cap arrives as several records, not one.** When a read
+finds no newline inside its budget and already holds more than `MAX_LINE_BYTES`, it emits
+the first 64 KiB, counts it in `truncated`, and advances by **exactly what it emitted**.
+So a 200 KiB single-line record becomes four truncated records rather than one sample, and
+the run report says `truncated: 4`. That is deliberate: advancing by the whole read instead
+discarded everything past the first 64 KiB of each window — up to 8 MiB minus 64 KiB per
+pass — while reporting `truncated: 1`, indistinguishable from an ordinary backlog
+(measured at 4505 of 5410 bytes lost). The trade is visible noise over silent loss. If a
+pathological source is inflating your event count, fix the source or raise the line cap;
+do not read the inflation as separate events on the host.
+
+**One `ingested_at` per source, not per pass.** Each source's batch is stamped immediately
+before its own commit, because `append_many` is one transaction per call and the pipeline
+holds a *different* lock from the collector — so a cycle can fire between two of a pass's
+commits. With one stamp shared across the pass, that cycle saved a cursor inside the tie
+group and every later-source event whose content hash sorted below it was behind a cursor
+that had already passed: never read, by any cycle. Reproduced at 30 of 60 collected events
+permanently invisible with the pipeline reporting `events_read: 0`. Per-commit stamping
+means a cursor can only land *between* tie groups. Nothing to configure; it is noted here
+because the symptom — a pipeline that reports idle while the store grows — is otherwise
+very hard to read.
 
 **Known limitation — a forward clock jump is permanent.** `ingested_at` comes from
 `EventStore.next_stamp(time.time())`, which returns a value strictly after the store's
