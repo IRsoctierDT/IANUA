@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Minimal, secure-by-default MCP server stub.
 
 Design goals (see DESIGN.md §3-§6, AGENTS.md §5-§6):

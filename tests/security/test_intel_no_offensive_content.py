@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Committed intel content is detection-phrased — never an attack toolkit."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Render an incident-report Markdown document to PDF (pure-Python, reportlab).
 
 Purpose: a portable, client-ready PDF of the deterministic incident report, with

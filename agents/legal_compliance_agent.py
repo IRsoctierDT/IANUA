@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Legal/Compliance Research Agent.
 
 Structures a legal or compliance inquiry into a reviewable intake: it classifies

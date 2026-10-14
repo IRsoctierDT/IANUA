@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Input-validation contracts for agents that consume untrusted text.
 
 Every agent validates its own inputs (AGENTS.md §4): malformed input raises

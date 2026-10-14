@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the local LLM generation client (no network — injected transport)."""
 
 from collections.abc import Callable

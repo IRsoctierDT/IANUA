@@ -66,6 +66,51 @@ a royalty-free patent license covering the published contributions. You cannot
 publish code under this license and later charge those same users patent
 royalties for it. That is the bargain, and it is intentional.
 
+### 3.1.1 Attribution hardening (2026-10-14)
+
+**Decision.** Keep Apache-2.0. Harden attribution instead.
+
+**Reasoning.** The question raised was whether to revise the licence to stop
+someone lifting the project, renaming it, and shipping it. That concern splits
+in two, and only one half is a licensing problem:
+
+- **Using the IANUA name** was already prevented — §6 plus `NOTICE`, which is
+  why Apache was chosen over MIT (§3.1).
+- **Renaming and shipping it** is what Apache-2.0 permits by design. Stopping
+  that requires a source-available licence (BSL 1.1, FSL, Elastic 2.0), which
+  forfeits OSI-approved status — and this project is positioned for "an
+  investor, a grantor, or a regulator" (`AGENTS.md` §1), several of whom
+  require an OSI licence. The protection would cost the credibility it exists
+  to protect.
+
+Since the goal is credit and name rather than blocking commercial use, the
+licence was already correct and the gap was elsewhere: attribution did not
+**travel**. §4 carries notices through redistributed *source*; nothing carried
+them into a generated document, a published page, or a single module copied
+into another project.
+
+**Changes made.**
+
+| Surface | Before | After |
+|---|---|---|
+| Source files | 0 of 249 carried any notice | SPDX short-form on every tracked `.py`, after any shebang |
+| Generated incident reports | timestamp only | provenance footer: name, version (from `pyproject.toml`), repo URL, licence, `NOTICE` pointer |
+| `docs/status.html`, `docs/trust.html` | no copyright, no link back | attribution emitted **by the builders**, so regeneration cannot drop it |
+| `docs/index.html` | already fully attributed | unchanged |
+| Drift gate | none | `tests/unit/test_attribution.py` — a new `.py` without a notice fails the build |
+
+**Why SPDX short-form** over the eleven-line Apache appendix boilerplate: two
+lines per file instead of eleven, and it is machine-readable, so licence
+scanners and SBOM tooling detect it — which matters because this project
+publishes CycloneDX SBOMs under `security/sbom/`.
+
+**Consequence to understand.** None of this is retroactive. Every published
+release remains under Apache-2.0 for anyone who obtained it, and a fork taken
+from those versions carries those terms in perpetuity (§8 already records
+this). Attribution hardening changes what *future* copies carry, and makes a
+rebranded deployment's own output visibly inconsistent with its branding
+rather than silently unattributed.
+
 ### 3.2 Copyright holder: the individual author
 
 **Decision.** `Copyright 2026 Ivan Rozenblad` — legal name, not the GitHub
@@ -224,6 +269,23 @@ affiliation or endorsement.
    (§4), not on anything technical.
 3. **Any patent question** — patent attorney, and quickly if it applies, given
    the grace-period clock (§5).
+4. **US copyright registration** — copyright attorney, and the one item here
+   with a clock already running. Copyright exists on creation (§3.2), but
+   registration is a *remedies* question:
+
+   - **17 U.S.C. §411(a)** — for a US work, an infringement suit generally
+     cannot be filed until the Copyright Office has acted on a registration.
+     Unregistered, the first step after discovering infringement is to apply
+     and wait.
+   - **17 U.S.C. §412** — statutory damages and attorney's fees are
+     unavailable unless registration precedes the infringement, **or** occurs
+     within **three months of first publication**.
+
+   The published releases are already outside that three-month window, which
+   argues for registering now rather than after something happens. This is the
+   lever that makes "keep the credit" enforceable rather than merely stated;
+   the attribution work above is evidentiary, not remedial. Consult the
+   statutes and an attorney — this summary does not govern.
 
 ---
 
@@ -231,6 +293,10 @@ affiliation or endorsement.
 
 Consult primary sources; they govern, and this summary does not.
 
+- 17 U.S.C. §411 (registration as a precondition to suit) and §412
+  (timing of statutory damages and fees) —
+  <https://www.copyright.gov/title17/>
+- SPDX license list and short-form identifiers — <https://spdx.org/licenses/>
 - Apache License, Version 2.0 — <https://www.apache.org/licenses/LICENSE-2.0>
   (see §3 patent grant, §5 contributions, §6 trademarks, §§7–8 warranty and
   liability)

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The containment boundary is closed by construction (DESIGN.md §5 boundary 8).
 
 These tests are the enforcement behind the claim "IANUA does not execute

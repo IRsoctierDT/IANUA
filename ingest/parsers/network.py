@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Network telemetry: Zeek (conn/dns/http) and Suricata EVE.
 
 Zeek describes what happened on the wire; Suricata says what a signature

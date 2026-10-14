@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """attack/ is structurally offline, clock-free, and dependency-free.
 
 The vocabulary layer must be safe to import from every other layer: no

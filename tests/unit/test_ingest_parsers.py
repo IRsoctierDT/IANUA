@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Contracts for the multi-source ingest layer.
 
 The properties that matter here are not "does field X land in field Y" — they

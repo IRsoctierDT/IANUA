@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Standalone verifier for the tamper-evident audit log (Hardening #2).
 
 Recomputes the full hash chain across all retained segments (archives +

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Behavioral detection content stays defensive, synthetic, and honest.
 
 Detection rules necessarily *describe* attacker behavior — that is what makes

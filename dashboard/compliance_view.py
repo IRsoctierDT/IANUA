@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Presentation helpers for the dashboard's Compliance tab.
 
 Pure functions from compliance-engine types to render-ready rows, kept free of

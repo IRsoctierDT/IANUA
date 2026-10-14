@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Policy-guarded capability wrapper for agent tool surfaces.
 
 The single, reusable enforcement primitive for *any* capability that reaches the

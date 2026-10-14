@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Pinned expected outputs for every ladder-era branch, plus the deliberate changes.
 
 The legacy scalar SHAPE is frozen; three string values changed deliberately

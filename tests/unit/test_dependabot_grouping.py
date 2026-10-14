@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Dependabot grouping must route tool bumps to the auto-merging group.
 
 This exists because the obvious configuration was silently wrong. The `uv`

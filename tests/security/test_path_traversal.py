@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security test: tool input validation must block path traversal.
 
 This is the day-one example for the `tests/security` suite required by

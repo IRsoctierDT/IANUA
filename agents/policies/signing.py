@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Pluggable signers for the audit log's chain head (Hardening #2).
 
 The audit log signs its chain head so tampering is detectable even by someone who

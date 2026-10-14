@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Fail-closed loader for the committed response-action catalogue.
 
 The catalogue is reviewed data, not code: actions land through PRs and are

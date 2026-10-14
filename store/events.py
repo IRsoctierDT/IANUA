@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Durable, append-only event store over the canonical ``NormalizedEvent``.
 
 ``ingest/`` translates ten formats into one shape but holds nothing: it is a

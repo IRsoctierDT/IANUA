@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Error taxonomy for the local ATT&CK corpus.
 
 ``attack/`` is the shared technique vocabulary read by agents, detections

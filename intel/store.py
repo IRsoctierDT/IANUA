@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Fail-closed loader for the committed threat-intelligence library.
 
 DESIGN.md §5 boundary 6: committed intel content is first-party or synthetic

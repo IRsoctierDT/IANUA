@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Identity telemetry: Microsoft Entra ID sign-ins and Okta System Log.
 
 Identity is where a modern intrusion usually becomes visible first — an

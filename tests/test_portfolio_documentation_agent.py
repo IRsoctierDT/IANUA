@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 import pytest
 from agents.portfolio_documentation_agent import PortfolioDocumentationAgent
 

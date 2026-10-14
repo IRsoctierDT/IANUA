@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Property-based fuzzing of tool input validators (HARDENING_ROADMAP #3).
 
 Uses Hypothesis to assert invariants over generated inputs rather than only the

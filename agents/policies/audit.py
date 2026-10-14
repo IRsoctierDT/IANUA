@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Structured, tamper-evident audit log — implements AGENTS.md §3 auditability.
 
 Security-relevant decisions (e.g. policy-gate evaluations) are appended as JSON

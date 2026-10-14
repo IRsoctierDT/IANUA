@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Data-driven event→technique mapping over the pinned ATT&CK corpus.
 
 Public surface: :class:`MappingEngine` (the evaluator), :func:`load_store`

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic lookup and matching over the validated intel library.
 
 No clock, no network: ``as_of`` is always injected by the caller (the

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Domain parsers — one module per telemetry domain.
 
 Each module exports a ``SIGNATURES`` tuple. A signature pairs a *recognizer*

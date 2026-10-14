@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Reference validation against the pinned corpus.
 
 The merge-blocking teeth of the "ongoing database" requirement: every

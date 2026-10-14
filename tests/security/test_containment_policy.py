@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the defensive `containment` action class.
 
 Proves the DESIGN.md (2026-08-21) compensating controls: containment is

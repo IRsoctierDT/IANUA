@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate a CycloneDX Software Bill of Materials (SBOM) for this repository.
 
 The repository spans two package ecosystems:

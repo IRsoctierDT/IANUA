@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit + security tests for the RAG ingestion/retrieval skeleton."""
 
 from pathlib import Path

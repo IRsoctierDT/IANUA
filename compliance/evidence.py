@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Evidence recording for compliance runs — tamper-evident and exportable.
 
 Two artifacts per run, both under the gitignored ``data/compliance/``:

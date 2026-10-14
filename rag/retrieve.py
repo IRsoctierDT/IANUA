@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """In-memory cosine retrieval over embedded chunks.
 
 A dependency-free default so the pipeline is testable on day one. For persistence

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Multi-source telemetry ingest — the XDR front door.
 
 Translates endpoint, network, cloud, identity, and email telemetry into one

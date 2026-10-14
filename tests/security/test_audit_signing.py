@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for HMAC head-hash signing of the audit log (Hardening #2).
 
 Signing closes the "recompute a fresh valid chain" gap: without the key an

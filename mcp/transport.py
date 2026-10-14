@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Line-delimited JSON-RPC 2.0 transport over stdio for the MCP server stub.
 
 This wires `ToolRegistry` (mcp/server.py) to a concrete transport so an agent

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Declarative policy bundle loader — externalizes the §5/§5.1 policy (fail-closed).
 
 The in-code default (:mod:`agents.policies.approval`) remains the safety net; this

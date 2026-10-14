@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the persistent SQLite vector store (rag/vector_store.py)."""
 
 from __future__ import annotations

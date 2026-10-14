@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The event store holds evidence — hold its properties closed.
 
 ``store/`` is the first package in this platform that writes a database, and

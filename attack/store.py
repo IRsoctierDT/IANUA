@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Integrity-verified loader for the committed ATT&CK shards.
 
 Every shard's SHA-256 is checked against the pin **before** its bytes are

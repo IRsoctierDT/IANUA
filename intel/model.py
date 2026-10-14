@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Typed, immutable views over the local threat-intelligence library.
 
 Two indicator kinds with deliberately different lifecycles (the Pyramid of

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Convert the Markdown incident report to PDF — hardened rendering path.
 
 Incident reports interpolate **untrusted input** (raw log lines, indicators,

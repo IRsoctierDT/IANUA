@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """MITRE ATT&CK Mapper Agent — facade over the data-driven mapping engine.
 
 Historically an if/elif ladder of ~8 hardcoded mappings; now a thin facade

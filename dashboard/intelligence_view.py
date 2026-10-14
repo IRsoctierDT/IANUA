@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Presentation helpers for the dashboard's Detection Intelligence tab.
 
 Pure functions over the ``attack/``, ``intel/``, ``detections/behaviors/``,

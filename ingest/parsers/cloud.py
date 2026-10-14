@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Cloud control-plane telemetry: AWS CloudTrail and Azure Activity Log.
 
 Control-plane records are the domain the platform was most blind to: they

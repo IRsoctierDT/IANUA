@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end contracts for the widened detection + KB coverage.
 
 Pins the four event types added to close the classifier<->Sigma gap

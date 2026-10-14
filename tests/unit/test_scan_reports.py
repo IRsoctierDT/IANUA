@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Offline Broker import, filtering, and scope-conscious comparison tests."""
 
 from __future__ import annotations

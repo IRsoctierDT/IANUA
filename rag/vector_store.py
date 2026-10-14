@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Persistent, dependency-free vector store (SQLite) for the RAG pipeline.
 
 :class:`~rag.retrieve.InMemoryVectorStore` is a fine reference, but it holds

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate a MITRE ATT&CK Navigator coverage layer from the Sigma corpus.
 
 Reads every rule in ``detections/sigma/`` and emits an ATT&CK Navigator layer

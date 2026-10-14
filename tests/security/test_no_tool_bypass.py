@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests proving no MCP tool dispatch bypasses the policy choke point.
 
 Every ``ToolRegistry.dispatch`` must route through ``enforce()`` (AGENTS.md §5.1).

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """No committed intel or attack data may carry restricted markings or licenses."""
 
 from __future__ import annotations

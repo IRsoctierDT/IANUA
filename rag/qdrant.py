@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared Qdrant client factory: embedded-by-default, server by opt-in.
 
 Security consideration — attack-surface reduction: when ``QDRANT_URL`` is not

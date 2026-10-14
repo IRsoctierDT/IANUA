@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Contracts for the ATT&CK Navigator coverage-layer generator + drift gate."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Minimal deterministic evaluator for the base-rule Sigma subset used here.
 
 Enough of the Sigma detection grammar to *replay* this repository's base rules

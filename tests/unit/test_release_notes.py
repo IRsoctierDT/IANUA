@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Contracts for scripts/release_notes.py — curated release bodies, fail closed.
 
 The release body is externally visible and immutable in practice: once a

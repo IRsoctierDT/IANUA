@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Threat Intel Agent — indicator triage over the local intel library.
 
 Classifies an indicator (IP / domain / hash / unknown) with the stdlib

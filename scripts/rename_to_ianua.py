@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Perform the controlled repository-wide rename to IANUA.
 
 The migration updates active text files while preserving captured historical

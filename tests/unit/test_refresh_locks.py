@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for scripts/refresh_locks.py (pure functions only — no network,
 no subprocesses). The uv/pip-compile integration is exercised by the sbom-sync
 CI gate, which regenerates from the committed locks and diffs."""

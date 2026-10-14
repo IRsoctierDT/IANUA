@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Build and verify the derived behavioral-detection index.
 
 The behavioral corpus is *authored* in YAML (``detections/behaviors/*.yml``,

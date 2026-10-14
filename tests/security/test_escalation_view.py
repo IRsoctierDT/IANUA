@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests: the dashboard's read-only escalation-queue view.
 
 The view must verify the broker's hash chain before trusting any record —

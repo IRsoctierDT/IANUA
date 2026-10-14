@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Prepare an IANUA release: bump every version surface in one atomic step.
 
 Cutting a release used to be a hand-edit of a dozen files (v2.1.0 took sixteen

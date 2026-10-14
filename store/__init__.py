@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Durable, append-only event store — the SOC's memory of what happened.
 
 ``ingest/`` turns ten telemetry formats into one :class:`ingest.NormalizedEvent`
