@@ -29,6 +29,7 @@ PACKAGES = {
     "ingest",
     "store",
     "correlation",
+    "pipeline",
     "rag",
     "mcp",
     "dashboard",
@@ -42,6 +43,7 @@ MYPY_SCOPE = {
     "ingest",
     "store",
     "correlation",
+    "pipeline",
     "scripts",
     "tests",
     "dashboard",
@@ -56,13 +58,40 @@ COVERAGE_SCOPE = {
     "ingest",
     "store",
     "correlation",
+    "pipeline",
     "compliance",
     "rag",
     "mcp",
 }
 # Bandit covers the packages that parse untrusted or externally influenced
 # input (agent pipeline, corpus loaders, operational scripts, MCP surface).
-BANDIT_SCOPE = {"agents", "attack", "intel", "ingest", "store", "correlation", "scripts", "mcp"}
+BANDIT_SCOPE = {
+    "agents",
+    "attack",
+    "intel",
+    "ingest",
+    "store",
+    "correlation",
+    "pipeline",
+    "scripts",
+    "mcp",
+}
+
+#: Top-level directories holding Python that are deliberately outside
+#: :data:`PACKAGES`, each with the reason. The point of naming them is that
+#: ``test_every_python_directory_is_accounted_for`` then fails for a directory
+#: nobody decided about — which is how ``cli/`` came to be in no gate at all.
+UNGATED = {
+    # Pre-charter entry points to the orchestrator: untyped (``def main():``),
+    # and the path that reaches agents/tools/llm.py's urlopen with only three
+    # enforce() sites behind it. Bringing it under the gates means annotating
+    # it and gating that egress, which is its own stage in
+    # docs/PRODUCTION_SOC_PLAN.md — not a silent omission.
+    "cli",
+    # The test suite is type-checked (it is in MYPY_SCOPE) but is not a
+    # shipped package, so it is not in PACKAGES or the coverage source.
+    "tests",
+}
 
 
 def _pyproject() -> dict:
@@ -99,6 +128,26 @@ def test_ci_mypy_and_bandit_lines_match() -> None:
     bandit_line = next(line for line in ci.splitlines() if "run: bandit" in line)
     scope = set(bandit_line.split()[2:]) - {"-c", "pyproject.toml", "-r"}
     assert scope == BANDIT_SCOPE
+
+
+@pytest.mark.unit
+def test_release_workflow_mypy_scope_matches() -> None:
+    """release.yml derives its scope from a list, and that list must not drift.
+
+    This file asserted ci.yml's scope but never release.yml's, so the release
+    job's copy was free to fall behind — the same by-omission gap that left
+    ``cli/`` in no gate at all. The release job builds its scope by looping over
+    directory names and skipping any absent at the tag (it runs against a
+    detached tag, and a hard-coded list breaks release repair for every tag
+    predating the newest package), so the literal list is what this checks.
+    """
+    release = (_REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    loop = re.search(r"for dir in ([^\n]*(?:\\\n[^\n]*)*?); do", release)
+    assert loop is not None, "release.yml must build its mypy scope from a directory list"
+    listed = set(loop.group(1).replace("\\", " ").split())
+    assert listed == MYPY_SCOPE, (
+        f"release.yml mypy scope {sorted(listed)} drifted from the canonical scope"
+    )
 
 
 @pytest.mark.unit
@@ -157,3 +206,26 @@ def test_committed_package_data_is_not_gitignored() -> None:
             check=False,
         )
         assert result.returncode != 0, f"{probe} is gitignored — committed data would be dropped"
+
+
+@pytest.mark.unit
+def test_every_python_directory_is_accounted_for() -> None:
+    """A new package must land in a scope or an explicit exclusion.
+
+    Without this, the parity assertions above are all conditional on someone
+    having remembered to add the directory to ``PACKAGES`` in the first place
+    — and a directory nobody added is checked by nothing. That is not
+    hypothetical: ``cli/`` sat in no gate scope at all, by omission, and every
+    gate stayed green.
+    """
+    found = {
+        entry.name
+        for entry in _REPO.iterdir()
+        if entry.is_dir() and not entry.name.startswith(".") and any(entry.glob("*.py"))
+    }
+    unaccounted = found - PACKAGES - UNGATED
+    assert unaccounted == set(), (
+        f"{sorted(unaccounted)} hold Python but are in no gate scope. Add each to "
+        "PACKAGES (and every config the assertions above check), or to UNGATED "
+        "with the reason."
+    )
