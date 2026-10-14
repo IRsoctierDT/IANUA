@@ -480,7 +480,7 @@ def test_json_output_is_parseable_and_names_the_incident(
     assert _cli_main()(["--root", str(tmp_path), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["events_read"] == 3
-    assert payload["cursor_advanced"] is True
+    assert payload["cursor_advancing"] is True
     assert payload["idle"] is False
     assert len(payload["incidents"][0]["reference"]) == 16
 
@@ -772,3 +772,243 @@ def test_a_root_that_is_a_file_is_refused(tmp_path: Path) -> None:
     not_a_dir = tmp_path / "root"
     not_a_dir.write_text("", encoding="utf-8")
     assert _cli_main()(["--root", str(not_a_dir)]) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "batch,max_events,lookback",
+    [
+        (200, 500, 900.0),  # the backlog case: more history than the ceiling
+        (200, 500, 0.0),  # no overlap
+        (50, 60, 900.0),  # budget almost exhausted by the progress window
+        (500, 500, 900.0),  # ceiling exactly equals the batch: no room for context
+        (1, 2, 900.0),  # smallest useful window
+    ],
+)
+def test_every_consumed_event_is_inside_the_correlation_window(
+    tmp_path: Path, batch: int, max_events: int, lookback: float
+) -> None:
+    """``progress`` must be a subset of what ``assemble`` saw, always.
+
+    This is the invariant that the earlier coverage test only *looked* like it
+    asserted: summing ``events_read`` across cycles proves every event was
+    consumed, not that any of it was correlated. With the widened read limited
+    newest-first and filtered afterwards, a backlogged store consumed 200
+    events and correlated 0 — cursor advancing over a window nothing had looked
+    at — and the suite stayed green.
+
+    Parameterised across the boundary shapes because the failure needed a store
+    larger than the correlation ceiling to appear at all.
+    """
+    for block in range(6):
+        records = tuple(
+            {"type": "SYSCALL", "node": f"h{block}-{index}", "auid": f"u{index}", "comm": "ls"}
+            for index in range(300)
+        )
+        _seed(tmp_path, records, at=1000.0 + block)
+
+    thresholds = Thresholds(max_events=max_events)
+    cursor: Cursor | None = None
+    with EventStore.open(tmp_path) as store:
+        for _ in range(12):
+            page = run_cycle(
+                store, cursor=cursor, batch=batch, thresholds=thresholds, lookback=lookback
+            )
+            if page.idle:
+                break
+            assert page.events_correlated >= page.events_read, (
+                f"consumed {page.events_read} events but correlated only "
+                f"{page.events_correlated}; the cursor advances over events nothing saw"
+            )
+            assert page.events_correlated <= max_events, (
+                f"correlated {page.events_correlated} events past the {max_events} ceiling"
+            )
+            cursor = page.cursor
+
+
+@pytest.mark.unit
+def test_a_batch_cut_does_not_lose_an_incident(tmp_path: Path) -> None:
+    """The other half of the window defect: a BATCH boundary, not a time one.
+
+    999 unrelated events, then the three correlated ones. The first cycle fills
+    its batch with noise and the second sees only the tail — so without the
+    overlap the analyst is shown a two-domain score-30 incident instead of the
+    three-domain score-52 one, with the cloud leg silently dropped. Distinct
+    mechanism from the timer case, so it gets its own test.
+    """
+    noise = tuple(
+        {"type": "SYSCALL", "node": f"h{index}", "auid": f"u{index}", "comm": "ls"}
+        for index in range(999)
+    )
+    _seed(tmp_path, noise, at=500.0)
+    _seed(tmp_path, (_CLOUD,), at=1000.0)
+    _seed(tmp_path, (_IDENTITY,), at=1001.0)
+    _seed(tmp_path, (_ENDPOINT,), at=1002.0)
+
+    best, cursor = None, None
+    with EventStore.open(tmp_path) as store:
+        for _ in range(5):
+            page = run_cycle(store, cursor=cursor)
+            if page.idle:
+                break
+            top = max(page.fresh, key=lambda incident: incident.score, default=None)
+            if top is not None and (best is None or top.score > best.score):
+                best = top
+            cursor = page.cursor
+    assert best is not None, "the story was never assembled"
+    assert sorted(best.domains) == ["cloud", "endpoint", "identity"], (
+        f"the batch cut lost a domain: {sorted(best.domains)}"
+    )
+
+
+@pytest.mark.unit
+def test_a_failed_report_leaves_the_cursor_where_it_was(tmp_path: Path) -> None:
+    """The alerts live only in stdout, so they are written before the cursor.
+
+    If the cursor advanced first and the report then failed — a full disk under
+    the run log, a closed pipe — the window would be consumed with its
+    incidents lost, and nothing would ever look at those events again. Writing
+    the report first means a failed write re-reads and re-reports, which is
+    what at-least-once promises for every other step.
+    """
+    from unittest import mock
+
+    _seed(tmp_path, (_CLOUD, _IDENTITY, _ENDPOINT), at=1000.0)
+
+    real_print = print
+
+    def fail_on_the_report(*args: Any, **kwargs: Any) -> None:
+        text = str(args[0]) if args else ""
+        if kwargs.get("file") is None and ("event(s)" in text or '"events_read"' in text):
+            raise OSError("No space left on device")
+        real_print(*args, **kwargs)
+
+    with mock.patch("builtins.print", fail_on_the_report):
+        assert _cli_main()(["--root", str(tmp_path)]) == 1
+    assert load_cursor(cursor_path(tmp_path)) is None, (
+        "the cursor advanced over a window whose alerts were never written"
+    )
+
+
+@pytest.mark.unit
+def test_the_lookback_never_loses_what_the_narrow_window_found(tmp_path: Path) -> None:
+    """Widening is not monotonic, so the overlap has to be strictly additive.
+
+    ``assemble`` demotes an entity appearing in more than ``max_entity_fanout``
+    events to reported context rather than a join key — correctly, since
+    grouping transitively on a shared gateway collapses a window into one false
+    incident. But the history a lookback pulls in inflates exactly those
+    counts, so an entity that was a valid join key over the new events alone can
+    become context over the wider window and the link is never made.
+
+    Measured before the fix: a score-30 two-domain incident reported at
+    ``lookback=0`` vanished entirely at ``lookback=900``. A window meant to find
+    *more* was losing detections it already had.
+    """
+    history = tuple(
+        {"type": "SYSCALL", "node": f"h{index}", "auid": "svc-deploy", "comm": "ls"}
+        for index in range(12)
+    )
+    _seed(tmp_path, history, at=1000.0)
+    _seed(tmp_path, (_CLOUD, _ENDPOINT), at=1100.0)
+
+    thresholds = Thresholds(max_entity_fanout=10)  # history alone exceeds this
+    with EventStore.open(tmp_path) as store:
+        consumed = run_cycle(store, batch=12, thresholds=thresholds)
+        narrow = run_cycle(
+            store, cursor=consumed.cursor, batch=12, thresholds=thresholds, lookback=0
+        )
+        wide = run_cycle(
+            store, cursor=consumed.cursor, batch=12, thresholds=thresholds, lookback=900.0
+        )
+
+    narrow_best = max((incident.score for incident in narrow.fresh), default=None)
+    wide_best = max((incident.score for incident in wide.fresh), default=None)
+    assert narrow_best is not None, "the test shape does not exercise the claim"
+    assert wide_best is not None, (
+        "the lookback suppressed a detection the narrow window reported: "
+        f"narrow top score {narrow_best}, wide found nothing"
+    )
+    assert wide_best >= narrow_best, (
+        f"the lookback degraded a detection: {narrow_best} -> {wide_best}"
+    )
+
+
+@pytest.mark.unit
+def test_the_additive_union_does_not_double_report_one_story(tmp_path: Path) -> None:
+    """A narrow incident covered by a wide one is the same story, less context.
+
+    Without the subset check the union would emit both the two-domain and the
+    three-domain version of one attack every cycle, which is the duplicate
+    storm the ``fresh`` derivation exists to avoid.
+    """
+    _seed(tmp_path, (_CLOUD, _IDENTITY, _ENDPOINT), at=1000.0)
+    with EventStore.open(tmp_path) as store:
+        page = run_cycle(store)
+    assert len(page.incidents) == 1, (
+        f"one story was reported {len(page.incidents)} times: "
+        f"{[sorted(i.domains) for i in page.incidents]}"
+    )
+
+
+@pytest.mark.unit
+def test_include_seen_surfaces_a_story_the_fresh_proxy_suppresses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Raising --lookback must actually surface what the wider window finds.
+
+    ``fresh`` means "involves an event this cycle had not consumed", which is a
+    proxy for "not already reported" — and the proxy is wrong in exactly the
+    case an operator hits when remediating a miss. Two correlated events are
+    consumed in separate cycles with no overlap, so neither cycle correlates
+    them; a later run with a lookback assembles the story from events that are
+    all behind the cursor, and it is suppressed as re-seen having never been
+    reported once.
+
+    Reproduced before ``--include-seen`` existed: the cloud+endpoint story was
+    assembled (``total_incidents=1``) and emitted by nothing.
+    """
+    _seed(tmp_path, (_CLOUD,), at=1000.0)
+    _seed(tmp_path, (_ENDPOINT,), at=1100.0)
+    main = _cli_main()
+
+    # Consume both events one at a time with no overlap, as a narrow
+    # configuration would.
+    assert main(["--root", str(tmp_path), "--batch", "1", "--lookback", "0"]) == 0
+    assert main(["--root", str(tmp_path), "--batch", "1", "--lookback", "0"]) == 0
+    capsys.readouterr()
+
+    # The operator widens the window. A new event makes the cycle non-idle.
+    _seed(
+        tmp_path, ({"type": "SYSCALL", "node": "other", "auid": "alice", "comm": "ls"},), at=1200.0
+    )
+
+    assert main(["--root", str(tmp_path), "--batch", "1", "--lookback", "900", "--json"]) == 0
+    default = json.loads(capsys.readouterr().out.strip())
+    assert default["incidents"] == [], "the default view should still suppress re-seen stories"
+    assert default["repeats"] >= 1, "the story was not assembled at all; test shape is wrong"
+
+    # Same window, asking for everything: the story must appear.
+    _seed(
+        tmp_path, ({"type": "SYSCALL", "node": "other2", "auid": "bob", "comm": "ls"},), at=1300.0
+    )
+    assert (
+        main(
+            [
+                "--root",
+                str(tmp_path),
+                "--batch",
+                "1",
+                "--lookback",
+                "900",
+                "--include-seen",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    everything = json.loads(capsys.readouterr().out.strip())
+    assert everything["include_seen"] is True
+    assert any(i["events"] >= 2 for i in everything["incidents"]), (
+        "--include-seen did not surface the multi-event story the window assembled"
+    )

@@ -20,6 +20,13 @@ the chain shows a permitted attempt with no outcome, which is the thing an
 operator needs to see. A single combined record could only be written after
 the work, and so could never describe a run that did not finish.
 
+**Audited, reported, then advanced — in that order.** The incidents exist
+only in this process's stdout; nothing persists them. So the report is written
+first: if it fails after the cursor had already moved, the window would be
+consumed with its alerts lost and nothing would ever look at those events
+again. A failed report now leaves the cursor where it was, so the next
+invocation re-reads and re-reports.
+
 **Audited before the cursor moves, deliberately.** The audit record is written
 first, then the cursor is saved. The reverse order has a bad failure: if the
 save succeeded and the audit write then failed, the pipeline would have
@@ -108,7 +115,7 @@ from agents.policies.audit import (  # noqa: E402
 )
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle  # noqa: E402
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
-from correlation import ThresholdError, Thresholds  # noqa: E402
+from correlation import Incident, ThresholdError, Thresholds  # noqa: E402
 from pipeline import (  # noqa: E402
     DEFAULT_BATCH,
     DEFAULT_LOOKBACK,
@@ -250,6 +257,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=DEFAULT_BUNDLE_PATH,
         help="Declarative policy bundle to gate the cycle against (fail-closed).",
     )
+    parser.add_argument(
+        "--include-seen",
+        action="store_true",
+        help=(
+            "Report every incident the correlation window assembles, not just the "
+            "ones involving new events. Use after RAISING --lookback: the wider "
+            "window may assemble stories from already-consumed events, and those "
+            "are suppressed as re-seen by default even if no cycle ever reported "
+            "them."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Emit the report as JSON.")
     return parser.parse_args(argv)
 
@@ -270,13 +288,37 @@ def _thresholds(args: argparse.Namespace) -> Thresholds:
     return thresholds
 
 
-def _report(result: CycleResult, *, elapsed: float, advanced: bool) -> dict[str, object]:
+def _reportable(result: CycleResult, *, include_seen: bool) -> tuple[Incident, ...]:
+    """Which incidents this run should emit.
+
+    ``fresh`` by default: the lookback re-assembles recent history every cycle,
+    and emitting all of it each run would duplicate every alert for the whole
+    overlap. But ``fresh`` is a *proxy* — "involves an event this cycle had not
+    consumed" — and the proxy is wrong in one reachable case: raising
+    ``--lookback`` can make the wider window assemble a story entirely from
+    already-consumed events, which is then suppressed as re-seen even though no
+    cycle ever reported it. That is precisely the situation an operator raising
+    the lookback is trying to fix, so ``--include-seen`` exists to make the
+    remediation work rather than silently do nothing.
+
+    Stateless by choice: knowing what was *actually* reported before would mean
+    persisting the reference set, with its own retention question. An explicit
+    flag puts that call where it belongs — with the operator who changed the
+    window.
+    """
+    return result.incidents if include_seen else result.fresh
+
+
+def _report(
+    result: CycleResult, *, elapsed: float, advancing: bool, include_seen: bool = False
+) -> dict[str, object]:
     """The run's outcome as JSON-serializable data, for a machine reader."""
     return {
         "events_read": result.events_read,
         "idle": result.idle,
         "events_correlated": result.events_correlated,
         "repeats": result.repeats,
+        "include_seen": include_seen,
         # Only the fresh ones: an incident the lookback re-assembled was
         # reported by an earlier cycle, and emitting it again every run would
         # make a log shipper duplicate every alert for the whole lookback.
@@ -288,15 +330,20 @@ def _report(result: CycleResult, *, elapsed: float, advanced: bool) -> dict[str,
                 "events": len(incident.event_ids),
                 "entities": [entity.key for entity in incident.entities],
             }
-            for incident in result.fresh
+            for incident in _reportable(result, include_seen=include_seen)
         ],
-        "cursor_advanced": advanced,
+        # "advancing", not "advanced": the report is written BEFORE the save that
+        # decides it, for the reason in the module docstring. Saying "advanced"
+        # here would be the same overstatement the audit record used to make.
+        "cursor_advancing": advancing,
         "resumed_from": None if result.started_from is None else result.started_from.event_id,
         "elapsed_seconds": round(elapsed, 3),
     }
 
 
-def _print_text(result: CycleResult, *, elapsed: float, advanced: bool) -> None:
+def _print_text(
+    result: CycleResult, *, elapsed: float, advancing: bool, include_seen: bool = False
+) -> None:
     """Human-readable summary, one line per new incident.
 
     Printed from the :class:`CycleResult` rather than from the JSON dictionary,
@@ -309,11 +356,12 @@ def _print_text(result: CycleResult, *, elapsed: float, advanced: bool) -> None:
         return
     print(
         f"read {result.events_read} event(s), correlated {result.events_correlated} "
-        f"in {elapsed:.3f}s; {len(result.fresh)} new incident(s)"
-        + (f", {result.repeats} re-seen" if result.repeats else "")
-        + f"; cursor {'advanced' if advanced else 'held'}."
+        f"in {elapsed:.3f}s; {len(_reportable(result, include_seen=include_seen))} "
+        + ("incident(s) incl. re-seen" if include_seen else "new incident(s)")
+        + (f", {result.repeats} re-seen" if result.repeats and not include_seen else "")
+        + f"; cursor {'advancing' if advancing else 'held'}."
     )
-    for incident in result.fresh:
+    for incident in _reportable(result, include_seen=include_seen):
         print(
             f"  {reference(incident)}  score={incident.score:>3}  "
             f"events={len(incident.event_ids):>3}  "
@@ -471,11 +519,41 @@ def _run(
         print(f"error: cycle ran but could not be recorded: {exc}", file=sys.stderr)
         return 1
 
-    advanced = False
+    # Report BEFORE advancing. The alerts are the output of the whole stage and
+    # they exist only in this process's stdout — nothing persists them. If the
+    # cursor were saved first and the write then failed (a full disk under the
+    # run log, a closed pipe), the window would be consumed with its incidents
+    # lost and no cycle would ever look at those events again. Reporting first
+    # means a failed write leaves the cursor where it was, so the next
+    # invocation re-reads the window and re-reports — which is exactly what
+    # at-least-once already promises for every other step.
+    try:
+        if args.json:
+            print(
+                json.dumps(
+                    _report(
+                        result,
+                        elapsed=elapsed,
+                        advancing=advancing,
+                        include_seen=args.include_seen,
+                    ),
+                    sort_keys=True,
+                )
+            )
+        else:
+            _print_text(
+                result,
+                elapsed=elapsed,
+                advancing=advancing,
+                include_seen=args.include_seen,
+            )
+    except OSError as exc:
+        print(f"error: cycle ran but its report could not be written: {exc}", file=sys.stderr)
+        return 1
+
     if advancing and result.cursor is not None:
         try:
             save_cursor(path, result.cursor)
-            advanced = True
         except (CursorError, OSError, ValueError) as exc:
             # The window will be re-read, which is what at-least-once promises.
             # Recorded as well as printed, so the chain does not end on a record
@@ -493,11 +571,6 @@ def _run(
                     ),
                 )
             return 1
-
-    if args.json:
-        print(json.dumps(_report(result, elapsed=elapsed, advanced=advanced), sort_keys=True))
-    else:
-        _print_text(result, elapsed=elapsed, advanced=advanced)
     return 0
 
 

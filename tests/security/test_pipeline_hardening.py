@@ -302,6 +302,34 @@ def test_an_incident_reference_is_unkeyed_and_therefore_not_evidence(tmp_path: P
 
 
 @pytest.mark.security
+def test_a_vanished_temp_file_with_no_cursor_written_is_an_error(tmp_path: Path) -> None:
+    """The third outcome of the race, and the one that must fail loudest.
+
+    If the temporary file is gone and the destination holds *nothing*, no
+    writer put anything there — the file was removed rather than renamed. The
+    caller's cursor was not saved, so reporting success would advance a
+    pipeline over a window whose progress was never recorded.
+
+    This is the branch that makes the race handling fail-closed rather than a
+    swallowed error, so it is tested directly rather than left to inference.
+    """
+    path = cursor_path(tmp_path)
+
+    def vanish_without_renaming(self: Path, target: object) -> Path:
+        if self.name.endswith(".tmp"):
+            self.unlink()
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        raise AssertionError("unexpected replace target")
+
+    with (
+        mock.patch.object(Path, "replace", vanish_without_renaming),
+        pytest.raises(CursorError, match="no cursor was written"),
+    ):
+        save_cursor(path, Cursor(ingested_at=1.0, event_id="abc"))
+    assert not path.exists()
+
+
+@pytest.mark.security
 def test_the_cursor_is_written_owner_only(tmp_path: Path) -> None:
     """It names stored evidence; it inherits the audit logger's file posture."""
     path = cursor_path(tmp_path)

@@ -96,9 +96,18 @@ class CycleResult:
     #:
     #: Computed from the event ids, so it needs **no persisted state**: an
     #: incident every one of whose events sits at or before the starting cursor
-    #: cannot be news. That is what keeps a lookback from turning every cycle
-    #: into a duplicate alert storm without the cycle having to remember
-    #: anything.
+    #: is treated as already reported. That is what keeps a lookback from
+    #: turning every cycle into a duplicate alert storm without the cycle having
+    #: to remember anything.
+    #:
+    #: It is a **proxy**, and the one case where it is wrong is worth naming: if
+    #: the window *widens* between runs — an operator raising ``lookback`` after
+    #: a miss — the wider window can assemble a story entirely from
+    #: already-consumed events, and this rule suppresses it even though no cycle
+    #: ever reported it. Knowing better would mean persisting the set of
+    #: reported references, with its own retention question, so the CLI exposes
+    #: ``--include-seen`` instead and leaves that call to the operator who
+    #: changed the window. :attr:`incidents` always holds everything assembled.
     fresh: tuple[Incident, ...] = field(default_factory=tuple)
 
     @property
@@ -179,31 +188,72 @@ def run_cycle(
     # not before the newest: an event that arrived just now needs the context
     # that preceded *it*, and anchoring on the newest would shrink the overlap
     # to nothing whenever a cycle covers a wide span.
+    # Context BEHIND the progress window, concatenated rather than filtered.
+    #
+    # The obvious implementation — read everything from the floor and drop what
+    # is newer than the cursor — is wrong, and wrong in the worst direction. A
+    # row limit applied newest-first is spent on the rows *above* the boundary,
+    # which the filter then discards: on a backlogged store that leaves the
+    # correlation window empty while the cursor still advances over everything
+    # it consumed. Measured at 200 events read and 0 correlated before this was
+    # rewritten — a blind spot worse than the one the lookback exists to close.
+    #
+    # Bounding the read in SQL instead (``ingested_before``) spends the budget
+    # on the newest context actually below the boundary, and building the window
+    # by concatenation makes ``progress ⊆ window`` true by construction: no
+    # filter can drop an event the cursor is about to cross.
     window = progress
-    if lookback > 0:
-        floor = progress[0].ingested_at - lookback
-        # Newest-first, then reversed. The ceiling is a hard budget, and when
-        # the window exceeds it the events to drop are the OLDEST: the new ones
-        # must be correlated because the cursor is about to advance over them,
-        # whereas dropping lookback only loses context. Reading oldest-first
-        # here would have truncated the other way and silently discarded the
-        # very events this cycle is consuming.
-        widened = store.query(
+    budget = ceiling - len(progress)
+    if lookback > 0 and budget > 0:
+        first = progress[0]
+        context = store.query(
             Query(
-                ingested_from=floor,
-                ingested_after=None,
+                ingested_from=first.ingested_at - lookback,
+                ingested_before=(first.ingested_at, first.event_id),
                 newest_first=True,
-                limit=ceiling,
+                limit=budget,
             )
         )
-        # Bound to this cycle: the store may have grown since the progress read
-        # (a collector appends continuously), and correlating events beyond the
-        # cursor we are about to save would report incidents built partly from
-        # events the next cycle will read again — without having consumed them.
-        keyset = advanced.as_keyset()
-        window = tuple(reversed([e for e in widened if (e.ingested_at, e.event_id) <= keyset]))
+        # Newest-first so the budget buys the most recent context, then reversed
+        # so the window stays in ingestion order for ``assemble``.
+        window = tuple(reversed(context)) + progress
 
     incidents = assemble(window, thresholds=thresholds)
+    if window is not progress:
+        # Also correlate the new events ALONE, and keep anything the wide
+        # window missed.
+        #
+        # Widening is not monotonic. ``assemble`` demotes an entity appearing in
+        # more than ``max_entity_fanout`` events to reported context rather than
+        # a join key — correctly, since grouping transitively on a shared
+        # gateway collapses a window into one false incident. But the extra
+        # history the lookback pulls in inflates exactly those counts, so an
+        # entity that was a valid join key over the new events can become
+        # context over the wider window, and the link is never made. Measured:
+        # a score-30 two-domain incident reported at ``lookback=0`` vanished
+        # entirely at ``lookback=900`` once the shared principal crossed the
+        # fan-out threshold.
+        #
+        # So the lookback is strictly additive. An incident whose events are a
+        # subset of one the wide window already found is dropped as the same
+        # story seen with less context; everything else is kept. The cost is one
+        # extra assembly over at most ``batch`` events, which is the smaller of
+        # the two windows.
+        covered = [set(incident.event_ids) for incident in incidents]
+        recovered = tuple(
+            incident
+            for incident in assemble(progress, thresholds=thresholds)
+            if not any(set(incident.event_ids) <= seen for seen in covered)
+        )
+        if recovered:
+            # Re-sorted on ``assemble``'s own key so the merged sequence keeps
+            # the highest-score-first contract and stays deterministic.
+            incidents = tuple(
+                sorted(
+                    incidents + recovered,
+                    key=lambda i: (-i.score, -len(i.event_ids), i.event_ids[0]),
+                )
+            )
     # An incident is news if it involves any event this cycle had not already
     # consumed. Derived from the ids, so no state is persisted to know it.
     new_ids = {event.event_id for event in progress}
