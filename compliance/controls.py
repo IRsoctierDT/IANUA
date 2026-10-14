@@ -507,8 +507,14 @@ def registry() -> tuple[Control, ...]:
             id="MAN-01",
             title="Branch protection on main",
             description=(
-                "No direct commits to main; required status checks and review "
-                "before merge. Verified in GitHub settings, not offline."
+                "Branch rulesets on main block deletion and non-fast-forward "
+                "(force) pushes with no bypass actor, and require the CI status "
+                "checks before a ref update, waivable by a repository role "
+                "holding an always-on bypass. Deliberately does NOT assert "
+                "pull-request-only merges "
+                "or review before merge: neither is enforced, and a solo "
+                "maintainer cannot approve their own pull request. Verified in "
+                "GitHub settings, not offline."
             ),
             category=Category.CI_CD,
             severity=Severity.HIGH,
@@ -518,8 +524,11 @@ def registry() -> tuple[Control, ...]:
                 (Framework.ISO_27001, "A.8.32"),
             ),
             attestation_hint=(
-                "GitHub -> Settings -> Branches: confirm main requires PRs, "
-                "status checks, and at least one review."
+                "GitHub -> Settings -> Rules: confirm main's rulesets carry "
+                "deletion and non_fast_forward with an empty bypass_actors, "
+                "and required_status_checks covering the CI contexts. The "
+                "authoritative read is the API: "
+                "repos/<owner>/<repo>/rules/branches/main."
             ),
         ),
         Control(
