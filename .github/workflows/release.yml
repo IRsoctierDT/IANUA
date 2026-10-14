@@ -155,7 +155,21 @@ jobs:
         env:
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
           GH_REPO: ${{ github.repository }}
-        run: python scripts/release_notes.py --tag "$TAG" --repo "$GH_REPO" --output /tmp/notes.md
+        # GUARDED, and the guard is load-bearing. release-on-merge.yml
+        # dispatches this workflow with `--ref main`, so the RECIPE comes from
+        # main while "Resolve immutable release source" detaches the CHECKOUT
+        # to the tag. A tag cut before this script existed therefore has no
+        # scripts/release_notes.py, and an unguarded `python` would fail the
+        # publish — breaking the documented post-dispatch-failure recovery
+        # path for exactly those tags. v2.2.0 is one: the script landed in
+        # #193, after the tag. Degrade to --generate-notes rather than refuse
+        # to republish an older release.
+        run: |
+          if [ -f scripts/release_notes.py ]; then
+            python scripts/release_notes.py --tag "$TAG" --repo "$GH_REPO" --output /tmp/notes.md
+          else
+            echo "::warning::scripts/release_notes.py is absent at $TAG (tag predates it); falling back to --generate-notes"
+          fi
       - name: Create release with assets or repair existing release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -170,9 +184,14 @@ jobs:
             # all assets are already built, tested, and signed in this run.
             # Repairing an existing release deliberately leaves its notes
             # alone; only a first publication writes them.
-            gh release create "$TAG" release-assets/* \
-              --target "$(git rev-parse HEAD)" --title "IANUA $TAG" \
-              --notes-file /tmp/notes.md
+            if [ -f /tmp/notes.md ]; then
+              gh release create "$TAG" release-assets/* \
+                --target "$(git rev-parse HEAD)" --title "IANUA $TAG" \
+                --notes-file /tmp/notes.md
+            else
+              gh release create "$TAG" release-assets/* \
+                --target "$(git rev-parse HEAD)" --title "IANUA $TAG" --generate-notes
+            fi
           fi
           gh release view "$TAG" --json assets --jq '.assets[].name' > /tmp/release-assets.txt
           for asset in release-assets/*; do

@@ -223,3 +223,30 @@ def test_runs_as_a_subprocess_from_a_foreign_cwd(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, f"failed from foreign cwd:\n{result.stdout}\n{result.stderr}"
     assert result.stdout.strip()
+
+
+@pytest.mark.unit
+def test_release_workflow_guards_the_notes_step_for_older_tags() -> None:
+    """The notes step must tolerate a tag cut before this script existed.
+
+    release-on-merge.yml dispatches release.yml with ``--ref main``, so the
+    RECIPE comes from main while release.yml detaches the CHECKOUT to the tag.
+    A tag predating scripts/release_notes.py therefore has no such file, and an
+    unguarded ``python scripts/release_notes.py`` fails the publish — which
+    breaks the documented post-dispatch-failure recovery path for exactly those
+    tags. v2.2.0 is one: this script landed in #193, after the tag.
+
+    Pinned because the guard reads like defensive clutter and the failure it
+    prevents only appears when republishing an old release, which is both rare
+    and the worst moment to discover it.
+    """
+    workflow = (_REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "scripts/release_notes.py" in workflow, "release.yml no longer composes curated notes"
+    assert "-f scripts/release_notes.py" in workflow, (
+        "the notes step is no longer guarded on the script existing in the checked-out tree; "
+        "republishing a tag cut before the script existed would fail the publish"
+    )
+    assert "--generate-notes" in workflow, (
+        "the fallback for tags predating release_notes.py is gone; an older tag cannot be republished"
+    )
+    assert "--notes-file" in workflow, "the curated-notes path is gone"
