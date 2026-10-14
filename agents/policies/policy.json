@@ -2,6 +2,7 @@
   "version": 1,
   "policy": {
     "read_only": "allow",
+    "collection": "allow",
     "containment": "allow",
     "destructive": "require_approval",
     "external_network": "require_approval",

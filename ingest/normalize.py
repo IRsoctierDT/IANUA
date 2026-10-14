@@ -32,6 +32,7 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from ingest import keyvalue
 from ingest._coerce import depth_within, observables, text
 from ingest.errors import UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
@@ -128,6 +129,14 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
         if isinstance(decoded, Mapping):
             return _normalize_mapping(decoded, excerpt=raw[:MAX_RAW_EXCERPT])
         return _unrecognized(raw, notes=("decoded JSON was not an object; carried as text",))
+    # Not JSON. It may still be structured: auditd and logfmt-style lines are
+    # `key=value` runs, and the auditd recognizer in parsers/endpoint.py was
+    # written expecting exactly the mapping that decodes to — nothing was
+    # producing one. `decode` returns None for prose, which is most log text,
+    # and the line is then carried as an excerpt exactly as before.
+    pairs = keyvalue.decode(stripped)
+    if pairs is not None:
+        return _normalize_mapping(pairs, excerpt=raw[:MAX_RAW_EXCERPT])
     return _unrecognized(raw)
 
 

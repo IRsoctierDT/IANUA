@@ -37,6 +37,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from store.paths import confine
+
 from pipeline.errors import CursorError, CursorPathError
 
 #: Fixed location under the repository's gitignored lab-data root, mirroring
@@ -72,41 +74,17 @@ class Cursor:
 
 
 def resolve(root: Path, *, filename: str = DEFAULT_FILENAME) -> Path:
-    """Validate the filename and confine the cursor to the pipeline directory."""
-    if filename in {".", ".."} or not _SAFE_FILENAME.fullmatch(filename):
-        raise CursorPathError(
-            f"cursor filename must match {_SAFE_FILENAME.pattern!r}, got {filename!r}"
-        )
-    # Resolve the ROOT then append, so a symlink planted at the pipeline
-    # directory cannot resolve to its own target and pass the check.
-    base = root.resolve()
-    directory = base / CURSOR_SUBDIR
-    candidate = directory / filename
-    # EVERY component between the root and the file, not just the leaf
-    # directory: ``CURSOR_SUBDIR`` is two deep, so checking only
-    # ``data/pipeline`` leaves ``data`` unexamined, and ``mkdir(parents=True)``
-    # then creates the leaf *through* a link planted there — putting the cursor
-    # outside the lab root while every name still looks valid.
-    #
-    # ``is_symlink`` rather than ``exists() and resolve() != path``: a link
-    # whose target does not exist yet reports ``exists() is False``, so the
-    # existence-gated form skipped precisely the case that mkdir goes on to
-    # create. Refused rather than followed — relocating the pipeline's state
-    # to another volume is a deployment decision (``docs/PRODUCTION_SOC_PLAN``
-    # stage 9), not something a planted link should accomplish silently.
-    walked = base
-    for part in (*CURSOR_SUBDIR.parts, filename):
-        walked = walked / part
-        if walked.is_symlink():
-            raise CursorPathError(
-                f"{walked} is a symlink (-> {walked.readlink()}); refusing to "
-                "follow it out of the lab-data root"
-            )
-    if not candidate.is_relative_to(directory):  # pragma: no cover
-        # Unreachable while _SAFE_FILENAME holds; kept so loosening that regex
-        # does not silently open a traversal.
-        raise CursorPathError(f"cursor path {candidate} escapes {directory}")
-    return candidate
+    """Confine the cursor to the pipeline directory under the lab-data root.
+
+    Delegates to :func:`store.paths.confine`, shared with ``store/`` and
+    ``collect/``. This module carried its own copy with two defects that
+    ``store/`` had as well: it checked only the leaf directory and the file, so
+    a link at ``data`` was never examined while ``mkdir(parents=True)`` built
+    the leaf through it; and the check was gated on ``exists()``, which is
+    ``False`` for the dangling link that mkdir then materializes. Fixing one
+    copy and not the other is how that recurs.
+    """
+    return confine(root, CURSOR_SUBDIR, filename, error=CursorPathError, what="cursor")
 
 
 def load(path: Path) -> Cursor | None:

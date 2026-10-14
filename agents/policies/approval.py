@@ -54,6 +54,7 @@ from typing import Literal
 
 ActionClass = Literal[
     "read_only",
+    "collection",
     "containment",
     "destructive",
     "external_network",
@@ -71,6 +72,19 @@ Decision = Literal["allow", "require_approval", "deny"]
 # requires a human (fail closed).
 _DEFAULT_POLICY: dict[ActionClass, Decision] = {
     "read_only": "allow",
+    # Reading this node's own logs. A class of its own rather than folded into
+    # read_only, because it is the one action that reaches *outside* the
+    # project's filesystem (DESIGN.md §5 boundary 14) and an operator must be
+    # able to stop collection without stopping detection — the pipeline is
+    # gated read_only and the two should not share a switch.
+    #
+    # `allow` by default, which makes this a kill switch rather than a
+    # restriction, and that is stated rather than implied. What actually
+    # constrains collection is which sources were declared: `collect.sources`
+    # refuses a relative path, a symlinked log, a non-file and anything on the
+    # credential deny-list. The gate decides *whether* this node collects; the
+    # source validation decides *what* it may read.
+    "collection": "allow",
     "containment": "allow",
     "destructive": "require_approval",
     "external_network": "require_approval",

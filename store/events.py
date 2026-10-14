@@ -57,12 +57,15 @@ from typing import Any, Self
 from ingest.schema import NormalizedEvent
 
 from store.errors import (
+    IngestionOrderError,
     SchemaVersionError,
     StoreIntegrityError,
     StorePathError,
 )
+from store.paths import confine
 from store.schema import (
     DDL,
+    HIGH_WATER_KEY,
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
     SCHEMA_VERSION,
@@ -217,50 +220,15 @@ class EventStore:
 
     @staticmethod
     def _resolve(root: Path, filename: str) -> Path:
-        """Validate the filename and confine the database to the events dir."""
-        if filename in {".", ".."} or not _SAFE_FILENAME.fullmatch(filename):
-            raise StorePathError(
-                f"store filename must match {_SAFE_FILENAME.pattern!r}, got {filename!r}"
-            )
-        # Resolve the ROOT, then append the subdirectory without resolving it:
-        # resolving the events directory first would follow a symlink planted
-        # there and then happily confirm the database sits inside its own
-        # target. The containment check has to be made against where the
-        # directory is *supposed* to be.
-        base = root.resolve()
-        events_dir = base / EVENTS_SUBDIR
-        candidate = events_dir / filename
-        # A symlinked events directory, a symlinked *ancestor* of it, or a
-        # symlinked database file all relocate the evidence outside the lab
-        # root while every filename still looks valid. Refused rather than
-        # followed: moving an event store to another volume is a deployment
-        # decision (see docs/PRODUCTION_SOC_PLAN.md stage 9), not something a
-        # planted link should accomplish silently.
-        #
-        # EVERY component is walked, not just the leaf directory and the file.
-        # ``EVENTS_SUBDIR`` is two deep, so checking only ``data/events`` left
-        # ``data`` unexamined and ``mkdir(parents=True)`` created the leaf
-        # *through* a link planted there. ``is_symlink`` rather than
-        # ``exists() and resolve() != path``, because a link whose target does
-        # not exist yet reports ``exists() is False`` — skipping exactly the
-        # case mkdir then goes on to create.
-        walked = base
-        for part in (*EVENTS_SUBDIR.parts, filename):
-            walked = walked / part
-            if walked.is_symlink():
-                raise StorePathError(
-                    f"{walked} is a symlink (-> {walked.readlink()}); refusing to "
-                    "relocate the event store outside the lab-data root"
-                )
-        if not candidate.is_relative_to(events_dir):  # pragma: no cover
-            # Unreachable while _SAFE_FILENAME holds: a name with no separator
-            # cannot escape its parent lexically, and the symlink checks above
-            # cover the resolve-based escapes. Kept as a structural backstop so
-            # that loosening that regex does not silently open a traversal —
-            # marked no-cover rather than given a test that cannot be written
-            # honestly.
-            raise StorePathError(f"store path {candidate} escapes {events_dir}")
-        return candidate
+        """Confine the database to the events directory under the lab-data root.
+
+        Delegates to :func:`store.paths.confine`, which ``pipeline/`` and
+        ``collect/`` also use. The check used to live here in a copy that
+        examined only the leaf directory and the file — so a symlink at
+        ``data`` relocated the whole evidence database — and the identical bug
+        existed in ``pipeline/``. One implementation, one place to fix.
+        """
+        return confine(root, EVENTS_SUBDIR, filename, error=StorePathError, what="event store")
 
     @staticmethod
     def _apply_schema(conn: sqlite3.Connection) -> None:
@@ -326,10 +294,16 @@ class EventStore:
         Idempotent: re-appending an identical event is a no-op that returns
         the same id. ``ingested_at`` is injected rather than read from a clock
         here, so callers control (and tests pin) the storage timeline.
+
+        Raises :class:`IngestionOrderError` if ``ingested_at`` is behind the
+        high-water mark — see :meth:`append_many`.
         """
         projection, identifier = self._project(event)
+        stamp = float(ingested_at)
         with self._conn:
-            self._insert(event, projection, identifier, float(ingested_at))
+            self._require_monotonic(stamp)
+            self._insert(event, projection, identifier, stamp)
+            self._advance_high_water(stamp)
         return identifier
 
     def append_many(self, events: tuple[NormalizedEvent, ...], *, ingested_at: float) -> int:
@@ -340,13 +314,66 @@ class EventStore:
         query. The return value is the new count rather than the input length,
         so a caller replaying an overlapping batch sees that it added nothing
         instead of reporting work it did not do.
+
+        **Ingestion order is enforced, not assumed.** ``ingested_at`` must be at
+        or after the highest value ever written, or this raises
+        :class:`IngestionOrderError` before touching a row. The pipeline pages
+        by a ``(ingested_at, event_id)`` keyset, so an event stamped earlier
+        than one already stored would sit behind a cursor that has already
+        passed and would never be read by any cycle — silent data loss in the
+        layer whose purpose is not having blind spots. Stage 4 documented this
+        as a contract on collectors; enforcing it here makes it unrepresentable
+        instead, which is the difference between a rule and a control.
+
+        An empty batch is a no-op and is not order-checked: it writes nothing,
+        so there is nothing to place out of order.
         """
+        if not events:
+            return 0
         projected = [(event, *self._project(event)) for event in events]
+        stamp = float(ingested_at)
         before = self.count()
         with self._conn:
+            self._require_monotonic(stamp)
             for event, projection, identifier in projected:
-                self._insert(event, projection, identifier, float(ingested_at))
+                self._insert(event, projection, identifier, stamp)
+            self._advance_high_water(stamp)
         return self.count() - before
+
+    def high_water_mark(self) -> float | None:
+        """The highest ``ingested_at`` ever written, or ``None`` if never written.
+
+        Exposed so a collector can stamp ``max(now, mark)`` and stay monotone
+        across a clock that steps backwards, rather than discovering the
+        constraint by being refused.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
+        ).fetchone()
+        return None if row is None else float(row["value"])
+
+    def _require_monotonic(self, ingested_at: float) -> None:
+        """Refuse a write that would land behind the high-water mark.
+
+        Checked inside the caller's transaction and before any insert, so a
+        refused batch leaves the database exactly as it was.
+        """
+        mark = self.high_water_mark()
+        if mark is not None and ingested_at < mark:
+            raise IngestionOrderError(
+                f"ingested_at {ingested_at!r} is behind the high-water mark {mark!r}; "
+                "the pipeline's cursor has already passed that point, so these events "
+                "would never be read. Stamp the current time instead — a replay is "
+                "being ingested now, not then."
+            )
+
+    def _advance_high_water(self, ingested_at: float) -> None:
+        """Raise the mark. Written in the same transaction as the rows it covers."""
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (HIGH_WATER_KEY, repr(float(ingested_at))),
+        )
 
     @staticmethod
     def _project(event: NormalizedEvent) -> tuple[str, str]:

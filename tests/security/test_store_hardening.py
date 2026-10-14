@@ -64,6 +64,11 @@ _BANNED_IMPORTS = {
 }
 _BANNED_CALLS = {"eval", "exec", "compile", "__import__", "input"}
 
+#: Two distinct records, so a refused second write is distinguishable from a
+#: content-addressed no-op.
+_RECORD = "Failed password for root from 10.0.0.5 port 22 ssh2"
+_OTHER_RECORD = "Accepted password for alice from 10.0.0.9 port 22 ssh2"
+
 #: A literal is "SQL-ish" if it carries a statement keyword. Used to decide
 #: which strings must never be built by interpolation.
 _SQL_KEYWORDS = (
@@ -402,7 +407,7 @@ def test_a_symlinked_events_directory_cannot_relocate_the_database(tmp_path: Pat
     events = tmp_path / "data" / "events"
     events.parent.mkdir(parents=True)
     events.symlink_to(elsewhere, target_is_directory=True)
-    with pytest.raises(StorePathError, match="refusing to relocate"):
+    with pytest.raises(StorePathError, match="is a symlink"):
         EventStore.open(tmp_path).close()
 
 
@@ -447,5 +452,102 @@ def test_a_symlinked_database_file_cannot_relocate_the_store(tmp_path: Path) -> 
     events = tmp_path / "data" / "events"
     events.mkdir(parents=True)
     (events / "events.sqlite3").symlink_to(decoy)
-    with pytest.raises(StorePathError, match="refusing to relocate"):
+    with pytest.raises(StorePathError, match="is a symlink"):
         EventStore.open(tmp_path).close()
+
+
+# --------------------------------------------------------------------------
+# Ingestion order is a control, not a contract on callers
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.security
+def test_a_write_behind_the_high_water_mark_is_refused(tmp_path: Path) -> None:
+    """Stage 4 documented this as a collector's responsibility; that was not enough.
+
+    The pipeline pages by a ``(ingested_at, event_id)`` keyset, so an event
+    stamped earlier than one already stored sits behind a cursor that has
+    already passed it — never read, by any cycle, ever. Silent data loss in the
+    layer whose purpose is not having blind spots, which is why it is refused at
+    write time rather than left to whoever writes next.
+    """
+    from store import IngestionOrderError
+
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD),), ingested_at=200.0)
+        before = store.count()
+        with pytest.raises(IngestionOrderError, match="behind the high-water mark"):
+            store.append_many((normalize(_OTHER_RECORD),), ingested_at=150.0)
+        assert store.count() == before, "a refused batch still wrote rows"
+
+
+@pytest.mark.security
+def test_the_high_water_mark_survives_retention(tmp_path: Path) -> None:
+    """Which is the whole reason it is stored rather than derived from MAX().
+
+    A derived watermark resets the moment a window ages out, and a collector
+    could then stamp an event behind a cursor that had already passed it. The
+    mark lives in the existing ``meta`` table — a new *row*, so the DDL is
+    unchanged and no ``SCHEMA_VERSION`` bump is provoked.
+    """
+    from store import IngestionOrderError
+
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD),), ingested_at=200.0)
+        assert store.prune(before=1_000.0) == 1
+        assert store.count() == 0
+        assert store.high_water_mark() == 200.0
+        with pytest.raises(IngestionOrderError):
+            store.append_many((normalize(_OTHER_RECORD),), ingested_at=100.0)
+
+
+@pytest.mark.security
+def test_an_equal_timestamp_is_accepted(tmp_path: Path) -> None:
+    """Batches share one ``ingested_at`` by design, so equality must pass.
+
+    Refusing it would break ``append_many``'s own batching, and the composite
+    cursor exists precisely because ties are the normal case.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD),), ingested_at=200.0)
+        store.append_many((normalize(_OTHER_RECORD),), ingested_at=200.0)
+        assert store.count() == 2
+
+
+@pytest.mark.security
+def test_an_empty_batch_is_not_order_checked(tmp_path: Path) -> None:
+    """It writes nothing, so there is nothing to place out of order."""
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD),), ingested_at=200.0)
+        assert store.append_many((), ingested_at=1.0) == 0
+
+
+@pytest.mark.security
+def test_the_mark_does_not_break_the_stores_idempotence(tmp_path: Path) -> None:
+    """Content idempotence and ingestion order are different promises.
+
+    Re-appending identical content at the *current* time is a no-op that stores
+    nothing new — the honest form of a replay, since it is being ingested now
+    rather than then.
+    """
+    with EventStore.open(tmp_path) as store:
+        assert store.append_many((normalize(_RECORD),), ingested_at=200.0) == 1
+        assert store.append_many((normalize(_RECORD),), ingested_at=300.0) == 0
+        assert store.count() == 1
+
+
+@pytest.mark.security
+def test_the_schema_version_is_unchanged_by_the_watermark(tmp_path: Path) -> None:
+    """A new ``meta`` row must not look like a new schema to an older build.
+
+    ``SchemaVersionError`` refuses a differing version, so storing the mark as a
+    column would have forced a migration on every existing store.
+    """
+    from store.schema import SCHEMA_VERSION
+
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD),), ingested_at=200.0)
+    # Re-opening is what would raise if the version had moved.
+    with EventStore.open(tmp_path) as reopened:
+        assert reopened.high_water_mark() == 200.0
+    assert SCHEMA_VERSION == 1
