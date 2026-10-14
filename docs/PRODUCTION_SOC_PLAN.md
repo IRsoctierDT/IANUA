@@ -98,6 +98,15 @@ Two consequences worth knowing before you read the output:
   re-correlating more history each cycle; the real fix is persisted, mergeable
   incidents, which is stage 9 work. Pick a lookback longer than the dwell time
   you expect to catch, not longer than you can afford to re-read.
+- **After raising `--lookback`, run once with `--include-seen`.** By default a
+  cycle reports only incidents involving events it had not already consumed.
+  That is a *proxy* for "not reported before", and it is wrong in exactly this
+  case: a wider window can assemble a story entirely from already-consumed
+  events, which the proxy then suppresses even though no cycle ever reported
+  it. `--include-seen` emits everything the window assembled, so the
+  remediation actually surfaces what you widened the window to find. Expect
+  duplicates of things you have already seen — that is the trade for not
+  persisting a reported-reference set.
 
 ```bash
 # on demand, with attribution

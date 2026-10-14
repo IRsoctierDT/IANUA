@@ -148,6 +148,14 @@ class Query:
     #: source time would have a permanent blind spot for exactly the undated
     #: events ``ingest/`` deliberately produces.
     ingested_from: float | None = None
+    #: Return only events ingested strictly *before* this ``(ingested_at,
+    #: event_id)`` pair — the exclusive upper edge, mirroring
+    #: :data:`ingested_after`'s exclusive lower edge. A correlator reading
+    #: context *behind* a window needs this: bounding the read in SQL rather
+    #: than filtering rows afterwards is the difference between a budgeted read
+    #: that returns the newest context below the boundary and one whose row
+    #: limit is spent on rows above it that the filter then discards.
+    ingested_before: tuple[float, str] | None = None
     #: Newest first when true, which is what an analyst opening a view wants.
     newest_first: bool = True
     limit: int = 1_000
@@ -429,6 +437,11 @@ class EventStore:
             clauses.append(_INGESTED_AFTER)
             at, identifier = spec.ingested_after
             params.extend((float(at), float(at), identifier))
+        if spec.ingested_before is not None:
+            # Strictly before the pair, in the same total order as the ORDER BY.
+            clauses.append(_INGESTED_BEFORE)
+            at, identifier = spec.ingested_before
+            params.extend((float(at), float(at), identifier))
         if spec.ingested_from is not None:
             # Inclusive, so the lower edge of a lookback window is not itself
             # the thing that falls out of it.
@@ -482,6 +495,8 @@ _SELECT = "SELECT event_id, ingested_at, projection FROM events e"
 _INGESTED_AFTER = "(e.ingested_at > ? OR (e.ingested_at = ? AND e.event_id > ?))"
 #: Inclusive lower edge of an ingestion-time window.
 _INGESTED_FROM = "e.ingested_at >= ?"
+#: Keyset upper edge: strictly before ``(ingested_at, event_id)``.
+_INGESTED_BEFORE = "(e.ingested_at < ? OR (e.ingested_at = ? AND e.event_id < ?))"
 #: Ordering is on ``ingested_at``, not ``occurred_at``: it is always present
 #: (a source may carry no timestamp) and it is the one of the two this
 #: platform controls, so a source with a wrong clock cannot reorder the view.
