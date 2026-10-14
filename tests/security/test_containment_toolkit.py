@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the lab-scoped containment toolkit.
 
 Covers the layered controls promised in agents/tools/containment.py: policy

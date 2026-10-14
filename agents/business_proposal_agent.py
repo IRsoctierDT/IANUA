@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Business Proposal Agent.
 
 Converts a plain-language description of client needs into a structured proposal /

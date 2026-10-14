@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Approval-gate policy engine — codifies the AGENTS.md §5 / §5.1 boundaries.
 
 Turns the charter's prose security boundaries into enforced, testable code. Given a

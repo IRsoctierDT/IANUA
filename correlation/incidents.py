@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Incident assembly — group events that share a resolved entity, and say why.
 
 One event is a signal. A SOC's actual work is noticing that a cloud role

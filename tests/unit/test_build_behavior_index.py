@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Contracts for the behavioral index builder and its reference gate.
 
 The builder is where behavioral content meets the pinned ATT&CK corpus: a

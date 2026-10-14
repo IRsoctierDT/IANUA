@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scripts/prepare_release.py — atomic, fail-closed release preparation."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for audit-log rotation & retention (Hardening Roadmap #2).
 
 The tamper-evident hash chain must remain unbroken *across* rotation and

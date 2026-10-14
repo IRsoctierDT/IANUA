@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Agent roles — the AGENTS.md §6 operating roles, referenceable in code.
 
 Public API: the four canonical :class:`Role` instances (``PLANNER``, ``BUILDER``,

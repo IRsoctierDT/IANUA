@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for PDF incident-report export (agents/tools/pdf_report.py).
 
 reportlab ships in the ``dev`` extra, so these run in CI; if it is somehow

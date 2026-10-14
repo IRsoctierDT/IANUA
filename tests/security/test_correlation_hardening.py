@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Correlation decides who did what — hold its attribution closed.
 
 Most of this platform's security tests guard against code reaching somewhere

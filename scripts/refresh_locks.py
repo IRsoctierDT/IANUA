@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Regenerate the derived pip lockfiles under ``security/sbom/`` from ``uv.lock``.
 
 ``uv.lock`` is the dependency source of truth; ``requirements.lock`` (the

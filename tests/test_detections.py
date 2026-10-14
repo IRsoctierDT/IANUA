@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Structural validation of the Sigma detection rules in detections/sigma/.
 
 Guards the detection content: every rule must parse, carry the required Sigma

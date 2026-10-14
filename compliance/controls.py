@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Control registry — automated, offline checks over IANUA's own posture.
 
 Each :class:`Control` either carries a ``check`` callable (automated: reads the

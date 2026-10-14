@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Drift gate: every agent's display name must carry the current platform version.
 
 The platform version has one source of truth (``pyproject.toml``); agents derive

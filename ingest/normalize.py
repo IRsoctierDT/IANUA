@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Front door: raw telemetry in, one canonical event out.
 
 The whole point of this module is that *no downstream layer needs to know

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Search over the cybersecurity knowledge base, resilient by design.
 
 Used by the dashboard's Knowledge Base Search tab. The preferred backend is

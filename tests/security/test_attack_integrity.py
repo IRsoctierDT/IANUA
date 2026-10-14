@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security contracts for ATT&CK corpus integrity (DESIGN.md §5 boundary 5).
 
 Tampering hard-fails; absence degrades soft to an explicit unavailable state;

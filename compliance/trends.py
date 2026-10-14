@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Posture trend history — score over time from the recorded evidence trail.
 
 Reads the local evidence JSONL (via :func:`compliance.evidence.load_recent`,

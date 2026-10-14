@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The intel library loads whole or not at all (DESIGN.md §5 boundary 6)."""
 
 from __future__ import annotations

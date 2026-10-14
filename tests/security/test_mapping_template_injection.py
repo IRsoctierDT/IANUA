@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Attacker-controlled log text can never transit into a mapping result.
 
 Every string a mapping result carries is a store- or corpus-declared

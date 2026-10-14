@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Framework catalog and rollups for the compliance layer.
 
 Maps IANUA controls to public security frameworks so the dashboard and trust

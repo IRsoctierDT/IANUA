@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests: trust-broker gate on the MCP tool surface (mcp/broker.py).
 
 The broker layer must fail closed on every path — missing token, unbound

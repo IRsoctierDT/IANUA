@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the deepened audit-verification tooling.
 
 Covers ``AuditLogger.verify_report`` (structured tamper diagnosis: located

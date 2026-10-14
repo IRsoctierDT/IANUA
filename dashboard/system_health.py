@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only system-health probes for the dashboard sidebar.
 
 Each probe fails soft — it returns a human-readable status string rather than

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Cross-domain correlation — resolve entities, assemble incidents.
 
 The half of XDR that turns normalized events into a story. ``ingest/``

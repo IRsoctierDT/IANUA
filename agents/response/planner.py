@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Build draft response plans from triage results — deterministic, unexecuted.
 
 Selection is table-driven off the ATT&CK techniques a mapping result

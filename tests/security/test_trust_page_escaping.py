@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the trust page generator (AGENTS.md §5, §6.1).
 
 The snapshot is trusted and committed, but the renderer escapes every dynamic

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for compliance evidence recording (AGENTS.md §5).
 
 Evidence must never leak secrets or environment values, must stay inside the

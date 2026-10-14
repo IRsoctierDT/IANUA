@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The Detection Matcher surfaces behavioral coverage alongside Sigma coverage."""
 
 from __future__ import annotations

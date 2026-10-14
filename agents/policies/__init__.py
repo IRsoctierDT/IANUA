@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Policy & audit layer — enforces and records the AGENTS.md §5/§5.1 boundaries.
 
 Public API:

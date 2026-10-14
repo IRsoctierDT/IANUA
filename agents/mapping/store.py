@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Fail-closed loader for the committed mapping ruleset.
 
 Follows the ``compliance/attestations.py`` posture: exact field sets, strict

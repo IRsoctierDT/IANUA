@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Local LLM generation client (Ollama) — the sanctioned model capability surface.
 
 `OllamaGenerator` calls a LOCAL Ollama server for text generation. It mirrors the

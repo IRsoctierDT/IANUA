@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Nothing sensitive can transit into a response plan (allow-list projection).
 
 A plan is a client-deliverable artifact: it lands in incident reports and

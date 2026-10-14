@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Detection-as-code: replay every behavioral rule against its fixtures.
 
 The post-compromise corpus in ``detections/behaviors/`` is held to the same

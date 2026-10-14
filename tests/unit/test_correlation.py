@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Behaviour of entity resolution and incident assembly.
 
 The tests that matter here are the ones about *not* linking. A missed link

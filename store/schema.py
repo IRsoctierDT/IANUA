@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Physical schema for the event store — DDL, versioning, content addressing.
 
 Separated from :mod:`store.events` so the storage contract is readable on its

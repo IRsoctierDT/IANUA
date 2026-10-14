@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Contracts for OCSF normalization and deterministic source labeling."""
 
 from __future__ import annotations

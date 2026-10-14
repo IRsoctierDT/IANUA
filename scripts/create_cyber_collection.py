@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 from qdrant_client.models import Distance, VectorParams
 from rag.qdrant import make_client
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the hardened Markdown → PDF report pipeline.
 
 Incident reports interpolate untrusted log content; these tests pin the two

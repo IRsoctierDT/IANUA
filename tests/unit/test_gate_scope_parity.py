@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Meta-test: every enforcement point names the same package set.
 
 Gate-scope drift is how ~41 KB of compliance/ logic sat outside the coverage

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Typed schema for the committed event→technique mapping ruleset.
 
 The ruleset (``agents/mapping/rules/*.json``) is reviewed data, not code:

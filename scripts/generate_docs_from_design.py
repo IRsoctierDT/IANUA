@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Regenerate core Markdown files from the STICHES/DESIGN.md identity.
 
 Deterministic and idempotent: each run writes the same content for the same

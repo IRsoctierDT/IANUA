@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The canonical normalized event — one shape for five telemetry domains.
 
 Today the platform reasons over syslog-shaped text through a keyword

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Trust-broker seam for the MCP tool surface (DESIGN.md trust boundary #2).
 
 Adds caller identity to the tool-dispatch trust model. The existing policy

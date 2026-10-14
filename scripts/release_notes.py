@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Compose a GitHub Release body from the promoted changelog section.
 
 ``release.yml`` previously published with ``--generate-notes``, which lists the

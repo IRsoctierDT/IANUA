@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Embedding backends for the RAG pipeline.
 
 `OllamaEmbedder` calls a LOCAL Ollama server for embeddings. Per AGENTS.md §5

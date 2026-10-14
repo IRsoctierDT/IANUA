@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Fail-closed parser for the committed ATT&CK pin manifest.
 
 The pin (``attack/pins/enterprise-attack.pin.json``) is the single source of

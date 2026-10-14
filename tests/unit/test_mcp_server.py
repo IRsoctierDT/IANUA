@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the MCP server stub: allow-list + confinement + policy gating."""
 
 from pathlib import Path

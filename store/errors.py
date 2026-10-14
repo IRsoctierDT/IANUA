@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Event-store error taxonomy.
 
 Imports nothing first-party, so the layering is structural and nothing below

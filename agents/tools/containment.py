@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Defensive containment toolkit — stop or contain an active payload (lab-scoped).
 
 Gives agents the sanctioned ability to contain or shut down malicious payloads

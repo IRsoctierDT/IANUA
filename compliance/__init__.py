@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Compliance layer — continuous, Vanta-style posture monitoring for IANUA.
 
 Runs a registry of deterministic, offline control checks against the

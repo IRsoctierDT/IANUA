@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Input-validation helpers for agent tool surfaces.
 
 Every tool adapter MUST validate untrusted input (incl. LLM-generated strings)

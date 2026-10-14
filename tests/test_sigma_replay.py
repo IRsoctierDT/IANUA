@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Detection-as-code: replay every base Sigma rule against fixtures.
 
 Each base rule in ``detections/sigma/`` must have a fixtures entry with

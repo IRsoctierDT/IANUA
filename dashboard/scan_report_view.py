@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Session-only scan-report review; uploaded text is never executed or rendered as HTML.
 
 The UI is injected so bounded upload handling and presentation can be tested

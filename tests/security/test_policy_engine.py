@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the approval-gate policy engine (AGENTS.md §5/§5.1)."""
 
 import pytest

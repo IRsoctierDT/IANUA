@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Email telemetry: Microsoft Defender for Office 365 and Google Workspace.
 
 Email is the most sensitive corpus the platform touches, so this module is

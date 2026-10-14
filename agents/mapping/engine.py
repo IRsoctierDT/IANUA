@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The event→technique mapping engine (replaces the if/elif ladder).
 
 Evaluates the ordered ruleset against a classified event, collects every

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """OCSF (Open Cybersecurity Schema Framework) event-class normalization.
 
 Maps this platform's deterministic SOC ``event_type`` labels to their OCSF

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Every gate script must run as a subprocess from a foreign CWD.
 
 ``python scripts/x.py`` puts ``scripts/`` (not the repo root) on ``sys.path``,

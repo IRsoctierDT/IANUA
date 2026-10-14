@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Ingest is the platform's largest untrusted-input surface — hold it closed.
 
 Every byte this layer reads came from somewhere the platform does not

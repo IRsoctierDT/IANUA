@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Agent package — shared platform version (single source of truth).
 
 Every agent reports the **platform** version in its display name (e.g.

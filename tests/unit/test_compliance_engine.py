@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for compliance/engine.py — evaluation, fail-closed, rollups."""
 
 from pathlib import Path

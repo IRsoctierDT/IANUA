@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Distiller contracts against a synthetic STIX fixture.
 
 The fixture carries a nonzero count of every consumed object and relationship

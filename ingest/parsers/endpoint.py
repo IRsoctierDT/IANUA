@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Endpoint telemetry: Sysmon (Windows) and auditd (Linux).
 
 These two carry the process-lineage and file/registry detail the behavioral
