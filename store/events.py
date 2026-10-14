@@ -121,6 +121,21 @@ class Query:
     ip: str | None = None
     #: Exact match against an extracted observable (hash, domain, URL).
     observable: str | None = None
+    #: Keyset cursor: return only events ingested strictly after this
+    #: ``(ingested_at, event_id)`` pair. This is the filter a continuous
+    #: pipeline pages with, and it is a *pair* rather than a timestamp for a
+    #: reason that is not obvious: :meth:`EventStore.append_many` stamps one
+    #: ``ingested_at`` across a whole batch, so ties are the normal case, not
+    #: an edge case. A cursor on the timestamp alone must then choose between
+    #: ``>`` (skipping the rest of the batch) and ``>=`` (reprocessing it
+    #: forever) — the first silently drops security events.
+    #:
+    #: Keyed on ``ingested_at``, never ``occurred_at``: ingestion time is
+    #: always present, whereas an event whose source carried no timestamp is
+    #: excluded from every ``since``/``until`` window. A pipeline paging by
+    #: ``occurred_at`` would therefore have a permanent blind spot for exactly
+    #: the undated events ``ingest/`` deliberately produces.
+    ingested_after: tuple[float, str] | None = None
     #: Newest first when true, which is what an analyst opening a view wants.
     newest_first: bool = True
     limit: int = 1_000
@@ -385,6 +400,11 @@ class EventStore:
         if spec.ip is not None:
             clauses.append("(e.src_ip = ? OR e.dst_ip = ?)")
             params.extend((spec.ip, spec.ip))
+        if spec.ingested_after is not None:
+            # Strictly after the pair, in the same total order as the ORDER BY.
+            clauses.append(_INGESTED_AFTER)
+            at, identifier = spec.ingested_after
+            params.extend((float(at), float(at), identifier))
         if spec.observable is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM observables o WHERE o.event_id = e.event_id AND o.value = ?)"
@@ -429,11 +449,26 @@ class EventStore:
 #: The query's fixed pieces. Declared as constants so that every character of
 #: every statement this module runs is traceable to a literal written here.
 _SELECT = "SELECT event_id, ingested_at, projection FROM events e"
+#: Keyset pagination: strictly after ``(ingested_at, event_id)``.
+_INGESTED_AFTER = "(e.ingested_at > ? OR (e.ingested_at = ? AND e.event_id > ?))"
 #: Ordering is on ``ingested_at``, not ``occurred_at``: it is always present
 #: (a source may carry no timestamp) and it is the one of the two this
 #: platform controls, so a source with a wrong clock cannot reorder the view.
-_ORDER_NEWEST = " ORDER BY e.ingested_at DESC LIMIT ?"
-_ORDER_OLDEST = " ORDER BY e.ingested_at ASC LIMIT ?"
+#: Ordering includes ``event_id`` as a tie-break, which makes the sequence a
+#: TOTAL order. Ordering by ``ingested_at`` alone leaves ties in whatever
+#: sequence the engine happens to return, and keyset paging over a
+#: non-deterministic order skips or repeats rows. The content address is the
+#: natural tie-break: it is unique, stable, and already indexed as the
+#: primary key.
+#:
+#: Deliberately NOT backed by a composite ``(ingested_at, event_id)`` index:
+#: adding one would change the schema, and this store refuses to open a
+#: database written under a different ``SCHEMA_VERSION``. The existing
+#: ``events_ingested_at`` index covers the selective range scan; the
+#: tie-break sorts within one timestamp. A composite index is a deliberate
+#: migration, not a thing to smuggle in behind a query change.
+_ORDER_NEWEST = " ORDER BY e.ingested_at DESC, e.event_id DESC LIMIT ?"
+_ORDER_OLDEST = " ORDER BY e.ingested_at ASC, e.event_id ASC LIMIT ?"
 
 #: Equality fragments, written out so the column name in every statement is a
 #: literal from this module rather than a value threaded in from a caller.

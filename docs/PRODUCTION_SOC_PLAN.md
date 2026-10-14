@@ -51,7 +51,7 @@ Assessed 2026-10-14 against `DESIGN.md`, the Decision Log, and the tree.
 | Persistence | **Stage 1 — done** | `store/`: append-only, content-addressed, tamper-evident |
 | Correlation | **Stage 2 — done** | `correlation/`: declared-exact entity merges, fan-out suppression, explainable scoring |
 | **Collection** | Absent | `ingest/` takes records from a caller; no forwarder, listener, or poller exists |
-| **Scheduling** | Absent | No scheduler in `agents/`, `ingest/`, `dashboard/`, `mcp/` |
+| Scheduling | **Stage 4 — done** | `pipeline/` + `scripts/run_pipeline.py`: one at-least-once cycle per invocation, driven by cron or a systemd timer |
 | Identity | **Stage 3 — done** | `agents/policies/principal.py`: rides in the hashed `actor` field; no ambient path to an identity |
 | **Case management** | Partial | `dashboard/escalations.py` reads the Agent Trust Broker queue — read-only by design |
 | **Operational envelope** | Absent | Single-node compose, loopback-only, no HA/backup/DR, no self-monitoring |
@@ -64,15 +64,86 @@ and run against lab telemetry before any charter amendment is argued.
 
 | # | Stage | Charter crossing required | Status |
 |---|---|---|---|
-| 1 | **`store/`** — durable append-only event store | None (lab data under gitignored `data/`) | **DONE** — this PR |
+| 1 | **`store/`** — durable append-only event store | None (lab data under gitignored `data/`) | **DONE** |
 | 2 | **`correlation/`** — entity resolution across domains, incident assembly (XDR-2) | None | **DONE** |
 | 3 | **Caller identity** — a principal on every request, carried in the audit chain | None | **DONE** (the three gated paths) |
-| 4 | **Scheduled execution** — continuous detection over the store rather than on demand | None | Planned |
+| 4 | **Scheduled execution** — continuous detection over the store rather than on demand | None (lab data; no new egress, no new dependency) | **DONE** |
 | 5 | **Collection** — agents/forwarders shipping real telemetry | **Yes**: `ingest/`'s no-network invariant stays (collection is a separate package); default-deny egress must admit collection endpoints (`DESIGN.md` Decision Log, initial) | Planned |
 | 6 | **Real telemetry + retention policy** | **Yes**: §5 treats logs and client info as sensitive by default and `data/` as lab-only; real logs carry usernames, addresses, hostnames. Needs a stated PII posture, not a silent reclassification | Planned |
 | 7 | **Authenticated multi-user access** | **Yes**: `dashboard/`'s "local-only backends" invariant and loopback-only binding | Planned |
 | 8 | **Response execution** (plan → act) | **Yes**: `agents/response/` ships no executor and security tests enforce that. The 2026-08-21 containment decision is the template for doing this properly — a dedicated action class decided and audited per invocation, not an allow-list standing grant | Planned |
 | 9 | **Operational envelope** — HA, backup/DR, self-monitoring, SLOs | None in §5; deployment remains human-gated per §5.1 | Planned |
+
+### Running Stage 4 (the scheduled cycle)
+
+One cycle per invocation; the process exits. There is no daemon to supervise.
+
+```bash
+# on demand, with attribution
+python scripts/run_pipeline.py --root /srv/ianua --caller soc-timer
+
+# see what a cycle would do without advancing the cursor
+python scripts/run_pipeline.py --root /srv/ianua --dry-run
+
+# machine-readable, for a log shipper
+python scripts/run_pipeline.py --root /srv/ianua --json
+```
+
+**cron** — simplest, adequate for a single node:
+
+```cron
+*/5 * * * *  cd /srv/ianua && /srv/ianua/.venv/bin/python \
+    scripts/run_pipeline.py --root /srv/ianua --caller soc-timer \
+    >> /srv/ianua/data/pipeline/run.log 2>&1
+```
+
+**systemd** — preferred, and not only for tidiness. `Persistent=true` runs a
+window missed while the host was down, which cron drops silently; and the unit
+is where the pipeline's least-privilege posture is actually expressed, since
+nothing in the Python can stop itself from being run as root:
+
+```ini
+# /etc/systemd/system/ianua-pipeline.service
+[Unit]
+Description=IANUA detection cycle
+[Service]
+Type=oneshot
+User=ianua
+WorkingDirectory=/srv/ianua
+ExecStart=/srv/ianua/.venv/bin/python scripts/run_pipeline.py \
+    --root /srv/ianua --caller soc-timer
+# Least privilege (AGENTS.md §3): the cycle reads the event store and writes
+# one cursor plus one audit record. Nothing else needs to be reachable.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/srv/ianua/data
+# The cycle makes no outbound connection; the AST tests assert the package
+# cannot, and this makes the kernel agree.
+PrivateNetwork=true
+
+# /etc/systemd/system/ianua-pipeline.timer
+[Unit]
+Description=Run the IANUA detection cycle every five minutes
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+**Exit codes**, which are the whole interface a scheduler sees: `0` the cycle
+ran (including the common idle case — a non-zero exit for "nothing new" would
+page someone nightly), `1` the cycle or a persisted cursor failed, `2` bad
+arguments, `3` blocked by policy.
+
+**What to watch.** `data/pipeline/audit.log` gets two records per cycle: the
+gate decision and the outcome. A run that dies mid-cycle therefore leaves a
+permitted attempt with no outcome, which is the signal worth alerting on. A
+corrupt cursor exits `1` and stops the pipeline rather than reprocessing all
+of history or silently skipping it — that is deliberate, and it needs an
+operator.
 
 ### Why this order
 
@@ -103,10 +174,18 @@ gated at all, and threading the policy engine into the agent pipeline. That belo
 in its own stage with its own review, and is not a prerequisite for Stages 4–9.
 
 Also outside every gate: `cli/` is in no scope — not `packages.find.include`, not
-mypy, not coverage, not bandit — and `tests/unit/test_gate_scope_parity.py` asserts
-the canonical set against each config surface but never asserts that every top-level
-directory containing `.py` is *in* that set. So `cli/` is ungated by omission rather
+mypy, not coverage, not bandit — and `tests/unit/test_gate_scope_parity.py` asserted
+the canonical set against each config surface but never asserted that every top-level
+directory containing `.py` is *in* that set. So `cli/` was ungated by omission rather
 than by decision.
+
+**Half-closed in Stage 4.** The parity test now asserts that every top-level
+directory holding Python is either in a gate scope or in a named `UNGATED` set with
+its reason, so a new package cannot repeat this silently — that was the mechanism
+by which `pipeline/` could have been forgotten the same way. `cli/` is listed there
+pointing at the enforcement stage above. The omission is now a recorded decision;
+the two modules are still untyped (`def main():`) and still reach `llm.py`'s egress
+with no gate behind it, which is the part that stays open.
 
 ## Risks
 

@@ -8,8 +8,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = [
-  "agents*", "attack*", "intel*", "ingest*", "store*", "correlation*", "rag*", "mcp*", "dashboard*",
-  "scripts*", "compliance*",
+  "agents*", "attack*", "intel*", "ingest*", "store*", "correlation*", "pipeline*", "rag*",
+  "mcp*", "dashboard*", "scripts*", "compliance*",
 ]
 exclude = ["tests*"]
 
@@ -108,8 +108,8 @@ exclude = ["*.md"]
 [tool.mypy]
 python_version = "3.11"
 files = [
-  "agents", "attack", "intel", "ingest", "store", "correlation", "scripts", "tests", "dashboard",
-  "mcp", "rag", "compliance",
+  "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "scripts", "tests",
+  "dashboard", "mcp", "rag", "compliance",
 ]
 warn_unused_configs = true
 warn_redundant_casts = true
@@ -160,6 +160,7 @@ addopts = [
   "--cov=ingest",
   "--cov=store",
   "--cov=correlation",
+  "--cov=pipeline",
   "--cov=compliance",
   "--cov=rag",
   "--cov=mcp",
@@ -175,8 +176,8 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = [
-  "agents", "attack", "intel", "ingest", "store", "correlation", "compliance", "rag",
-  "mcp",
+  "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "compliance",
+  "rag", "mcp",
 ]
 omit = ["tests/*", "*/__init__.py"]
 

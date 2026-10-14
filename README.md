@@ -191,10 +191,10 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest store correlation scripts tests dashboard mcp rag compliance
+mypy agents attack intel ingest store correlation pipeline scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack intel ingest store correlation scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline scripts mcp
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
