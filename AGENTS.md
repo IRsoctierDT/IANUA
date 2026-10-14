@@ -124,6 +124,7 @@ ianua/
 ├── store/                     # Durable append-only event store (SOC memory; stdlib sqlite3)
 ├── correlation/               # Entity resolution across domains + incident assembly
 ├── pipeline/                  # Scheduled detection cycle (at-least-once, resumable cursor)
+├── collect/                   # Local log collection (declared sources; reaches outside the project)
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
 ├── mcp/                       # MCP server + sandboxed tool execution
@@ -183,6 +184,38 @@ request to "just this once" relax them.
 **Treat as sensitive by default:** logs, legal documents, client information, credentials,
 internal hostnames/IPs, and anything under `data/`. Apply confidentiality, minimize copies,
 and never commit them.
+
+**Filesystem reach — amended for local log collection (stage 5).** Reach is scoped to the
+project and the gitignored lab-data root, with one licensed exception: `collect/` may read
+log files on the node it runs on, **read-only**, and only files an operator has named on the
+command line. The exception is deliberately narrow, and the narrowness is the control:
+
+- **Declared, never discovered.** No glob, no directory walk, no "find the logs" heuristic.
+  A collector that searches for sources eventually finds one nobody meant it to read, and
+  everything it reads becomes stored evidence.
+- **Absolute paths only**, since a relative path means whatever the scheduler's working
+  directory happens to be.
+- **No symlink at the log file**, checked when the operator's paths are validated. This
+  catches a source that is a link at declare time — a stale or mistyped path, a layout
+  nobody intended — not an adversary who swaps a link between validation and the read:
+  winning that race requires write access to the log's directory, and with that the same
+  false evidence can be written into the log directly. Within one pass every byte (the
+  continuity digest and the data) comes from a single descriptor. Ancestor components are
+  not walked, deliberately, because `/var/log` ancestors are legitimately symlinks on
+  several distributions.
+- **Credential-shaped paths are refused**, not warned about. A collector copies what it
+  reads into `data/`, so collecting a private key would put a secret there.
+- **Read-only, always.** Sources are opened `"rb"`; a security test asserts no write mode
+  reaches a source path. A collector that could modify the logs it reads could destroy the
+  evidence it exists to preserve.
+- **No subprocess**, which is why `journald` is out of scope: reading it means running
+  `journalctl`.
+
+This amendment covers **inbound reads of this node's own files only**. It does not license
+outbound network egress, which remains default-deny (and has been refused twice on the
+grounds that `guarded.enforce()` cannot express per-invocation human approval), and it does
+not license an inbound listener, which adds an unauthenticated network surface this charter
+does not yet describe. See `DESIGN.md` §5 boundary 14.
 
 **Lawful-lab scope:** security tooling in this repo is for **defensive purposes and
 authorized lab exercises only**. Detection content, parsers, and analysis tooling are
@@ -283,10 +316,10 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest store correlation pipeline scripts tests dashboard mcp rag compliance
+mypy agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
@@ -334,8 +367,12 @@ in the pipeline."
 **Pipeline stages (fail-fast, ordered):**
 
 1. **Setup** — pinned toolchain, cached deps, reproducible install.
-2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy` (full scope:
-   `agents scripts tests dashboard mcp rag`).
+2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy` over the same
+   fourteen packages §7 names (`agents attack intel ingest store correlation pipeline
+   collect scripts tests dashboard mcp rag compliance`). §8 claims §7 is mirrored
+   exactly, so this list is part of that claim: it had drifted to six of the fourteen,
+   and `tests/unit/test_gate_scope_parity.py` pins the §7 block against CI but not this
+   prose. Keep the two in step.
 3. **Security** — `bandit` (SAST), `pip-audit` (SCA), `gitleaks` (secrets), CodeQL.
    Any finding above the agreed severity threshold **blocks merge**.
 4. **Tests** — `pytest` on 3.11 and 3.12 with coverage gate (`--cov-fail-under=85`);

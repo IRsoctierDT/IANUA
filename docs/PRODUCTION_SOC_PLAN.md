@@ -50,7 +50,7 @@ Assessed 2026-10-14 against `DESIGN.md`, the Decision Log, and the tree.
 | Compliance | **Built** | `compliance/` + published trust page |
 | Persistence | **Stage 1 — done** | `store/`: append-only, content-addressed, tamper-evident |
 | Correlation | **Stage 2 — done** | `correlation/`: declared-exact entity merges, fan-out suppression, explainable scoring |
-| **Collection** | Absent | `ingest/` takes records from a caller; no forwarder, listener, or poller exists |
+| Collection | **Stage 5 — done (local)** | `collect/` + `scripts/run_collector.py`: declared local log files, read-only, no network. A forwarder/listener for other hosts remains a later stage |
 | Scheduling | **Stage 4 — done** | `pipeline/` + `scripts/run_pipeline.py`: one at-least-once cycle per invocation with a trailing correlation window, driven by cron or a systemd timer |
 | Identity | **Stage 3 — done** | `agents/policies/principal.py`: rides in the hashed `actor` field; no ambient path to an identity |
 | **Case management** | Partial | `dashboard/escalations.py` reads the Agent Trust Broker queue — read-only by design |
@@ -68,7 +68,8 @@ and run against lab telemetry before any charter amendment is argued.
 | 2 | **`correlation/`** — entity resolution across domains, incident assembly (XDR-2) | None | **DONE** |
 | 3 | **Caller identity** — a principal on every request, carried in the audit chain | None | **DONE** (the three gated paths) |
 | 4 | **Scheduled execution** — continuous detection over the store rather than on demand | None (lab data; no new egress, no new dependency) | **DONE** |
-| 5 | **Collection** — agents/forwarders shipping real telemetry | **Yes**: `ingest/`'s no-network invariant stays (collection is a separate package); default-deny egress must admit collection endpoints (`DESIGN.md` Decision Log, initial) | Planned |
+| 5 | **Collection (local)** — this node's own log files into the store | **Yes, amended**: filesystem reach beyond the project, read-only and declared-only (`AGENTS.md` §5, `DESIGN.md` §5 boundary 14). `ingest/`'s no-network invariant is untouched — collection is a separate package — and **default-deny egress is NOT amended** | **DONE** |
+| 5b | **Collection (remote)** — forwarders or a listener for other hosts | **Yes**: an inbound listening socket with forwarder authentication, which no boundary currently describes. Not egress, so it does not reopen the default-deny argument | Planned |
 | 6 | **Real telemetry + retention policy** | **Yes**: §5 treats logs and client info as sensitive by default and `data/` as lab-only; real logs carry usernames, addresses, hostnames. Needs a stated PII posture, not a silent reclassification | Planned |
 | 7 | **Authenticated multi-user access** | **Yes**: `dashboard/`'s "local-only backends" invariant and loopback-only binding | Planned |
 | 8 | **Response execution** (plan → act) | **Yes**: `agents/response/` ships no executor and security tests enforce that. The 2026-08-21 containment decision is the template for doing this properly — a dedicated action class decided and audited per invocation, not an allow-list standing grant | Planned |
@@ -224,6 +225,117 @@ writes events yet (collection is Stage 5), so this is a contract on whatever
 does: `ingested_at` must be non-decreasing across calls. Making it
 unconditionally safe needs a monotonic sequence column, which is a schema
 change and belongs to Stage 5 when the collector lands.
+
+### Running Stage 5 (local log collection)
+
+One pass per invocation; the process exits. Sources are **declared**, never discovered —
+there is no glob and no directory walk, because a collector that searches for logs
+eventually finds one nobody meant it to read, and everything it reads becomes stored
+evidence.
+
+```bash
+# on demand, with attribution
+python scripts/run_collector.py --root /srv/ianua --caller soc-collector \
+    --source /var/log/audit/audit.log --source /var/log/suricata/eve.json
+
+# see what a source would yield without storing or advancing
+python scripts/run_collector.py --root /srv/ianua --source /var/log/auth.log --dry-run
+```
+
+**What parses today.** Measured, not assumed:
+
+| Source shape | Result |
+|---|---|
+| JSON lines — Suricata EVE, Zeek, CloudTrail, Azure, Entra, Okta, Defender, Workspace | fully parsed, correlated |
+| auditd `type=SYSCALL … comm=bash` | fully parsed via `ingest/keyvalue.py` |
+| logfmt app logs (`level=error service=api …`) | fields decoded, domain unclaimed (`unknown`/`partial`) |
+| freeform syslog (`Failed password for x from y`) | carried as `unknown`/`text`, **no fields** |
+
+Freeform syslog is deliberately out of scope: extracting it means regex patterns against
+unversioned vendor message strings, which is the most defect-prone code in any log pipeline.
+If you need `/var/log/auth.log` correlated, the honest options today are to configure the
+service to log JSON, or to treat that parser as its own reviewed change.
+
+**cron** — note the cadence:
+
+```cron
+# Every minute. Not tidiness: the tail of a file rotated away BETWEEN runs is
+# unreachable by name, because a one-shot process holds no descriptor across
+# invocations. Running often is what bounds that gap.
+* * * * *  cd /srv/ianua && /srv/ianua/.venv/bin/python \
+    scripts/run_collector.py --root /srv/ianua --caller soc-collector \
+    --source /var/log/audit/audit.log >> /srv/ianua/data/collect/run.log 2>&1
+```
+
+As with the pipeline, create the directory first — the shell opens the redirect before the
+program runs, so on a fresh deployment the first firing would die before it could create it:
+
+```bash
+install -d -m 700 -o ianua -g ianua /srv/ianua/data/collect
+```
+
+**systemd** — preferred, and the unit is where least privilege is actually expressed:
+
+```ini
+# /etc/systemd/system/ianua-collector.service
+[Unit]
+Description=IANUA local log collection
+[Service]
+Type=oneshot
+User=ianua
+WorkingDirectory=/srv/ianua
+ExecStart=/srv/ianua/.venv/bin/python scripts/run_collector.py \
+    --root /srv/ianua --caller soc-collector \
+    --source /var/log/audit/audit.log
+# Read the logs, write only the lab-data root.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/srv/ianua/data
+ReadOnlyPaths=/var/log
+# The collector makes no outbound connection; the AST tests assert the package
+# cannot, and this makes the kernel agree.
+PrivateNetwork=true
+# The account needs read access to the sources. Prefer adding it to the group
+# that owns them (often `adm` for /var/log on Debian) over running as root.
+SupplementaryGroups=adm
+```
+
+Both `ReadWritePaths` and `ReadOnlyPaths` must already exist: under `ProtectSystem=strict` a
+missing entry makes the unit fail to start rather than creating it.
+
+**Exit codes**, which are the whole interface a scheduler sees: `0` a pass ran (including
+nothing-new, and including a skip because another pass held the lock — the output
+distinguishes them), `1` a source was unreadable or the store/audit/offsets write failed
+(nothing consumed; the next pass re-reads), `2` bad arguments, `3` blocked by policy.
+
+**What to watch.** `data/collect/audit.log` gets two records per pass: the gate decision and
+the outcome. A pass that dies mid-run leaves a permitted attempt with no outcome, which is
+the signal worth alerting on. Persistent `skipped: another pass holds the lock` means a pass
+is taking longer than the interval — raise `--max-bytes` or lengthen the schedule. A `reset`
+of `rotated` is routine; `truncated` usually is not, and means something emptied the log.
+`replaced` means the bytes at the stored offset are not the bytes that were read there
+before — `logrotate copytruncate`, a log cleared with `>`, or an inode reused after a
+delete-and-recreate — and the source was re-read from the beginning, so expect duplicates
+(harmless: the store is content-addressed) rather than a gap.
+
+**`--max-bytes` has a floor worth respecting.** A value below the 64 KiB line cap means a
+single longer line cannot fit in one read. That no longer wedges the source — the read is
+extended just far enough to hold one legal line, and a line that still cannot end is
+emitted truncated and counted so the offset advances — but every such line then costs an
+over-budget read. Leave the flag alone unless a backlog is genuinely not draining.
+
+**Known limitation — a forward clock jump is permanent.** `ingested_at` comes from
+`EventStore.next_stamp(time.time())`, which returns a value strictly after the store's
+high-water mark whenever the clock is at or behind it. A clock that steps *backwards*
+therefore clamps harmlessly and `occurred_at` still carries the source's own time. A clock
+that jumps *forward* raises the mark permanently, which delays retention for everything
+stored afterwards. Fixing that needs a monotonic sequence column rather than a timestamp,
+which is a schema change. (Strictly after, not `max(now, mark)`: the pipeline's keyset
+cursor is strictly after `(ingested_at, event_id)`, so an event written at *exactly* the
+mark with a lower event id would sit behind a cursor that had already passed it and never
+be read — four stored, three ever seen, measured before the fix.)
 
 ### Why this order
 

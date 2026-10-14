@@ -206,7 +206,20 @@ def _recognizes_auditd(payload: Mapping[str, Any]) -> bool:
 
 
 def _execve_command(payload: Mapping[str, Any]) -> str | None:
-    """Reassemble an EXECVE argv, in index order rather than dict order."""
+    """Reassemble an EXECVE argv, in index order rather than dict order.
+
+    **Only for EXECVE.** On a ``SYSCALL`` record the same ``a0``/``a1``… keys
+    are the syscall's *argument registers* — hex words like ``0x7ffd…`` — not
+    an argv. Reassembling those produced a plausible-looking ``command_line``
+    out of register values on the most frequent auditd record type, which is
+    fabricated evidence: an analyst reading an incident would see a command
+    that was never run. Found by review once ``ingest/keyvalue.py`` made text
+    auditd records reachable for the first time; the guard is here rather than
+    at the call site so no future caller can reintroduce it.
+    """
+    record_type = text(payload.get("type"))
+    if record_type is None or record_type.upper() != "EXECVE":
+        return None
     args: list[tuple[int, str]] = []
     for key, value in payload.items():
         match = _EXECVE_ARG.match(key)

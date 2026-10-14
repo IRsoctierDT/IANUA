@@ -42,6 +42,7 @@ boundary 10 for the trust argument.
 from __future__ import annotations
 
 from store.errors import (
+    IngestionOrderError,
     SchemaVersionError,
     StoreError,
     StoreIntegrityError,
@@ -71,6 +72,7 @@ __all__ = [
     "MAX_QUERY_LIMIT",
     "SCHEMA_VERSION",
     "EventStore",
+    "IngestionOrderError",
     "Query",
     "SchemaVersionError",
     "StoreError",

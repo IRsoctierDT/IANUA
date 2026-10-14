@@ -45,6 +45,16 @@ SCHEMA_VERSION = 1
 #: ``meta`` key holding :data:`SCHEMA_VERSION` for the open database.
 VERSION_KEY = "schema_version"
 
+#: ``meta`` key holding the highest ``ingested_at`` ever written.
+#:
+#: Stored rather than derived from ``MAX(ingested_at)`` because retention
+#: deletes rows: a derived watermark would reset the moment a window aged out,
+#: and a collector could then stamp an event behind a cursor that had already
+#: passed it. A **row** in the existing ``meta`` table, not a column — the DDL
+#: is unchanged, so this needs no :data:`SCHEMA_VERSION` bump and
+#: ``SchemaVersionError`` is never provoked.
+HIGH_WATER_KEY = "ingested_high_water"
+
 #: Ceiling on one serialized projection. ``ingest/`` already bounds every
 #: field, so a projection past this is not oversized telemetry — it is a
 #: caller that built a ``NormalizedEvent`` by hand without the bounds. Refused

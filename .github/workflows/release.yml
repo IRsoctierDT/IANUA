@@ -103,7 +103,7 @@ jobs:
           ruff check .
           ruff format --check .
           scope=""
-          for dir in agents attack intel ingest store correlation pipeline \
+          for dir in agents attack intel ingest store correlation pipeline collect \
                      scripts tests dashboard mcp rag compliance; do
             if [ -d "$dir" ]; then
               scope="$scope $dir"
