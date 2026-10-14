@@ -34,6 +34,7 @@ security operation.
 | **ATT&CK Corpus (`attack/`)** — version-pinned local MITRE ATT&CK 19.x: hash-verified shards, tombstoned revocations, merge-blocking reference gates ([plan](./docs/DETECTION_INTELLIGENCE_PLAN.md)) | Data | Complete |
 | **Threat-Intel Library (`intel/`)** — first-party behavioral records (ATT&CK-anchored, review-aged) + synthetic atomic seed with per-type decay | Data | Complete |
 | **Behavioral Detections (`detections/behaviors/`)** — post-compromise TTP corpus, reference-gated against the pinned corpus, each rule declaring whether its telemetry is ingested | Detection | Complete |
+| **Event Store (`store/`)** — durable append-only SOC memory: content-addressed rows, engine-enforced append-only, tamper-evident reads, bounded queries ([plan](./docs/PRODUCTION_SOC_PLAN.md)) | Data | Complete |
 | **Response Layer (`agents/response/`)** — draft containment plans with per-action rollback and human owners; **no executor exists** and security tests prove it ([doc](./docs/RESPONSE_LAYER.md)) | Agent | Complete |
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
@@ -189,10 +190,10 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest scripts tests dashboard mcp rag compliance
+mypy agents attack intel ingest store scripts tests dashboard mcp rag compliance
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack intel ingest scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest store scripts mcp
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock

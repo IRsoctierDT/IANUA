@@ -26,6 +26,7 @@ from ingest.normalize import SIGNATURES, SOURCE_TYPES, detect_source, normalize,
 from ingest.schema import (
     MAX_FIELD_LEN,
     MAX_NESTING_DEPTH,
+    MAX_NOTES,
     MAX_OBSERVABLES,
     MAX_RAW_BYTES,
     MAX_RAW_EXCERPT,
@@ -42,6 +43,7 @@ from ingest.schema import (
 __all__ = [
     "MAX_FIELD_LEN",
     "MAX_NESTING_DEPTH",
+    "MAX_NOTES",
     "MAX_OBSERVABLES",
     "MAX_RAW_BYTES",
     "MAX_RAW_EXCERPT",

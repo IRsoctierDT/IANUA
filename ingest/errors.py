@@ -27,3 +27,16 @@ class UnsupportedInputError(IngestError):
     Raised for a wrong Python type — not for malformed or unrecognized
     telemetry, which degrades visibly instead of raising.
     """
+
+
+class MalformedProjectionError(IngestError):
+    """A stored event projection is not the shape :meth:`to_dict` writes.
+
+    Distinct from :class:`UnsupportedInputError` because the provenance is
+    different, and so is the correct response. Raw telemetry is messy by
+    nature, so it degrades to a ``partial``/``text`` event. A *projection* is
+    a record this platform serialized itself: if it comes back missing a key,
+    carrying an undeclared one, or past a declared bound, the row was damaged
+    or edited after it was written. There is no honest degradation of that —
+    rebuilding a plausible event would launder the damage — so it raises.
+    """

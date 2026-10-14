@@ -93,7 +93,7 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
-          mypy agents attack intel ingest scripts tests dashboard mcp rag compliance
+          mypy agents attack intel ingest store scripts tests dashboard mcp rag compliance
           pytest
       - name: Build distributions from the tagged commit
         run: python -m build
