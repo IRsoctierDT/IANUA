@@ -35,7 +35,9 @@ from ingest import (
     normalize,
 )
 
-_INGEST_ROOT = Path(__file__).resolve().parents[2] / "ingest"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_INGEST_ROOT = _REPO_ROOT / "ingest"
+LAYER = "ingest"
 
 
 # --------------------------------------------------------------------------
@@ -334,12 +336,31 @@ def test_ingest_reads_no_clock() -> None:
 
 @pytest.mark.security
 def test_ingest_is_importable_without_third_party_packages() -> None:
-    """The runtime dependency set stays empty — a load-bearing repo property."""
+    """The runtime dependency set stays empty — a load-bearing repo property.
+
+    Asserted against ``pyproject.toml`` rather than installed metadata, so it
+    runs everywhere. The property is a declaration in a committed file, not a
+    fact about the current virtualenv: reading it through
+    ``importlib.metadata`` made the test error with ``PackageNotFoundError``
+    wherever the package was not pip-installed, which reported an environment
+    fact as a security failure. Installed metadata is still checked when it
+    happens to be available, because it would also catch a dependency injected
+    by the build backend rather than declared here.
+    """
+    import tomllib
+
+    config = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = config["project"]["dependencies"]
+    assert declared == [], f"{LAYER} must not introduce runtime dependencies: {declared}"
+
     import importlib.metadata as metadata
 
-    declared = metadata.requires("ianua") or []
-    runtime = [req for req in declared if "extra ==" not in req]
-    assert runtime == [], f"ingest must not introduce runtime dependencies: {runtime}"
+    try:
+        installed = metadata.requires("ianua") or []
+    except metadata.PackageNotFoundError:
+        return  # not installed here; the committed declaration above is the contract
+    runtime = [req for req in installed if "extra ==" not in req]
+    assert runtime == [], f"installed metadata declares runtime dependencies: {runtime}"
 
 
 def _load(name: str) -> dict:

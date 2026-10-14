@@ -25,6 +25,7 @@ PACKAGES = {
     "intel",
     "ingest",
     "store",
+    "correlation",
     "rag",
     "mcp",
     "dashboard",
@@ -37,6 +38,7 @@ MYPY_SCOPE = {
     "intel",
     "ingest",
     "store",
+    "correlation",
     "scripts",
     "tests",
     "dashboard",
@@ -44,10 +46,20 @@ MYPY_SCOPE = {
     "rag",
     "compliance",
 }
-COVERAGE_SCOPE = {"agents", "attack", "intel", "ingest", "store", "compliance", "rag", "mcp"}
+COVERAGE_SCOPE = {
+    "agents",
+    "attack",
+    "intel",
+    "ingest",
+    "store",
+    "correlation",
+    "compliance",
+    "rag",
+    "mcp",
+}
 # Bandit covers the packages that parse untrusted or externally influenced
 # input (agent pipeline, corpus loaders, operational scripts, MCP surface).
-BANDIT_SCOPE = {"agents", "attack", "intel", "ingest", "store", "scripts", "mcp"}
+BANDIT_SCOPE = {"agents", "attack", "intel", "ingest", "store", "correlation", "scripts", "mcp"}
 
 
 def _pyproject() -> dict:
