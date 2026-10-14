@@ -23,8 +23,17 @@ from agents.policies.approval import (
     PolicyEngine,
     classify_action,
 )
-from agents.policies.audit import AuditEvent, AuditLogger, signing_key_from_env
+from agents.policies.audit import (
+    AUDIT_FIELD_DELIMITER,
+    AuditEvent,
+    AuditFieldError,
+    AuditLogger,
+    escape_delimiter,
+    reject_delimiter,
+    signing_key_from_env,
+)
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle
+from agents.policies.principal import Principal, PrincipalError, coerce
 from agents.policies.signing import (
     Ed25519Signer,
     Ed25519Verifier,
@@ -36,9 +45,11 @@ from agents.policies.signing import (
 )
 
 __all__ = [
+    "AUDIT_FIELD_DELIMITER",
     "DEFAULT_BUNDLE_PATH",
     "ActionClass",
     "AuditEvent",
+    "AuditFieldError",
     "AuditLogger",
     "Decision",
     "Ed25519Signer",
@@ -47,13 +58,18 @@ __all__ = [
     "PolicyBundleError",
     "PolicyDecision",
     "PolicyEngine",
+    "Principal",
+    "PrincipalError",
     "Signer",
     "classify_action",
+    "coerce",
     "ed25519_signer_from_env",
     "ed25519_verifier_from_env",
+    "escape_delimiter",
     "generate_ed25519_keypair",
     "guard",
     "load_bundle",
+    "reject_delimiter",
     "signing_key_from_env",
 ]
 
