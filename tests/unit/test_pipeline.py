@@ -27,9 +27,11 @@ import pytest
 from correlation import Thresholds
 from pipeline import (
     CURSOR_VERSION,
+    DEFAULT_LOOKBACK,
     Cursor,
     CursorError,
     CursorPathError,
+    CycleResult,
     cursor_path,
     load_cursor,
     reference,
@@ -562,3 +564,183 @@ def test_a_cycle_reads_no_more_than_assemble_will_look_at(tmp_path: Path) -> Non
             seen += page.events_read
             cursor = page.cursor
     assert seen == 10, f"only {seen} of 10 events were ever correlated"
+
+
+# --------------------------------------------------------------------------
+# The correlation window: the defect that made this stage not work
+# --------------------------------------------------------------------------
+#
+# A cursor partitions the event stream. Cross-domain correlation is windowed,
+# not partitioned. Handing assemble() only the events since the cursor means an
+# incident whose steps arrive in different cycles is never assembled at all,
+# and once the cursor passes them nothing can recover it — reported as
+# "0 incident(s)" and exit 0, which is the silent blind spot DESIGN.md §5
+# boundary 13 refuses to accept. These tests pin the trailing overlap that
+# fixes it, and its limit.
+
+
+def _interleaved(
+    root: Path, arrivals: tuple[tuple[Mapping[str, Any], float], ...], **kwargs: Any
+) -> list[CycleResult]:
+    """Append, run a cycle, append, run a cycle — the real steady state.
+
+    The helper exists because every earlier test in this file seeded a whole
+    batch *before* the first cycle, which put the entire story inside one
+    window and hid the defect completely.
+    """
+    results: list[CycleResult] = []
+    cursor: Cursor | None = None
+    for record, at in arrivals:
+        with EventStore.open(root) as store:
+            store.append_many((normalize(record),), ingested_at=at)
+        with EventStore.open(root) as store:
+            page = run_cycle(store, cursor=cursor, **kwargs)
+        results.append(page)
+        if page.cursor is not None:
+            cursor = page.cursor
+    return results
+
+
+@pytest.mark.unit
+def test_an_incident_spanning_three_cycles_is_still_assembled(tmp_path: Path) -> None:
+    """The reproduction, turned into a regression test.
+
+    Three attack steps five minutes apart, a cycle between each — the only way
+    this ever runs in production. With no lookback every cycle reports nothing
+    and the story is lost permanently.
+    """
+    results = _interleaved(tmp_path, ((_CLOUD, 1000.0), (_IDENTITY, 1300.0), (_ENDPOINT, 1600.0)))
+    assert [r.events_read for r in results] == [1, 1, 1], "each cycle sees one new event"
+    best = max(
+        (incident for page in results for incident in page.fresh),
+        key=lambda incident: incident.score,
+        default=None,
+    )
+    assert best is not None, "the story was never assembled by any cycle"
+    assert sorted(best.domains) == ["cloud", "endpoint", "identity"], (
+        f"only {sorted(best.domains)} were correlated together"
+    )
+    assert len(best.event_ids) == 3
+
+
+@pytest.mark.unit
+def test_without_a_lookback_the_same_story_is_lost(tmp_path: Path) -> None:
+    """The counter-test, so the one above cannot pass for an unrelated reason.
+
+    ``lookback=0`` is the old partitioning behaviour, kept because a backfill
+    occasionally wants it. It must demonstrably lose the incident — otherwise
+    the test above proves nothing about the overlap.
+    """
+    results = _interleaved(
+        tmp_path, ((_CLOUD, 1000.0), (_IDENTITY, 1300.0), (_ENDPOINT, 1600.0)), lookback=0
+    )
+    assert all(page.fresh == () for page in results), (
+        "lookback=0 must partition the stream; if it assembles the story, the "
+        "lookback test above is not testing the lookback"
+    )
+
+
+@pytest.mark.unit
+def test_an_incident_spanning_longer_than_the_lookback_is_still_cut(tmp_path: Path) -> None:
+    """The limit of a stateless window, asserted rather than left implicit.
+
+    This is why persisted, mergeable incidents remain the end state. Pinning it
+    means nobody later reads the lookback as a complete solution.
+    """
+    far_apart = ((_CLOUD, 1000.0), (_IDENTITY, 1000.0 + DEFAULT_LOOKBACK * 3))
+    results = _interleaved(tmp_path, far_apart)
+    assert all(page.fresh == () for page in results), (
+        "events this far apart cannot be correlated by a window this size; if "
+        "they are, the lookback is not bounded by DEFAULT_LOOKBACK"
+    )
+
+
+@pytest.mark.unit
+def test_an_idle_cycle_correlates_nothing_despite_the_lookback(tmp_path: Path) -> None:
+    """A lookback must not manufacture work when nothing arrived.
+
+    Re-correlating recent history on every firing regardless of new input would
+    re-report every incident forever and turn an idle pipeline into an alert
+    storm.
+    """
+    _seed(tmp_path, (_CLOUD, _IDENTITY, _ENDPOINT), at=1000.0)
+    with EventStore.open(tmp_path) as store:
+        first = run_cycle(store)
+        idle = run_cycle(store, cursor=first.cursor)
+    assert first.fresh, "the first cycle should have found the story"
+    assert idle.idle and idle.events_read == 0
+    assert idle.incidents == () and idle.fresh == ()
+    assert idle.events_correlated == 0
+
+
+@pytest.mark.unit
+def test_a_re_assembled_incident_is_not_reported_as_new(tmp_path: Path) -> None:
+    """The lookback re-assembles history by design; it must not re-alert.
+
+    An incident every one of whose events sits at or before the starting cursor
+    cannot be news. Derived from the event ids, so no state is persisted to
+    know it — which is what keeps the overlap from duplicating every alert for
+    its whole duration.
+    """
+    _seed(tmp_path, (_CLOUD, _IDENTITY, _ENDPOINT), at=1000.0)
+    with EventStore.open(tmp_path) as store:
+        first = run_cycle(store)
+    assert len(first.fresh) == 1
+    # One unrelated event arrives: the cycle is not idle, so the lookback pulls
+    # the earlier story back in, and it must come back as a repeat not news.
+    _seed(
+        tmp_path,
+        ({"type": "SYSCALL", "node": "other-host", "auid": "alice", "comm": "ls"},),
+        at=1100.0,
+    )
+    with EventStore.open(tmp_path) as store:
+        second = run_cycle(store, cursor=first.cursor)
+    assert second.events_read == 1
+    assert second.events_correlated > 1, "the lookback did not widen the window"
+    assert second.repeats >= 1, "the earlier incident was not re-assembled at all"
+    # The new event is a lone, uncorroborated action on an unrelated host by an
+    # unrelated user, so nothing new can legitimately come of it. Everything
+    # the lookback re-assembled must therefore land in `repeats`, not `fresh`.
+    assert second.fresh == (), (
+        "an incident built entirely from already-consumed events was reported as new"
+    )
+
+
+@pytest.mark.unit
+def test_a_negative_lookback_is_refused(tmp_path: Path) -> None:
+    with (
+        EventStore.open(tmp_path) as store,
+        pytest.raises(ValueError, match="lookback must be >= 0"),
+    ):
+        run_cycle(store, lookback=-1.0)
+
+
+@pytest.mark.unit
+def test_the_correlation_window_never_passes_the_cursor_being_saved(tmp_path: Path) -> None:
+    """The window is bounded above by the cursor this cycle will save.
+
+    The store grows continuously under a collector, so the widened read can
+    return events newer than the progress window. Correlating those would
+    report incidents built partly from events this cycle never consumed — and
+    the next cycle would read them again and report a second, overlapping
+    version of the same story.
+    """
+    _seed(tmp_path, (_CLOUD,), at=1000.0)
+    with EventStore.open(tmp_path) as store:
+        # batch=1 makes the progress window strictly narrower than the store.
+        _seed(tmp_path, (_IDENTITY, _ENDPOINT), at=1100.0)
+        page = run_cycle(store, cursor=None, batch=1)
+    assert page.events_read == 1
+    assert page.cursor is not None
+    assert page.events_correlated == 1, (
+        f"correlated {page.events_correlated} events for a 1-event progress window; "
+        "the widened read was not bounded by the cursor being saved"
+    )
+
+
+@pytest.mark.unit
+def test_the_cli_accepts_a_lookback_and_refuses_a_negative_one(tmp_path: Path) -> None:
+    _seed(tmp_path, (_CLOUD, _IDENTITY, _ENDPOINT), at=1000.0)
+    main = _cli_main()
+    assert main(["--root", str(tmp_path), "--lookback", "60"]) == 0
+    assert main(["--root", str(tmp_path), "--lookback", "-5"]) == 2

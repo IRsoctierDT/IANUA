@@ -52,6 +52,15 @@ Schedule examples::
     # being lost) and the unit's own sandboxing (ProtectSystem, ReadWritePaths
     # limited to the data root).
 
+**Two windows, not one.** A cycle advances its cursor over the events since
+the last one, but *correlates* those alongside a trailing ``--lookback`` of
+already-consumed history. Without that overlap the cursor partitions the event
+stream, and cross-domain correlation is windowed rather than partitioned: an
+attack landing at 10:02, 10:07 and 10:12 becomes three one-event cycles that
+each assemble nothing, with no later cycle able to recover the story. Incidents
+the lookback re-assembles are reported once, when they are new or when they
+grow; see ``pipeline.CycleResult.fresh``.
+
 **One cycle at a time.** An exclusive lock is held for the whole cycle. Two
 cycles appending to the hash-chained audit log at once fork the chain and break
 ``verify()`` permanently, which would put a false positive into a tamper
@@ -102,6 +111,7 @@ from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
 from correlation import ThresholdError, Thresholds  # noqa: E402
 from pipeline import (  # noqa: E402
     DEFAULT_BATCH,
+    DEFAULT_LOOKBACK,
     CursorError,
     CycleResult,
     cursor_path,
@@ -198,6 +208,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=f"Events to read in this cycle (default: {DEFAULT_BATCH}).",
     )
     parser.add_argument(
+        "--lookback",
+        type=float,
+        default=DEFAULT_LOOKBACK,
+        help=(
+            "Seconds of already-consumed history to correlate alongside the new "
+            f"events (default: {DEFAULT_LOOKBACK:.0f}). 0 disables the overlap, which "
+            "partitions the stream and loses any incident spanning two cycles."
+        ),
+    )
+    parser.add_argument(
         "--caller",
         default=None,
         help="Who this run is for, recorded in the audit chain. Never inferred.",
@@ -250,6 +270,11 @@ def _report(result: CycleResult, *, elapsed: float, advanced: bool) -> dict[str,
     return {
         "events_read": result.events_read,
         "idle": result.idle,
+        "events_correlated": result.events_correlated,
+        "repeats": result.repeats,
+        # Only the fresh ones: an incident the lookback re-assembled was
+        # reported by an earlier cycle, and emitting it again every run would
+        # make a log shipper duplicate every alert for the whole lookback.
         "incidents": [
             {
                 "reference": reference(incident),
@@ -258,7 +283,7 @@ def _report(result: CycleResult, *, elapsed: float, advanced: bool) -> dict[str,
                 "events": len(incident.event_ids),
                 "entities": [entity.key for entity in incident.entities],
             }
-            for incident in result.incidents
+            for incident in result.fresh
         ],
         "cursor_advanced": advanced,
         "resumed_from": None if result.started_from is None else result.started_from.event_id,
@@ -267,20 +292,23 @@ def _report(result: CycleResult, *, elapsed: float, advanced: bool) -> dict[str,
 
 
 def _print_text(result: CycleResult, *, elapsed: float, advanced: bool) -> None:
-    """Human-readable summary, one line per incident.
+    """Human-readable summary, one line per new incident.
 
     Printed from the :class:`CycleResult` rather than from the JSON dictionary,
-    so neither form is a reinterpretation of the other.
+    so neither form is a reinterpretation of the other. Only *fresh* incidents
+    are listed: the lookback re-assembles recent history every cycle by design,
+    and printing those again each run would bury the new ones.
     """
     if result.idle:
         print("idle: no new events since the stored cursor.")
         return
     print(
-        f"read {result.events_read} events in {elapsed:.3f}s; "
-        f"{len(result.incidents)} incident(s); "
-        f"cursor {'advanced' if advanced else 'held'}."
+        f"read {result.events_read} event(s), correlated {result.events_correlated} "
+        f"in {elapsed:.3f}s; {len(result.fresh)} new incident(s)"
+        + (f", {result.repeats} re-seen" if result.repeats else "")
+        + f"; cursor {'advanced' if advanced else 'held'}."
     )
-    for incident in result.incidents:
+    for incident in result.fresh:
         print(
             f"  {reference(incident)}  score={incident.score:>3}  "
             f"events={len(incident.event_ids):>3}  "
@@ -298,6 +326,8 @@ def main(argv: list[str] | None = None) -> int:
     started_at = time.monotonic()
 
     try:
+        if args.lookback < 0:
+            raise ValueError(f"lookback must be >= 0 seconds, got {args.lookback}")
         if args.batch < 1:
             # Validated here as well as in run_cycle: a scheduler misconfigured
             # with a batch of zero is a bad argument, not a failed cycle, and
@@ -376,7 +406,13 @@ def _run(
     try:
         cursor = load_cursor(path)
         with EventStore.open(args.root) as store:
-            result = run_cycle(store, cursor=cursor, thresholds=thresholds, batch=args.batch)
+            result = run_cycle(
+                store,
+                cursor=cursor,
+                thresholds=thresholds,
+                batch=args.batch,
+                lookback=args.lookback,
+            )
     except (CursorError, StoreError, sqlite3.Error, ValueError, OSError) as exc:
         # sqlite3.Error is neither an OSError nor a StoreError, so a corrupt or
         # externally-locked database would otherwise escape as a traceback.
@@ -398,8 +434,10 @@ def _run(
             action_class=ACTION_CLASS,
             decision="allow",
             reason=(
-                f"read {result.events_read} event(s), assembled "
-                f"{len(result.incidents)} incident(s), "
+                f"read {result.events_read} event(s), correlated "
+                f"{result.events_correlated}, assembled "
+                f"{len(result.fresh)} new incident(s) "
+                f"({result.repeats} re-seen), "
                 + (
                     f"advancing cursor to {result.cursor.event_id[:16]}"
                     if advancing and result.cursor is not None

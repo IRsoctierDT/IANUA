@@ -136,6 +136,18 @@ class Query:
     #: ``occurred_at`` would therefore have a permanent blind spot for exactly
     #: the undated events ``ingest/`` deliberately produces.
     ingested_after: tuple[float, str] | None = None
+    #: ``ingested_at >= ingested_from``. The inclusive lower edge of an
+    #: ingestion-time window, which is what a correlator needs and what
+    #: :data:`ingested_after` deliberately is not: that one *excludes* the
+    #: cursor so a pipeline makes progress, while this one *includes* a
+    #: trailing region so a story spanning two cycles can still be seen whole.
+    #:
+    #: Keyed on ``ingested_at`` rather than ``occurred_at`` for the same reason
+    #: :data:`ingested_after` is: an event whose source carried no timestamp is
+    #: excluded from every ``since``/``until`` window, so a correlator paging by
+    #: source time would have a permanent blind spot for exactly the undated
+    #: events ``ingest/`` deliberately produces.
+    ingested_from: float | None = None
     #: Newest first when true, which is what an analyst opening a view wants.
     newest_first: bool = True
     limit: int = 1_000
@@ -417,6 +429,11 @@ class EventStore:
             clauses.append(_INGESTED_AFTER)
             at, identifier = spec.ingested_after
             params.extend((float(at), float(at), identifier))
+        if spec.ingested_from is not None:
+            # Inclusive, so the lower edge of a lookback window is not itself
+            # the thing that falls out of it.
+            clauses.append(_INGESTED_FROM)
+            params.append(float(spec.ingested_from))
         if spec.observable is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM observables o WHERE o.event_id = e.event_id AND o.value = ?)"
@@ -463,6 +480,8 @@ class EventStore:
 _SELECT = "SELECT event_id, ingested_at, projection FROM events e"
 #: Keyset pagination: strictly after ``(ingested_at, event_id)``.
 _INGESTED_AFTER = "(e.ingested_at > ? OR (e.ingested_at = ? AND e.event_id > ?))"
+#: Inclusive lower edge of an ingestion-time window.
+_INGESTED_FROM = "e.ingested_at >= ?"
 #: Ordering is on ``ingested_at``, not ``occurred_at``: it is always present
 #: (a source may carry no timestamp) and it is the one of the two this
 #: platform controls, so a source with a wrong clock cannot reorder the view.

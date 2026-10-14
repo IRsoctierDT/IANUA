@@ -21,8 +21,18 @@ Programmatically::
         result = run_cycle(events, cursor=cursor)
     if result.cursor is not None:          # only advance after success
         save_cursor(path, result.cursor)
+    for incident in result.fresh:          # `incidents` includes re-seen ones
+        ...
 
-Three properties worth knowing before relying on it:
+Four properties worth knowing before relying on it:
+
+* **Two windows, never one.** The cursor advances over the new events; the
+  correlator sees those *plus* a trailing ``lookback`` of already-consumed
+  history. A cursor partitions the stream, and cross-domain correlation is
+  windowed — without the overlap an incident whose steps arrive in different
+  cycles is never assembled, and nothing can recover it afterwards.
+  ``CycleResult.fresh`` marks the incidents that are actually news, derived
+  from event ids rather than remembered state.
 
 * **At-least-once.** The cursor advances only after a cycle succeeds, so a
   crash re-reads rather than skips. Duplicate incidents are noise; a skipped
@@ -42,13 +52,20 @@ from pipeline.cursor import CURSOR_SUBDIR, CURSOR_VERSION, Cursor
 from pipeline.cursor import load as load_cursor
 from pipeline.cursor import resolve as cursor_path
 from pipeline.cursor import save as save_cursor
-from pipeline.cycle import DEFAULT_BATCH, CycleResult, reference, run_cycle
+from pipeline.cycle import (
+    DEFAULT_BATCH,
+    DEFAULT_LOOKBACK,
+    CycleResult,
+    reference,
+    run_cycle,
+)
 from pipeline.errors import CursorError, CursorPathError, PipelineError
 
 __all__ = [
     "CURSOR_SUBDIR",
     "CURSOR_VERSION",
     "DEFAULT_BATCH",
+    "DEFAULT_LOOKBACK",
     "Cursor",
     "CursorError",
     "CursorPathError",

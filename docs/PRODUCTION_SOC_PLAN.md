@@ -51,7 +51,7 @@ Assessed 2026-10-14 against `DESIGN.md`, the Decision Log, and the tree.
 | Persistence | **Stage 1 — done** | `store/`: append-only, content-addressed, tamper-evident |
 | Correlation | **Stage 2 — done** | `correlation/`: declared-exact entity merges, fan-out suppression, explainable scoring |
 | **Collection** | Absent | `ingest/` takes records from a caller; no forwarder, listener, or poller exists |
-| Scheduling | **Stage 4 — done** | `pipeline/` + `scripts/run_pipeline.py`: one at-least-once cycle per invocation, driven by cron or a systemd timer |
+| Scheduling | **Stage 4 — done** | `pipeline/` + `scripts/run_pipeline.py`: one at-least-once cycle per invocation with a trailing correlation window, driven by cron or a systemd timer |
 | Identity | **Stage 3 — done** | `agents/policies/principal.py`: rides in the hashed `actor` field; no ambient path to an identity |
 | **Case management** | Partial | `dashboard/escalations.py` reads the Agent Trust Broker queue — read-only by design |
 | **Operational envelope** | Absent | Single-node compose, loopback-only, no HA/backup/DR, no self-monitoring |
@@ -78,9 +78,33 @@ and run against lab telemetry before any charter amendment is argued.
 
 One cycle per invocation; the process exits. There is no daemon to supervise.
 
+**The correlation window.** A cycle advances its cursor over the events since
+the last one, but *correlates* those alongside a trailing `--lookback` of
+already-consumed history (default 900s = three firings of the five-minute
+timer). Without that overlap the cursor partitions the event stream, and
+cross-domain correlation is windowed rather than partitioned — an attack
+landing at 10:02, 10:07 and 10:12 would be three one-event cycles that each
+assemble nothing, with no later cycle able to recover it.
+
+Two consequences worth knowing before you read the output:
+
+- **Incidents are reported as they grow.** The 10:02/10:07/10:12 attack above
+  surfaces first as a two-domain score-25 incident, then as the three-domain
+  score-52 one, with a different `reference` each time because the membership
+  changed. That is an escalation series, not a duplicate — it is what seeing an
+  attack develop looks like.
+- **An incident spanning longer than the lookback is still cut.** Inherent to
+  any stateless window. Raising `--lookback` widens the reach at the cost of
+  re-correlating more history each cycle; the real fix is persisted, mergeable
+  incidents, which is stage 9 work. Pick a lookback longer than the dwell time
+  you expect to catch, not longer than you can afford to re-read.
+
 ```bash
 # on demand, with attribution
 python scripts/run_pipeline.py --root /srv/ianua --caller soc-timer
+
+# widen the correlation reach to an hour
+python scripts/run_pipeline.py --root /srv/ianua --lookback 3600
 
 # see what a cycle would do without advancing the cursor
 python scripts/run_pipeline.py --root /srv/ianua --dry-run
