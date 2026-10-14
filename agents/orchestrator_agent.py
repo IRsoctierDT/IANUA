@@ -76,7 +76,7 @@ class OrchestratorAgent:
     def process_log(
         self,
         log_text: str,
-        report_path: str = "reports/markdown/orchestrated_incident.md",
+        report_path: str = "data/reports/orchestrated_incident.md",
     ) -> dict[str, Any]:
         """Run the full agent pipeline over a single log line.
 
@@ -141,7 +141,7 @@ class OrchestratorAgent:
     def process_sequence(
         self,
         events: Sequence[str | dict[str, Any]],
-        report_path: str = "reports/markdown/orchestrated_sequence_incident.md",
+        report_path: str = "data/reports/orchestrated_sequence_incident.md",
     ) -> dict[str, Any]:
         """Run the pipeline over an ordered batch of log events.
 

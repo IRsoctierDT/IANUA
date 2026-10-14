@@ -171,6 +171,33 @@ class Query:
 ALL = Query()
 
 
+#: Owner-only, matching ``pipeline/cursor.py``, ``collect/offsets.py`` and the
+#: audit log. The directory mode is what actually protects the contents; the
+#: file mode is defence in depth on top of it.
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
+
+
+def _sidecar(path: Path, suffix: str) -> Path:
+    """The ``-wal``/``-shm`` companion SQLite creates beside the database."""
+    return path.with_name(path.name + suffix)
+
+
+def _narrow(path: Path, mode: int) -> None:
+    """Set ``mode`` if ``path`` exists, ignoring a filesystem that cannot.
+
+    Absent is the normal case for a sidecar on a freshly opened store, and a
+    filesystem without POSIX modes is not a reason to refuse to store events —
+    the confinement in :func:`store.paths.confine` is the control that must not
+    fail, and it is unaffected.
+    """
+    try:
+        if path.exists():
+            path.chmod(mode)
+    except OSError:  # pragma: no cover - filesystem without mode support
+        pass
+
+
 class EventStore:
     """An open, append-only event database.
 
@@ -199,7 +226,19 @@ class EventStore:
         schema version.
         """
         path = cls._resolve(root, filename)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only, matching the cursor, the offsets and the audit log. The
+        # database holding every collected event was the ONE piece of state
+        # under the lab-data root created at the process umask and never
+        # narrowed: measured at 0o644 inside 0o755 directories, while a byte
+        # offset in data/pipeline/ was deliberately 0o600 inside 0o700. The
+        # asymmetry ran the wrong way round — bookkeeping protected, evidence
+        # readable by every local account — and it matters far more once the
+        # telemetry is real. Found by review.
+        path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+        # `mkdir(mode=...)` is masked by umask and does nothing to a directory
+        # that already exists, so the mode is also set explicitly. Same reason
+        # `pipeline/cursor.py` chmods rather than relying on a creation mode.
+        _narrow(path.parent, _DIR_MODE)
         conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
         try:
@@ -214,6 +253,17 @@ class EventStore:
             # pruning would otherwise orphan every observable row.
             conn.execute("PRAGMA foreign_keys=ON")
             cls._apply_schema(conn)
+            # After the PRAGMA, because WAL mode is what creates the sidecars.
+            #
+            # Stated precisely, since the stronger claim would be false: SQLite
+            # creates each of these at the umask default and may recreate the
+            # sidecars on any later write, so there is a window in which they
+            # are wider than 0o600 and this cannot close it. What makes the
+            # contents unreachable throughout is the enclosing directory being
+            # 0o700 — the file modes are defence in depth on top of it, exactly
+            # as `pipeline/cursor.py` documents for the same trade.
+            for candidate in (path, _sidecar(path, "-wal"), _sidecar(path, "-shm")):
+                _narrow(candidate, _FILE_MODE)
         except Exception:
             conn.close()
             raise
