@@ -1,13 +1,6 @@
 {
   "attestations": [
     {
-      "attested_by": "Claude Code agent (branch-ruleset API verification, on maintainer request)",
-      "control_id": "MAN-01",
-      "date": "2026-10-14",
-      "expires": "2027-01-12",
-      "note": "Verified 2026-10-14 against repos/IRsoctierDT/IANUA/rules/branches/main, the authoritative list of rules applying to the ref (branches/main/protection is 403 \"Resource not accessible by integration\" from this session, so classic protection could not be read and is not relied on). It returns exactly three rules. Ruleset 17716083 (\"not\", enforcement active) carries deletion and non_fast_forward with bypass_actors=[] and current_user_can_bypass=never, so branch deletion and force pushes are blocked unconditionally. Ruleset 19136911 (\"main: required checks before merge\", enforcement active) carries required_status_checks over 7 contexts: Static analysis (ruff + mypy), Security (bandit + pip-audit + gitleaks), SBOM & locks in sync with uv.lock, Tests + coverage gate (3.11), Tests + coverage gate (3.12), Sandbox enforcement (Linux container), Status page in sync with source data. Scope limits, all material: 19136911 has bypass_actors=[{actor_type RepositoryRole, actor_id 5, bypass_mode always}] and reports current_user_can_bypass=always, so the status-check leg is waivable by that role and by the attesting identity; actor_id 5 could not be resolved to a role name because the collaborators API is blocked from this session. There is NO pull_request rule and NO required_linear_history rule, so direct pushes to main are permitted and no review is required -- commit 611d1d33f (\"Update CODEOWNERS\", 2026-09-05, committer GitHub web editor, 0 associated PRs, an ancestor of main, postdating both rulesets) is a direct unreviewed commit that happened. The control's description was narrowed in this same change to assert only the enforced set; it previously claimed pull-request-only merges and review before merge, which this evidence disproves."
-    },
-    {
       "attested_by": "Claude Code agent (staged and distilled ATT&CK 19.2 on maintainer request)",
       "control_id": "MAN-03",
       "date": "2026-08-21",
