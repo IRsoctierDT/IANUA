@@ -32,14 +32,16 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import stat
+import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from agents.policies import AUDIT_FIELD_DELIMITER
 from pipeline import (
     Cursor,
+    CursorError,
     CursorPathError,
     cursor_path,
     load_cursor,
@@ -310,18 +312,97 @@ def test_the_cursor_is_written_owner_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.security
-def test_an_interrupted_save_cannot_leave_a_truncated_cursor(tmp_path: Path) -> None:
-    """Written to a temporary file and renamed, so a reader never sees a partial.
+def test_an_interrupted_save_leaves_the_previous_cursor_intact(tmp_path: Path) -> None:
+    """Actually interrupt it, rather than asserting a clean save is clean.
 
-    A half-written cursor would be refused on the next load (which is correct),
-    but refusing means the pipeline stops — so the atomic rename is what keeps
-    a crash during the save from needing an operator.
+    The previous version of this test saved a cursor and checked no temporary
+    files remained — which the atomic rename could be deleted entirely and it
+    would still pass. It interrupted nothing.
+
+    This crashes the save *between* the temporary write and the rename, which
+    is the window the whole temp-file-and-rename dance exists for, and asserts
+    the property that matters: a reader sees the OLD cursor, never a partial
+    one. A half-written cursor would be refused on the next load, which is
+    correct but means the pipeline stops and needs an operator.
     """
     path = cursor_path(tmp_path)
-    save_cursor(path, Cursor(ingested_at=1.0, event_id="abc"))
-    assert json.loads(path.read_text(encoding="utf-8"))["event_id"] == "abc"
+    save_cursor(path, Cursor(ingested_at=1.0, event_id="first"))
+
+    real_replace = Path.replace
+
+    def crash_before_rename(self: Path, target: object) -> Path:
+        if self.name.endswith(".tmp"):
+            raise OSError("simulated crash between write and rename")
+        return real_replace(self, target)  # type: ignore[arg-type]
+
+    with mock.patch.object(Path, "replace", crash_before_rename), pytest.raises(OSError):
+        save_cursor(path, Cursor(ingested_at=2.0, event_id="second"))
+
+    survived = load_cursor(path)
+    assert survived == Cursor(ingested_at=1.0, event_id="first"), (
+        f"an interrupted save left {survived} — the rename was not atomic"
+    )
     leftovers = [p.name for p in path.parent.iterdir() if p != path]
-    assert leftovers == [], f"save left temporary files behind: {leftovers}"
+    assert leftovers == [], f"the interrupted save left temporary files: {leftovers}"
+
+
+@pytest.mark.security
+def test_a_save_that_loses_an_identical_content_race_does_not_report_failure(
+    tmp_path: Path,
+) -> None:
+    """The temp name is content-keyed, so only an identical writer can take it.
+
+    Finding its temporary file already renamed into place means another writer
+    put *the same bytes* there — the outcome this call wanted. Raising would be
+    a lie, and the CLI would exit 1 reporting "cursor was not advanced" for a
+    cycle that advanced correctly.
+
+    The destination is verified rather than assumed, so a genuine failure still
+    fails; the companion test below covers that direction.
+    """
+    path = cursor_path(tmp_path)
+    cursor = Cursor(ingested_at=1000.0, event_id="abc123")
+    real_chmod = Path.chmod
+    raced = {"done": False}
+
+    def complete_a_rival_save(self: Path, mode: int) -> None:
+        if not raced["done"] and self.name.endswith(".tmp"):
+            raced["done"] = True
+            save_cursor(path, cursor)  # the rival finishes, renaming our temp away
+        real_chmod(self, mode)
+
+    with mock.patch.object(Path, "chmod", complete_a_rival_save):
+        save_cursor(path, cursor)  # must not raise
+
+    assert load_cursor(path) == cursor
+    assert raced["done"], "the race never happened; this test proved nothing"
+
+
+@pytest.mark.security
+def test_a_save_whose_destination_holds_something_else_still_fails(
+    tmp_path: Path,
+) -> None:
+    """Fail-closed: the race is only benign when the bytes actually match."""
+    path = cursor_path(tmp_path)
+    cursor = Cursor(ingested_at=1000.0, event_id="abc123")
+    real_chmod = Path.chmod
+    raced = {"done": False}
+
+    def rival_writes_something_else(self: Path, mode: int) -> None:
+        if not raced["done"] and self.name.endswith(".tmp"):
+            raced["done"] = True
+            save_cursor(path, cursor)
+            path.write_text(
+                json.dumps({"version": 1, "ingested_at": 9.0, "event_id": "other"}),
+                encoding="utf-8",
+            )
+        real_chmod(self, mode)
+
+    with (
+        mock.patch.object(Path, "chmod", rival_writes_something_else),
+        pytest.raises(CursorError),
+    ):
+        save_cursor(path, cursor)
 
 
 # --------------------------------------------------------------------------
@@ -565,13 +646,52 @@ def test_a_window_is_bounded_even_when_the_caller_asks_for_everything(
 
 
 @pytest.mark.security
-def test_the_cli_is_not_importable_as_a_side_effecting_module() -> None:
-    """Importing the CLI must not run a cycle.
+def test_importing_the_cli_runs_no_cycle() -> None:
+    """Importing the module must do nothing, observed in a fresh interpreter.
 
-    ``scripts/`` modules are importable, and a tool that ran work at import
-    time would do so from any test or linter that touched it.
+    Two earlier versions of this test were weak and the second was wrong in an
+    instructive way. The first opened with ``assert
+    os.environ.get("IANUA_PIPELINE_RAN") is None`` — a variable nothing ever
+    sets, so it could never fail. The second imported the module and asserted a
+    ``tmp_path`` was untouched, which misses the real case entirely: an
+    import-time ``main([])`` runs against the **default** root, so it would
+    scribble in the repository while the assertion watched an empty temp
+    directory and passed.
+
+    So this imports in a subprocess and asserts the import produced **no
+    output**. A cycle always prints — either ``idle:`` or ``read N event(s)`` —
+    so silence is the observable form of "did nothing", wherever it would have
+    run. ``scripts/`` modules are importable, and a tool doing work at import
+    time would do it from any test, linter or doc build that touched it.
     """
-    assert os.environ.get("IANUA_PIPELINE_RAN") is None
-    source = _CLI.read_text(encoding="utf-8")
-    assert 'if __name__ == "__main__":' in source
-    assert source.rstrip().endswith("raise SystemExit(main())")
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import scripts.run_pipeline; print('IMPORT-OK')"],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, f"importing the CLI failed: {result.stderr[-400:]}"
+    assert result.stdout.strip() == "IMPORT-OK", (
+        "importing the CLI produced output, so it did work at import time: "
+        f"{result.stdout.strip()!r}"
+    )
+    # The entry point exists but was not called.
+    assert (
+        "main"
+        in subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import scripts.run_pipeline as m; print('main' if callable(m.main) else '')",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+            timeout=120,
+            check=False,
+        ).stdout
+    )

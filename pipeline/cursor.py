@@ -164,8 +164,11 @@ def save(path: Path, cursor: Cursor) -> None:
       cycle and a five-minute timer — would otherwise interleave writes to one
       fixed temp path and could rename a half-written file into place, halting
       the pipeline on the next load. Keying the name to the content means two
-      different cursors never share a temp file, and two identical ones share
-      one harmlessly because the bytes are the same.
+      different cursors never share a temp file, and two identical ones can
+      share one *because* the bytes are the same — the loser of that race finds
+      its temp file already renamed into place, which is the outcome it wanted,
+      so it verifies the destination and returns rather than reporting a
+      failure that did not happen.
     """
     path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
     payload = {
@@ -180,6 +183,28 @@ def save(path: Path, cursor: Cursor) -> None:
         temporary.write_text(body, encoding="utf-8")
         temporary.chmod(_FILE_MODE)
         temporary.replace(path)
+    except FileNotFoundError:
+        # The temp file vanished between our write and our rename. Because the
+        # name is keyed to a digest of the content, the only writer that could
+        # have taken it was one writing *byte-identical* content — and it
+        # renamed it into place, which is precisely the outcome this call
+        # wanted. Raising here would be a lie: the caller's cursor is on disk,
+        # and the CLI would report "cursor was not advanced" and exit 1 for a
+        # cycle that advanced correctly.
+        #
+        # Verified rather than assumed, so a genuine failure still fails: the
+        # destination must actually hold what we meant to write.
+        try:
+            landed = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CursorError(
+                f"{path}: the temporary file disappeared and no cursor was written ({exc})"
+            ) from exc
+        if landed != body:
+            raise CursorError(
+                f"{path}: the temporary file disappeared and the cursor on disk is not "
+                "the one this call wrote"
+            ) from None
     finally:
         # A crash between write and rename would otherwise leave the temp file
         # behind, and the next run would accumulate another one.
