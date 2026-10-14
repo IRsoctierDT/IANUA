@@ -121,6 +121,74 @@ def _write_text_owner_only(path: Path, text: str) -> None:
         fh.write(text)
 
 
+#: The field separator in the hash preimage below. Named because it is
+#: load-bearing: the join is *unescaped*, so a value containing this character
+#: shifts where one field ends and the next begins. Two records with different
+#: meanings then produce the same preimage — a ``deny`` record can be made to
+#: hash identically to an ``allow`` record. :func:`reject_delimiter` is what
+#: prevents that, and ``tests/security/test_audit_field_delimiter.py``
+#: demonstrates the collision it closes.
+AUDIT_FIELD_DELIMITER = "|"
+
+
+class AuditFieldError(ValueError):
+    """A field value would corrupt the hash preimage.
+
+    A :class:`ValueError` subclass because every other guard in this module
+    raises ``ValueError``; the subclass lets a caller catch this case
+    specifically without breaking existing handlers.
+
+    Fails closed rather than escaping or truncating: a record that cannot be
+    hashed unambiguously must not be written at all, because the whole value
+    of the chain is that a stored record means exactly one thing. Callers that
+    carry attacker-influenced text into a field are expected to escape it
+    *before* calling :meth:`AuditLogger.record` — see
+    ``containment._record_outcome`` — so this is a backstop, not the first
+    line of defence.
+    """
+
+
+def reject_delimiter(**fields: str) -> None:
+    """Raise :class:`AuditFieldError` if any field carries the delimiter.
+
+    Checked for every hashed field, not just the caller-supplied ones: the
+    forgery works whichever field holds the stray character, so excluding any
+    field from the check would leave the hole open through that field.
+    """
+    for name, value in fields.items():
+        if AUDIT_FIELD_DELIMITER in value:
+            raise AuditFieldError(
+                f"audit field {name!r} contains the preimage delimiter "
+                f"{AUDIT_FIELD_DELIMITER!r}, which would make this record "
+                f"hash-ambiguous with a differently-meaning one: {value!r}"
+            )
+
+
+def escape_delimiter(value: str) -> str:
+    """Render attacker-influenced text safe for a hashed field.
+
+    For *descriptive* fields only — an action string or a reason, where the
+    value documents what happened rather than asserting who did it. A filename
+    may legitimately contain ``|``, and quarantining such a file must not fail:
+    ``containment._record_outcome`` writes its record *after* the file has
+    moved, so raising there would mean the effect succeeded and the audit
+    write did not. Escaping keeps the record writable and unambiguous.
+
+    Identity fields are **not** escaped. A principal is validated and rejected
+    (see ``agents/policies/principal.py``), because silently rewriting who did
+    something is not a repair.
+
+    **Percent-encoded, not backslash-escaped.** A ``\\|`` escape still
+    *contains* the delimiter, so :func:`reject_delimiter` would refuse it and
+    the preimage would stay ambiguous — ``\\|`` is indistinguishable from a
+    literal backslash followed by a field break. Percent-encoding removes the
+    character entirely while staying reversible and ASCII. ``%`` is encoded
+    first, so an input that already contained ``%7C`` cannot be confused with
+    an encoded pipe.
+    """
+    return value.replace("%", "%25").replace(AUDIT_FIELD_DELIMITER, "%7C")
+
+
 def _compute_hash(
     *,
     seq: int,
@@ -132,7 +200,7 @@ def _compute_hash(
     reason: str,
     prev_hash: str,
 ) -> str:
-    payload = "|".join(
+    payload = AUDIT_FIELD_DELIMITER.join(
         [str(seq), timestamp, actor, action, action_class, decision, reason, prev_hash]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -303,6 +371,13 @@ class AuditLogger:
         self, *, actor: str, action: str, action_class: str, decision: str, reason: str
     ) -> AuditEvent:
         """Append one audit event and return it. Rotates first if configured."""
+        reject_delimiter(
+            actor=actor,
+            action=action,
+            action_class=action_class,
+            decision=decision,
+            reason=reason,
+        )
         self.path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         if self._should_rotate():
             self._rotate()

@@ -52,7 +52,7 @@ Assessed 2026-10-14 against `DESIGN.md`, the Decision Log, and the tree.
 | Correlation | **Stage 2 — done** | `correlation/`: declared-exact entity merges, fan-out suppression, explainable scoring |
 | **Collection** | Absent | `ingest/` takes records from a caller; no forwarder, listener, or poller exists |
 | **Scheduling** | Absent | No scheduler in `agents/`, `ingest/`, `dashboard/`, `mcp/` |
-| **Identity** | Absent | Decision Log, 2026-08-21: "the repository has no caller identity at all" |
+| Identity | **Stage 3 — done** | `agents/policies/principal.py`: rides in the hashed `actor` field; no ambient path to an identity |
 | **Case management** | Partial | `dashboard/escalations.py` reads the Agent Trust Broker queue — read-only by design |
 | **Operational envelope** | Absent | Single-node compose, loopback-only, no HA/backup/DR, no self-monitoring |
 
@@ -66,7 +66,7 @@ and run against lab telemetry before any charter amendment is argued.
 |---|---|---|---|
 | 1 | **`store/`** — durable append-only event store | None (lab data under gitignored `data/`) | **DONE** — this PR |
 | 2 | **`correlation/`** — entity resolution across domains, incident assembly (XDR-2) | None | **DONE** |
-| 3 | **Caller identity** — a principal on every request; authz decided per caller; approval bound to a person | None to build; unblocks Stage 7 | Planned |
+| 3 | **Caller identity** — a principal on every request, carried in the audit chain | None | **DONE** (the three gated paths) |
 | 4 | **Scheduled execution** — continuous detection over the store rather than on demand | None | Planned |
 | 5 | **Collection** — agents/forwarders shipping real telemetry | **Yes**: `ingest/`'s no-network invariant stays (collection is a separate package); default-deny egress must admit collection endpoints (`DESIGN.md` Decision Log, initial) | Planned |
 | 6 | **Real telemetry + retention policy** | **Yes**: §5 treats logs and client info as sensitive by default and `data/` as lab-only; real logs carry usernames, addresses, hostnames. Needs a stated PII posture, not a silent reclassification | Planned |
@@ -83,6 +83,30 @@ the 2026-08-21 decision gave for keeping the plan→execution boundary closed.
 Stage 5 before Stage 6 so the collection path is reviewed while it is still
 carrying lab data. Stage 8 last, because it is the only stage that can cause
 an outage on the operator's own infrastructure.
+
+## Found during Stage 3, not yet addressed
+
+The Stage 3 survey established that **the repository's actual shipped call path is
+ungated and unaudited**: `cli/run_incident.py` → `agents/orchestrator_agent.py` →
+the ten `agents/*_agent.py` modules → `agents/tools/llm.py`, which performs real
+`urllib` egress (`llm.py:68`) and imports no policy engine, no `enforce`, and no
+`AuditLogger`. Only three `enforce()` call sites exist outside tests
+(`containment.py:161`, `guarded.py:90`, `mcp/server.py:103`), and `guarded.enforce`'s
+own docstring describing itself as the shared chokepoint is true only of the
+containment toolkit and the MCP registry.
+
+Stage 3 deliberately did not change this. Adding identity to a path with no gate
+would put a principal in a log line without putting a decision behind it — the
+appearance of control rather than control. Closing it is **enforcement** work:
+deciding the action class for local-LLM egress, choosing whether a loopback call is
+gated at all, and threading the policy engine into the agent pipeline. That belongs
+in its own stage with its own review, and is not a prerequisite for Stages 4–9.
+
+Also outside every gate: `cli/` is in no scope — not `packages.find.include`, not
+mypy, not coverage, not bandit — and `tests/unit/test_gate_scope_parity.py` asserts
+the canonical set against each config surface but never asserts that every top-level
+directory containing `.py` is *in* that set. So `cli/` is ungated by omission rather
+than by decision.
 
 ## Risks
 

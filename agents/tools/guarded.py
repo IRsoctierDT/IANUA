@@ -23,7 +23,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
-from agents.policies import ActionClass, AuditLogger, PolicyDecision, PolicyEngine
+from agents.policies import (
+    ActionClass,
+    AuditLogger,
+    PolicyDecision,
+    PolicyEngine,
+    Principal,
+    coerce,
+)
 from agents.tools.validation import ValidationError
 
 R = TypeVar("R")
@@ -39,7 +46,7 @@ def enforce(
     name: str,
     engine: PolicyEngine,
     audit: AuditLogger | None = None,
-    actor: str = "tool",
+    actor: Principal | str = "tool",
     report_only: bool = False,
 ) -> PolicyDecision:
     """Evaluate and audit a capability invocation; raise if it is not allowed.
@@ -49,13 +56,17 @@ def enforce(
     non-``allow`` decision raises :class:`ToolBlockedError`.
 
     When ``report_only`` is ``True``, a non-``allow`` decision is recorded (with a
-    ``report-only`` marker in ``actor``) but does **not** raise, so a new policy can
+    ``report-only`` marker appended after the rendered principal) but does **not** raise, so a new policy can
     be observed before it is enforced. Use only during a deliberate staged rollout.
     """
     decision = engine.decide(action_class=action_class, label=name)
     if audit is not None:
+        # Render once: a Principal becomes its audit-safe scalar, a legacy
+        # string is validated to the same alphabet. The report-only marker is
+        # appended after rendering so it stays outside the identity itself.
+        rendered = coerce(actor)
         audit.record(
-            actor=f"{actor}[report-only]" if report_only else actor,
+            actor=f"{rendered}[report-only]" if report_only else rendered,
             action=f"tool:{name}",
             action_class=decision.action_class,
             decision=decision.decision,
