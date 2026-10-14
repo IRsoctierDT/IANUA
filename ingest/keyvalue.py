@@ -40,8 +40,15 @@ Security considerations (AGENTS.md §3, §5):
   ``tests/security/test_keyvalue_hardening.py`` is where they are held.
 * **Bounded before it is useful.** A pathological line cannot create an
   unbounded mapping, an unbounded key, or an unbounded value; every limit is a
-  named constant and the excess is dropped with the record marked degraded by
-  ``ingest/``'s existing machinery.
+  named constant, asserted against fixed literals rather than against itself.
+  Be precise about what the bounds do and do not give you: the excess is
+  **dropped silently** — this function returns a mapping and has nowhere to
+  put a note, so a record whose value was cut at ``MAX_VALUE_LEN`` or whose
+  pairs stopped at ``MAX_PAIRS`` is stored looking complete. An earlier draft
+  of this list claimed the record was "marked degraded by ``ingest/``'s
+  existing machinery"; nothing does that, and the claim is corrected here
+  rather than left to be discovered. Surfacing it means giving the decoder a
+  way to report, which is a signature change and its own reviewed commit.
 * **Pure.** No clock, no filesystem, no network, no subprocess, no ``eval``.
   The package's AST invariants already assert this and now cover this module.
 * **Nothing is executed or resolved.** A value is text. ``comm=/bin/sh`` is a
@@ -93,9 +100,19 @@ def decode(line: str) -> dict[str, str] | None:
     line as an excerpt — the behaviour every non-JSON line had before this
     module. It is not an error: most log lines in the world are prose.
 
-    Later keys win on a repeat, which is the convention every logfmt reader
-    follows. auditd's repeated ``a0``/``a1`` argv keys are distinct names, so
-    the EXECVE reassembly in ``parsers/endpoint.py`` is unaffected.
+    **The first occurrence of a key wins**, which is deliberately *not* the
+    last-wins convention logfmt readers use. Two reasons, and the first was
+    found by review: a real auditd ``USER_AUTH``/``CRED_ACQ``/``USER_CMD``
+    record carries ``msg=audit(<epoch>.<ms>:<serial>)`` *and* a second
+    ``msg='op=… acct=… res=…'``, so last-wins clobbered the clock form and
+    every authentication and sudo record landed undated — the records an
+    analyst most wants placed in time. The second reason is defensive: a later
+    pair cannot overwrite an earlier one, so a line whose tail an attacker
+    influences cannot restate the ``user`` or ``host`` its head already
+    declared.
+
+    auditd's ``a0``/``a1`` argv keys are distinct names, so the EXECVE
+    reassembly in ``parsers/endpoint.py`` is unaffected either way.
 
     Args:
         line: One decoded log line, newline already stripped.
@@ -116,6 +133,8 @@ def decode(line: str) -> dict[str, str] | None:
         if len(pairs) >= MAX_PAIRS:
             continue
         key = match.group("key")
+        if key in pairs:
+            continue  # first occurrence wins — see the docstring
         value = match.group("dq")
         if value is None:
             value = match.group("sq")

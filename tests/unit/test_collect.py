@@ -36,6 +36,8 @@ from collect import (
 )
 from store import EventStore, Query
 
+from ingest import normalize
+
 _AUDITD = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
 _CLOUD = json.dumps(
     {
@@ -430,3 +432,326 @@ def test_collected_logs_become_a_correlated_incident(tmp_path: Path) -> None:
         result = run_cycle(store)
     assert result.fresh, "collected logs produced no incident"
     assert sorted(result.fresh[0].domains) == ["cloud", "endpoint"]
+
+
+# --------------------------------------------------------------------------
+# Defects found by review, each reproduced before it was fixed
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_line_longer_than_the_byte_cap_does_not_wedge_the_source(tmp_path: Path) -> None:
+    """Holding position on a no-newline read wedged the source permanently.
+
+    Reproduced over five consecutive passes sitting at offset 0 while the CLI
+    reported "nothing new" — a total blind spot on that source, forever. The
+    read now extends far enough to hold one legal line, and a line past even
+    that is emitted truncated so the offset still advances.
+    """
+    source = declare(_log(tmp_path, body="x" * 500 + "\nafter\n"))
+    position, total, passes = None, 0, 0
+    for _ in range(12):
+        page = read_new(source, position, max_bytes=100, max_line=120)
+        assert page.position is not None
+        if page.count == 0 and position is not None and page.position.offset == position.offset:
+            break
+        total += page.count
+        position = page.position
+        passes += 1
+    assert position is not None
+    assert position.offset > 0, "the source is still wedged at offset 0"
+    assert total >= 2, "the over-long line and the line after it were both lost"
+    assert passes < 12, "the read never reached the end"
+
+
+@pytest.mark.unit
+def test_the_byte_cap_is_still_honoured_on_an_ordinary_file(tmp_path: Path) -> None:
+    """The wedge fix must not become a silent override of --max-bytes.
+
+    A floor on the cap would have raised every read to the line cap, ignoring
+    an operator's explicit setting on every pass. The read is extended only
+    when a legal line cannot otherwise fit.
+    """
+    body = "".join(f"line {index}\n" for index in range(200))
+    source = declare(_log(tmp_path, body=body))
+    page = read_new(source, None, max_bytes=64)
+    assert page.capped is True
+    assert page.position is not None
+    assert page.position.offset <= 64, (
+        f"read {page.position.offset} bytes under a 64-byte cap; the cap was overridden"
+    )
+
+
+@pytest.mark.unit
+def test_truncation_followed_by_regrowth_is_detected(tmp_path: Path) -> None:
+    """logrotate's copytruncate, and the case identity-plus-size cannot see.
+
+    A file truncated and regrown PAST the old offset keeps its inode and has a
+    larger size, so every other check passes and the reader resumes mid-stream.
+    Reproduced: four of six new lines silently skipped with ``reset=''``. The
+    trailing-byte digest is what catches it.
+    """
+    path = _log(tmp_path, body="aaaa\nbbbb\ncccc\ndddd\n")
+    source = declare(path)
+    first = read_new(source, None)
+    assert first.position is not None
+    path.write_text("NEW1\nNEW2\nNEW3\nNEW4\nNEW5\nNEW6\n", encoding="utf-8")
+    after = read_new(source, first.position)
+    assert after.reset == "replaced", f"undetected: reset={after.reset!r}"
+    assert [line.decode() for line in after.lines] == [
+        "NEW1",
+        "NEW2",
+        "NEW3",
+        "NEW4",
+        "NEW5",
+        "NEW6",
+    ]
+
+
+@pytest.mark.unit
+def test_a_reused_inode_does_not_resume_into_a_different_file(tmp_path: Path) -> None:
+    """``(device, inode)`` can legitimately match a different file after delete.
+
+    A filesystem is free to reuse an inode number, so identity alone is not
+    proof of continuity. Simulated by crafting the stored position, which is
+    what inode reuse looks like from the reader's side.
+    """
+    path = _log(tmp_path, body="old1\nold2\n")
+    source = declare(path)
+    first = read_new(source, None)
+    assert first.position is not None
+    path.write_text("fresh1\nfresh2\nfresh3\n", encoding="utf-8")
+    status = path.stat()
+    as_if_reused = Position(
+        offset=first.position.offset,
+        inode=status.st_ino,
+        device=status.st_dev,
+        size=status.st_size,
+        fingerprint=first.position.fingerprint,
+    )
+    after = read_new(source, as_if_reused)
+    assert after.reset == "replaced"
+    assert [line.decode() for line in after.lines] == ["fresh1", "fresh2", "fresh3"]
+
+
+@pytest.mark.unit
+def test_paging_through_a_file_never_re_reads_it(tmp_path: Path) -> None:
+    """The monotone-progress invariant that caught a fingerprint mismatch.
+
+    Storing the digest of the just-consumed chunk and verifying it by reading
+    back from the file agreed only while the chunk was at least
+    FINGERPRINT_BYTES long, so every smaller page saw a mismatch, reset to
+    zero, and re-read from the start: 1709 lines from a 200-line file. Both
+    sides now compute it the same way, so they agree by construction.
+    """
+    body = "".join(f"line {index}\n" for index in range(200))
+    source = declare(_log(tmp_path, body=body))
+    seen, position = 0, None
+    for _ in range(400):
+        page = read_new(source, position, max_bytes=64)
+        if page.count == 0:
+            break
+        seen += page.count
+        position = page.position
+        assert page.reset == "" or page.reset == "first-run", (
+            f"a plain forward page reported reset={page.reset!r}"
+        )
+    assert seen == 200, f"read {seen} lines from a 200-line file"
+
+
+@pytest.mark.unit
+def test_one_unreadable_source_does_not_starve_the_others(tmp_path: Path) -> None:
+    """Before this, a single failure returned 1 before any offset was saved.
+
+    So every *healthy* source re-read its whole window every run and never
+    advanced: one broken source took the others down with it, silently and
+    forever. Each source is now isolated, and the pass reports 1 so a
+    scheduler still knows something needs attention.
+    """
+    from unittest import mock
+
+    import collect
+
+    root = _root(tmp_path)
+    good = _log(tmp_path, name="good.log", body=f"{_AUDITD}\n")
+    bad = _log(tmp_path, name="bad.log", body=f"{_AUDITD}\n")
+    real_read = collect.read_new
+
+    def fail_for_bad(source: Any, previous: Any, **kwargs: Any) -> Any:
+        if source.name == "bad.log":
+            raise OSError("simulated unreadable source")
+        return real_read(source, previous, **kwargs)
+
+    with mock.patch("scripts.run_collector.read_new", fail_for_bad):
+        code = _cli_main()(["--root", str(root), "--source", str(good), "--source", str(bad)])
+    assert code == 1, "a failed source must still report that attention is needed"
+    saved = load_offsets(offsets_path(root))
+    assert str(good.resolve()) in saved, "the healthy source's progress was discarded"
+    assert str(bad.resolve()) not in saved
+    with EventStore.open(root) as store:
+        assert store.count() == 1, "the healthy source's events were not stored"
+
+
+@pytest.mark.unit
+def test_offsets_are_not_advanced_when_the_report_cannot_be_written(tmp_path: Path) -> None:
+    """Report, then advance — the ordering stage 4 learned the hard way.
+
+    Moving the offsets consumes the lines: nothing will ever read that region
+    again. So a report that fails *after* the save leaves events in the store
+    that no operator was ever told about, and a pass that exits 1 while having
+    silently made progress. Doing it the other way round costs a re-read,
+    which is noise, instead of an unannounced blind spot.
+
+    Asserted by failing the report write rather than by reading the source
+    order, because the ordering is only a real control if the failure path
+    honours it — the suite stayed green with the two blocks swapped until this
+    existed.
+    """
+    from unittest import mock
+
+    root = _root(tmp_path)
+    log = _log(tmp_path, name="ordered.log", body=f"{_AUDITD}\n")
+
+    with mock.patch("scripts.run_collector._print_text", side_effect=OSError("stdout closed")):
+        code = _cli_main()(["--root", str(root), "--source", str(log)])
+
+    assert code == 1, "a report that could not be written must not look like success"
+    saved = load_offsets(offsets_path(root))
+    assert str(log.resolve()) not in saved, (
+        "the offsets advanced past lines nobody was told about; the report must be "
+        "written before the position moves"
+    )
+
+
+@pytest.mark.unit
+def test_an_unusable_lock_directory_is_an_error_not_a_traceback(tmp_path: Path) -> None:
+    """Every other startup failure in this CLI is a message and exit 2.
+
+    The lock's ``mkdir``/``touch``/``chmod`` used to run at ``__enter__``,
+    outside every ``try``, so an unwritable ``data/collect`` reached the
+    terminal as a traceback. The operator who hits it first is the one
+    following the runbook: the documented manual pass, run as themselves,
+    after the documented root cron entry has already created the directory as
+    root. Found by review.
+    """
+    from unittest import mock
+
+    root = _root(tmp_path)
+    log = _log(tmp_path, name="locked.log", body=f"{_AUDITD}\n")
+
+    with mock.patch.object(
+        Path, "mkdir", side_effect=PermissionError("Permission denied: data/collect")
+    ):
+        code = _cli_main()(["--root", str(root), "--source", str(log)])
+
+    assert code == 2, "an unusable lock directory must exit 2 like other startup failures"
+
+
+@pytest.mark.unit
+def test_the_same_source_declared_twice_is_collected_once(tmp_path: Path) -> None:
+    """Otherwise the pass double-reads it and then misreports what it did.
+
+    ``--source X --source X`` produced two ``Source`` objects sharing one key,
+    so the same region was read twice from one stored position and appended
+    twice, while ``results[key]`` collapsed to a single entry — the audit
+    record then said "read N lines from 1 of 2 sources" about a pass that read
+    one file twice. The store's content addressing hid the duplicate events;
+    the misstated record is the part that cannot be undone. Found by review.
+    """
+    root = _root(tmp_path)
+    log = _log(tmp_path, name="twice.log", body=f"{_AUDITD}\n")
+
+    code = _cli_main()(["--root", str(root), "--source", str(log), "--source", str(log)])
+    assert code == 0
+    with EventStore.open(root) as store:
+        assert store.count() == 1
+    audit = (offsets_path(root).parent / "audit.log").read_text(encoding="utf-8")
+    assert "collect_logs:1" in audit, (
+        "the gate record counted the same source twice: " + audit.splitlines()[-1][:200]
+    )
+
+
+@pytest.mark.unit
+def test_offsets_are_not_saved_when_the_store_rejects_the_events(tmp_path: Path) -> None:
+    """The ordering claim: offsets advance only after the events are durable.
+
+    Nothing asserted it, so moving the save into the read loop would have lost
+    lines permanently with the suite green.
+    """
+    from unittest import mock
+
+    root = _root(tmp_path)
+    log = _log(tmp_path, name="audit.log", body=f"{_AUDITD}\n")
+
+    def refuse(*args: Any, **kwargs: Any) -> int:
+        raise OSError("simulated store failure")
+
+    with mock.patch.object(EventStore, "append_many", refuse):
+        assert _cli_main()(["--root", str(root), "--source", str(log)]) == 1
+    assert load_offsets(offsets_path(root)) == {}, (
+        "offsets advanced over lines whose events were never stored"
+    )
+
+
+@pytest.mark.unit
+def test_the_collector_stamps_strictly_after_the_stores_mark(tmp_path: Path) -> None:
+    """A clock behind the mark must not produce an event at exactly the mark.
+
+    The pipeline's keyset is strictly after ``(ingested_at, event_id)``, so an
+    event written at exactly the mark with a lower event_id sits behind a
+    cursor that has already passed it. Removing the clamp halts collection with
+    exit 1; using plain ``max(now, mark)`` loses events silently.
+    """
+    root = _root(tmp_path)
+    log = _log(tmp_path, name="audit.log", body=f"{_AUDITD}\n")
+    with EventStore.open(root) as store:
+        store.append_many((normalize(_CLOUD),), ingested_at=4_000_000_000.0)
+        mark = store.high_water_mark()
+    assert mark is not None
+    assert _cli_main()(["--root", str(root), "--source", str(log)]) == 0
+    with EventStore.open(root) as store:
+        advanced = store.high_water_mark()
+        assert advanced is not None
+        assert advanced > mark, "the pass did not advance the mark, so it stamped at or below it"
+        assert store.count() == 2
+
+
+@pytest.mark.unit
+def test_an_over_long_line_at_the_end_of_the_file_is_not_extended_past_it(
+    tmp_path: Path,
+) -> None:
+    """The extension is bounded by what is actually there, not by ``max_line``.
+
+    ``extra = min(max_line + 1, available) - len(chunk)`` can be zero or
+    negative when the budget already reached end-of-file, and reading a
+    negative count would drain the rest of the handle. Exercised with a final
+    line that has no newline and exactly fills the budget.
+    """
+    # The budget already holds more than one legal line, so the extension is
+    # negative and must not be read: a negative count would drain the handle.
+    source = declare(_log(tmp_path, name="exact.log", body="X" * 200))
+    page = read_new(source, None, max_bytes=100, max_line=20)
+    assert page.position is not None
+    # The line cannot end inside the budget, so it is emitted truncated and the
+    # offset advances by what was read rather than holding forever.
+    assert page.truncated == 1
+    assert len(page.lines[0]) == 20
+    assert page.position.offset == 100
+    assert page.capped is True
+
+
+@pytest.mark.unit
+def test_the_default_caps_are_exercised(tmp_path: Path) -> None:
+    """Every other tail test passes explicit caps, so the defaults were untested.
+
+    A default of zero would make the collector read nothing while reporting
+    success, and no test would have noticed.
+    """
+    from collect import MAX_BYTES_PER_RUN, MAX_LINE_BYTES
+
+    assert MAX_BYTES_PER_RUN >= MAX_LINE_BYTES, (
+        "the byte cap below the line cap makes every long line need an extended read"
+    )
+    source = declare(_log(tmp_path, body="one\ntwo\n"))
+    page = read_new(source, None)  # no caps passed: the defaults must work
+    assert [line.decode() for line in page.lines] == ["one", "two"]

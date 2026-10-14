@@ -315,12 +315,27 @@ the outcome. A pass that dies mid-run leaves a permitted attempt with no outcome
 the signal worth alerting on. Persistent `skipped: another pass holds the lock` means a pass
 is taking longer than the interval — raise `--max-bytes` or lengthen the schedule. A `reset`
 of `rotated` is routine; `truncated` usually is not, and means something emptied the log.
+`replaced` means the bytes at the stored offset are not the bytes that were read there
+before — `logrotate copytruncate`, a log cleared with `>`, or an inode reused after a
+delete-and-recreate — and the source was re-read from the beginning, so expect duplicates
+(harmless: the store is content-addressed) rather than a gap.
 
-**Known limitation — a forward clock jump is permanent.** `ingested_at` is stamped at
-`max(now, store.high_water_mark())`, so a clock that steps *backwards* clamps harmlessly and
-`occurred_at` still carries the source's own time. A clock that jumps *forward* raises the
-mark permanently, which delays retention for everything stored afterwards. Fixing that needs
-a monotonic sequence column rather than a timestamp, which is a schema change.
+**`--max-bytes` has a floor worth respecting.** A value below the 64 KiB line cap means a
+single longer line cannot fit in one read. That no longer wedges the source — the read is
+extended just far enough to hold one legal line, and a line that still cannot end is
+emitted truncated and counted so the offset advances — but every such line then costs an
+over-budget read. Leave the flag alone unless a backlog is genuinely not draining.
+
+**Known limitation — a forward clock jump is permanent.** `ingested_at` comes from
+`EventStore.next_stamp(time.time())`, which returns a value strictly after the store's
+high-water mark whenever the clock is at or behind it. A clock that steps *backwards*
+therefore clamps harmlessly and `occurred_at` still carries the source's own time. A clock
+that jumps *forward* raises the mark permanently, which delays retention for everything
+stored afterwards. Fixing that needs a monotonic sequence column rather than a timestamp,
+which is a schema change. (Strictly after, not `max(now, mark)`: the pipeline's keyset
+cursor is strictly after `(ingested_at, event_id)`, so an event written at *exactly* the
+mark with a lower event id would sit behind a cursor that had already passed it and never
+be read — four stored, three ever seen, measured before the fix.)
 
 ### Why this order
 

@@ -135,7 +135,12 @@ def declare(raw: str | Path) -> Source:
             "not logs this collector knows how to position itself in"
         )
     resolved = path.resolve()
-    if _DENIED.search(str(resolved)):
+    # BOTH spellings are checked. The positional rules (``/.ssh/``,
+    # ``/.gnupg/``) describe where a secret lives, and an ordinary symlinked
+    # ancestor — ``/home/ivan`` pointing at ``/mnt/users/ivan`` — resolves them
+    # away, so a resolved-path-only check let every positional rule be
+    # bypassed without any symlink at the file itself. Found by review.
+    if _DENIED.search(str(resolved)) or _DENIED.search(str(path)):
         raise SourceError(
             f"source {resolved} looks like a credential store, not a log. This "
             "collector copies whatever it reads into the event store, so collecting "
@@ -151,5 +156,22 @@ def declare_all(raws: tuple[str | Path, ...]) -> tuple[Source, ...]:
     All-or-nothing on purpose. Collecting the valid subset and reporting the
     rest would start the run with a known blind spot, and the operator would
     see a successful exit code.
+
+    **Collapsed by key**, keeping the first spelling of each file. Two names
+    for one file — ``--source X --source X``, or a path and its symlinked
+    parent's spelling — share one stored position, so a pass would read the
+    same region twice from that one position, append both batches, and then
+    report the pass against a result map that had collapsed to one entry: an
+    audit record stating "read N line(s) from 1 of 2 source(s)" about a pass
+    that read one file twice. The duplicate events are harmless because the
+    store is content-addressed; the misstated record is in a hash-chained log
+    and cannot be corrected afterwards. Found by review.
+
+    Deduplicating here rather than in the CLI keeps it true for every caller,
+    and happens *after* validation so a repeated bad path is still refused.
     """
-    return tuple(declare(raw) for raw in raws)
+    declared: dict[str, Source] = {}
+    for raw in raws:
+        source = declare(raw)
+        declared.setdefault(source.key, source)
+    return tuple(declared.values())

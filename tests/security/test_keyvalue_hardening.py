@@ -118,24 +118,34 @@ def test_the_coverage_threshold_is_what_separates_dense_lines_from_prose() -> No
 
 @pytest.mark.security
 def test_a_pathological_line_cannot_create_an_unbounded_mapping() -> None:
-    line = " ".join(f"k{index}=v{index}" for index in range(MAX_PAIRS * 4))
+    """Pinned against a fixed input, not one scaled from the constant.
+
+    Scaling the input with the constant under test means raising the constant
+    raises the input too, so the bound can be loosened arbitrarily with the
+    test still green — found by review. The literals here are the contract.
+    """
+    assert MAX_PAIRS <= 256, "the pair ceiling was raised; justify it here"
+    line = " ".join(f"k{index}=v{index}" for index in range(2_000))
     decoded = decode(line)
     assert decoded is not None
-    assert len(decoded) <= MAX_PAIRS
+    assert len(decoded) <= 256
 
 
 @pytest.mark.security
 def test_an_over_long_value_is_bounded() -> None:
-    line = f"type=SYSCALL comm={'x' * (MAX_VALUE_LEN * 3)}"
+    """Fixed literals, for the same reason as the pair ceiling."""
+    assert MAX_VALUE_LEN <= 4096, "the value ceiling was raised; justify it here"
+    line = f"type=SYSCALL comm={'x' * 50_000}"
     decoded = decode(line)
     assert decoded is not None
-    assert len(decoded["comm"]) <= MAX_VALUE_LEN
+    assert len(decoded["comm"]) <= 4096
 
 
 @pytest.mark.security
 def test_an_over_long_key_is_not_claimed() -> None:
     """The key pattern caps length, so a huge key simply is not a pair."""
-    huge = "k" * (MAX_KEY_LEN * 3)
+    assert MAX_KEY_LEN <= 64, "the key ceiling was raised; justify it here"
+    huge = "k" * 1_000
     decoded = decode(f"{huge}=1 other=2")
     assert decoded is None or huge not in decoded
 
@@ -247,3 +257,67 @@ def test_a_decoded_line_that_no_signature_claims_is_not_attributed() -> None:
     event = normalize('level=error service=api user=svc-deploy msg="auth failed"')
     assert event.source_type == "unknown"
     assert event.parse_status != "structured"
+
+
+@pytest.mark.security
+def test_a_repeated_key_keeps_the_first_occurrence() -> None:
+    """Real auditd auth records carry ``msg=`` twice, and last-wins lost the clock.
+
+    ``type=USER_AUTH msg=audit(<epoch>:<serial>): … msg='op=… res=failed'`` —
+    last-wins clobbered the clock form, so every authentication and sudo
+    record landed undated. Found by review. First-wins is also defensive: a
+    later pair cannot restate what the head of the line already declared.
+    """
+    decoded = decode(
+        "type=USER_AUTH msg=audit(1760000000.100:1): user=real msg='op=x' user=attacker"
+    )
+    assert decoded is not None
+    assert decoded["msg"].startswith("audit(1760000000.100:1)")
+    assert decoded["user"] == "real", "a later pair overwrote an earlier one"
+
+
+@pytest.mark.security
+def test_a_real_auditd_auth_record_keeps_its_timestamp() -> None:
+    """End to end through normalize, because the clock is what was being lost."""
+    event = normalize(
+        "type=USER_AUTH msg=audit(1760000000.100:1): pid=1 uid=0 auid=svc-deploy "
+        "node=web-01 msg='op=PAM:authentication acct=\"svc-deploy\" res=failed'"
+    )
+    assert event.source_type == "endpoint"
+    assert event.timestamp == 1760000000.1, "the auth record landed undated"
+    assert event.device.hostname == "web-01"
+
+
+@pytest.mark.security
+def test_decode_is_not_catastrophic_on_a_crafted_line() -> None:
+    """A log line is attacker-influenced input; the pattern must not backtrack.
+
+    Bounded by wall clock rather than by inspection, because a regex's
+    behaviour under a crafted input is not obvious from reading it.
+    """
+    import time
+
+    hostile = "a=" + "=" * 5_000 + " b=" + '"' * 5_000 + " c=1 d=2"
+    start = time.monotonic()
+    decode(hostile)
+    assert time.monotonic() - start < 1.0, "decode() is super-linear on crafted input"
+
+
+@pytest.mark.security
+def test_a_syscall_records_argument_registers_are_not_a_command_line() -> None:
+    """On SYSCALL, a0/a1… are syscall argument registers, not argv.
+
+    Reassembling them produced a plausible ``command_line`` out of register
+    values on the most frequent auditd record type — fabricated evidence an
+    analyst would read as a command that was never run. Reachable for the
+    first time once this decoder existed, which is why it is pinned here.
+    """
+    syscall = normalize(
+        "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc comm=bash "
+        "a0=7ffd1234 a1=0 a2=1b6"
+    )
+    assert syscall.actor.command_line is None, (
+        f"fabricated a command line from registers: {syscall.actor.command_line!r}"
+    )
+    execve = normalize('type=EXECVE msg=audit(1760000002.300:3): argc=2 a0="curl" a1="-s"')
+    assert execve.actor.command_line == "curl -s", "EXECVE argv reassembly was lost"

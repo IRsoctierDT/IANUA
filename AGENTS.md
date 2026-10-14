@@ -195,8 +195,14 @@ command line. The exception is deliberately narrow, and the narrowness is the co
   everything it reads becomes stored evidence.
 - **Absolute paths only**, since a relative path means whatever the scheduler's working
   directory happens to be.
-- **No symlink at the log file.** A link redirects the reader at a chosen target without
-  needing write access to the real log.
+- **No symlink at the log file**, checked when the operator's paths are validated. This
+  catches a source that is a link at declare time — a stale or mistyped path, a layout
+  nobody intended — not an adversary who swaps a link between validation and the read:
+  winning that race requires write access to the log's directory, and with that the same
+  false evidence can be written into the log directly. Within one pass every byte (the
+  continuity digest and the data) comes from a single descriptor. Ancestor components are
+  not walked, deliberately, because `/var/log` ancestors are legitimately symlinks on
+  several distributions.
 - **Credential-shaped paths are refused**, not warned about. A collector copies what it
   reads into `data/`, so collecting a private key would put a secret there.
 - **Read-only, always.** Sources are opened `"rb"`; a security test asserts no write mode
@@ -361,8 +367,12 @@ in the pipeline."
 **Pipeline stages (fail-fast, ordered):**
 
 1. **Setup** — pinned toolchain, cached deps, reproducible install.
-2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy` (full scope:
-   `agents scripts tests dashboard mcp rag`).
+2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy` over the same
+   fourteen packages §7 names (`agents attack intel ingest store correlation pipeline
+   collect scripts tests dashboard mcp rag compliance`). §8 claims §7 is mirrored
+   exactly, so this list is part of that claim: it had drifted to six of the fourteen,
+   and `tests/unit/test_gate_scope_parity.py` pins the §7 block against CI but not this
+   prose. Keep the two in step.
 3. **Security** — `bandit` (SAST), `pip-audit` (SCA), `gitleaks` (secrets), CodeQL.
    Any finding above the agreed severity threshold **blocks merge**.
 4. **Tests** — `pytest` on 3.11 and 3.12 with coverage gate (`--cov-fail-under=85`);

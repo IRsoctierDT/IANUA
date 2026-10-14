@@ -34,16 +34,22 @@ from __future__ import annotations
 import ast
 import json
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
 import pytest
 from collect import (
+    MAX_BYTES_PER_RUN,
+    MAX_LINE_BYTES,
     CollectPathError,
+    OffsetError,
     Position,
     SourceError,
     declare,
+    load_offsets,
     offsets_path,
+    read_new,
     save_offsets,
 )
 from store import EventStore, StorePathError
@@ -223,19 +229,41 @@ def test_a_fifo_is_refused(tmp_path: Path) -> None:
 
 
 @pytest.mark.security
-def test_the_package_exposes_no_way_to_discover_sources() -> None:
-    """Declared, never discovered — asserted structurally, not just documented.
+def test_nothing_in_the_collection_path_can_discover_sources() -> None:
+    """Declared, never discovered — over the CLI as well as the package.
 
-    A collector that searched for sources would eventually find one nobody
-    meant it to read, and the blast radius of that is fabricated evidence.
+    Two gaps found by review: the check looked only at attribute calls, so a
+    plain ``from glob import glob`` would have passed all three AST
+    invariants; and it never covered ``scripts/run_collector.py``, which is
+    where operator paths actually enter. A collector that searched for sources
+    would eventually find one nobody meant it to read, and the blast radius of
+    that is fabricated evidence.
     """
-    for path in _collect_modules():
+    enumerators = {"glob", "rglob", "walk", "iterdir", "scandir", "listdir"}
+    for path in [*_collect_modules(), _CLI]:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                assert node.func.attr not in {"glob", "rglob", "walk", "iterdir", "scandir"}, (
+                assert node.func.attr not in enumerators, (
                     f"{path.name} enumerates the filesystem via .{node.func.attr}()"
                 )
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                assert node.func.id not in enumerators, (
+                    f"{path.name} calls {node.func.id}() directly"
+                )
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] not in {"glob", "fnmatch"}, (
+                        f"{path.name} imports {alias.name}"
+                    )
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module.split(".")[0] not in {"glob", "fnmatch"}, (
+                    f"{path.name} imports from {node.module}"
+                )
+                for alias in node.names:
+                    assert alias.name not in enumerators, (
+                        f"{path.name} imports {alias.name} by name"
+                    )
 
 
 # --------------------------------------------------------------------------
@@ -244,27 +272,60 @@ def test_the_package_exposes_no_way_to_discover_sources() -> None:
 
 
 @pytest.mark.security
-def test_a_source_is_only_ever_opened_for_reading() -> None:
-    """A collector that could write to a log could destroy the evidence it reads.
+def test_no_collect_module_opens_a_source_for_writing() -> None:
+    """Every module, not just tail.py, and every mode, not just the first arg.
 
-    Asserted over the AST: every ``.open(...)`` on a source path passes
-    ``"rb"``. The offsets file is written, and that is a different path under
-    the lab-data root, so the two are distinguished by which object is opened
-    rather than by counting calls.
+    The earlier version parsed one hard-coded file, so a sibling module could
+    open a log for writing and pass every gate. Found by review.
     """
-    tail = _COLLECT_ROOT / "tail.py"
-    tree = ast.parse(tail.read_text(encoding="utf-8"), filename=str(tail))
-    opens = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "open"
-    ]
-    assert opens, "tail.py opens nothing; this test would pass vacuously"
-    for call in opens:
-        modes = [arg.value for arg in call.args if isinstance(arg, ast.Constant)]
-        assert modes == ["rb"], f"a source is opened with {modes!r}, not read-only"
+    for path in _collect_modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "open"
+            ):
+                continue
+            modes: list[str] = [
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ]
+            modes += [
+                kw.value.value
+                for kw in node.keywords
+                if kw.arg == "mode"
+                and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
+            ]
+            for mode in modes:
+                assert set(mode) <= {"r", "b"}, (
+                    f"{path.name} opens something with mode {mode!r}; a collector that "
+                    "can write to a log can destroy the evidence it reads"
+                )
+
+
+@pytest.mark.security
+def test_no_collect_module_can_destroy_a_source() -> None:
+    """Read-only means more than the open mode.
+
+    ``unlink``, ``rename``, ``truncate``, ``chmod`` or ``write_text`` on a
+    source would destroy evidence just as thoroughly as a write mode, and the
+    mode check alone would not see any of them. ``offsets.py`` legitimately
+    writes — under the lab-data root, never to a source — so it is exempted by
+    name rather than by pattern, which keeps the exemption visible.
+    """
+    destructive = {"unlink", "rename", "replace", "truncate", "rmdir", "write_bytes"}
+    for path in _collect_modules():
+        if path.name == "offsets.py":
+            continue  # writes the offsets file, by design; covered by its own tests
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                assert node.func.attr not in destructive, (
+                    f"{path.name} calls .{node.func.attr}(), which could destroy a source"
+                )
 
 
 @pytest.mark.security
@@ -309,20 +370,36 @@ def test_all_three_lab_data_writers_refuse_the_same_escape(tmp_path: Path) -> No
     """
     from pipeline import CursorPathError, cursor_path
 
-    for index, (call, expected) in enumerate(
-        (
-            (lambda root: EventStore.open(root), StorePathError),
-            (lambda root: cursor_path(root), CursorPathError),
-            (lambda root: offsets_path(root), CollectPathError),
-        )
-    ):
-        outside = tmp_path / f"outside{index}"
-        outside.mkdir()
-        root = tmp_path / f"root{index}"
-        root.mkdir()
-        (root / "data").symlink_to(outside, target_is_directory=True)
-        with pytest.raises(expected):
-            call(root)
+    writers: tuple[tuple[str, Callable[[Path], object], type[Exception]], ...] = (
+        ("store", lambda root: EventStore.open(root), StorePathError),
+        ("pipeline", lambda root: cursor_path(root), CursorPathError),
+        ("collect", lambda root: offsets_path(root), CollectPathError),
+    )
+    # Both link shapes, because the second was the actual defect and every
+    # fixture here used to be the first: a link to an existing directory is
+    # caught by any check at all, whereas a link whose target does not exist
+    # yet reads as absent to ``exists()`` and is precisely what
+    # ``mkdir(parents=True)`` then materializes. The docstring claimed this
+    # case; planting it back showed nothing asserted it.
+    for shape in ("existing", "dangling"):
+        for name, call, expected in writers:
+            root = tmp_path / f"root-{shape}-{name}"
+            root.mkdir()
+            outside = tmp_path / f"outside-{shape}-{name}"
+            if shape == "existing":
+                outside.mkdir()
+            (root / "data").symlink_to(outside, target_is_directory=True)
+            assert outside.exists() is (shape == "existing")
+            with pytest.raises(expected):
+                call(root)
+            assert not (outside / "collect").exists()
+            assert not (outside / "pipeline").exists()
+            if shape == "dangling":
+                assert not outside.exists(), (
+                    f"{name} created the link's target instead of refusing to follow "
+                    "it; a dangling link reads as absent to exists() and mkdir() "
+                    "walks straight through it"
+                )
 
 
 @pytest.mark.security
@@ -465,29 +542,28 @@ def test_two_passes_cannot_run_at_once(tmp_path: Path) -> None:
     reader — a false positive in a tamper detector, which is worse than losing
     the records. Deterministic by construction rather than by racing processes.
     """
-    from scripts.run_collector import _single_instance
+    from scripts.run_collector import _prepare_lock, _single_instance
 
     root = tmp_path / "root"
     root.mkdir()
-    directory = offsets_path(root).parent
-    with _single_instance(directory) as first:
+    lock = _prepare_lock(offsets_path(root).parent)
+    with _single_instance(lock) as first:
         assert first is True
-        with _single_instance(directory) as second:
+        with _single_instance(lock) as second:
             assert second is False, "a second pass acquired the lock concurrently"
-    with _single_instance(directory) as third:
+    with _single_instance(lock) as third:
         assert third is True, "the lock was not released"
 
 
 @pytest.mark.security
 def test_a_declined_lock_exits_zero_and_touches_nothing(tmp_path: Path) -> None:
     """A minutely schedule is expected to overlap; failing would train neglect."""
-    from scripts.run_collector import _single_instance, main
+    from scripts.run_collector import _prepare_lock, _single_instance, main
 
     root = tmp_path / "root"
     root.mkdir()
     log = _log(tmp_path, "audit.log", body="type=SYSCALL node=web-01 auid=x comm=bash\n")
-    directory = offsets_path(root).parent
-    with _single_instance(directory) as held:
+    with _single_instance(_prepare_lock(offsets_path(root).parent)) as held:
         assert held is True
         assert main(["--root", str(root), "--source", str(log)]) == 0
     assert not offsets_path(root).exists(), "a skipped pass advanced the offsets"
@@ -602,3 +678,236 @@ def test_a_vanished_temp_file_with_no_offsets_written_is_an_error(tmp_path: Path
     ):
         save_offsets(path, {"a": Position(offset=1, inode=1, device=1, size=1)})
     assert not path.exists()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        ("[]", "a JSON array is not an offsets object"),
+        ('{"version": 2}', "no 'sources' object at all"),
+        ('{"version": 2, "sources": []}', "'sources' is not an object"),
+        ('{"version": 1, "sources": {}}', "an older format must not be read as this one"),
+        ('{"version": 2, "sources": {"/x": 7}}', "a position that is not an object"),
+    ],
+)
+def test_an_offsets_file_that_is_not_this_format_is_refused(
+    tmp_path: Path, payload: str, reason: str
+) -> None:
+    """Migration is explicit, never implicit.
+
+    Reading a version this build does not speak — or a shape it does not
+    recognize — and carrying on would resume from a position whose meaning has
+    changed. ``version`` went 1 → 2 in this stage precisely because the
+    continuity fingerprint changed what a stored position means, so an offset
+    written by the previous build must be refused rather than reused.
+    """
+    path = offsets_path(tmp_path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(OffsetError):
+        load_offsets(path)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("offset", "12"),
+        ("offset", True),
+        ("offset", -1),
+        ("inode", 1.5),
+        ("device", None),
+        ("size", -4),
+        ("fingerprint", 7),
+    ],
+)
+def test_a_malformed_stored_position_is_refused_field_by_field(
+    tmp_path: Path, field: str, bad: object
+) -> None:
+    """The offsets file decides where the next read starts, so it is parsed fail-closed.
+
+    A position accepted with a nonsense field would seek somewhere nobody
+    chose — past the end (silently collecting nothing forever) or back to zero
+    (re-reading a window as if it were new). ``bool`` is in the table on
+    purpose: it is an ``int`` subclass and would otherwise pass as offset 0 or
+    1 without a murmur.
+    """
+    path = offsets_path(tmp_path)
+    good: dict[str, object] = {
+        "offset": 10,
+        "inode": 2,
+        "device": 3,
+        "size": 10,
+        "fingerprint": "ab",
+    }
+    good[field] = bad
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 2, "sources": {"/var/log/x": good}}), encoding="utf-8")
+    with pytest.raises(OffsetError):
+        load_offsets(path)
+
+
+@pytest.mark.security
+def test_an_empty_source_yields_no_position_claim_it_cannot_support(tmp_path: Path) -> None:
+    """At offset 0 there is no consumed context, so the fingerprint is empty.
+
+    Claiming a digest of nothing would make the continuity check compare an
+    arbitrary constant on the next pass and report ``replaced`` for a file that
+    had simply not been written to yet.
+    """
+    log = tmp_path / "logs" / "empty.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_bytes(b"")
+    result = read_new(declare(log), None)
+    assert result.count == 0
+    assert result.position is not None
+    assert result.position.offset == 0
+    assert result.position.fingerprint == ""
+    assert result.reset == "first-run"
+
+
+@pytest.mark.security
+def test_the_shipped_default_caps_are_the_ones_that_hold() -> None:
+    """Pinned against fixed literals, not against themselves.
+
+    The caps are a memory-exhaustion bound on attacker-influenced input, and
+    every positioning test passes explicit values (``max_bytes=64``,
+    ``max_line=100``), so the *shipped* numbers were never exercised by
+    anything — a plausible "the backlog never drains" fix raising
+    ``MAX_BYTES_PER_RUN`` would let one source pull an unbounded file into one
+    ``bytes`` object with the suite green. Found by review. The literals here
+    are the contract; scaling an assertion from the constant under test is the
+    tautology this file has already been caught writing once.
+    """
+    assert MAX_LINE_BYTES <= 64 * 1024, "the line cap was raised; justify it here"
+    assert MAX_BYTES_PER_RUN <= 8 * 1024 * 1024, "the per-run cap was raised; justify it here"
+
+
+@pytest.mark.security
+def test_the_default_line_cap_truncates_rather_than_passing_the_line_on(tmp_path: Path) -> None:
+    """Behaviourally, at the default — ``read_new`` called with no caps at all."""
+    body = "A" * (MAX_LINE_BYTES + 500) + "\n" + "type=SYSCALL node=web-01 comm=bash\n"
+    source = declare(_log(tmp_path, name="long.log", body=body))
+    result = read_new(source, None)
+    assert result.truncated == 1, "the default line cap did not fire"
+    assert len(result.lines[0]) == MAX_LINE_BYTES
+    assert result.count == 2, "the line after the over-long one was lost"
+
+
+@pytest.mark.security
+def test_the_default_per_run_cap_bounds_one_read(tmp_path: Path) -> None:
+    """One source cannot pull an unbounded file into memory in a single pass.
+
+    Uses the real default rather than an injected one, because the default is
+    what an unattended schedule runs with. The file is deliberately just over
+    the cap: enough to prove the bound fires, small enough to stay a unit test.
+    """
+    # The fixture's size is bounded by a *literal*, not by the constant under
+    # test. Sizing it from MAX_BYTES_PER_RUN means raising the cap grows this
+    # file to match — a 512 MiB plant made this test allocate 512 MiB instead
+    # of failing. Clamped, a raised cap leaves the read uncapped and the
+    # assertion below fails, which is the outcome that was wanted.
+    line = b"x" * 63 + b"\n"
+    body = line * (min(MAX_BYTES_PER_RUN, 8 * 1024 * 1024) // len(line) + 16)
+    log = tmp_path / "logs" / "big.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_bytes(body)
+
+    result = read_new(declare(log), None)
+    assert result.capped is True, "the default per-run cap did not bound the read"
+    assert result.position is not None
+    assert result.position.offset <= MAX_BYTES_PER_RUN
+
+
+@pytest.mark.security
+def test_a_credential_reached_through_a_symlinked_ancestor_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The positional deny-list rules were bypassed without any symlink at the file.
+
+    ``/.ssh/`` and ``/.gnupg/`` describe *where* a secret lives, and a
+    symlinked ancestor resolves them away — ``~/.ssh`` pointing into an
+    encrypted volume is an ordinary dotfile-manager layout. Checking only the
+    resolved path let every positional rule through. Found by review; both
+    spellings are now checked.
+
+    The resolved path is asserted *not* to match first. Without that, a
+    fixture whose real location also matches (``volume/ivan/.ssh/id_rsa``)
+    passes with the declared-spelling check deleted, which is how this test
+    was first written and how it stayed green while the defect was planted
+    back in.
+    """
+    from collect.sources import _DENIED
+
+    vault = tmp_path / "vault" / "keys"
+    vault.mkdir(parents=True)
+    key = vault / "authorized_keys"
+    key.write_text("ssh-ed25519 AAAA... not a real key\n", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".ssh").symlink_to(vault, target_is_directory=True)
+
+    declared = home / ".ssh" / "authorized_keys"
+    assert not _DENIED.search(str(declared.resolve())), (
+        "the fixture's real location matches the deny-list too, so this test "
+        "would pass on the resolved spelling alone and prove nothing"
+    )
+    assert _DENIED.search(str(declared)), "the fixture no longer exercises a positional rule"
+    with pytest.raises(SourceError, match="credential store"):
+        declare(declared)
+
+
+@pytest.mark.security
+def test_a_symlinked_ancestor_pointing_into_a_credential_store_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The mirror case, and the one an attacker actually arranges.
+
+    Checking only the *declared* spelling is just as broken as checking only
+    the resolved one, and in the more dangerous direction: an operator names
+    ``/opt/app/logs/current``, which looks like a log, and whoever can create
+    a symlink at ``logs`` points it at a key directory. No symlink sits at the
+    file, so the final-component check does not fire, and the declared path
+    carries nothing to deny. Only the resolved spelling shows where the read
+    would land.
+
+    Found by planting the deny-list the other way round: with ``resolved``
+    dropped the suite stayed green, because every other credential fixture
+    has both spellings matching at once and so proves neither.
+    """
+    from collect.sources import _DENIED
+
+    secrets = tmp_path / "root" / ".ssh"
+    secrets.mkdir(parents=True)
+    (secrets / "current").write_text("ssh-ed25519 AAAA... not a real key\n", encoding="utf-8")
+    app = tmp_path / "opt" / "app"
+    app.mkdir(parents=True)
+    (app / "logs").symlink_to(secrets, target_is_directory=True)
+
+    declared = app / "logs" / "current"
+    assert not _DENIED.search(str(declared)), (
+        "the declared spelling matches the deny-list, so this test would pass on "
+        "it alone and prove nothing about where the read lands"
+    )
+    assert _DENIED.search(str(declared.resolve())), "the fixture no longer resolves into /.ssh/"
+    with pytest.raises(SourceError, match="credential store"):
+        declare(declared)
+
+
+@pytest.mark.security
+def test_the_collection_gate_record_does_not_call_the_crossing_benign() -> None:
+    """It is the platform's only §5 boundary crossing, in a tamper-evident log.
+
+    The default allow reason reads "Read-only/benign action.", which would
+    misdescribe the one action an auditor most needs to find.
+    """
+    from agents.policies import PolicyEngine
+
+    decision = PolicyEngine().decide(action_class="collection", label="collect_logs")
+    assert decision.decision == "allow"
+    assert "benign" not in decision.reason.lower()
+    assert "collection" in decision.reason.lower()
+    assert "read-only" in decision.reason.lower(), (
+        "the reason should still say the crossing is read-only"
+    )

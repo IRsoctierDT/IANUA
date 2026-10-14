@@ -183,6 +183,26 @@ def test_agents_md_command_blocks_match() -> None:
 
 
 @pytest.mark.unit
+def test_agents_md_ci_prose_names_the_same_mypy_scope() -> None:
+    """§8 opens by claiming §7 is "mirrored exactly in CI" — so its own list counts.
+
+    Only the §7 command *block* was pinned, so the §8 prose drifted to six of
+    the fourteen packages while this stage added a fifteenth to §7, to
+    ``ci.yml``, to ``release.yml``, to ``pyproject.toml`` and to pre-commit.
+    A charter that states a scope and means a different one is worse than one
+    that states none. Found by review.
+    """
+    charter = (_REPO / "AGENTS.md").read_text(encoding="utf-8")
+    stage = re.search(r"2\. \*\*Static analysis\*\*(.+?)\n3\. ", charter, re.MULTILINE | re.DOTALL)
+    assert stage is not None, "AGENTS.md §8 must describe the static-analysis stage"
+    named = {word for word in re.findall(r"[a-z_]+", stage.group(1)) if word in MYPY_SCOPE}
+    assert named == MYPY_SCOPE, (
+        "AGENTS.md §8's static-analysis stage does not name the §7 mypy scope; missing "
+        f"{sorted(MYPY_SCOPE - named)}"
+    )
+
+
+@pytest.mark.unit
 def test_no_blanket_scripts_mypy_ignore() -> None:
     overrides = _pyproject()["tool"]["mypy"].get("overrides", [])
     for override in overrides:

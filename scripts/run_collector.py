@@ -85,6 +85,7 @@ import argparse
 import contextlib
 import fcntl
 import json
+import sqlite3
 import sys
 import time
 from collections.abc import Iterator
@@ -144,8 +145,27 @@ ACTION_CLASS: ActionClass = "collection"
 ACTION_NAME = "collect_logs"
 
 
+def _prepare_lock(directory: Path) -> Path:
+    """Create the lock file and return it, before any lock is attempted.
+
+    Separated from :func:`_single_instance` so that its ``mkdir``, ``touch``
+    and ``chmod`` run inside the caller's startup ``try`` and an unwritable
+    ``data/collect`` becomes a message and exit 2 like every other startup
+    failure in this CLI. Inside the context manager they ran at ``__enter__``,
+    outside every ``try``, and reached the terminal as a traceback — and the
+    first operator to hit it is the one following the runbook, who runs the
+    documented manual pass as themselves after the documented root cron entry
+    has already created the directory as root. Found by review.
+    """
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / LOCK_FILE
+    path.touch(mode=_FILE_MODE, exist_ok=True)
+    path.chmod(_FILE_MODE)
+    return path
+
+
 @contextlib.contextmanager
-def _single_instance(directory: Path) -> Iterator[bool]:
+def _single_instance(path: Path) -> Iterator[bool]:
     """Hold an exclusive lock for the duration of one pass.
 
     A correctness control, not an optimization. :class:`AuditLogger` derives
@@ -160,15 +180,15 @@ def _single_instance(directory: Path) -> Iterator[bool]:
     It also serializes offset writes, so two passes cannot each read the same
     region and race to persist different positions.
 
+    Takes a path already created by :func:`_prepare_lock`, so nothing here
+    can fail for a reason the caller would have to translate into an exit code.
+
     Yields ``True`` when the lock was taken, ``False`` when another pass holds
     it. A declined lock is not an error, and must not exit non-zero: a
     minutely schedule is *expected* to overlap occasionally, and failing would
     mail the operator every minute until they learned to ignore it.
     """
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / LOCK_FILE
     with path.open("a", encoding="utf-8") as handle:
-        path.chmod(_FILE_MODE)
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -315,12 +335,13 @@ def main(argv: list[str] | None = None) -> int:
         principal = Principal("collector", args.caller)
         sources = declare_all(tuple(args.source))
         path = offsets_path(args.root)
+        lock = _prepare_lock(path.parent)
         engine = load_bundle(args.policy)
     except (PrincipalError, CollectError, PolicyBundleError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with _single_instance(path.parent) as acquired:
+    with _single_instance(lock) as acquired:
         if not acquired:
             print("skipped: another pass holds the lock; this invocation did nothing.")
             return 0
@@ -371,28 +392,39 @@ def _run(
     results: dict[str, TailResult] = {}
     advanced: dict[str, Position] = {}
     stored = 0
+    failure: str | None = None
     try:
         positions = load_offsets(path)
+    except (CollectError, OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
         with EventStore.open(args.root) as store:
-            # max(now, mark): the store refuses a write behind its high-water
-            # mark, so a clock that stepped backwards would otherwise fail the
-            # pass. occurred_at still carries the source's own time.
-            mark = store.high_water_mark()
-            stamp = time.time()
-            if mark is not None:
-                stamp = max(stamp, mark)
+            stamp = store.next_stamp(time.time())
             for source in sources:
-                result = read_new(source, positions.get(source.key), max_bytes=args.max_bytes)
-                results[source.key] = result
-                if result.lines and not args.dry_run:
-                    stored += store.append_many(
-                        tuple(normalize_many(result.lines)), ingested_at=stamp
-                    )
-                # Recorded for the save below, which happens only after every
-                # source's events are durable.
-                if result.position is not None:
-                    advanced[source.key] = result.position
-    except (CollectError, StoreError, ValueError, OSError) as exc:
+                # Per-source, so one unreadable file does not starve the rest.
+                # Before this, a single permission error returned 1 before any
+                # offset was saved, so every *healthy* source re-read its whole
+                # window every run and never advanced — one broken source took
+                # the others down with it, silently and forever.
+                try:
+                    result = read_new(source, positions.get(source.key), max_bytes=args.max_bytes)
+                    results[source.key] = result
+                    if result.lines and not args.dry_run:
+                        stored += store.append_many(
+                            tuple(normalize_many(result.lines)), ingested_at=stamp
+                        )
+                    # Recorded only once this source's events are durable.
+                    if result.position is not None:
+                        advanced[source.key] = result.position
+                except (CollectError, StoreError, sqlite3.Error, ValueError, OSError) as exc:
+                    # sqlite3.Error is neither OSError nor StoreError, so a
+                    # corrupt or locked database would otherwise escape as a
+                    # traceback in cron mail.
+                    print(f"error: {source.key}: {exc}", file=sys.stderr)
+                    failure = f"{source.name}: {exc}"
+    except (StoreError, sqlite3.Error, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -411,10 +443,11 @@ def _run(
             action_class=ACTION_CLASS,
             decision="allow",
             reason=escape_delimiter(
-                f"read {total} line(s) from {len(sources)} source(s), stored "
-                f"{stored} event(s), offsets "
+                f"read {total} line(s) from {len(results)} of {len(sources)} "
+                f"source(s), stored {stored} event(s), offsets "
                 + ("advancing" if advancing else "held")
                 + (" (dry run)" if args.dry_run else "")
+                + (f"; FAILED {failure[:120]}" if failure else "")
             ),
         )
     except (AuditFieldError, OSError, ValueError) as exc:
@@ -455,7 +488,10 @@ def _run(
                     ),
                 )
             return 1
-    return 0
+    # A source failed, but every source that succeeded has had its events
+    # stored and its offset saved above. Reporting 1 tells the scheduler
+    # something needs attention without discarding the progress that was made.
+    return 1 if failure else 0
 
 
 if __name__ == "__main__":

@@ -14,6 +14,15 @@ extra two fields are what make rotation detectable:
   applied to a brand-new file and skip its first ``offset`` bytes.
 * ``size`` — so truncation in place (``: > file``) is distinguishable from a
   file that has simply not grown.
+* ``fingerprint`` — a digest of the last bytes actually consumed. Identity and
+  size together are **not** enough, which was found by review and reproduced:
+  a file truncated and then regrown *past* the old offset has the same inode
+  and a larger size, so every other check passes and the reader resumes
+  mid-stream, silently skipping the head of the new content. That is
+  logrotate's ``copytruncate`` mode, which is the standard option for a file a
+  writer holds open — so the common case, not an exotic one. The fingerprint
+  also closes inode reuse after delete-and-recreate, where ``(device, inode)``
+  can legitimately match a different file.
 
 **Advanced only after the events are stored.** The collector persists offsets
 after ``append_many`` returns, so a crash re-reads the same lines rather than
@@ -47,13 +56,24 @@ DEFAULT_FILENAME = "offsets.json"
 
 #: Format version. A reader that does not recognise it refuses rather than
 #: guessing, because both guesses lose data — see :class:`OffsetError`.
-OFFSETS_VERSION = 1
+OFFSETS_VERSION = 2
 
 #: Owner-only, matching the audit log, the compliance evidence chain and the
 #: pipeline cursor. The offsets name paths on this host, which is operational
 #: detail worth not publishing.
 _FILE_MODE = 0o600
 _DIR_MODE = 0o700
+
+
+#: Bytes of trailing context hashed into :attr:`Position.fingerprint`. Small
+#: enough that re-reading them costs nothing, long enough that two unrelated
+#: log files are overwhelmingly unlikely to agree on them.
+FINGERPRINT_BYTES = 64
+
+
+def fingerprint_of(data: bytes) -> str:
+    """Digest the trailing context that proves a file is still the same stream."""
+    return hashlib.sha256(data[-FINGERPRINT_BYTES:]).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +84,9 @@ class Position:
     inode: int
     device: int
     size: int
+    #: Digest of the last :data:`FINGERPRINT_BYTES` consumed, or ``""`` when
+    #: nothing has been consumed yet (a first run that found an empty file).
+    fingerprint: str = ""
 
     def matches(self, stat_result: tuple[int, int]) -> bool:
         """Whether a (device, inode) pair is still the file this position describes."""
@@ -108,7 +131,7 @@ def _position(path: Path, key: str, value: object) -> Position:
     """Rebuild and validate one stored position, fail-closed on any bad field."""
     if not isinstance(value, dict):
         raise OffsetError(f"{path}: position for {key!r} is not an object")
-    fields = {}
+    fields: dict[str, object] = {}
     for name in ("offset", "inode", "device", "size"):
         raw = value.get(name)
         # bool is an int subclass and would otherwise pass silently as 0 or 1.
@@ -117,7 +140,11 @@ def _position(path: Path, key: str, value: object) -> Position:
         if raw < 0:
             raise OffsetError(f"{path}: position for {key!r} has a negative {name}: {raw!r}")
         fields[name] = raw
-    return Position(**fields)
+    mark = value.get("fingerprint")
+    if not isinstance(mark, str):
+        raise OffsetError(f"{path}: position for {key!r} has a bad fingerprint: {mark!r}")
+    fields["fingerprint"] = mark
+    return Position(**fields)  # type: ignore[arg-type]
 
 
 def save(path: Path, positions: dict[str, Position]) -> None:
@@ -140,6 +167,7 @@ def save(path: Path, positions: dict[str, Position]) -> None:
                 "inode": position.inode,
                 "device": position.device,
                 "size": position.size,
+                "fingerprint": position.fingerprint,
             }
             for key, position in sorted(positions.items())
         },

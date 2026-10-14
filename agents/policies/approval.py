@@ -308,7 +308,17 @@ class PolicyEngine:
             )
 
         decision = self.policy.get(action_class, "require_approval")
-        if decision == "allow" and action_class == "containment":
+        if decision == "allow" and action_class == "collection":
+            # Not "read-only/benign": this is the platform's only §5 boundary
+            # crossing, and a hash-chained record calling it benign would
+            # misdescribe the one action an auditor most needs to find.
+            reason = (
+                "Local log collection — reads declared files outside the project, "
+                "read-only, auto-allowed so an unattended schedule can run and "
+                "audited per pass (AGENTS.md §5 as amended, DESIGN.md §5 "
+                "boundary 14)."
+            )
+        elif decision == "allow" and action_class == "containment":
             reason = (
                 "Defensive containment action — auto-allowed for time-critical "
                 "response and audited (DESIGN.md decision log, 2026-08-21)."

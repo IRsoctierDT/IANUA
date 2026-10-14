@@ -11,9 +11,16 @@ make file tailing harder than ``seek`` and ``read``:
   bytes — silently, and in the most interesting moment, since rotation usually
   follows volume. Detected by comparing ``(device, inode)``, not by heuristics
   on the name.
-* **Truncation in place.** ``: > file`` leaves the identity intact and resets
-  the size. An offset-only reader would then seek past the end and report
-  "nothing new" forever. Detected by ``size < offset``.
+* **Truncation in place, and truncation followed by regrowth.** ``: > file``
+  leaves the identity intact and resets the size, so an offset-only reader
+  seeks past the end and reports "nothing new" forever. Worse, a file truncated
+  and then regrown *past* the old offset has the same inode and a larger size,
+  so size-and-identity checks all pass and the reader resumes mid-stream,
+  silently skipping the head of the new content — which is logrotate's
+  ``copytruncate`` mode, the standard option for a file a writer holds open.
+  Reproduced before the fix: four of six new lines lost with no reset reported.
+  Both are caught by re-reading the trailing bytes at the stored offset and
+  comparing a digest, which also closes inode reuse after delete-and-recreate.
 * **Partial writes.** A reader can arrive mid-line. Consuming a partial line
   gives ``ingest/`` a truncated record *and* loses the rest when the offset
   advances past it, so the read stops at the last newline and the remainder is
@@ -39,8 +46,9 @@ identities. Time enters only at ``scripts/run_collector.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import BinaryIO
 
-from collect.offsets import Position
+from collect.offsets import FINGERPRINT_BYTES, Position, fingerprint_of
 from collect.sources import MAX_BYTES_PER_RUN, MAX_LINE_BYTES, Source
 
 
@@ -56,7 +64,8 @@ class TailResult:
     #: all, in which case the caller must leave the stored position untouched.
     position: Position | None = None
     #: Why the position was reset, for the operator's report: ``"rotated"``,
-    #: ``"truncated"``, ``"first-run"``, or ``""`` when it simply advanced.
+    #: ``"truncated"``, ``"replaced"``, ``"first-run"``, or ``""`` when it
+    #: simply advanced.
     reset: str = ""
     #: Lines that exceeded :data:`MAX_LINE_BYTES` and were truncated. Counted
     #: rather than silent, because a truncated record is a degraded record.
@@ -102,71 +111,158 @@ def read_new(
     status = source.path.stat()
     identity = (status.st_dev, status.st_ino)
 
-    start, reset = _resume_from(previous, identity, status.st_size)
-
-    if status.st_size <= start:
-        # Nothing appended. The position is still refreshed, because a rotation
-        # or truncation detected above has to be recorded even when the new
-        # file is empty — otherwise the next run detects it all over again.
-        return TailResult(
-            position=Position(
-                offset=start, inode=status.st_ino, device=status.st_dev, size=status.st_size
-            ),
-            reset=reset,
-        )
-
-    budget = min(max_bytes, status.st_size - start)
+    # One descriptor for every byte this call reads. The continuity digest and
+    # the data used to be two separate opens by path, so the digest could be
+    # of one file and the data of another, and a fingerprint match proved
+    # nothing about the bytes that were then consumed. They now come from the
+    # same handle, which is what makes the continuity check mean what it says.
+    #
+    # The identity stat above is still by path, so a name repointed between it
+    # and this open is read under the previous ``(device, inode)``. That window
+    # is left open deliberately rather than silently: closing it needs
+    # ``os.fstat``, and ``os`` is on this package's banned-import list for
+    # reasons (no spawn, no clock, no environment) that outweigh a race whose
+    # precondition — write access to the log's directory — already permits
+    # writing whatever content the attacker wants into the log itself.
     with source.path.open("rb") as handle:
-        handle.seek(start)
-        chunk = handle.read(budget)
+        start, reset = _resume_from(handle, previous, identity, status.st_size)
 
-    # Stop at the last newline: a trailing fragment is a partial write, and
-    # consuming it would hand ingest/ a truncated record and lose the rest.
-    cut = chunk.rfind(b"\n")
-    if cut == -1:
-        # No complete line in the whole budget. Either a very long line still
-        # being written, or one longer than the cap. Advancing past it would
-        # lose it, so hold position and let the next run see it finished; the
-        # line cap below handles the genuinely-too-long case once it ends.
+        if status.st_size <= start:
+            # Nothing appended. The position is still refreshed, because a
+            # rotation or truncation detected above has to be recorded even
+            # when the new file is empty — otherwise the next run detects it
+            # all over again.
+            return TailResult(
+                position=Position(
+                    offset=start,
+                    inode=status.st_ino,
+                    device=status.st_dev,
+                    size=status.st_size,
+                    fingerprint=_trailing(handle, start),
+                ),
+                reset=reset,
+            )
+
+        available = status.st_size - start
+        handle.seek(start)
+        chunk = handle.read(min(max_bytes, available))
+        # Stop at the last newline: a trailing fragment is a partial write, and
+        # consuming it would hand ingest/ a truncated record and lose the rest.
+        cut = chunk.rfind(b"\n")
+        if cut == -1 and len(chunk) < available:
+            # No complete line inside the throughput cap, but the file has more.
+            # Extend this one read — and ONLY this one — far enough to hold a
+            # line of the maximum permitted length. Without that, a line longer
+            # than max_bytes wedges the source **forever**: hold position, same
+            # budget next run, no progress, reported as "nothing new".
+            # Reproduced over five consecutive passes at offset 0.
+            #
+            # The extension is deliberately not a floor on max_bytes. Raising
+            # the cap unconditionally would silently override an operator's
+            # explicit --max-bytes on every read; exceeding it only when a
+            # legal line cannot otherwise fit keeps the cap meaningful and the
+            # pathological case unblocked.
+            extra = min(max_line + 1, available) - len(chunk)
+            if extra > 0:
+                chunk += handle.read(extra)
+            cut = chunk.rfind(b"\n")
+
+        if cut == -1:
+            if len(chunk) > max_line:
+                # No newline, and already longer than one record may be. Holding is
+                # what wedged the source, so emit what fits — counted as truncated,
+                # which is visible — and advance past it. The remainder may arrive
+                # as further truncated records; that is degradation, not loss.
+                end = start + len(chunk)
+                return TailResult(
+                    lines=(chunk[:max_line],),
+                    position=Position(
+                        offset=end,
+                        inode=status.st_ino,
+                        device=status.st_dev,
+                        size=status.st_size,
+                        fingerprint=_trailing(handle, end),
+                    ),
+                    reset=reset,
+                    truncated=1,
+                    capped=end < status.st_size,
+                )
+            # A partial line still being written, and within the record cap. Hold
+            # position so it arrives whole next time.
+            return TailResult(
+                position=Position(
+                    offset=start,
+                    inode=status.st_ino,
+                    device=status.st_dev,
+                    size=status.st_size,
+                    fingerprint=_trailing(handle, start),
+                ),
+                reset=reset,
+            )
+
+        consumed = chunk[: cut + 1]
+        lines: list[bytes] = []
+        truncated = 0
+        for line in consumed.split(b"\n"):
+            if not line:
+                continue  # blank line, or the empty tail after the final newline
+            if len(line) > max_line:
+                truncated += 1
+                line = line[:max_line]
+            lines.append(line)
+
+        end = start + len(consumed)
         return TailResult(
+            lines=tuple(lines),
             position=Position(
-                offset=start, inode=status.st_ino, device=status.st_dev, size=status.st_size
+                offset=end,
+                inode=status.st_ino,
+                device=status.st_dev,
+                size=status.st_size,
+                fingerprint=_trailing(handle, end),
             ),
             reset=reset,
-            capped=budget < status.st_size - start,
+            truncated=truncated,
+            capped=end < status.st_size,
         )
 
-    consumed = chunk[: cut + 1]
-    lines: list[bytes] = []
-    truncated = 0
-    for line in consumed.split(b"\n"):
-        if not line:
-            continue  # blank line, or the empty tail after the final newline
-        if len(line) > max_line:
-            truncated += 1
-            line = line[:max_line]
-        lines.append(line)
 
-    end = start + len(consumed)
-    return TailResult(
-        lines=tuple(lines),
-        position=Position(
-            offset=end, inode=status.st_ino, device=status.st_dev, size=status.st_size
-        ),
-        reset=reset,
-        truncated=truncated,
-        capped=end < status.st_size,
-    )
+def _trailing(handle: BinaryIO, offset: int) -> str:
+    """Digest the bytes just before ``offset``, for the continuity check.
+
+    **The only place a fingerprint is computed**, used both when storing a
+    position and when verifying one. An earlier version hashed the
+    just-consumed chunk when storing and read back from the file when
+    verifying, which agreed only while the chunk was at least
+    ``FINGERPRINT_BYTES`` long — and disagreed on every smaller read, so each
+    page saw a mismatch, reset to zero, and re-read the file from the start.
+    Caught by the monotone-progress assertion: 1709 lines read from a 200-line
+    file. Making both sides call this makes them agree by construction rather
+    than by two code paths happening to match.
+
+    Takes the caller's open descriptor rather than the path, so the digest is
+    of the same file that was stat'ed and read. It leaves the handle's position
+    wherever it finished; every caller seeks before reading.
+
+    Returns ``""`` at offset 0, where there is no consumed context to prove
+    anything about.
+    """
+    if offset <= 0:
+        return ""
+    back = min(FINGERPRINT_BYTES, offset)
+    handle.seek(offset - back)
+    return fingerprint_of(handle.read(back))
 
 
 def _resume_from(
-    previous: Position | None, identity: tuple[int, int], size: int
+    handle: BinaryIO, previous: Position | None, identity: tuple[int, int], size: int
 ) -> tuple[int, str]:
     """Decide where to start reading, and name why if it is not where we stopped.
 
-    The three resets are kept separate in the return value rather than collapsed
-    into a boolean, because an operator reading the report needs to tell a
-    routine rotation from a truncation nobody expected.
+    The four resets are kept separate rather than collapsed into a boolean,
+    because an operator reading the report needs to tell a routine rotation
+    from a truncation nobody expected, and both from a file that was replaced
+    under a reused inode.
     """
     if previous is None:
         # A first run starts at the beginning, not the end. Starting at the end
@@ -178,4 +274,11 @@ def _resume_from(
         return 0, "rotated"
     if size < previous.offset:
         return 0, "truncated"
+    # Identity matches and the file is long enough — and that is still not
+    # enough. A file truncated and regrown past the old offset passes both
+    # checks above while holding entirely different content, so the bytes just
+    # before the offset are re-read and compared. Without this, logrotate's
+    # copytruncate silently skips the head of every new window.
+    if previous.fingerprint and _trailing(handle, previous.offset) != previous.fingerprint:
+        return 0, "replaced"
     return previous.offset, ""

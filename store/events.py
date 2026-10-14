@@ -47,6 +47,7 @@ Security considerations (AGENTS.md §3, §5):
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -343,14 +344,63 @@ class EventStore:
     def high_water_mark(self) -> float | None:
         """The highest ``ingested_at`` ever written, or ``None`` if never written.
 
-        Exposed so a collector can stamp ``max(now, mark)`` and stay monotone
+        Exposed so a collector can call :meth:`next_stamp` and stay monotone
         across a clock that steps backwards, rather than discovering the
         constraint by being refused.
+
+        **Falls back to the rows when the meta row is absent.** ``SCHEMA_VERSION``
+        is deliberately unchanged by this control, so every database written
+        before it existed opens with rows but no ``meta`` entry — and returning
+        ``None`` there left the one population that matters undefended: an
+        existing deployment's first write after the upgrade could go behind its
+        own rows, which is precisely the silent blind spot this enforces
+        against. Found by review. Derived once; the next append writes the row
+        and the cheap path takes over.
+
+        The stored row still wins when it exists, because it outlives the rows
+        it describes: retention prunes old events, and a mark derived from
+        ``MAX(ingested_at)`` after a prune would move *backwards*, re-opening
+        the window for exactly the event ordering the mark exists to refuse.
         """
         row = self._conn.execute(
             "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
         ).fetchone()
-        return None if row is None else float(row["value"])
+        if row is not None:
+            return float(row["value"])
+        derived = self._conn.execute("SELECT MAX(ingested_at) AS mark FROM events").fetchone()
+        if derived is None or derived["mark"] is None:
+            return None
+        return float(derived["mark"])
+
+    def next_stamp(self, now: float) -> float:
+        """An ``ingested_at`` that is safe to write, at or after ``now``.
+
+        Monotonicity alone is not enough, and the gap was found by review and
+        reproduced. The mark permits **equality**, which it must — a single
+        ``append_many`` stamps one time across a whole batch. But the pipeline's
+        keyset is *strictly* after ``(ingested_at, event_id)``, so an event
+        written at exactly the mark, with an ``event_id`` sorting below the
+        cursor's, sits behind a cursor that has already passed it and is never
+        read. Four events stored, three ever seen.
+
+        A caller clamping with ``max(now, mark)`` walks straight into it
+        whenever the clock is at or behind the mark — which is what an NTP step
+        backwards produces. So the safe stamp is strictly after the mark, and it
+        lives here because the mark and the cursor contract are both this
+        layer's.
+
+        Raises:
+            ValueError: for a non-finite ``now``. A NaN would compare false
+                against everything and silently disable the ordering control;
+                an infinity would raise the mark to a value nothing can ever
+                exceed, permanently wedging the store.
+        """
+        if not math.isfinite(now):
+            raise ValueError(f"ingestion time must be finite, got {now!r}")
+        mark = self.high_water_mark()
+        if mark is None or now > mark:
+            return now
+        return math.nextafter(mark, math.inf)
 
     def _require_monotonic(self, ingested_at: float) -> None:
         """Refuse a write that would land behind the high-water mark.
@@ -358,6 +408,14 @@ class EventStore:
         Checked inside the caller's transaction and before any insert, so a
         refused batch leaves the database exactly as it was.
         """
+        if not math.isfinite(ingested_at):
+            # NaN compares false against every bound, so it would slip past the
+            # check below and then poison the mark for every later write;
+            # infinity would raise the mark beyond anything a clock can reach.
+            raise IngestionOrderError(
+                f"ingested_at must be finite, got {ingested_at!r}; a non-finite "
+                "stamp would disable the ordering control rather than violate it"
+            )
         mark = self.high_water_mark()
         if mark is not None and ingested_at < mark:
             raise IngestionOrderError(
