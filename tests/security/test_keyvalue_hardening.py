@@ -288,6 +288,103 @@ def test_a_real_auditd_auth_record_keeps_its_timestamp() -> None:
     assert event.device.hostname == "web-01"
 
 
+#: A verbatim auditd failed-password record. Everything an analyst needs is
+#: inside the *second*, single-quoted ``msg``, which is how auditd writes
+#: USER_AUTH / USER_ACCT / USER_CMD / USER_LOGIN / CRED_* — every SSH
+#: authentication and every sudo invocation on a Linux node.
+_NESTED_AUTH = (
+    "type=USER_AUTH msg=audit(1760000000.123:456): pid=1234 uid=0 auid=4294967295 "
+    'ses=4294967295 msg=\'op=PAM:authentication acct="svc-deploy" '
+    'exe="/usr/sbin/sshd" hostname=? addr=203.0.113.9 terminal=ssh res=failed\''
+)
+
+
+@pytest.mark.security
+def test_the_nested_auditd_payload_is_decoded_not_swallowed() -> None:
+    """Without this, collecting audit.log produced events with no actor at all.
+
+    The pattern matches the quoted payload as one value, so ``finditer``
+    resumed *after* it and ``acct``/``addr``/``res`` were never produced as
+    keys. The record reached the parser with only ``type/msg/pid/uid/auid/ses``,
+    so ``user`` fell back to ``auid`` — ``4294967295``, the unset sentinel every
+    pre-auth sshd record carries — with no address, no result and no
+    observables, while still being stamped ``structured`` with no note. Found
+    by review.
+    """
+    decoded = decode(_NESTED_AUTH)
+    assert decoded is not None
+    assert decoded["acct"] == "svc-deploy", "the nested payload was swallowed whole"
+    assert decoded["addr"] == "203.0.113.9"
+    assert decoded["res"] == "failed", "a failed password was indistinguishable from a success"
+    # The clock form still wins the `msg` key — first-occurrence-wins, which is
+    # what keeps the record dated.
+    assert decoded["msg"].startswith("audit(1760000000.123:456)")
+
+
+@pytest.mark.security
+def test_a_nested_auth_record_normalizes_to_an_attributable_event() -> None:
+    """End to end: the event must carry an actor and an address, not a sentinel."""
+    event = normalize(_NESTED_AUTH)
+    assert event.source_type == "endpoint"
+    assert event.timestamp == 1760000000.123
+    assert event.actor.user_name == "svc-deploy", (
+        f"the actor is {event.actor.user_name!r} — the unset auid sentinel rather than "
+        "the account that failed to authenticate"
+    )
+    assert event.src_endpoint.ip == "203.0.113.9"
+    assert "203.0.113.9" in event.observables
+
+
+@pytest.mark.security
+def test_a_nested_payload_cannot_overwrite_what_the_record_head_declared() -> None:
+    """First-occurrence-wins holds across levels, which is the defensive half.
+
+    A payload an attacker influences must not be able to restate the record's
+    own ``type`` or ``exe``. Only keys the head never declared are merged.
+    """
+    decoded = decode(
+        'type=USER_AUTH msg=audit(1760000000.100:1): exe="/usr/sbin/sshd" '
+        'msg=\'type=EVIL exe="/bin/evil" acct="real"\''
+    )
+    assert decoded is not None
+    assert decoded["type"] == "USER_AUTH", "a nested pair overwrote the record type"
+    assert decoded["exe"] == "/usr/sbin/sshd", "a nested pair overwrote the executable"
+    assert decoded["acct"] == "real", "a key the head never declared should still merge"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "line",
+    [
+        "the operator said 'count=3 limit=9' during the call at length this morning",
+        "error: the config read 'a=1 b=2 c=3' which was not what anyone expected here",
+        "note='x=1 y=2'",
+    ],
+)
+def test_nesting_cannot_promote_prose_into_an_event(line: str) -> None:
+    """The merge runs only *after* the thresholds pass, so it cannot promote.
+
+    Otherwise a sentence containing a quoted pair run would become a
+    multi-field "event" — the manufactured telemetry this module exists to
+    refuse. The control stays on the outer line.
+    """
+    assert decode(line) is None
+
+
+@pytest.mark.security
+def test_only_quoted_values_are_rescanned() -> None:
+    """A bare value cannot hold a space, so it cannot hold a second pair.
+
+    Re-scanning bare values would mine a URL's query string for pairs nobody
+    wrote: ``url=http://h/?a=1&b=2`` would gain ``a`` and ``b``.
+    """
+    decoded = decode("type=PROXY node=web-01 url=http://h/p?a=1&b=2 status=200")
+    assert decoded is not None
+    assert "a" not in decoded and "b" not in decoded, (
+        "a bare value's query string was mined for pairs"
+    )
+
+
 @pytest.mark.security
 def test_decode_is_not_catastrophic_on_a_crafted_line() -> None:
     """A log line is attacker-influenced input; the pattern must not backtrack.

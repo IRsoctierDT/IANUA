@@ -59,6 +59,11 @@ from __future__ import annotations
 
 import re
 
+#: How many quoted payloads one line may be re-scanned for nested pairs.
+#: auditd nests exactly one such payload (the second ``msg=``); the bound is
+#: here so a crafted line cannot turn one decode into many.
+MAX_NESTED_PAYLOADS = 4
+
 #: Smallest number of pairs that makes a line "structured" rather than prose
 #: that happens to contain an equals sign.
 #:
@@ -122,6 +127,7 @@ def decode(line: str) -> dict[str, str] | None:
         :data:`MIN_COVERAGE` of the line's non-space characters, or ``None``.
     """
     pairs: dict[str, str] = {}
+    payloads: list[str] = []
     covered = 0
     for match in _PAIR.finditer(line):
         # Coverage is counted for every pair found, including those past the
@@ -130,16 +136,20 @@ def decode(line: str) -> dict[str, str] | None:
         # MAX_PAIRS and be rejected as prose, which is the opposite of the
         # intent. The cap bounds what is *kept*, not what is *measured*.
         covered += len(match.group(0).replace(" ", ""))
+        quoted = match.group("dq")
+        if quoted is None:
+            quoted = match.group("sq")
+        # Collected even when the pair itself is dropped just below, because the
+        # payload that matters is auditd's *second* ``msg=`` — precisely the one
+        # first-occurrence-wins discards.
+        if quoted is not None and "=" in quoted and len(payloads) < MAX_NESTED_PAYLOADS:
+            payloads.append(quoted)
         if len(pairs) >= MAX_PAIRS:
             continue
         key = match.group("key")
         if key in pairs:
             continue  # first occurrence wins — see the docstring
-        value = match.group("dq")
-        if value is None:
-            value = match.group("sq")
-        if value is None:
-            value = match.group("bare") or ""
+        value = quoted if quoted is not None else (match.group("bare") or "")
         pairs[key] = value[:MAX_VALUE_LEN]
 
     if len(pairs) < MIN_PAIRS:
@@ -147,4 +157,52 @@ def decode(line: str) -> dict[str, str] | None:
     dense = len(line.replace(" ", ""))
     if dense == 0 or covered / dense < MIN_COVERAGE:
         return None
+    # Only after the thresholds have passed, so scavenging inside a quote can
+    # never promote prose into an "event" — the control stays on the outer line.
+    _merge_nested(pairs, payloads)
     return pairs
+
+
+def _merge_nested(pairs: dict[str, str], payloads: list[str]) -> None:
+    """Merge the pairs inside auditd's nested quoted payload, first-wins.
+
+    A real auditd ``USER_AUTH``/``USER_CMD``/``CRED_*`` record puts everything
+    an analyst needs inside a second, single-quoted ``msg``::
+
+        type=USER_AUTH msg=audit(…): pid=1 uid=0 auid=4294967295
+            msg='op=PAM:authentication acct="svc-deploy" addr=203.0.113.9 res=failed'
+
+    The pattern matches that whole span as one value, so ``finditer`` resumes
+    *after* it and ``acct``/``addr``/``res`` were never produced as keys. The
+    record then reached the auditd parser with only ``type/msg/pid/uid/auid/ses``,
+    so ``user`` fell back to ``auid`` — ``4294967295``, the unset sentinel every
+    pre-auth sshd record carries — with no address, no result, and no
+    observables, while still being stamped ``structured`` with no note. The
+    numeric user is not host-joinable, so the event carried **zero** joinable
+    entity references and could never enter an incident: a brute force collected
+    from ``audit.log`` produced zero incidents. Verified A/B through the real
+    CLIs — identical records with the fields at the top level produced one
+    score-30 incident, the nested form produced none.
+
+    Depth is fixed at one, which is all auditd uses, so this cannot recurse.
+    Only *quoted* values are re-scanned: a bare value cannot hold a space and so
+    cannot hold a second pair, and re-scanning bare values would mine
+    ``url=http://h/?a=1&b=2`` for pairs nobody wrote.
+
+    First-occurrence-wins holds across levels too: a top-level key is never
+    overwritten by a nested one, so a payload an attacker influences cannot
+    restate the ``type`` or ``exe`` the head of the record already declared.
+    """
+    for payload in payloads:
+        for match in _PAIR.finditer(payload):
+            if len(pairs) >= MAX_PAIRS:
+                return
+            key = match.group("key")
+            if key in pairs:
+                continue
+            value = match.group("dq")
+            if value is None:
+                value = match.group("sq")
+            if value is None:
+                value = match.group("bare") or ""
+            pairs[key] = value[:MAX_VALUE_LEN]

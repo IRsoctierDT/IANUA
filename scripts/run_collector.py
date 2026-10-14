@@ -31,16 +31,27 @@ region nothing will ever re-read, and a report written after the position moves
 can be lost while the region stays consumed. At-least-once costs a duplicate
 read, which the content-addressed store turns into a no-op.
 
-**Ingestion order is kept monotone.** ``ingested_at`` is stamped at
-``max(now, store.high_water_mark())``. The store now *refuses* a write behind
-its high-water mark, because the pipeline pages by a ``(ingested_at,
-event_id)`` keyset and an event stamped earlier would sit behind a cursor that
-has already passed it — never read, by any cycle. Clamping rather than failing
-on a backwards clock is the right trade: ``occurred_at`` still carries the
-source's own time, and ``ingested_at`` is only ever used for ordering and
-retention. The cost is stated in ``docs/PRODUCTION_SOC_PLAN.md``: a clock that
-jumps *forward* raises the mark permanently, which delays retention for
-everything after it.
+**Ingestion order is kept monotone, per commit.** Each source's batch is
+stamped by ``EventStore.next_stamp(time.time())`` immediately before *its own*
+``append_many``, which is one transaction. The store refuses a write behind its
+high-water mark, and ``next_stamp`` returns a value strictly after that mark, so
+no two commits can share an ``ingested_at``.
+
+That "per commit" is load-bearing and was learned the hard way. The pipeline
+pages by a ``(ingested_at, event_id)`` keyset that is *strictly* after the
+cursor, and it holds a different lock from this CLI — so a cycle can fire
+between two of this pass's commits. With one stamp hoisted across the whole
+pass, that cycle saved a cursor *inside* a tie group, and every later-source
+event whose content hash sorted below the cursor's id was behind a cursor that
+had already passed it: never read, by any cycle. Reproduced at 30 of 60 events
+lost with the pipeline reporting ``events_read: 0``. Stamping per commit means a
+cursor can only ever land between tie groups, never inside one.
+
+Clamping rather than failing on a backwards clock is the right trade:
+``occurred_at`` still carries the source's own time, and ``ingested_at`` is only
+ever used for ordering and retention. The cost is stated in
+``docs/PRODUCTION_SOC_PLAN.md``: a clock that jumps *forward* raises the mark
+permanently, which delays retention for everything after it.
 
 **No ambient identity.** ``--caller`` is optional and must be passed
 explicitly. This program does not read ``$USER`` or any other environment
@@ -313,9 +324,10 @@ def _print_text(
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    # The one clock read in collection. Used for the duration in the report and
-    # for the ingestion stamp; the audit record keeps its own timestamp so the
-    # chain's notion of time stays the chain's.
+    # The report's duration. The ingestion stamps are read separately, one per
+    # source immediately before its commit (see the loop in `_run`); the audit
+    # record keeps its own timestamp so the chain's notion of time stays the
+    # chain's.
     started_at = time.monotonic()
 
     try:
@@ -401,7 +413,6 @@ def _run(
 
     try:
         with EventStore.open(args.root) as store:
-            stamp = store.next_stamp(time.time())
             for source in sources:
                 # Per-source, so one unreadable file does not starve the rest.
                 # Before this, a single permission error returned 1 before any
@@ -412,8 +423,27 @@ def _run(
                     result = read_new(source, positions.get(source.key), max_bytes=args.max_bytes)
                     results[source.key] = result
                     if result.lines and not args.dry_run:
+                        # Stamped per source, immediately before its own commit.
+                        # ``append_many`` is one transaction per call, so a stamp
+                        # hoisted out of this loop gave every source's *separate*
+                        # commit the same ``ingested_at`` — and the pipeline holds
+                        # a different lock, so a cycle landing between two commits
+                        # saves a cursor inside that tie group. The keyset is
+                        # strictly after ``(ingested_at, event_id)``, so every
+                        # later-source event whose content hash sorts below that
+                        # id is behind a cursor that has already passed it and is
+                        # never read by any cycle. Reproduced: 30 of 60 collected
+                        # events permanently invisible, the pipeline reporting
+                        # ``events_read: 0`` while the store held all 60.
+                        #
+                        # This is exactly the loss ``next_stamp`` exists to
+                        # prevent, reintroduced one layer up by hoisting the call.
+                        # Per commit, each stamp is strictly after the mark the
+                        # previous commit set, so no two commits share a stamp and
+                        # a cursor can only ever land *between* tie groups.
                         stored += store.append_many(
-                            tuple(normalize_many(result.lines)), ingested_at=stamp
+                            tuple(normalize_many(result.lines)),
+                            ingested_at=store.next_stamp(time.time()),
                         )
                     # Recorded only once this source's events are durable.
                     if result.position is not None:

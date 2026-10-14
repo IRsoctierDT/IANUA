@@ -896,6 +896,115 @@ def test_a_symlinked_ancestor_pointing_into_a_credential_store_is_refused(
 
 
 @pytest.mark.security
+def test_each_source_commits_at_its_own_stamp(tmp_path: Path) -> None:
+    """One stamp across a multi-source pass stranded the later sources forever.
+
+    ``append_many`` is one transaction per call, so a stamp hoisted out of the
+    per-source loop gave every source's *separate* commit the same
+    ``ingested_at``. The pipeline holds a different lock from the collector, so
+    a cycle can fire between two of those commits and save a cursor **inside**
+    that tie group — and the keyset is strictly after ``(ingested_at,
+    event_id)``, so every later-source event whose content hash sorts below the
+    cursor's id is behind a cursor that has already passed it. Never read, by
+    any cycle.
+
+    Reproduced before the fix at 30 of 60 collected events permanently
+    invisible, with the pipeline reporting ``events_read: 0`` while the store
+    held all 60 rows. This is exactly the loss ``next_stamp`` exists to
+    prevent, reintroduced one layer up. Found by review.
+    """
+    import sqlite3 as _sqlite3
+
+    root = tmp_path / "root"
+    root.mkdir(exist_ok=True)
+    first = _log(tmp_path, name="one.log", body="type=SYSCALL node=web-01 auid=a comm=bash\n")
+    second = _log(tmp_path, name="two.log", body="type=SYSCALL node=web-02 auid=b comm=sh\n")
+
+    from scripts.run_collector import main
+
+    assert main(["--root", str(root), "--source", str(first), "--source", str(second)]) == 0
+
+    database = next((root / "data" / "events").glob("*.sqlite3"))
+    stamps = [
+        row[0]
+        for row in _sqlite3.connect(database).execute(
+            "SELECT DISTINCT ingested_at FROM events ORDER BY 1"
+        )
+    ]
+    assert len(stamps) == 2, (
+        f"two sources committed at {len(stamps)} distinct stamp(s): {stamps}. One stamp "
+        "for separate commits lets a cursor land inside a tie group."
+    )
+    assert stamps[1] > stamps[0], "the second commit did not advance the mark"
+
+
+@pytest.mark.security
+def test_a_cycle_between_two_sources_commits_strands_nothing(tmp_path: Path) -> None:
+    """The interleaving itself, driven through the real CLI.
+
+    The collector and the pipeline hold separate locks by design — each exists
+    to stop *its own* concurrent invocations forking the audit chain — so
+    nothing prevents a cycle landing mid-pass.
+
+    The cycle is fired from inside ``append_many`` so that it lands exactly
+    between two of the pass's commits, which is the only place the defect is
+    reachable. An earlier version of this test drove the store API directly and
+    therefore passed with the defect planted back: it was asserting its own
+    arithmetic rather than the CLI's. Found by planting.
+    """
+    from unittest import mock
+
+    from pipeline import cursor_path, load_cursor, run_cycle, save_cursor
+    from scripts.run_collector import main
+    from store import EventStore
+
+    root = tmp_path / "root"
+    root.mkdir(exist_ok=True)
+    one = _log(
+        tmp_path,
+        name="a.log",
+        body="".join(f"type=SYSCALL node=web-01 auid=svc comm=sh{i}\n" for i in range(8)),
+    )
+    two = _log(
+        tmp_path,
+        name="b.log",
+        body="".join(f"type=SYSCALL node=web-02 auid=svc comm=ls{i}\n" for i in range(8)),
+    )
+
+    read: list[int] = []
+
+    def cycle() -> None:
+        with EventStore.open(root) as store:
+            result = run_cycle(store, cursor=load_cursor(cursor_path(root)))
+        if result.cursor is not None:
+            save_cursor(cursor_path(root), result.cursor)
+        read.append(result.events_read)
+
+    real_append = EventStore.append_many
+
+    def append_then_cycle(self: EventStore, events: object, **kwargs: object) -> int:
+        count = real_append(self, events, **kwargs)  # type: ignore[arg-type]
+        cycle()  # a timer firing between this commit and the next
+        return count
+
+    with mock.patch.object(EventStore, "append_many", append_then_cycle):
+        assert main(["--root", str(root), "--source", str(one), "--source", str(two)]) == 0
+
+    for _ in range(4):
+        cycle()
+        if read[-1] == 0:
+            break
+
+    with EventStore.open(root) as store:
+        total = store.count()
+    assert total == 16
+    assert sum(read) == total, (
+        f"{total - sum(read)} of {total} stored events were never read by any cycle; a "
+        "cursor landed inside a tie group and passed them"
+    )
+
+
+@pytest.mark.security
 def test_the_collection_gate_record_does_not_call_the_crossing_benign() -> None:
     """It is the platform's only §5 boundary crossing, in a tamper-evident log.
 
