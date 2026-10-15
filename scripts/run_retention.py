@@ -161,8 +161,8 @@ from store.paths import confine, validated_root  # noqa: E402
 #: Default window, in days. A number had to be chosen; this one is the value
 #: ``store/README.md`` already used in its illustrative snippet, so the
 #: documentation and the default agree rather than offering two numbers.
-#: It is not a recommendation — see the runbook, which states the storage cost
-#: per day so an operator can pick their own.
+#: It is not a recommendation — see ``docs/RETENTION.md``, which states the
+#: storage cost per day so an operator can pick their own.
 DEFAULT_KEEP_DAYS = 90
 
 #: Seconds of already-processed history a pass must leave behind the cursor,

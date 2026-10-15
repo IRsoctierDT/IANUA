@@ -54,7 +54,7 @@ Assessed 2026-10-14 against `DESIGN.md`, the Decision Log, and the tree.
 | Scheduling | **Stage 4 — done** | `pipeline/` + `scripts/run_pipeline.py`: one at-least-once cycle per invocation with a trailing correlation window, driven by cron or a systemd timer |
 | Identity | **Stage 3 — done** | `agents/policies/principal.py`: rides in the hashed `actor` field; no ambient path to an identity |
 | **Case management** | Partial | `dashboard/escalations.py` reads the Agent Trust Broker queue — read-only by design |
-| **Operational envelope** | **Partial** | Backup/DR done: `scripts/run_backup.py` + `docs/RESTORE.md`, with a completeness attestation and a drill test. Still absent: HA, self-monitoring, SLOs. Single-node compose, loopback-only |
+| **Operational envelope** | **Partial** | Backup/DR done: `scripts/run_backup.py` + `docs/RESTORE.md`, with a completeness attestation and a drill test. Retention done: `scripts/run_retention.py` + `docs/RETENTION.md`. Self-monitoring and SLOs done: `sli/` + `scripts/report_sli.py`, summarised into `compliance/` as AUD-03. Still absent: HA. Single-node compose, loopback-only |
 
 ## Stages
 
@@ -70,12 +70,10 @@ and run against lab telemetry before any charter amendment is argued.
 | 4 | **Scheduled execution** — continuous detection over the store rather than on demand | None (lab data; no new egress, no new dependency) | **DONE** |
 | 5 | **Collection (local)** — this node's own log files into the store | **Yes, amended**: filesystem reach beyond the project, read-only and declared-only (`AGENTS.md` §5, `DESIGN.md` §5 boundary 14). `ingest/`'s no-network invariant is untouched — collection is a separate package — and **default-deny egress is NOT amended** | **DONE** |
 | 5b | **Collection (remote)** — forwarders or a listener for other hosts | **Yes**: an inbound listening socket with forwarder authentication, which no boundary currently describes. Not egress, so it does not reopen the default-deny argument | Planned |
-| 6 | **Real telemetry + retention policy** | **Partly done.** The retention half has landed (`scripts/run_retention.py`, reporting by default, deleting only on an exact-match grant; see "Running retention" below). The **PII posture half is still open** and is the charter crossing: §5 already classifies logs and `data/` as sensitive, so what needs amending is narrower than this row once claimed — §4's `data/` line ("never client/PII") and §6.2's "No secrets, PII, or sensitive data added anywhere". The decision is *what `ingest/` writes*, because redaction after the fact is structurally impossible: `event_id` is `sha256(projection)` and both tables carry append-only triggers, so only whole-row deletion works | **Retention done; posture open** |
-| 7 | **Authenticated multi-user access** | **Yes**: `dashboard/`'s "local-only backends" invariant and loopback-only binding | Planned |
-| 6 | **Real telemetry + retention policy** | **Yes**: §5 treats logs and client info as sensitive by default and `data/` as lab-only; real logs carry usernames, addresses, hostnames. Needs a stated PII posture, not a silent reclassification | Planned |
+| 6 | **Real telemetry + retention policy** | **Yes, amended** (both halves have landed). The retention half is `scripts/run_retention.py` — reporting by default, deleting only on an exact-match grant; runbook at `docs/RETENTION.md`. The PII posture half is the charter crossing and is now stated: §5's stage-6 amendment makes it *what `ingest/` writes*, an allow-list rather than a later handling policy, because redaction after the fact is structurally foreclosed — `event_id` is `sha256(projection)` and both tables carry append-only triggers, so only whole-row deletion works | **DONE** |
 | 7 | **Authenticated multi-user access** | **Yes**, but narrower than this row used to claim — see "What stage 7 actually crosses" below. The dashboard authenticates no one and now binds loopback only (pinned, control CFG-02) | Planned |
 | 8 | **Response execution** (plan → act) | **Yes**: `agents/response/` ships no executor and security tests enforce that. The 2026-08-21 containment decision is the template for doing this properly — a dedicated action class decided and audited per invocation, not an allow-list standing grant | Planned |
-| 9 | **Operational envelope** — HA, backup/DR, self-monitoring, SLOs | Backup/DR crosses nothing: a second copy inside the gitignored lab root is permitted today, and off-node copies are left to an operator under §5.1's external-network gate. HA as chosen (active/passive with a replicated store) **does** cross §5.1's dependency-addition row and retires `dependencies = []` | **Backup/DR done**; HA, self-monitoring and SLOs planned |
+| 9 | **Operational envelope** — HA, backup/DR, self-monitoring, SLOs | Backup/DR and self-monitoring cross nothing: a second copy inside the gitignored lab root is permitted today (off-node copies are left to an operator under §5.1's external-network gate), and `sli/` measures the platform from its own on-disk state with no new reach. HA as chosen (active/passive with a replicated store) **does** cross §5.1's dependency-addition row and retires `dependencies = []` | **Backup/DR, self-monitoring and SLOs done**; HA planned |
 
 ### Running Stage 4 (the scheduled cycle)
 
@@ -141,6 +139,10 @@ python scripts/run_pipeline.py --root /srv/ianua --dry-run
 # machine-readable, for a log shipper
 python scripts/run_pipeline.py --root /srv/ianua --json
 ```
+
+The retention pass that pairs with this cycle has its own runbook — `docs/RETENTION.md`,
+which covers the grants, the margin interlock above, what a prune does and does not return,
+and why a green `scripts/report_sli.py` is not evidence that a pass behaved.
 
 **cron** — simplest, adequate for a single node:
 

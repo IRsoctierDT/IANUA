@@ -187,7 +187,15 @@ A backup is roughly the size of the store, and the store grows at **~1.8 KB per 
 cadence that is ~507 MB/day and ~15 GB/month, so each backup costs about a month of
 ingestion per copy retained. Choose a cadence and a copy count against the disk you have,
 and pair it with `scripts/run_retention.py` — which is the knob that bounds the source, and
-whose own runbook figures these came from.
+whose runbook is `docs/RETENTION.md`. The figures above are measured here and cited there,
+rather than the other way round: an earlier version of this paragraph credited them to "its
+own runbook" while that runbook did not exist, which made the two references circular around
+an absent document.
+
+Note also what retention does **not** buy, because it bears on sizing a volume: a prune
+returns no bytes to the filesystem — measured byte-identical across a pass that deleted 85%
+of events — so the store plateaus at its peak live set rather than shrinking. Reclaiming
+disk is a manual `VACUUM`; `docs/RETENTION.md` has the procedure and its costs.
 
 The backup itself is cheap: the online backup API copies pages under a read lock and the
 attestation streams one `event_id` at a time, so neither loads the database into memory.
