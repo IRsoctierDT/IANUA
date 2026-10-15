@@ -15,12 +15,14 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sqlite3
 import time
 from pathlib import Path
 
 import pytest
 
 from collect import MAX_BYTES_PER_RUN, Position, offsets_path, save_offsets
+from ingest import normalize
 from pipeline import DEFAULT_BATCH, Cursor, cursor_path, save_cursor
 from sli import (
     BY_ID,
@@ -476,3 +478,102 @@ def test_a_report_with_no_indicators_is_not_healthy() -> None:
     own tests more than once.
     """
     assert SliReport(measured_at=0.0, indicators=()).healthy is False
+
+
+@pytest.mark.unit
+def test_store_intact_catches_the_damage_the_readability_sample_cannot(
+    tmp_path: Path,
+) -> None:
+    """Why there are two store objectives and not one widened one.
+
+    ``store-readable`` reads a fixed 100 rows from the two ends however large
+    the store is, and its own docstring concedes that. Measured on a
+    1200-event / 525-page store, zeroing each page in turn: **116 of 524**
+    single-page losses leave it reading ``1.0`` and the caught-up sentence
+    while ``integrity_check`` raises, and ``verify_integrity`` refuses **116 of
+    116**. The other 408 now read ``breached`` rather than ``unknown``, because
+    ``store/`` maps corruption to a ``StoreError``.
+
+    This test asserts the discriminating case rather than the easy one: a page
+    whose loss the **sample does not notice**. If no such page exists in the
+    fixture the test says so and fails, because a page both indicators catch
+    would prove nothing about why they are separate.
+    """
+    root = _root(tmp_path)
+    with EventStore.open(root) as store:
+        store.append_many(
+            tuple(
+                normalize(
+                    json.dumps(
+                        {
+                            "eventSource": "s3.amazonaws.com",
+                            "eventName": "GetObject",
+                            "eventTime": f"2026-10-15T09:00:{index % 60:02d}Z",
+                            "sourceIPAddress": f"10.0.{index // 256 % 256}.{index % 256}",
+                            "userIdentity": {"userName": f"svc-{index:06d}"},
+                        }
+                    )
+                )
+                for index in range(600)
+            ),
+            ingested_at=1_760_000_000.0,
+        )
+    database = root / "data" / "events" / "events.sqlite3"
+    folding = sqlite3.connect(database)
+    try:
+        folding.execute("PRAGMA journal_mode=DELETE")
+        page_size = int(folding.execute("PRAGMA page_size").fetchone()[0])
+    finally:
+        folding.close()
+    pristine = database.read_bytes()
+
+    discriminating = 0
+    for pageno in range(2, len(pristine) // page_size + 1):
+        offset = (pageno - 1) * page_size
+        database.write_bytes(pristine[:offset] + bytes(page_size) + pristine[offset + page_size :])
+        by_id = {
+            indicator.objective.id: indicator
+            for indicator in measure(root, now=time.time()).indicators
+        }
+        if by_id["store-readable"].status is not Status.MET:
+            continue  # the sample caught it; not the case under test
+        discriminating += 1
+        assert by_id["store-intact"].status is Status.BREACHED, (
+            f"page {pageno}: the sample read met and store-intact did not breach "
+            f"({by_id['store-intact'].status.value}: {by_id['store-intact'].detail})"
+        )
+        assert by_id["store-intact"].value == 0.0
+        assert "damaged" in by_id["store-intact"].detail
+    database.write_bytes(pristine)
+
+    assert discriminating, (
+        "no page's loss escaped the readability sample, so this fixture cannot "
+        "distinguish the two objectives"
+    )
+
+
+@pytest.mark.unit
+def test_store_intact_is_unmeasurable_rather_than_sound_when_there_is_no_store(
+    tmp_path: Path,
+) -> None:
+    """An absent store must not read as a sound one.
+
+    ``0.0`` is reserved for "the signal was read and the evidence is damaged".
+    A root with no database at all is a different conversation, and grading it
+    ``1.0`` would be the fail-open this whole package exists to prevent.
+    """
+    report = measure(_root(tmp_path), now=time.time())
+    intact = next(i for i in report.indicators if i.objective.id == "store-intact")
+    assert intact.status is Status.UNKNOWN, intact.detail
+    assert intact.value is None
+    assert "no event store" in intact.detail
+
+
+@pytest.mark.unit
+def test_a_sound_store_reads_met_on_both_store_objectives(tmp_path: Path) -> None:
+    """The other direction, or every assertion above is satisfied by refusing."""
+    report = measure(_populated(tmp_path), now=time.time())
+    by_id = {indicator.objective.id: indicator for indicator in report.indicators}
+    assert by_id["store-intact"].status is Status.MET, by_id["store-intact"].detail
+    assert by_id["store-intact"].value == 1.0
+    assert by_id["store-readable"].status is Status.MET

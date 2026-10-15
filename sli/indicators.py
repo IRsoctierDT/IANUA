@@ -308,6 +308,44 @@ def measure_detection_backlog(root: Path, now: float) -> Measurement:
     return Measurement(float(pending), f"{pending} event(s) not yet processed")
 
 
+def measure_store_intact(root: Path, now: float) -> Measurement:
+    """Whether the database file itself is structurally sound.
+
+    The companion to :func:`measure_store_readable`, and the two are not
+    redundant: this one walks every b-tree page and cannot see an
+    application-level failure, that one samples 100 rows and cannot see damage
+    outside them. Measured on a 1200-event / 525-page store, zeroing each page
+    in turn: 116 of 524 losses left the sample reading ``1.0`` while
+    ``integrity_check`` raised, and ``verify_integrity`` refuses 116 of 116.
+
+    ``0.0`` rather than ``None`` for a damaged store, deliberately. The signal
+    was read and it said the evidence is damaged; that is a measured breach and
+    the most actionable thing this package can report. ``None`` is reserved for
+    a store that is not there or will not open, which is a different
+    conversation with the operator.
+
+    Cost is why this is affordable at the documented ``*/5`` cadence:
+    ``quick_check`` is roughly linear at 1.1-1.5 ms/MiB (24 ms at 16.7 MiB,
+    90 ms at 67.1 MiB, 220 ms at 202.2 MiB), while ``integrity_check`` is
+    super-linear over the same three points (67 / 419 / 1440 ms) and was
+    therefore not a candidate. What ``quick_check`` does not catch is a
+    structurally valid page carrying another generation's rows — see
+    ``EventStore.verify_integrity``.
+    """
+    del now
+    path = _store_path(root)
+    if not path.is_file():
+        return Measurement(None, f"no event store at {path.relative_to(root)}")
+    try:
+        with EventStore.open(root) as store:
+            store.verify_integrity()
+    except StoreError as exc:
+        return Measurement(0.0, f"the store's database is damaged: {exc}")
+    except OSError as exc:
+        return Measurement(None, f"the store could not be opened ({type(exc).__name__})")
+    return Measurement(1.0, "every b-tree page the quick check walks is sound")
+
+
 def measure_store_readable(root: Path, now: float) -> Measurement:
     """Whether a bounded query of the store returns rather than raising.
 
@@ -330,14 +368,15 @@ def measure_store_readable(root: Path, now: float) -> Measurement:
     wrong shape, and the leak was on seven of ten store entry points rather
     than only this one.
 
-    **The sample is still a sample, and that is the remaining gap.** Measured
-    on a 1200-event / 525-page store, zeroing each page in turn: 116 of 524
-    losses (22%) leave this probe reading ``1.0`` and the sentence "read 50
-    newest and 50 oldest row(s) without error" while ``integrity_check``
-    raises. ``EventStore.verify_integrity`` is the primitive that closes it,
-    priced at 1.1-1.5 ms/MiB, and whether this indicator should carry it or a
-    second objective should is a judgement about what one indicator may mean —
-    tracked, not silently folded in here.
+    **The sample is still a sample, and ``store-intact`` is what covers it.**
+    Measured on a 1200-event / 525-page store: 116 of 524 single-page losses
+    leave this probe reading ``1.0`` and the sentence "read 50 newest and 50
+    oldest row(s) without error" while ``integrity_check`` raises, because the
+    probe reads a fixed 100 rows from the two ends however large the store is.
+    :func:`measure_store_intact` refuses 116 of 116 of them. The two stay
+    separate rather than merging because they fail differently and an operator
+    acts differently: a damaged file is restored, an unreadable projection is
+    pruned.
     """
     del now
     path = _store_path(root)
@@ -445,6 +484,7 @@ MEASURERS: dict[str, Callable[[Path, float], Measurement]] = {
     "ingest-freshness": measure_ingest_freshness,
     "detection-lag": measure_detection_lag,
     "detection-backlog": measure_detection_backlog,
+    "store-intact": measure_store_intact,
     "store-readable": measure_store_readable,
     "audit-chains-intact": measure_audit_chains_intact,
     "backup-present": measure_backup_present,

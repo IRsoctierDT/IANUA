@@ -153,6 +153,25 @@ OBJECTIVES: tuple[Objective, ...] = (
         ),
     ),
     Objective(
+        id="store-intact",
+        title="The event store's database is structurally sound",
+        unit="(1 = yes)",
+        direction=Direction.AT_LEAST,
+        target=1.0,
+        rationale=(
+            "A second objective rather than a widening of store-readable, "
+            "because the two failures have different runbook branches and one "
+            "indicator carrying both would make its detail ambiguous between "
+            "them: a damaged file is restored from a backup, an unreadable "
+            "projection is pruned. The same argument earned StoreCorruptionError "
+            "its own class. Measured need: on a 1200-event store, 116 of 524 "
+            "single-page losses left store-readable reading met while "
+            "integrity_check raised, because its probe is a fixed 100-row sample "
+            "from the two ends; EventStore.verify_integrity refuses 116 of 116. "
+            "Priced at 1.1-1.5 ms/MiB, roughly linear."
+        ),
+    ),
+    Objective(
         id="store-readable",
         title="A bounded query of the event store returns",
         unit="(1 = yes)",

@@ -32,7 +32,7 @@ import pytest
 from compliance.controls import check_self_monitoring_defined
 from compliance.engine import run_controls
 from pipeline import Cursor, cursor_path, save_cursor
-from sli import CHAIN_FILES, Status, measure
+from sli import CHAIN_FILES, OBJECTIVES, Status, measure
 from store import EventStore
 from tests.security.test_cli_startup_failclosed import RELATIVE_ROOTS
 
@@ -147,7 +147,7 @@ def test_a_measurement_runs_with_the_clock_taken_away(
 
     report = measure(root, now=1_760_000_000.0)
     assert report.measured_at == 1_760_000_000.0
-    assert len(report.indicators) == 7
+    assert len(report.indicators) == len(OBJECTIVES), "a probe was lost with the clock taken away"
 
 
 # ------------------------------------------------------ nothing outside the root
