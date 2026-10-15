@@ -417,9 +417,30 @@ class _Excerpt:
     ``values`` is therefore **never wider than** ``text``: it is built by
     matching each leaf against the rendered string
     (:func:`_retained_values`), so a leaf the excerpt truncated away is not
-    scanned either. Asserted directly rather than reasoned about — see
-    ``test_every_observable_is_findable_in_the_retained_evidence`` — because
-    this function has now been wrong in both directions.
+    scanned either.
+
+    **That is asserted, but not by the test this docstring used to name**, and
+    the correction is measured rather than reasoned. Planting
+    :func:`_retained_values` as the identity function — round two's defect,
+    exactly — turns **three** cases red:
+
+        test_an_indicator_is_extracted_only_when_the_excerpt_retains_it[in-the-cut-leaf]
+        test_an_indicator_is_extracted_only_when_the_excerpt_retains_it[past-the-cut]
+        test_an_unclaimed_records_observables_are_all_inside_its_excerpt[past-the-cut]
+
+    ``test_every_observable_is_findable_in_the_retained_evidence`` is **not**
+    among them: all thirty of its legs stay green, because on the committed
+    corpus ``_retained_values`` is behaviourally the identity function anyway.
+    Measured: 30 legs, 0 that drop a leaf, 307 of 307 leaves kept, largest
+    ``raw_excerpt`` 679 characters against a 4096 bound, and **no** leg
+    reaching that bound. A test cannot distinguish a function from its
+    degenerate case on a corpus where they agree, and this docstring claimed
+    it did.
+
+    Only the unclaimed path reaches here at all —
+    :func:`_normalize_mapping` passes ``_excerpt_for(...).text`` and discards
+    ``.values`` — so none of this covers a *recognized* record, which is a
+    separate open defect rather than a wording problem.
 
     They are both needed because they are bounded differently.
     :func:`~ingest._coerce.observables` coerces **each value** through

@@ -31,7 +31,7 @@ import json
 import re
 import sys
 import typing
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -1838,45 +1838,217 @@ def test_the_canonical_schema_has_no_body_field() -> None:
 # No ambient authority
 # --------------------------------------------------------------------------
 
-_BANNED_IMPORTS = {
-    "subprocess",
-    "socket",
-    "shutil",
-    "requests",
-    "httpx",
-    "urllib",
-    "urllib.request",
-    "pickle",
-    "marshal",
-    "ctypes",
-    "importlib",
+#: Every module ``ingest/`` may import, by root name. **An allow-list, not a
+#: deny-list, and that is the fix.** The deny-list these two tests used to
+#: carry was evadable twice over: by a module nobody had thought to ban
+#: (``asyncio``, ``http``, ``smtplib``, ``webbrowser``, or plain ``os``), and
+#: by an attribute call on a module imported for another reason, since the
+#: call check only looked at ``ast.Name`` func nodes and so could not see
+#: ``os.system(...)``. Both were found by review.
+#:
+#: The repository already made this argument against deny-lists once, about
+#: content fields: "``FORBIDDEN_CONTENT_FIELDS`` enumerates six spellings of
+#: 'body' and the seventh ships in a vendor's next release." The same holds
+#: here, and the surface is small enough that an allow-list costs nothing —
+#: measured, ``ingest/`` imports exactly these.
+_ALLOWED_IMPORTS = {
+    "__future__",
+    "collections",  # collections.abc only; the dotted form is checked below
+    "dataclasses",
+    "datetime",
+    "ingest",
+    "json",
+    "re",
+    "typing",
 }
-_BANNED_CALLS = {"eval", "exec", "compile", "open", "__import__", "input"}
+
+#: Every module-rooted call ``ingest/`` may make, dotted. Measured: these four
+#: are all of them. A new one is a deliberate edit here, which is the point —
+#: ``os.system`` or ``subprocess.run`` cannot arrive without failing this.
+_ALLOWED_MODULE_CALLS = {
+    "datetime.fromisoformat",
+    "json.dumps",
+    "json.loads",
+    "re.compile",
+}
+
+#: Builtins that execute, open, or import. Checked in both call shapes,
+#: because ``builtins.eval(...)`` is an ``ast.Attribute`` and the first
+#: version of this test only looked at ``ast.Name``.
+_BANNED_CALLS = {"eval", "exec", "compile", "open", "__import__", "input", "breakpoint"}
 
 
 def _ingest_modules() -> list[Path]:
-    return sorted(_INGEST_ROOT.rglob("*.py"))
+    modules = sorted(_INGEST_ROOT.rglob("*.py"))
+    assert len(modules) >= 8, f"only {len(modules)} ingest modules found; this would assert little"
+    return modules
+
+
+def _dotted(node: ast.expr) -> str | None:
+    """``os.path.join`` from an attribute chain, or ``None`` if not module-rooted."""
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    return ".".join(reversed(parts))
 
 
 @pytest.mark.security
-def test_ingest_imports_nothing_that_could_execute_or_reach_out() -> None:
+def test_ingest_imports_only_what_it_is_allowed_to() -> None:
+    """An allow-list cannot be evaded by a name nobody listed.
+
+    ``ingest/`` is the layer that must have no ambient authority: no clock, no
+    filesystem, no network, no subprocess (DESIGN.md §4). A deny-list asserts
+    the absence of the dangers somebody enumerated; this asserts the absence
+    of everything else.
+
+    **Measured, by applying the old deny-list's exact logic to eight planted
+    evasions: seven of the eight were green.**
+
+        import os                               EVADED
+        import os + os.system('...')            EVADED
+        import asyncio                          EVADED
+        import smtplib                          EVADED
+        import builtins + builtins.eval('1')    EVADED
+        import hashlib                          EVADED
+        from os import popen + popen('...')     EVADED
+        __import__('urllib.request')            caught (bare-name call check)
+
+    All eight are red now, and which test catches which is measured rather
+    than assumed: rows one to seven fail on *this* test; rows two and five
+    additionally fail the module-rooted call test below, and row eight fails
+    **only** there, because ``__import__`` is a bare-name call and imports
+    nothing this test can see.
+    """
     for path in _ingest_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    assert alias.name.split(".")[0] not in _BANNED_IMPORTS, f"{path}: {alias.name}"
+                    root = alias.name.split(".")[0]
+                    assert root in _ALLOWED_IMPORTS, (
+                        f"{path.name} imports {alias.name}; add it to _ALLOWED_IMPORTS "
+                        "deliberately, or do not import it"
+                    )
             elif isinstance(node, ast.ImportFrom) and node.module:
-                assert node.module.split(".")[0] not in _BANNED_IMPORTS, f"{path}: {node.module}"
+                root = node.module.split(".")[0]
+                assert root in _ALLOWED_IMPORTS, (
+                    f"{path.name} imports from {node.module}; add it to _ALLOWED_IMPORTS "
+                    "deliberately, or do not import it"
+                )
 
 
 @pytest.mark.security
-def test_ingest_calls_no_executor_and_opens_no_file() -> None:
+def test_ingest_makes_no_module_rooted_call_outside_the_allow_list() -> None:
+    """The attribute-call evasion, closed.
+
+    The previous version checked only ``ast.Call`` nodes whose ``func`` is an
+    ``ast.Name``, so ``eval(...)`` was caught and ``os.system(...)`` was not —
+    and with ``os`` absent from the import deny-list, nothing else would have
+    caught it either. Now every attribute call whose root is an imported
+    module must be on a four-entry allow-list.
+    """
     for path in _ingest_modules():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        imported = {
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                assert node.func.id not in _BANNED_CALLS, f"{path}: calls {node.func.id}()"
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name):
+                assert node.func.id not in _BANNED_CALLS, f"{path.name}: calls {node.func.id}()"
+                continue
+            dotted = _dotted(node.func)
+            if dotted is None:
+                continue
+            # Only the ``builtins.`` form, not any attribute that happens to
+            # share a banned name: the first version matched on the trailing
+            # attribute and so failed on ``re.compile()``, which is one of the
+            # four calls this layer is *allowed* to make. A check applied at
+            # the wrong level, which is the day's recurring shape.
+            assert dotted not in {f"builtins.{name}" for name in _BANNED_CALLS}, (
+                f"{path.name}: calls {dotted}()"
+            )
+            if dotted.split(".")[0] in imported:
+                assert dotted in _ALLOWED_MODULE_CALLS, (
+                    f"{path.name} calls {dotted}(); add it to _ALLOWED_MODULE_CALLS "
+                    "deliberately, or do not call it"
+                )
+
+
+@pytest.mark.security
+def test_normalizing_the_whole_corpus_touches_no_ambient_authority() -> None:
+    """The runtime half, because reading the source is not the same as running it.
+
+    An AST scan proves what the committed source says; this proves what the
+    code does. Both are kept, and their blind spots are opposite: the scan
+    cannot see a call assembled at runtime, and this cannot see a name bound
+    at import time — ``from time import time`` resolves before any patch here
+    lands, which is exactly what the allow-list above covers.
+
+    Stated rather than implied: ``datetime`` is in the allow-list and
+    ``_coerce`` does ``from datetime import UTC, datetime`` at module scope,
+    so patching ``datetime.datetime`` afterwards would not catch a clock read
+    through that binding. ``test_ingest_reads_no_clock`` is the check that
+    does, by reading the source for the four spellings.
+    """
+    import builtins
+    import os
+    import socket
+    import subprocess
+    import time
+
+    fixtures = json.loads(
+        (Path(__file__).resolve().parents[1] / "fixtures" / "ingest_fixtures.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    records = [fixtures[name]["record"] for name in sorted(fixtures)]
+    assert len(records) >= 15, "the corpus shrank; this would exercise little"
+    normalize_many([*records, *(json.dumps(record) for record in records)])  # warm lazy imports
+
+    def refuse(name: str) -> Callable[..., object]:
+        def raiser(*args: object, **kwargs: object) -> object:
+            raise AssertionError(f"ingest reached {name}")
+
+        return raiser
+
+    broken = (
+        (time, "time", "time.time"),
+        (time, "monotonic", "time.monotonic"),
+        (time, "time_ns", "time.time_ns"),
+        (socket, "socket", "socket.socket"),
+        (socket, "create_connection", "socket.create_connection"),
+        (socket, "getaddrinfo", "socket.getaddrinfo"),
+        (subprocess, "Popen", "subprocess.Popen"),
+        (subprocess, "run", "subprocess.run"),
+        (os, "system", "os.system"),
+        (os, "popen", "os.popen"),
+        (os, "fork", "os.fork"),
+        (builtins, "open", "builtins.open"),
+        (builtins, "eval", "builtins.eval"),
+        (builtins, "exec", "builtins.exec"),
+    )
+    originals = [(module, attribute, getattr(module, attribute)) for module, attribute, _ in broken]
+    try:
+        for module, attribute, label in broken:
+            setattr(module, attribute, refuse(label))
+        events = normalize_many([*records, *(json.dumps(record) for record in records)])
+    finally:
+        for module, attribute, original in originals:
+            setattr(module, attribute, original)
+
+    assert len(events) == 2 * len(records)
+    assert all(event.vendor for event in events)
 
 
 @pytest.mark.security
