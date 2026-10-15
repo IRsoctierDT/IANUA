@@ -300,8 +300,14 @@ class _Excerpt:
 
     One object rather than two parameters, because the two must not diverge —
     a second, *wider* source is exactly the defect this layer was just fixed
-    for. Here ``values`` is strictly the decomposition of ``text``: the same
-    projection, before serialization.
+    for. ``values`` is the decomposition of ``text`` and nothing more.
+
+    ``values`` is therefore **never wider than** ``text``: it is built by
+    matching each leaf against the rendered string
+    (:func:`_retained_values`), so a leaf the excerpt truncated away is not
+    scanned either. Asserted directly rather than reasoned about — see
+    ``test_every_observable_is_findable_in_the_retained_excerpt`` — because
+    this function has now been wrong in both directions.
 
     They are both needed because they are bounded differently.
     :func:`~ingest._coerce.observables` coerces **each value** through
@@ -323,20 +329,75 @@ class _Excerpt:
 
 
 def _leaf_values(value: Any) -> Iterator[Any]:
-    """Every scalar inside a projection, so each is bounded on its own.
+    """Every scalar inside a projection, in the order the excerpt renders it.
+
+    Mappings are walked in sorted-key order to match ``json.dumps(...,
+    sort_keys=True)``, which is what makes :func:`_retained_values` able to
+    find each leaf in the rendered text by scanning forward.
 
     Bounded by construction: :func:`~ingest._coerce.project` has already
     applied ``MAX_PROJECTED_ITEMS``, ``MAX_NESTING_DEPTH`` and the per-value
     ``MAX_FIELD_LEN``, so this cannot walk further than the projection goes.
     """
     if isinstance(value, Mapping):
-        for child in value.values():
-            yield from _leaf_values(child)
+        for key in sorted(value):
+            yield from _leaf_values(value[key])
     elif isinstance(value, list | tuple):
         for child in value:
             yield from _leaf_values(child)
     else:
         yield value
+
+
+def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, ...]:
+    """The leaves wholly inside ``rendered`` — the scan source, never wider.
+
+    **The invariant this exists to hold: every indicator must be findable in
+    the evidence an operator can read.** The first version of this change
+    handed ``observables()`` the serialized projection, which applied a
+    *per-field* bound to the whole string and lost a late-sorting modelled
+    field's indicator. The second handed it every leaf, which went too far the
+    other way: ``_serialize`` truncates at ``MAX_RAW_EXCERPT``, so leaves past
+    that cut were scanned while being absent from ``raw_excerpt`` **and**
+    ``message``. Measured on that version — three declared 2048-character
+    fields sorting before ``Subject`` — the URL appeared in ``observables``
+    and in neither retained field. Both are the same mistake twice: deriving
+    the scan source from something other than the text that is kept.
+
+    So the leaves are matched against the rendered text, scanning forward.
+    ``sort_keys=True`` makes the render order deterministic and equal to
+    :func:`_leaf_values`' walk order, so one forward pass is enough and a
+    value cannot be mistaken for an earlier identical one. A leaf that cannot
+    be found — which the ``_serialize`` fallback for an unencodable record can
+    produce — stops the walk, so the result is only ever *narrower* than the
+    text, never wider. That asymmetry is why ``rendered`` needs no further
+    bound check here: ``_serialize`` has already sliced it to
+    ``MAX_RAW_EXCERPT``, so a successful ``find`` is within the bound by
+    construction, and a fragment the slice cut in half is not found at all. A
+    second explicit check was written, measured to be unreachable, and
+    removed rather than left as decorative defence.
+
+    One honest caveat about the sort: a plant that walks in insertion order
+    instead leaves every test green, because :func:`~ingest._coerce.project`
+    happens to build the projection in an order the forward scan tolerates.
+    The sort is therefore **not** currently load-bearing — it makes this
+    function's correctness independent of ``project``'s insertion order rather
+    than dependent on it, which is worth the two characters, and it is
+    recorded as uncovered rather than claimed as tested.
+    """
+    kept: list[Any] = []
+    offset = 0
+    for value in _leaf_values(projected):
+        try:
+            fragment = json.dumps(value, default=str)
+        except (TypeError, ValueError, RecursionError):  # pragma: no cover - defensive
+            break
+        found = rendered.find(fragment, offset)
+        if found < 0:
+            break
+        kept.append(value)
+        offset = found + len(fragment)
+    return tuple(kept)
 
 
 def _excerpt_for(fields: tuple[FieldPath, ...], payload: Mapping[str, Any]) -> _Excerpt:
@@ -349,7 +410,8 @@ def _excerpt_for(fields: tuple[FieldPath, ...], payload: Mapping[str, Any]) -> _
     format.
     """
     projected = project(payload, fields)
-    return _Excerpt(_serialize(projected), tuple(_leaf_values(projected)))
+    rendered = _serialize(projected)
+    return _Excerpt(rendered, _retained_values(projected, rendered))
 
 
 def _carried(raw: str) -> _Excerpt:
