@@ -502,6 +502,52 @@ def test_the_operational_control_is_manual_and_names_the_cli() -> None:
 
 
 @pytest.mark.security
+def test_the_attestation_does_not_rest_on_the_exit_code() -> None:
+    """The hint used to nominate an exit code that an emptied store satisfies.
+
+    ``AUD-03`` is HIGH severity and manual, so its ``attestation_hint`` *is*
+    the procedure — and for an unattested manual control the hint becomes the
+    evidence ``detail`` verbatim (measured: equal, 235 characters as shipped),
+    so every word of it lands in ``data/compliance/evidence.jsonl``.
+
+    It said "Exit 0 means every objective is met ... Attest with that output
+    as evidence". Measured on a node with a real collector pass, a real cycle
+    and a real backup: ``report_sli.py --json`` read exit 0, ``healthy: true``
+    and ``met=8`` **both before and after a prune removed 24 of 24 events**,
+    with the status map byte-identical. So an operator following the control
+    as written files a passing HIGH-severity SLO attestation for a node whose
+    evidence base has just been destroyed.
+
+    The indicator set is **not** what is wrong here, and the hint must not
+    imply it is: ``sli/indicators.py`` states that an emptied store beneath a
+    live cursor reads ``met`` and should, and
+    ``test_a_retention_pass_that_empties_the_store_still_measures_met`` pins
+    it. What *does* move across a prune is detail rather than status —
+    measured, ``store-readable`` went from "read 24 newest and 24 oldest
+    row(s) without error" to "read 0 newest and 0 oldest row(s) without
+    error" while its status stayed ``met`` — and that reading is already in
+    the JSON the attester runs, needing no backup directory. A second backup
+    manifest corroborates it, but only where backups exist, which the same
+    report may be reporting as breached.
+    """
+    from compliance.controls import registry
+
+    hint = next(c for c in registry() if c.id == "AUD-03").attestation_hint
+
+    # The exit code must not be offered as the thing attested to.
+    assert "Attest with that output as evidence" not in hint
+    assert "Exit 0 means" not in hint
+    assert "per-indicator" in hint
+
+    # The two readings that actually move when the evidence does.
+    assert "detection-backlog" in hint
+    assert "store-readable" in hint
+
+    # And it must not read as "the indicator set is broken".
+    assert "sli/indicators.py" in hint
+
+
+@pytest.mark.security
 def test_the_definitional_control_passes_on_the_committed_table() -> None:
     """``AUD-02`` is structural, so it must pass wherever the code is checked out."""
     from compliance.controls import ControlStatus

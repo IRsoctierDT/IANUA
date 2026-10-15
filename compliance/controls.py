@@ -485,7 +485,11 @@ def registry() -> tuple[Control, ...]:
                 "code, which is non-zero for any objective breached *or* "
                 "unmeasurable; this expiring attestation is what stops a node "
                 "nobody has looked at from silently claiming currency, which "
-                "is the same argument MAN-03 makes for corpus freshness."
+                "is the same argument MAN-03 makes for corpus freshness. What "
+                "that exit code is *not* is a census of the evidence behind "
+                "those objectives: an emptied store meets every one of them, "
+                "measured, so the attestation names per-indicator verdicts "
+                "rather than resting on the code alone."
             ),
             category=Category.AUDIT,
             severity=Severity.HIGH,
@@ -496,9 +500,18 @@ def registry() -> tuple[Control, ...]:
             ),
             attestation_hint=(
                 "On the deployed node: python scripts/report_sli.py --root "
-                "<lab root> --json. Exit 0 means every objective is met; 1 "
-                "means at least one is breached or could not be measured, and "
-                "the JSON names which. Attest with that output as evidence."
+                "<lab root> --json. Attest to the per-indicator verdicts the "
+                "JSON names, NOT to the exit code: it is a conjunction over "
+                "every objective and does not witness how much evidence the "
+                "node holds. Measured, a store pruned to zero rows left the "
+                "whole status map unchanged. Record detection-backlog's count "
+                "and store-readable's row counts in the note, since those move "
+                "when the evidence does (read 24 newest and 24 oldest -> read "
+                "0 newest and 0 oldest, status still met). That grading is "
+                "deliberate and sli/indicators.py records why, so a quiet "
+                "report is not a broken indicator set. A second backup "
+                "manifest's store.attestation.events corroborates it where "
+                "backups exist."
             ),
         ),
         Control(

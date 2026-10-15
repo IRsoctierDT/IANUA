@@ -226,17 +226,26 @@ alarm and breaking a named test. Verify by hand instead:
    the one check in the platform that does see a prune — measured 120 → 0 across a pass.
    Nothing makes this comparison for you.
 3. **Do not treat a green `report_sli` as evidence.** The status map was byte-identical
-   across a pass that removed every event; the only field that moved was the clock-derived
-   freshness value, and it moved in the *healthy* direction.
+   across a pass that removed every event. No *status* moves — but two **details** do, and
+   they are the cheap reading: measured, `store-readable` went from "read 24 newest and 24
+   oldest row(s) without error" to "read 0 newest and 0 oldest row(s) without error" with
+   its status still `met`, and `detection-backlog`'s count moves with the backlog. An
+   earlier version of this line said the only field that moved was the clock-derived
+   freshness value; that understated it, and the row counts are the ones to record.
 
-> **This also reaches compliance.** Control `AUD-03` ("Service-level objectives met on the
-> deployed node") tells the attesting operator, in its own `attestation_hint`, to run
-> `scripts/report_sli.py --root <lab root> --json` and "attest with that output as
-> evidence", where "Exit 0 means every objective is met". Measured: exit 0 and `healthy:
-> true` on a node whose entire store had just been pruned to zero rows. Following the
-> control as written therefore records a passing HIGH-severity attestation for a node with
-> no evidence left. Until that is fixed (tracked), pair any `AUD-03` attestation with the
-> manifest comparison above.
+> **This reaches compliance, and the control now says so itself.** `AUD-03`
+> ("Service-level objectives met on the deployed node") used to tell the attesting
+> operator, in its own `attestation_hint`, to run `scripts/report_sli.py --root <lab root>
+> --json` and "attest with that output as evidence", where "Exit 0 means every objective is
+> met". Measured on a node with a real collector pass, a real cycle and a real backup: exit
+> 0, `healthy: true` and `met=8` **both before and after** a prune removed every event.
+> Following the control as written filed a passing HIGH-severity attestation for a node
+> whose evidence base had just been destroyed — and because the hint becomes the evidence
+> `detail` verbatim for an unattested manual control, that instruction was itself the
+> record. The hint now asks for the per-indicator verdicts and names the two details that
+> move, so the exit code is no longer what is attested to. The indicator grading was never
+> the defect: `sli/indicators.py` states why an emptied store reads `met`, a named test
+> pins it, and the hint says so to stop anyone "fixing" it.
 
 ## Recovery, and what it costs
 
