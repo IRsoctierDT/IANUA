@@ -19,7 +19,8 @@ from typing import Any
 import pytest
 
 from ingest import normalize
-from store import EventStore
+from pipeline import Cursor, cursor_path, save_cursor
+from store import EventStore, Query
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-deploy" addr=203.0.113.9 res=failed'
 
@@ -37,8 +38,17 @@ def _root(tmp_path: Path) -> Path:
     return root
 
 
-def _seed(root: Path, *, old: int, recent: int) -> None:
-    """Store ``old`` events well outside any sane window and ``recent`` inside it."""
+def _seed(root: Path, *, old: int, recent: int, processed: int | None = None) -> None:
+    """Store ``old`` events well outside any sane window and ``recent`` inside it.
+
+    Also writes a pipeline cursor, which is **not incidental**: retention now
+    clamps its threshold to the cursor, and a root with no cursor prunes
+    nothing at all — so a fixture without one measures the clamp rather than
+    the window. ``processed=None`` means caught up (the cursor on the newest
+    seeded event), which is the state these window tests are about. An integer
+    puts it on the Nth-oldest instead, for the tests that are about a cycle
+    being behind.
+    """
     now = time.time()
     with EventStore.open(root) as store:
         for index in range(old):
@@ -51,10 +61,20 @@ def _seed(root: Path, *, old: int, recent: int) -> None:
                 normalize(_RECORD.replace("svc-deploy", f"new{index}")),
                 ingested_at=store.next_stamp(now - 3_600 + index),
             )
+        held = store.count()
+        if not held:
+            return
+        reached = store.query(
+            Query(limit=held if processed is None else processed, newest_first=False)
+        )[-1]
+    save_cursor(
+        cursor_path(root),
+        Cursor(ingested_at=reached.ingested_at, event_id=reached.event_id),
+    )
 
 
-def _granted_bundle(tmp_path: Path, label: str) -> Path:
-    """A policy bundle whose allow list carries exactly ``label``.
+def _granted_bundle(tmp_path: Path, *labels: str) -> Path:
+    """A policy bundle whose allow list carries exactly ``labels``.
 
     Built from the committed bundle so the test exercises the real default
     policy with one deliberate grant added — which is how an operator permits
@@ -64,8 +84,8 @@ def _granted_bundle(tmp_path: Path, label: str) -> Path:
     bundle = json.loads(
         (repo_root / "agents" / "policies" / "policy.json").read_text(encoding="utf-8")
     )
-    bundle["allow"] = [label]
-    path = tmp_path / "granted.json"
+    bundle["allow"] = list(labels)
+    path = tmp_path / f"granted-{'-'.join(labels) or 'none'}.json"
     path.write_text(json.dumps(bundle), encoding="utf-8")
     return path
 
@@ -284,10 +304,26 @@ def test_pruning_everything_leaves_the_high_water_mark_intact(tmp_path: Path) ->
     _seed(root, old=4, recent=0)
     with EventStore.open(root) as store:
         before = store.high_water_mark()
-    bundle = _granted_bundle(tmp_path, "retain_events:apply")
+    # `--include-unprocessed` because "everything" means everything: the clamp
+    # holds the commit the cursor sits in — `prune` is `ingested_at < ?` with no
+    # `event_id` tie-break — so a caught-up node always retains that one group.
+    # The flag lifts the clamp; it is not the default path and the tests below
+    # assert what the default does.
+    bundle = _granted_bundle(tmp_path, "retain_events:apply", "retain_events:apply-unprocessed")
 
     assert (
-        _cli_main()(["--root", str(root), "--caller", "test", "--apply", "--policy", str(bundle)])
+        _cli_main()(
+            [
+                "--root",
+                str(root),
+                "--caller",
+                "test",
+                "--apply",
+                "--include-unprocessed",
+                "--policy",
+                str(bundle),
+            ]
+        )
         == 0
     )
     with EventStore.open(root) as store:
@@ -320,7 +356,11 @@ def test_retention_does_not_rewind_the_collectors_offsets(tmp_path: Path) -> Non
     advanced = saved[str(source.resolve())].offset
     assert advanced > 0
 
-    bundle = _granted_bundle(tmp_path, "retain_events:apply")
+    # `--include-unprocessed` for the same reason as the high-water test, and
+    # here it is unavoidable: this root has one event and no cycle has run, so
+    # nothing is known to be processed and the default clamp prunes nothing.
+    # The subject of this test is the collector's offsets, not the clamp.
+    bundle = _granted_bundle(tmp_path, "retain_events:apply", "retain_events:apply-unprocessed")
     assert (
         _cli_main()(
             [
@@ -331,6 +371,7 @@ def test_retention_does_not_rewind_the_collectors_offsets(tmp_path: Path) -> Non
                 "--keep-days",
                 "0",
                 "--apply",
+                "--include-unprocessed",
                 "--policy",
                 str(bundle),
             ]

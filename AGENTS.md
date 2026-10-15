@@ -279,6 +279,18 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   by default and deletes only under a committed `destructive` grant. Measured at roughly
   1.8 KB per event, a `*/5` schedule at the default batch size is ~15 GB/month, so a
   retention decision is an operational requirement and not a tidiness preference.
+- **And a pass never deletes past the detection cycle, which is a second grant.** The
+  threshold is clamped to the pipeline cursor, because the two used to be mutually
+  invisible: measured, 40 events with only the oldest 5 processed and `--keep-days 3
+  --apply` destroyed **24 events the cycle had never looked at**, exit 0. An absent cursor
+  (step 3 of `docs/RESTORE.md` deletes one by design) and a cursor ahead of the newest
+  stored event both clamp to *nothing*. The honest shape of the trade is that clamping
+  does **not** bound the disk — measured over a 40-day stall, clamping and refusing grow
+  the store at the same rate and only deleting unprocessed evidence holds it flat — so
+  nothing bounds the disk during a detection stall except destroying evidence nobody has
+  analysed. That cannot be engineered away; it is *authorized*, by
+  `--include-unprocessed` under its own `retain_events:apply-unprocessed` grant, which
+  `retain_events:apply` deliberately does not confer.
 
 This amendment changes **nothing** about secrets: a credential, token, key or password is
 never written to source, tests, fixtures, comments, commit messages, or logs, and

@@ -48,6 +48,38 @@ optimization.
 ran (including a dry run, and including a skip because another pass held the
 lock), ``1`` the store or the audit write failed, ``2`` bad arguments, ``3``
 blocked by policy — which is what an ungranted ``--apply`` returns.
+
+**A pass never deletes past the detection cycle, unless an operator says so.**
+Retention prunes on ``ingested_at``; the pipeline cursor records how far
+detection has got; the two used to be mutually invisible (``grep -ic
+'cursor\\|pipeline'`` on this file: 0). Measured, 40 events over 10 days with
+only the oldest 5 processed and ``--keep-days 3 --apply``: **24 events
+destroyed that the cycle had never looked at**, exit 0, reported as a clean
+``events_removed: 29``. ``UPDATE`` is trigger-refused and ``event_id`` is a
+sha256 over the projection, so those rows cannot be recovered or
+reconstructed — it is evidence destroyed before anything analysed it.
+
+So the threshold is clamped to the cursor, and three states clamp it to
+*nothing*: an absent cursor (which is step 3 of ``docs/RESTORE.md``), a cursor
+ahead of the newest stored event (the skew that document calls unrecoverable),
+and — by refusing with exit 2 rather than guessing — one that will not parse.
+
+**The clamp does not bound the disk, and that is the honest shape of this.**
+Measured over a 40-day stall: clamping and refusing grow the store at the same
+rate (~+5.0 MB/30 days, +1000 events/10 days); only deleting unprocessed
+evidence holds it flat. Nothing bounds the disk during a detection stall except
+destroying evidence nobody has looked at, so the trade cannot be engineered
+away — it has to be *authorized*. ``--include-unprocessed`` is where, and it is
+gated on its own label (:data:`APPLY_UNPROCESSED_LABEL`) so that granting
+``retain_events:apply`` does not grant it.
+
+One residual, measured and accepted: ``prune`` is ``DELETE ... WHERE
+ingested_at < ?`` with no ``event_id`` tie-break, while the cursor is a
+``(ingested_at, event_id)`` pair. One ``append_many`` commit stamps every row
+with one ``ingested_at``, so the commit the cursor currently sits in is not
+deletable until the cursor moves to a later stamp. The error is always
+under-deletion, never over-deletion, and ``count_before`` uses the identical
+predicate so the dry run and the delete always agree.
 """
 
 from __future__ import annotations
@@ -81,6 +113,7 @@ from agents.policies.bundle import (  # noqa: E402
     load_bundle,
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
+from pipeline import CursorError, cursor_path, load_cursor  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -105,6 +138,14 @@ ACTION_NAME = "retain_events"
 #: shipped bundle, which is the point.
 DRY_RUN_CLASS: ActionClass = "read_only"
 APPLY_CLASS: ActionClass = "destructive"
+
+#: The label ``--apply --include-unprocessed`` is gated on. **A second,
+#: distinct label and not a variant of the first** — that separation is the
+#: entire control, and it is measured: a bundle granting only
+#: ``retain_events:apply`` answers ``require_approval`` for this one. Folding
+#: the two together would let the existing grant self-authorize the wider
+#: action, so a security test pins this exact string.
+APPLY_UNPROCESSED_LABEL = f"{ACTION_NAME}:apply-unprocessed"
 
 
 def _prepare_lock(directory: Path) -> TextIO:
@@ -180,6 +221,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--include-unprocessed",
+        action="store_true",
+        help=(
+            "Also delete events the detection cycle has never processed. Gated "
+            f"on its own label '{APPLY_UNPROCESSED_LABEL}', separate from "
+            f"'{ACTION_NAME}:apply' — granting one does not grant the other. "
+            "Without it a pass never deletes past the pipeline cursor, which "
+            "means a stalled cycle stops retention reclaiming anything; that is "
+            "the trade, and this flag is where an operator accepts it."
+        ),
+    )
+    parser.add_argument(
         "--caller",
         default=None,
         help="Who this pass is for, recorded in the audit chain. Never inferred.",
@@ -202,8 +255,20 @@ def _report(
     keep_days: float,
     applied: bool,
     removed: int | None,
+    cursor_ingested_at: float | None,
+    effective_threshold: float | None,
+    withheld: int,
+    cursor_state: str,
 ) -> dict[str, object]:
-    """The pass's outcome, as data."""
+    """The pass's outcome, as data.
+
+    The four cursor fields exist because a clamped pass and a quiet one were
+    otherwise indistinguishable in this payload, and that is the shape the
+    warn-only option was rejected for: a report that does not say it withheld
+    anything is a report an operator cannot act on. ``withheld`` is the number
+    the retention window matched and the cursor held back — the thing a stalled
+    cycle is costing in disk.
+    """
     return {
         "events_total": total,
         "events_matching": matching,
@@ -212,32 +277,115 @@ def _report(
         "keep_days": keep_days,
         "applied": applied,
         "events_removed": removed,
+        "cursor_ingested_at": cursor_ingested_at,
+        "cursor_state": cursor_state,
+        "effective_threshold": effective_threshold,
+        "events_withheld_unprocessed": withheld,
     }
+
+
+def _withheld_line(payload: dict[str, object]) -> str | None:
+    """One sentence naming what the cursor held back, or ``None``.
+
+    Printed on every path including the clamped-to-nothing one, because a pass
+    that silently reclaims nothing is indistinguishable from a pass with
+    nothing to reclaim — and the two call for opposite responses.
+    """
+    withheld = int(payload["events_withheld_unprocessed"])  # type: ignore[call-overload]
+    state = str(payload["cursor_state"])
+    if state == "absent":
+        return (
+            f"{withheld} event(s) matched the window and were withheld: the "
+            "detection cycle has recorded no position, so nothing is known to "
+            "have been processed. --include-unprocessed overrides this."
+        )
+    if state == "ahead-of-store":
+        return (
+            f"{withheld} event(s) matched the window and were withheld: the "
+            "cursor is ahead of the newest stored event, so its position cannot "
+            "be trusted (docs/RESTORE.md records this skew as unrecoverable)."
+        )
+    if withheld:
+        return (
+            f"{withheld} event(s) matched the window and were withheld as not "
+            "yet processed by the detection cycle. A stalled cycle stops "
+            "retention reclaiming anything; --include-unprocessed overrides it."
+        )
+    return None
 
 
 def _print_text(payload: dict[str, object]) -> None:
     matching = int(payload["events_matching"])  # type: ignore[call-overload]
     total = int(payload["events_total"])  # type: ignore[call-overload]
+    withheld_line = _withheld_line(payload)
     if payload["applied"]:
         print(f"removed {payload['events_removed']} of {total} event(s)")
+        if withheld_line:
+            print(f"  {withheld_line}")
         return
     if matching == 0:
         print(
             f"nothing to remove: no event was ingested more than "
             f"{payload['keep_days']} day(s) ago ({total} held)."
+            if withheld_line is None
+            else f"nothing to remove under the cursor bound ({total} held)."
         )
+        if withheld_line:
+            print(f"  {withheld_line}")
         return
     print(
         f"would remove {matching} of {total} event(s) ingested before "
-        f"{payload['threshold_ingested_before']} "
+        f"{payload['effective_threshold']} "
         f"({payload['keep_days']} day(s) ago); {payload['events_retained']} retained."
     )
+    if withheld_line:
+        print(f"  {withheld_line}")
     print(
         f"  nothing was deleted. Re-run with --apply, which requires "
         f"'{ACTION_NAME}:apply' on the policy bundle's allow list. Deletion is "
         "final: the collector's offsets are not rewound, so pruned content "
         "cannot be re-collected."
     )
+
+
+def _processed_bound(root: Path, store: EventStore) -> tuple[float | None, str]:
+    """How far the detection cycle is known to have got, and how sure we are.
+
+    Returns ``(bound, state)``. ``bound`` is the newest ``ingested_at`` that is
+    safe to delete below; ``None`` means **nothing is known to be processed**,
+    which is the fail-closed answer and not an error.
+
+    The three states that are not a plain cursor read are each measured, not
+    defensive:
+
+    * **absent** — ``docs/RESTORE.md`` step 3 deletes ``cursor.json`` by design
+      and step 6 restarts the timers, so this sits on the documented recovery
+      path. Treating an absent cursor as "no constraint" gives zero protection
+      in precisely the state holding the most unprocessed evidence: measured
+      end to end, the documented restore leaves no cursor and the next pass
+      destroyed **1500 of 1500** restored events.
+    * **ahead of the newest stored event** — the one unrecoverable skew
+      ``docs/RESTORE.md`` records. ``sli/indicators.py`` already grades it
+      ``UNKNOWN`` for both ``detection-lag`` and ``detection-backlog``;
+      retention must not be the single reader that treats it as healthy. A
+      clamp would silently bind on nothing there while ``count_before`` still
+      reported rows as deletable.
+    * **unreadable** — raised, not defaulted, because that is
+      ``pipeline/cursor.py``'s own stated posture: "a cursor that will not
+      parse raises rather than defaulting", since both available defaults are
+      silently wrong.
+
+    Security consideration: this reads one file under the lab-data root and no
+    clock. It never writes the cursor — retention must not be able to move the
+    pipeline's position, or a destructive pass could authorize its own next one.
+    """
+    cursor = load_cursor(cursor_path(root))
+    if cursor is None:
+        return None, "absent"
+    mark = store.high_water_mark()
+    if mark is not None and cursor.ingested_at > mark:
+        return None, "ahead-of-store"
+    return cursor.ingested_at, "present"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -276,7 +424,10 @@ def _run(
     started_at: float,
 ) -> int:
     action_class = APPLY_CLASS if args.apply else DRY_RUN_CLASS
-    label = f"{ACTION_NAME}:{'apply' if args.apply else 'dry-run'}"
+    if args.apply and args.include_unprocessed:
+        label = APPLY_UNPROCESSED_LABEL
+    else:
+        label = f"{ACTION_NAME}:{'apply' if args.apply else 'dry-run'}"
 
     try:
         audit = AuditLogger(
@@ -331,8 +482,43 @@ def _run(
             # acting on them, as a census of readable evidence.
             store.verify_integrity()
             total = store.count()
-            matching = store.count_before(before=threshold)
-            removed = store.prune(before=threshold) if args.apply else None
+            # What the window alone would take, which is what the report used
+            # to call `events_matching`. Kept as a separate figure so a clamped
+            # pass can say how much it withheld rather than just reporting a
+            # smaller number.
+            window_matching = store.count_before(before=threshold)
+            bound, cursor_state = _processed_bound(args.root, store)
+            if args.include_unprocessed:
+                effective: float | None = threshold
+                cursor_state = f"{cursor_state} (override)"
+            elif bound is None:
+                effective = None
+            else:
+                # `min`, and never `math.nextafter(bound, inf)`. Measured: one
+                # `append_many` commit stamps every row with one `ingested_at`
+                # — 5000 lines in one collector pass produced exactly one
+                # distinct stamp — and `prune` is `DELETE ... WHERE
+                # ingested_at < ?`, strict and with no `event_id` tie-break.
+                # So a nudge past the cursor's own stamp is all-or-nothing over
+                # that whole tie group and destroys the rows the cursor has not
+                # passed: 490 of 500 in one measurement. The strict `<` means
+                # `min` can only ever under-delete, which is the safe direction.
+                effective = min(threshold, bound)
+            if effective is None:
+                matching = 0
+                removed = 0 if args.apply else None
+            else:
+                matching = store.count_before(before=effective)
+                removed = store.prune(before=effective) if args.apply else None
+    except CursorError as exc:
+        # Not a StoreError and not a ValueError — `CursorError` derives from
+        # `PipelineError(Exception)`, so it would otherwise reach an unattended
+        # scheduler as a traceback. That is a shape this file has already been
+        # fixed for twice.
+        print(
+            f"error: the pipeline cursor is unreadable, refusing to prune: {exc}", file=sys.stderr
+        )
+        return 2
     except (StoreError, sqlite3.Error, ValueError, OSError) as exc:
         # sqlite3.Error is neither OSError nor StoreError. `store/` now maps
         # SQLite's two corruption verdicts to `StoreCorruptionError`, so this
@@ -348,6 +534,10 @@ def _run(
         keep_days=args.keep_days,
         applied=bool(args.apply),
         removed=removed,
+        cursor_ingested_at=bound,
+        effective_threshold=effective,
+        withheld=window_matching - matching,
+        cursor_state=cursor_state,
     )
 
     # Audited before the report, as elsewhere here: the deletion has already
@@ -362,7 +552,9 @@ def _run(
             reason=escape_delimiter(
                 f"{'removed' if args.apply else 'would remove'} "
                 f"{removed if args.apply else matching} of {total} event(s) ingested "
-                f"before {threshold} ({args.keep_days} day(s)); "
+                f"before {effective} ({args.keep_days} day(s), cursor "
+                f"{cursor_state}, {window_matching - matching} withheld as "
+                f"unprocessed); "
                 f"{'applied' if args.apply else 'dry run, nothing deleted'}"
             ),
         )
