@@ -38,7 +38,9 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+
 from agents.policies import AUDIT_FIELD_DELIMITER
+from ingest import normalize
 from pipeline import (
     Cursor,
     CursorError,
@@ -50,8 +52,6 @@ from pipeline import (
     save_cursor,
 )
 from store import EventStore
-
-from ingest import normalize
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PIPELINE_ROOT = _REPO_ROOT / "pipeline"

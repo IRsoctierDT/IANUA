@@ -111,8 +111,8 @@ ignore = [
 # first-party package is added to both. Packages not listed here still resolve
 # through `tool.ruff.src` above.
 known-first-party = [
-  "agents", "attack", "intel", "ingest", "store", "correlation", "scripts", "tests", "dashboard",
-  "mcp", "rag", "compliance",
+  "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "scripts", "tests",
+  "dashboard", "mcp", "rag", "compliance",
 ]
 
 [tool.ruff.format]

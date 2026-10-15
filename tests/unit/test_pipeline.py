@@ -24,7 +24,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from correlation import Thresholds
+from ingest import normalize
 from pipeline import (
     CURSOR_VERSION,
     DEFAULT_LOOKBACK,
@@ -39,8 +41,6 @@ from pipeline import (
     save_cursor,
 )
 from store import MAX_QUERY_LIMIT, EventStore
-
-from ingest import normalize
 
 # Shapes the committed parsers accept; mirrors tests/unit/test_correlation.py
 # so a parser change breaks both files together rather than silently making

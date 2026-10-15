@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from ingest import normalize
 from ingest.errors import MalformedProjectionError
 from ingest.schema import (
     MAX_FIELD_LEN,

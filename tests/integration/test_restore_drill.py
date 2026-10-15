@@ -30,6 +30,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+
 from scripts.run_backup import main as backup_main
 from scripts.run_collector import main as collect_main
 from store import EventStore

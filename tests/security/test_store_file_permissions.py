@@ -21,9 +21,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from store import EventStore
 
 from ingest import normalize
+from store import EventStore
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits required")
 

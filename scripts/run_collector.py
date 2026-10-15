@@ -136,9 +136,8 @@ from collect import (  # noqa: E402
     read_new,
     save_offsets,
 )
-from store import EventStore, StoreError  # noqa: E402
-
 from ingest import normalize_many  # noqa: E402
+from store import EventStore, StoreError  # noqa: E402
 
 #: The collector's own audit log, beside its offsets. Mirrors the pipeline and
 #: the compliance evidence engine: a per-subsystem chain means a corrupted
