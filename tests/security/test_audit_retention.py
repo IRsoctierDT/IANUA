@@ -52,7 +52,12 @@ def test_unrotated_log_behaves_as_before(tmp_path: Path) -> None:
     log = _logger(tmp_path / "audit.log")  # no rotation configured
     _emit(log, 5)
     assert log.verify() is True
-    assert not list(tmp_path.glob("audit.log.*"))  # no archives
+    # `audit.log.[0-9]*`, not `audit.log.*`: the loose glob also matches the
+    # sidecars, and it only ever passed here because this test configures
+    # neither a signer nor a lock-taking write. The six other archive
+    # assertions in this file and in test_audit_maintenance_failclosed.py
+    # already use the numeric form; this is a correction to match them.
+    assert not list(tmp_path.glob("audit.log.[0-9]*"))  # no archives
     assert log._read_checkpoint() is None
 
 
