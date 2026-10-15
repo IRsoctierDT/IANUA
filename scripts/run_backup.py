@@ -42,14 +42,41 @@ the sources and content addressing drops what is already stored, measured at
 600 of 600 events with zero duplication. A backup that cannot restore a
 position cannot restore a bad one.
 
-**Gated ``read_only``, and that is the honest class.** This changes no
-existing state: it deletes nothing, writes no live file, reaches no network,
-and refuses a destination outside the lab-data root. What it does do is make a
-*second copy of sensitive evidence*, so the copy is written owner-only inside
-the same gitignored root, and a destination off this node would be an
-``external_network`` gate under AGENTS.md §5.1 — which egress has twice been
-refused. That is a deployment decision for an operator, not something this
-script reaches for.
+**Gated ``read_only``, and that is the honest class — with one measured
+qualification.** No event content changes, nothing is deleted, no network is
+reached, and a destination outside the lab-data root is refused. What it does
+do is make a *second copy of sensitive evidence*, so the copy is written
+owner-only inside the same gitignored root, and a destination off this node
+would be an ``external_network`` gate under AGENTS.md §5.1 — which egress has
+twice been refused. That is a deployment decision for an operator, not
+something this script reaches for.
+
+The qualification: an earlier version of this paragraph said the script
+"writes no live file", and at the filesystem level that is false in exactly
+the case a backup is most likely to be taken in. Measured, both
+configurations:
+
+* after a writer **exits normally**, its own ``close()`` has already
+  checkpointed, so no ``-wal`` exists and the source is untouched — before and
+  after are byte-identical and the mtime does not move;
+* after a writer is **killed** (leaving a hot WAL — a crashed collector, an
+  OOM, a pulled plug), SQLite checkpoints on last-connection close: the main
+  file grew from 4 KiB to 60 KiB, its mtime changed, and ``-wal`` and
+  ``-shm`` were **removed**.
+
+The second case is wider than "no live writer", measured over four
+configurations: an *idle* extra connection does not prevent the checkpoint,
+and nor does one that has only run a statement touching no table. What
+prevents it is another connection having actually joined the WAL by reading
+WAL-backed data — a dashboard mid-query, say.
+
+No committed data is lost — a checkpoint moves already-durable WAL frames into
+the main file, and the copy is correct either way — so the action *class* is
+unchanged. But the sentence was wrong, and ``tests/integration`` now pins the
+post-crash behaviour so the corrected claim cannot drift back. (The reverse
+case already had a test: a backup taken while a writer holds the store open
+writes nothing to the source, because the backup is then not the last
+connection.)
 
 **Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
 or verified (including a skip because another pass held the lock), ``1`` the

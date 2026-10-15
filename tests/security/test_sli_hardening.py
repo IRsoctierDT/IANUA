@@ -31,7 +31,7 @@ import pytest
 
 from compliance.controls import check_self_monitoring_defined
 from compliance.engine import run_controls
-from sli import CHAIN_FILES, measure
+from sli import CHAIN_FILES, Status, measure
 from tests.security.test_cli_startup_failclosed import RELATIVE_ROOTS
 
 _SLI_ROOT = Path(__file__).resolve().parents[2] / "sli"
@@ -367,6 +367,52 @@ def test_a_missing_chain_is_never_reported_intact(tmp_path: Path) -> None:
 
 
 # ------------------------------------------------------------- the controls
+
+
+@pytest.mark.security
+def test_an_aborted_copy_cannot_produce_a_healthy_report(tmp_path: Path) -> None:
+    """A 0-byte store opens as a valid, attestable, EMPTY one — measured.
+
+    This is what an interrupted copy leaves behind, and every *local* signal
+    says it is fine:
+
+        destination size : 0 bytes
+        EventStore.open  : SUCCEEDED (it creates the schema)
+        count()          : 0
+        high_water_mark(): None
+        attest()         : events=0 observables=0, digest 0f2795bd…
+        integrity_check  : ok
+
+    So an aborted copy is indistinguishable from a healthy fresh deployment
+    unless something compares against an **expected** attestation — which
+    ``scripts/run_backup.py``'s manifest does, and a bare ``cp`` or a future
+    replication loop does not.
+
+    The compensating control on this side is that the SLI report must not call
+    such a store healthy. It does not, and the reason is the three-state
+    grading rather than anything about backups: ``ingest-freshness`` returns
+    ``UNKNOWN`` for a store that holds no events, and ``UNKNOWN`` is not a
+    pass. Pinned here because that is the property, and because
+    ``path.is_file()`` — which is how the SLI package avoids *creating* a
+    store — is satisfied by a 0-byte file and so cannot be what catches this.
+    """
+    root = _root(tmp_path)
+    (root / "data" / "events").mkdir(parents=True)
+    aborted = root / "data" / "events" / "events.sqlite3"
+    aborted.touch()
+    assert aborted.stat().st_size == 0, "the fixture is not the aborted-copy shape"
+
+    report = measure(root, now=1_760_000_000.0)
+    assert report.healthy is False, "an aborted copy reported a healthy platform"
+
+    by_id = {item.objective.id: item for item in report.indicators}
+    freshness = by_id["ingest-freshness"]
+    assert freshness.status is Status.UNKNOWN, freshness.detail
+    assert "no events" in freshness.detail
+
+    # And the empty store really did open and read cleanly, so the verdict
+    # rests on the grading rather than on the probe failing.
+    assert by_id["store-readable"].value == 1.0, by_id["store-readable"].detail
 
 
 @pytest.mark.security
