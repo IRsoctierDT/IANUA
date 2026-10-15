@@ -901,7 +901,7 @@ class EventStore:
         )
 
     @_refuse_corruption
-    def count_before(self, *, before: float) -> int:
+    def count_before(self, *, before: float, after: tuple[float, str] | None = None) -> int:
         """How many events :meth:`prune` would delete at this threshold.
 
         Exists so retention can be reported before it is applied. ``prune``
@@ -914,12 +914,59 @@ class EventStore:
         A ``COUNT`` rather than a ``query``: counting must not depend on every
         projection in range parsing cleanly, because the operator most needs
         this number when something is wrong with the data.
+
+        ``after`` narrows the count to events strictly after an
+        ``(ingested_at, event_id)`` pair — the pipeline cursor's own total
+        order, the one :data:`Query.ingested_after` pages with. A *pair* for
+        the reason that field documents: :meth:`append_many` stamps one
+        ``ingested_at`` across a whole commit, so a bound on the timestamp
+        alone cannot say where inside that commit a reader has got to.
+        Subtracting two timestamp counts instead over-counts by the part of
+        the cursor's own commit the reader has already passed — measured at 40
+        of 40 on a single-commit node whose cycle was demonstrably caught up,
+        and at 21 of a 40-row commit with the cursor at its midpoint, where
+        the true figure was 19. ``sli/indicators.py`` met that defect (2
+        reported against a true 0) and answered it with a *bounded* query,
+        ``limit=target+1``: enough to grade an objective against a target, and
+        not enough for ``scripts/run_retention.py``, which has to state an
+        exact figure over a window that can hold the whole store — and to keep
+        stating it when a projection will not parse, which is the same reason
+        this is a ``COUNT`` at all. So the keyset belongs here too.
+
+        **The two forms are not equally blind to damage, and the difference is
+        fail-closed.** Measured by zeroing each of 19 pages of a seeded store
+        in turn: on 5 of them the plain count returned a plausible figure
+        while the keyset form raised :class:`StoreCorruptionError`, because
+        ``events_ingested_at`` covers ``(ingested_at)`` alone, so the plain
+        count plans a COVERING index scan and the keyset form plans a
+        MULTI-INDEX OR that reaches table pages. The keyset form is therefore
+        strictly *less* blind, which is the safe direction; and
+        :meth:`verify_integrity` raised on all 18 damaged pages regardless, so
+        a caller that verifies first — ``scripts/run_retention.py`` does —
+        sees the damage either way. No composite index is added and
+        ``SCHEMA_VERSION`` is untouched: the plan reuses
+        ``events_ingested_at``, as :data:`_ORDER_NEWEST` requires of any
+        change here.
+
+        Security consideration: the statement is concatenated from the module
+        literals at the foot of this file and nothing else, and ``after``'s
+        values travel as bound parameters. Note what that does *not* rest on:
+        ``tests/security/test_store_hardening.py``'s AST check inspects only
+        the literal parts of an f-string, so it would not catch a caller value
+        concatenated in as text (measured — see the task tracking that gap).
+        The guarantee here is the literals, not the test.
         """
         if not math.isfinite(before):
             raise ValueError(f"retention threshold must be finite, got {before!r}")
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM events WHERE ingested_at < ?", (float(before),)
-        ).fetchone()
+        statement = _COUNT_BEFORE
+        params: list[float | str] = [float(before)]
+        if after is not None:
+            at, identifier = after
+            if not math.isfinite(at):
+                raise ValueError(f"keyset bound must be finite, got {at!r}")
+            statement = _COUNT_BEFORE + _AND + _INGESTED_AFTER
+            params.extend((float(at), float(at), identifier))
+        row = self._conn.execute(statement, tuple(params)).fetchone()
         return int(row["n"])
 
     @_refuse_corruption
@@ -1018,6 +1065,13 @@ class EventStore:
 _SELECT = "SELECT event_id, ingested_at, projection FROM events e"
 #: Keyset pagination: strictly after ``(ingested_at, event_id)``.
 _INGESTED_AFTER = "(e.ingested_at > ? OR (e.ingested_at = ? AND e.event_id > ?))"
+#: Retention's reporting count. Aliased ``events e`` so :data:`_INGESTED_AFTER`
+#: can be appended to it verbatim instead of being written out a second time:
+#: two spellings of one total order is how the two come to disagree.
+_COUNT_BEFORE = "SELECT COUNT(*) AS n FROM events e WHERE e.ingested_at < ?"
+#: The only joiner either count uses. A literal, like every other fragment
+#: here, so no statement this module runs is built by interpolation.
+_AND = " AND "
 #: Inclusive lower edge of an ingestion-time window.
 _INGESTED_FROM = "e.ingested_at >= ?"
 #: Keyset upper edge: strictly before ``(ingested_at, event_id)``.

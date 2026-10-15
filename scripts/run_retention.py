@@ -114,8 +114,39 @@ ingested_at < ?`` with no ``event_id`` tie-break, while the cursor is a
 ``(ingested_at, event_id)`` pair. One ``append_many`` commit stamps every row
 with one ``ingested_at``, so the commit the cursor currently sits in is not
 deletable until the cursor moves to a later stamp. The error is always
-under-deletion, never over-deletion, and ``count_before`` uses the identical
-predicate so the dry run and the delete always agree.
+under-deletion, never over-deletion.
+
+**The report must not charge that residual to the detection cycle.** It did:
+the withheld figure was ``window_matching - matching - margin_withheld``,
+which is every row the bound refused, and it named all of them "not yet
+processed by the detection cycle". Measured on one ``append_many`` of 40
+events with the cycle demonstrably caught up (``events_read 40``, the next
+cycle idle): **40 withheld as not yet processed against a true 0**, and the
+same sentence offering ``--include-unprocessed``, which on that store deletes
+all 40. Nor is the error the whole commit — with the cursor at the midpoint of
+a 40-row commit it was 21, against 19 genuinely unprocessed, so subtracting
+the tie group would have under-reported by as much as the old form
+over-reported. The unprocessed figure is therefore *counted* in the cursor's
+own total order (``count_before(after=...)``), and the already-read part of
+its commit is reported as the separate, flagless cause it is.
+
+**And the dry run predicts the delete only if the window is pinned.** The two
+passes share one predicate, which is not enough: ``threshold`` is re-derived
+from ``time.time()`` per invocation, so whatever aged past the boundary in
+between is deleted without having been reported. Measured at one event a
+second with six seconds between the two commands: 9 reported, 15 removed, exit
+0 both times, the operator's review done against the 9. So a dry run that
+matched anything prints the ``--before`` value that pins its own window, and
+``--before`` is a *ceiling* — ``min``-ed with the clock-derived threshold and
+invisible to the whole-store guard — so a stale, mistyped or hostile value can
+never authorize more than ``--keep-days`` already does.
+
+The pin bounds one direction and cannot bound the other, which the report says
+rather than implies: if the cursor is **lost** between the two commands — which
+``docs/RESTORE.md`` step 3 does by design — the apply clamps to nothing
+whatever the pin holds. Measured: 9 reported, 0 removed, ``cursor_state:
+absent``, exit 0. A pinned dry run is an upper bound on the delete, never an
+equality.
 """
 
 from __future__ import annotations
@@ -151,6 +182,7 @@ from agents.policies.bundle import (  # noqa: E402
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
 from pipeline import (  # noqa: E402
     DEFAULT_LOOKBACK,
+    Cursor,
     CursorError,
     cursor_path,
     load_cursor,
@@ -306,6 +338,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--before",
+        type=float,
+        default=None,
+        help=(
+            "Pin the window to this ingestion time (epoch seconds), so an "
+            "--apply deletes at most what a dry run reported rather than "
+            "re-deriving the boundary from the clock. A dry run prints the "
+            "value to pass. It is a ceiling, never a widening: the pass uses "
+            "min(this, now - --keep-days), so a stale or mistyped value can "
+            "only ever delete less, and the cursor clamp still applies on top. "
+            "It cannot bound the other direction: if the cursor is lost in "
+            "between, the apply clamps to nothing whatever this holds."
+        ),
+    )
+    parser.add_argument(
         "--caller",
         default=None,
         help="Who this pass is for, recorded in the audit chain. Never inferred.",
@@ -331,9 +378,11 @@ def _report(
     cursor_ingested_at: float | None,
     effective_threshold: float | None,
     withheld: int,
+    commit_held: int,
     cursor_state: str,
     lookback_margin: float,
     margin_withheld: int,
+    pinned_before: float | None,
 ) -> dict[str, object]:
     """The pass's outcome, as data.
 
@@ -343,6 +392,24 @@ def _report(
     anything is a report an operator cannot act on. ``withheld`` is the number
     the retention window matched and the cursor held back — the thing a stalled
     cycle is costing in disk.
+
+    The three withheld figures are **disjoint and complete**: ``withheld`` (the
+    cycle has not read them), ``commit_held`` (it has, but they share the
+    cursor's own ``ingested_at`` and ``prune`` cannot split a commit) and
+    ``margin_withheld`` (it has, and will re-read them as context) sum with
+    ``events_matching`` to exactly what the window matched. ``commit_held`` is
+    a field rather than prose for that reason alone: without it the payload
+    stops accounting for its own window, and ``window_matching`` was never a
+    field, so a JSON reader could not reconstruct the total — measured on a
+    caught-up single-commit node, the corrected report accounted for 0 of 12
+    while the old, wrong one at least showed 12.
+
+    ``pinned_before`` is the ``--before`` value **if it bound the window**, and
+    ``None`` otherwise — the fact, not the input. A pin that ``min`` discarded
+    is not a cause of anything, and recording the input would put a false one
+    into the audit chain, which is append-only and has no amend path: measured,
+    a pin ten days in the future produced a record naming a window 100 days
+    later than the one the pass actually used.
     """
     return {
         "events_total": total,
@@ -356,8 +423,10 @@ def _report(
         "cursor_state": cursor_state,
         "effective_threshold": effective_threshold,
         "events_withheld_unprocessed": withheld,
+        "events_withheld_at_cursor_stamp": commit_held,
         "lookback_margin": lookback_margin,
         "events_withheld_for_correlation": margin_withheld,
+        "window_pinned_before": pinned_before,
     }
 
 
@@ -367,8 +436,21 @@ def _withheld_line(payload: dict[str, object]) -> str | None:
     Printed on every path including the clamped-to-nothing one, because a pass
     that silently reclaims nothing is indistinguishable from a pass with
     nothing to reclaim — and the two call for opposite responses.
+
+    Both figures are folded into *this* sentence rather than given one each,
+    because two shares of one number printed by two functions that cannot see
+    each other is how "N withheld as not yet processed" came to be printed
+    beside a caught-up cycle in the first place.
+
+    Every branch that reports a non-zero figure names
+    ``scripts/report_sli.py``'s ``detection-backlog``, and that is not a
+    courtesy. Both figures here are **window-scoped** — bounded by
+    ``--keep-days`` — and will otherwise be read as the store-wide backlog.
+    Measured on one node: this sentence reports 4 while ``detection-backlog``
+    on the same root reads 12, with nothing to explain the gap.
     """
     withheld = int(payload["events_withheld_unprocessed"])  # type: ignore[call-overload]
+    commit_held = int(payload["events_withheld_at_cursor_stamp"])  # type: ignore[call-overload]
     state = str(payload["cursor_state"])
     if state == "absent":
         return (
@@ -382,11 +464,61 @@ def _withheld_line(payload: dict[str, object]) -> str | None:
             "cursor is ahead of the newest stored event, so its position cannot "
             "be trusted (docs/RESTORE.md records this skew as unrecoverable)."
         )
+    if withheld and commit_held:
+        return (
+            f"{withheld} event(s) matched the window and were withheld as not "
+            f"yet processed by the detection cycle, and {commit_held} more as "
+            "already-read rows of the commit the cursor sits inside, which a "
+            "threshold cannot split. A stalled cycle stops retention "
+            "reclaiming anything; --include-unprocessed overrides it and "
+            "would take that whole commit with them. Both figures are bounded "
+            "by this window — scripts/report_sli.py's detection-backlog is "
+            "the store-wide count."
+        )
     if withheld:
         return (
             f"{withheld} event(s) matched the window and were withheld as not "
             "yet processed by the detection cycle. A stalled cycle stops "
-            "retention reclaiming anything; --include-unprocessed overrides it."
+            "retention reclaiming anything; --include-unprocessed overrides it. "
+            "This figure is bounded by this window — scripts/report_sli.py's "
+            "detection-backlog is the store-wide count."
+        )
+    if commit_held:
+        # Deliberately names no flag: these are rows the cycle HAS read, held
+        # only because one `append_many` commit carries one `ingested_at` and
+        # `prune` has no `event_id` tie-break. On the node that made this
+        # sentence necessary the figure was 40 of 40 and
+        # `--include-unprocessed` would have deleted every one, so pointing an
+        # operator at it here would be the defect this replaces, inverted.
+        #
+        # And it must not claim the cycle is fine. An earlier draft of this
+        # branch said "the detection cycle is not behind, and there is nothing
+        # to do — its next tick moves the cursor and the next pass reclaims
+        # them". Both halves are false in the state that produces this branch
+        # most often: `commit_held > 0` with `withheld == 0` is exactly what a
+        # cycle stalled longer than `--keep-days` looks like. Measured on 12
+        # events committed 100 days ago with 8 more appended 10 days ago and
+        # never read: this branch fires, while `detection-lag` on the same root
+        # reads **breached, 7776000s behind** and `detection-backlog` reads 8.
+        # The cursor also advances only onto a row keyset-after it, so on a node
+        # whose collector has stopped there is no next tick to wait for. The
+        # mechanism sentence is gated on `commit_held > 1` because with a tie
+        # group of one — what per-event `append` produces — the commit holds a
+        # single row and the cause is only `prune`'s strict `<`.
+        split = (
+            " One append_many commit carries one ingestion stamp, so a "
+            "threshold takes all of a commit or none of it."
+            if commit_held > 1
+            else " prune is a strict `<`, so the row the cursor sits on is never deletable."
+        )
+        return (
+            f"{commit_held} event(s) matched the window and were withheld "
+            "because the cursor sits in their commit and the cycle has "
+            f"already read them.{split} No flag changes this and "
+            "--include-unprocessed is not the remedy: the cursor clears it by "
+            "advancing to a later stamp. Whether it is advancing is a separate "
+            "question this figure cannot answer — scripts/report_sli.py's "
+            "detection-lag and detection-backlog answer it store-wide."
         )
     return None
 
@@ -421,6 +553,28 @@ def _notes(payload: dict[str, object]) -> tuple[str, ...]:
     )
 
 
+def _window_held(payload: dict[str, object]) -> int:
+    """How many rows the window matched and the bound refused, from the payload.
+
+    Asked as a fact rather than inferred from "did any note print", which is
+    the proxy :func:`_print_text` used to choose its opening sentence by. The
+    proxy is wrong in both directions. One way: the ``absent`` and
+    ``ahead-of-store`` branches of :func:`_withheld_line` return a sentence
+    unconditionally, *including at zero* — measured on an empty store with no
+    cursor at ``--keep-days 0``, nothing was held back and a note still
+    printed. The other way: before the cursor's own commit had a sentence of
+    its own, a caught-up single-commit node holding 40 matched events printed
+    "nothing to remove: no event was ingested more than 0.0 day(s) ago (40
+    held)" — no note, and a flat contradiction. Reading the three disjoint
+    figures off the payload cannot drift from them, because
+    :func:`_report` is where they are computed.
+    """
+    unprocessed: int = int(payload["events_withheld_unprocessed"])  # type: ignore[call-overload]
+    commit: int = int(payload["events_withheld_at_cursor_stamp"])  # type: ignore[call-overload]
+    margin: int = int(payload["events_withheld_for_correlation"])  # type: ignore[call-overload]
+    return unprocessed + commit + margin
+
+
 def _print_text(payload: dict[str, object]) -> None:
     matching = int(payload["events_matching"])  # type: ignore[call-overload]
     total = int(payload["events_total"])  # type: ignore[call-overload]
@@ -431,12 +585,24 @@ def _print_text(payload: dict[str, object]) -> None:
             print(f"  {note}")
         return
     if matching == 0:
-        print(
-            f"nothing to remove: no event was ingested more than "
-            f"{payload['keep_days']} day(s) ago ({total} held)."
-            if not notes
-            else f"nothing to remove under the cursor bound ({total} held)."
-        )
+        if _window_held(payload):
+            print(f"nothing to remove under the cursor bound ({total} held).")
+        elif payload["window_pinned_before"] is not None:
+            # The pin emptied the window, and saying "no event was ingested
+            # more than N day(s) ago" would be false — measured, 12 events were
+            # ingested 100 days ago under a 90-day window pinned 200 days back,
+            # and the old text said none were. The chain recorded the pin and
+            # the sentence an operator reads did not.
+            print(
+                f"nothing to remove: --before pinned the window to "
+                f"{payload['window_pinned_before']}, which no event precedes "
+                f"({total} held)."
+            )
+        else:
+            print(
+                f"nothing to remove: no event was ingested more than "
+                f"{payload['keep_days']} day(s) ago ({total} held)."
+            )
         for note in notes:
             print(f"  {note}")
         return
@@ -448,11 +614,32 @@ def _print_text(payload: dict[str, object]) -> None:
     for note in notes:
         print(f"  {note}")
     print(
-        f"  nothing was deleted. Re-run with --apply, which requires "
-        f"'{ACTION_NAME}:apply' on the policy bundle's allow list. Deletion is "
-        "final: the collector's offsets are not rewound, so pruned content "
-        "cannot be re-collected."
+        f"  nothing was deleted. To remove at most these {matching} and nothing "
+        f"else, re-run with --apply --before {payload['effective_threshold']}, "
+        f"which requires '{ACTION_NAME}:apply' on the policy bundle's allow "
+        "list. Without --before the window is re-derived from the clock when "
+        "--apply runs and takes whatever has aged past the boundary since this "
+        "report: measured at one event a second, 9 reported and 15 removed six "
+        "seconds later. At most, because the pin bounds only that direction — "
+        "if the cursor is lost in between, the apply clamps to nothing "
+        "(measured: 9 reported, 0 removed). Deletion is final either way: the "
+        "collector's offsets are not rewound, so pruned content cannot be "
+        "re-collected."
     )
+
+
+def _pin_clause(pinned_before: float | None) -> str:
+    """``, window pinned ...`` when ``--before`` bound the window, else nothing.
+
+    In the chain because the record has to explain its own number: "removed 9
+    of 40 before X" reads as a narrower window than ``--keep-days`` asked for,
+    and the pin is why. Takes the *resolved* value rather than the flag, so a
+    pin ``min`` discarded is never recorded as a cause — the reason string is
+    inside the chain's hash and there is no amend path.
+    """
+    if pinned_before is None:
+        return ""
+    return f", window pinned to {pinned_before} by --before"
 
 
 def _margined(bound: float, margin: float) -> float:
@@ -474,12 +661,20 @@ def _margined(bound: float, margin: float) -> float:
     return bound - margin
 
 
-def _processed_bound(root: Path, store: EventStore) -> tuple[float | None, str]:
+def _processed_bound(root: Path, store: EventStore) -> tuple[Cursor | None, str]:
     """How far the detection cycle is known to have got, and how sure we are.
 
-    Returns ``(bound, state)``. ``bound`` is the newest ``ingested_at`` that is
+    Returns ``(cursor, state)``. Its ``ingested_at`` is the newest stamp it is
     safe to delete below; ``None`` means **nothing is known to be processed**,
     which is the fail-closed answer and not an error.
+
+    The whole pair rather than that one stamp, because the clamp and the report
+    need different things from it. The clamp needs the stamp: ``prune`` is
+    ``ingested_at < ?``. The report needs the ``event_id`` as well, to tell the
+    rows of the cursor's own commit the cycle has read from the rows it has
+    not — up to one commit's worth of events apart (measured: 40 of 40 on a
+    single-commit node), and charging all of them to a stalled cycle is what
+    the withheld figure used to do.
 
     The three states that are not a plain cursor read are each measured, not
     defensive:
@@ -511,7 +706,7 @@ def _processed_bound(root: Path, store: EventStore) -> tuple[float | None, str]:
     mark = store.high_water_mark()
     if mark is not None and cursor.ingested_at > mark:
         return None, "ahead-of-store"
-    return cursor.ingested_at, "present"
+    return cursor, "present"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -525,6 +720,19 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 f"--lookback-margin must be finite and >= 0, got {args.lookback_margin!r}"
             )
+        # Finite only: a `--before` older than the whole store matches nothing,
+        # the same harmless direction `_margined` documents for a margin
+        # reaching below the oldest event, so there is no lower bound to check.
+        #
+        # The check is here and not left to `min` because `min` does NOT refuse
+        # a NaN — measured, `min(100.0, float("nan")) == 100.0`, so a NaN pin
+        # would be silently *discarded* and the pass would run unpinned while
+        # the operator believed the window was bounded. That is the opposite of
+        # what a non-finite value should do to a destructive pass, and it is
+        # why this guard runs before the clock read rather than relying on
+        # `count_before`'s own finiteness check further in.
+        if args.before is not None and not math.isfinite(args.before):
+            raise ValueError(f"--before must be finite, got {args.before!r}")
         # This CLI had **no** root check at all, so `--root ""` reported on a
         # shadow store in the working directory and `--apply` would have
         # pruned it. Shared with every other entry point now.
@@ -590,7 +798,15 @@ def _run(
         return 1
 
     # The one clock read, and only after the gate permitted the pass.
-    threshold = time.time() - args.keep_days * 86_400.0
+    clock_threshold = time.time() - args.keep_days * 86_400.0
+    # `min`, so `--before` is a ceiling on the window and never a widening of
+    # it: the flag exists to make an --apply delete no more than a dry run
+    # reported, and a flag that could reach *past* --keep-days would be a
+    # second, ungated way to say "retain nothing".
+    threshold = min(clock_threshold, args.before) if args.before is not None else clock_threshold
+    # The fact, not the input — see `_report`. A pin `min` discarded explains
+    # nothing and must not be recorded as a cause.
+    pinned_before = args.before if threshold < clock_threshold else None
 
     try:
         with EventStore.open(args.root) as store:
@@ -618,7 +834,12 @@ def _run(
             # smaller number.
             window_matching = store.count_before(before=threshold)
             mark = store.high_water_mark()
-            if mark is not None and threshold > mark and args.keep_days > 0:
+            # The guard tests `clock_threshold`, NOT the pinned `threshold`,
+            # and the ordering is deliberate: a forward clock step is exactly
+            # what this control detects, so a pin must not be able to silence
+            # it. The pin still bounds the damage by itself, which the refusal
+            # now says rather than contradicting.
+            if mark is not None and clock_threshold > mark and args.keep_days > 0:
                 # The window has swallowed the entire store: every event in it
                 # is older than the threshold. That happens only when nothing
                 # has been ingested for a whole retention window, and the two
@@ -636,17 +857,26 @@ def _run(
                 # gated by `retain_events:apply`. Asserting any particular
                 # tolerance in seconds would be inventing a requirement this
                 # repository does not state (AGENTS.md §9).
+                pinned_note = (
+                    f" --before {args.before} would have held this pass to "
+                    f"{store.count_before(before=threshold)} event(s), but the "
+                    "refusal stands: the clock fault it reports is still there."
+                    if pinned_before is not None
+                    else ""
+                )
                 print(
                     f"refused: the {args.keep_days} day window reaches past every "
                     f"event in the store — the newest was ingested at {mark}, which "
-                    f"is before the threshold {threshold}. Either the clock has "
+                    f"is before the threshold {clock_threshold}. Either the clock has "
                     f"stepped forward or collection has been stopped for longer "
-                    f"than the window; a pass now would delete the whole store. "
-                    f"To purge deliberately, pass --keep-days 0.",
+                    f"than the window; an unpinned pass now would delete the whole "
+                    f"store.{pinned_note} To purge deliberately, pass --keep-days 0.",
                     file=sys.stderr,
                 )
                 return 2
-            bound, cursor_state = _processed_bound(args.root, store)
+            cursor, cursor_state = _processed_bound(args.root, store)
+            # The clamp needs only the timestamp; the *report* needs the pair.
+            bound = cursor.ingested_at if cursor is not None else None
             if args.include_unprocessed:
                 effective: float | None = threshold
                 cursor_state = f"{cursor_state} (override)"
@@ -675,6 +905,13 @@ def _run(
                 # already clamps the pass to nothing, so the margin held
                 # nothing back of its own and must not claim to have.
                 margin_withheld = 0
+                # Nor is any of it the cursor's own commit: there is no
+                # trustworthy cursor to have one. Both states that reach here
+                # (`absent`, `ahead-of-store`) have their own sentence and
+                # neither blames the cycle, so the whole window is reported
+                # under `withheld` as before — measured unchanged at 30 and 21.
+                unprocessed = window_matching
+                commit_held = 0
             else:
                 matching = store.count_before(before=effective)
                 # Attributed separately, with its own count, because folding
@@ -695,6 +932,40 @@ def _run(
                     margin_withheld = max(0, unmargined - matching)
                 else:
                     margin_withheld = 0
+                if cursor is None or args.include_unprocessed:
+                    # `cursor is None` here means --include-unprocessed, the
+                    # only way `effective` is not None without one. The
+                    # override deletes the window whole, so nothing is
+                    # withheld and this subtraction is 0 by construction
+                    # (`matching == window_matching`, margin gated off).
+                    unprocessed = window_matching - matching - margin_withheld
+                    commit_held = 0
+                else:
+                    # Counted in the cursor's own total order, not derived by
+                    # subtracting two timestamp counts. The old expression
+                    # `window_matching - matching - margin_withheld` is every
+                    # row the bound refused, and it had a third cause nothing
+                    # separated: `prune` has no `event_id` tie-break, so the
+                    # part of the cursor's own commit the cycle HAS read is
+                    # held back too. Charging that to the cycle made the
+                    # report say "40 withheld as not yet processed" on a node
+                    # whose cycle had just read all 40 (true figure: 0), and
+                    # offer `--include-unprocessed`, which there deletes the
+                    # whole store.
+                    #
+                    # Subtracting the tie group instead was measured and
+                    # refuted: with the cursor at the midpoint of a 40-row
+                    # commit the group is 40 and the inflation is 21, so that
+                    # would report 0 where 19 rows are genuinely unread —
+                    # trading an over-report for an under-report on the one
+                    # figure an operator uses to decide the cycle has stalled.
+                    # Only the keyset knows the difference.
+                    #
+                    # Exactness is structural, not approximate: every row
+                    # keyset-after the cursor has `ingested_at >= bound >=
+                    # effective`, so that set and `matching` are disjoint.
+                    unprocessed = store.count_before(before=threshold, after=cursor.as_keyset())
+                    commit_held = max(0, window_matching - matching - margin_withheld - unprocessed)
                 removed = store.prune(before=effective) if args.apply else None
     except CursorError as exc:
         # Not a StoreError and not a ValueError — `CursorError` derives from
@@ -722,17 +993,20 @@ def _run(
         removed=removed,
         cursor_ingested_at=bound,
         effective_threshold=effective,
-        # Disjoint, not overlapping. `window_matching - matching` is every
-        # row the window wanted and the bound refused, which now has two
-        # causes; attributing all of it to "not yet processed" made the text
-        # form say "3 withheld as not yet processed" about events the cycle
-        # had demonstrably processed (measured: 3 reported, of which 2 were
-        # the margin's). Subtracting here keeps each sentence true and keeps
-        # the two figures summing to the total withheld.
-        withheld=window_matching - matching - margin_withheld,
+        # Disjoint, complete, and now *counted* rather than derived. The
+        # three figures sum with `matching` to `window_matching`; see
+        # `_report`'s docstring for why all three are reported.
+        #
+        # One expression, read by both this payload and the audit reason
+        # below. It used to be written out twice, independently, so a change
+        # to one would have left the JSON report and the hash-chained record
+        # disagreeing about the same pass — and the chain has no amend path.
+        withheld=unprocessed,
+        commit_held=commit_held,
         cursor_state=cursor_state,
         lookback_margin=args.lookback_margin,
         margin_withheld=margin_withheld,
+        pinned_before=pinned_before,
     )
 
     # Audited before the report, as elsewhere here: the deletion has already
@@ -747,9 +1021,11 @@ def _run(
             reason=escape_delimiter(
                 f"{'removed' if args.apply else 'would remove'} "
                 f"{removed if args.apply else matching} of {total} event(s) ingested "
-                f"before {effective} ({args.keep_days} day(s), cursor "
-                f"{cursor_state}, {window_matching - matching - margin_withheld} "
-                f"withheld as unprocessed, {margin_withheld} withheld within the "
+                f"before {effective} ({args.keep_days} day(s)"
+                f"{_pin_clause(pinned_before)}, cursor "
+                f"{cursor_state}, {unprocessed} "
+                f"withheld as unprocessed, {commit_held} withheld in the cursor's "
+                f"own commit, {margin_withheld} withheld within the "
                 f"{args.lookback_margin:.0f}s correlation margin); "
                 f"{'applied' if args.apply else 'dry run, nothing deleted'}"
             ),

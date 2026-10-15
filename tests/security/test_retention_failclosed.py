@@ -710,3 +710,89 @@ def test_keep_days_zero_is_exempt_because_it_already_means_retain_nothing(
     ), "the deliberate purge was refused"
     assert _held(root) == 0, capsys.readouterr().out
     assert before > 0, "the fixture was empty, so the purge proved nothing"
+
+
+# --------------------------------------------------------------------------
+# `--before` is a ceiling, and it cannot buy its way past a control
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.security
+def test_a_pin_cannot_widen_the_window_past_keep_days(tmp_path: Path, capsys: Any) -> None:
+    """``--before`` must never be a second, ungated way to say "retain nothing".
+
+    The flag exists so an ``--apply`` deletes no more than a dry run reported,
+    which means it may only ever *narrow*. If it could reach past the
+    clock-derived boundary it would authorize deletions ``--keep-days`` does
+    not, outside the grant that gates widening — so the ``min`` is a control,
+    not an ergonomic choice, and this pins it in the dangerous direction.
+    """
+    root = _seeded(tmp_path, events=40)
+    # A pin a century in the future: as wide as a caller could ask for.
+    far = time.time() + 100 * 365 * 86_400
+    # `--keep-days 0` because this fixture is entirely 170-200 days old, so any
+    # positive window reaches past every event and the whole-store guard
+    # refuses at exit 2 before the pin is reached. Zero is exempt from that
+    # guard by design ("retain nothing" is the flag's documented meaning) and
+    # gives the widest clock-derived threshold a pin could try to beat.
+    flags = ["--root", str(root), "--json", "--keep-days", "0"]
+
+    assert _cli_main()([*flags, "--before", str(far)]) == 0
+    pinned = json.loads(capsys.readouterr().out)
+    assert _cli_main()(flags) == 0
+    unpinned = json.loads(capsys.readouterr().out)
+
+    assert pinned["events_matching"] <= unpinned["events_matching"]
+    assert pinned["threshold_ingested_before"] <= unpinned["threshold_ingested_before"] + 5.0
+    assert pinned["window_pinned_before"] is None
+    assert _held(root) == 40
+
+
+@pytest.mark.security
+def test_a_pin_cannot_silence_the_whole_store_refusal(tmp_path: Path, capsys: Any) -> None:
+    """The clock-fault guard tests the clock, not the pinned window.
+
+    ``--keep-days`` reaching past every event in the store means the clock has
+    stepped forward or collection has been dead for a window, and the pass
+    refuses at exit 2 rather than destroying the analysed evidence base. A pin
+    makes the *window* narrow, which would make the guard's own condition
+    false if it tested the pinned value — so the operator with a stepped clock
+    would stop being told. It tests ``clock_threshold`` for that reason.
+    """
+    root = _seeded(tmp_path, events=40)
+    # The guard fires when the threshold is NEWER than the newest stored
+    # event, which is a SMALL window against old data — every event here is
+    # 170-200 days old, so the shipped 90-day default already reaches past all
+    # of them. The pin is far older than any of them, so on its own this pass
+    # would match nothing: exactly the state in which a guard reading the
+    # pinned value would fall silent.
+    pin = time.time() - 500 * 86_400
+
+    code = _cli_main()(["--root", str(root), "--before", str(pin), "--caller", "pinned"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "reaches past every" in captured.err
+    assert _held(root) == 40
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("value", ["nan", "inf"])
+def test_a_non_finite_pin_is_refused_before_the_clock_is_read(
+    tmp_path: Path, value: str, capsys: Any
+) -> None:
+    """``min`` does not refuse a NaN — it discards it, which is the wrong way.
+
+    Measured: ``min(100.0, float("nan")) == 100.0``. So without this guard a
+    NaN pin would run the pass **unpinned** while the operator believed the
+    window was bounded, which is the opposite of what a non-finite value
+    should do to a destructive command. Refused as a bad argument instead.
+    """
+    root = _seeded(tmp_path, events=20)
+
+    code = _cli_main()(["--root", str(root), "--before", value, "--caller", "probe"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "--before must be finite" in captured.err
+    assert _held(root) == 20
