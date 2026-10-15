@@ -48,16 +48,36 @@ import pytest
 from scripts import run_backup, run_collector, run_pipeline, run_retention
 from store.paths import validated_root
 
-#: Spellings of a root that names nothing. All of them are ``Path(".")`` once
-#: argparse is done, which is the whole problem: the working directory is a
-#: perfectly good directory, so the check cannot be an ``is_dir()``.
-UNNAMED_ROOTS = ("", ".", "./", "././.")
+#: Roots that resolve to the working directory, or to somewhere else the
+#: operator did not name. The first four are all ``Path(".")`` once argparse is
+#: done, which is why the check cannot be an ``is_dir()``: the working
+#: directory is a perfectly good directory.
+#:
+#: The last four are the second lesson, and it cost a P1 on the pull request
+#: that introduced the guard. ``Path.resolve()`` with ``strict=False`` collapses
+#: ``..`` lexically against components that **do not exist**, so a guard that
+#: resolved first and checked afterwards accepted ``missing/..`` as the working
+#: directory — and ``run_pipeline`` exited 0 with "idle: no new events" after
+#: writing ``data/events/events.sqlite3`` into it. The guard it replaced had
+#: stated ``args.root.is_dir()`` on the *unresolved* path, where the kernel
+#: refuses to walk ``..`` out of a component that is not there, so the first
+#: version was a **regression** for this spelling while fixing the one above.
+RELATIVE_ROOTS = (
+    "",
+    ".",
+    "./",
+    "././.",
+    "missing/..",
+    "./missing/..",
+    "also/missing/../..",
+    "real/../real",
+)
 
 #: What argparse hands over for an unset shell variable: the empty spelling.
 #: Taken from the table rather than written inline, because ruff flags an empty
 #: ``Path`` literal as a redundant way of writing the current directory — and
 #: that equivalence *is* the defect, so the spelling has to survive the lint.
-UNSET_ROOT = Path(UNNAMED_ROOTS[0])
+UNSET_ROOT = Path(RELATIVE_ROOTS[0])
 
 
 class _Bespoke(Exception):
@@ -113,10 +133,10 @@ def _tree(directory: Path) -> set[Path]:
 # ------------------------------------------------------------------ the CLIs
 @pytest.mark.security
 @pytest.mark.parametrize("cli", CLIS, ids=_IDS)
-@pytest.mark.parametrize("unnamed", UNNAMED_ROOTS)
-def test_an_unnamed_root_is_refused_and_builds_no_shadow_tree(
+@pytest.mark.parametrize("relative", RELATIVE_ROOTS)
+def test_a_relative_root_is_refused_and_builds_no_shadow_tree(
     cli: Cli,
-    unnamed: str,
+    relative: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -125,13 +145,16 @@ def test_an_unnamed_root_is_refused_and_builds_no_shadow_tree(
     work = tmp_path / "scheduler-cwd"
     work.mkdir()
     # The ``chdir`` is the point, not scaffolding: an implementation that
-    # resolved the argument before comparing it would find a real, writable
-    # directory here and accept it.
+    # resolved the argument before testing it would find a real, writable
+    # directory here and accept every spelling in the table.
     monkeypatch.chdir(work)
+    (work / "real").mkdir()  # makes "real/../real" resolvable, so it must be
+    #                          refused for being relative rather than for
+    #                          naming nothing.
 
-    assert cli.main(_argv(cli, unnamed, tmp_path)) == 2
-    assert _tree(work) == set(), "a refused startup built a shadow tree in the cwd"
-    assert "must be named explicitly" in capsys.readouterr().err
+    assert cli.main(_argv(cli, relative, tmp_path)) == 2
+    assert _tree(work) == {Path("real")}, "a refused startup built a tree in the cwd"
+    assert "must be an absolute path" in capsys.readouterr().err
 
 
 @pytest.mark.security
@@ -208,19 +231,66 @@ def test_every_single_instance_cli_has_a_row_here() -> None:
 
 # --------------------------------------------------------- validated_root
 @pytest.mark.security
-@pytest.mark.parametrize("unnamed", UNNAMED_ROOTS)
-def test_validated_root_compares_before_it_resolves(
-    unnamed: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("relative", RELATIVE_ROOTS)
+def test_validated_root_refuses_every_relative_spelling(
+    relative: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Resolution erases the distinction, so it must come second.
+    """A relative root is the scheduler's working directory, whatever that is.
 
-    ``Path("").resolve()`` is the working directory — indistinguishable from an
-    operator who meant it. With a real directory as the cwd, an implementation
-    that resolved first would accept every spelling here.
+    The ``chdir`` is the test, not scaffolding: with a real directory as the
+    cwd, an implementation that resolved before testing would accept every
+    spelling in the table. ``real/`` exists so that ``real/../real`` is a
+    perfectly resolvable relative path and is refused for being *relative*,
+    not for naming nothing.
     """
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(_Bespoke, match="must be named explicitly"):
-        validated_root(Path(unnamed), error=_Bespoke)
+    (tmp_path / "real").mkdir()
+    with pytest.raises(_Bespoke, match="must be an absolute path"):
+        validated_root(Path(relative), error=_Bespoke)
+
+
+@pytest.mark.security
+def test_validated_root_tests_the_path_as_supplied_not_as_resolved(
+    tmp_path: Path,
+) -> None:
+    """``resolve()`` does not normalize an absolute root, it invents one.
+
+    ``/…/absent/..`` collapses lexically to an existing ``/…`` with
+    ``strict=False``, so a guard that resolved first and tested afterwards
+    accepted it. The kernel will not walk ``..`` out of a component that is not
+    there, so stating the supplied path is what refuses it — and this is the
+    absolute twin of the P1 the reviewer found at ``missing/..``.
+    """
+    invented = tmp_path / "absent" / ".."
+    assert invented.resolve() == tmp_path.resolve(), "fixture must exercise the collapse"
+    assert invented.resolve().is_dir(), "the resolved form is a real directory"
+
+    with pytest.raises(_Bespoke, match="not an existing directory"):
+        validated_root(invented, error=_Bespoke)
+
+
+@pytest.mark.security
+def test_validated_root_accepts_a_dotdot_whose_every_component_exists(
+    tmp_path: Path,
+) -> None:
+    """Which is why ``..`` is not refused as a spelling, only as an invention.
+
+    With both rules in force, a surviving ``..`` means the operator named a
+    real directory the long way round. Asserted so that over-tightening this
+    into a blanket ``..`` ban shows up as a failing test rather than as a
+    refused deployment.
+    """
+    inner = tmp_path / "inner"
+    inner.mkdir()
+
+    assert validated_root(inner / "..", error=_Bespoke) == tmp_path.resolve()
+
+
+@pytest.mark.security
+def test_validated_root_quotes_an_empty_root_so_it_is_visible(tmp_path: Path) -> None:
+    """``--root ""`` is invisible in a cron line; the message has to show it."""
+    with pytest.raises(_Bespoke, match=r"got '\.'"):
+        validated_root(UNSET_ROOT, error=_Bespoke, what="--root")
 
 
 @pytest.mark.security
@@ -261,5 +331,5 @@ def test_validated_root_raises_the_callers_error_type(tmp_path: Path) -> None:
 @pytest.mark.security
 def test_validated_root_names_what_it_refused(tmp_path: Path) -> None:
     """``what`` is how an operator learns *which* argument was wrong."""
-    with pytest.raises(_Bespoke, match="--root must be named explicitly"):
+    with pytest.raises(_Bespoke, match="--root must be an absolute path"):
         validated_root(UNSET_ROOT, error=_Bespoke, what="--root")

@@ -152,8 +152,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT,
         help=(
-            "Lab-data root holding data/events/ (default: repo root). Must already "
-            "exist: a typo must not build a shadow tree and report success."
+            "Lab-data root holding data/events/ (default: repo root). Must be an "
+            "absolute path that already exists: a typo, or a relative root that is "
+            "really the scheduler's working directory, must not build a shadow "
+            "tree and report success — still less prune one under --apply."
         ),
     )
     parser.add_argument(

@@ -229,9 +229,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=REPO_ROOT,
         help=(
             "Lab-data root holding data/events/ and data/collect/ (default: repo "
-            "root). Must already exist: the collector creates data/ beneath it but "
-            "never the root itself, so a typo fails loudly instead of building a "
-            "shadow tree and reporting success forever."
+            "root). Must be an absolute path that already exists: the collector "
+            "creates data/ beneath the root but never the root itself, and a "
+            "relative root is whatever the scheduler's working directory happens "
+            "to be — so a typo or an unset variable fails loudly instead of "
+            "building a shadow tree and reporting success forever."
         ),
     )
     parser.add_argument(

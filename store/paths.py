@@ -110,15 +110,39 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
     passed the check and built a complete shadow ``data/`` tree in whatever
     the working directory happened to be.
 
-    Measured on all three older CLIs: exit 0 every time, and the collector
-    silently wrote an ``events.sqlite3`` into the shadow tree. That is the
-    failure ``docs/PRODUCTION_SOC_PLAN.md`` names as the catastrophic one —
-    "every signal reading healthy while the SOC sees nothing" — reached by the
+    Measured on all four CLIs: exit 0 every time, and the collector silently
+    wrote an ``events.sqlite3`` into the shadow tree. That is the failure
+    ``docs/PRODUCTION_SOC_PLAN.md`` names as the catastrophic one — "every
+    signal reading healthy while the SOC sees nothing" — reached by the
     likeliest misconfiguration there is.
 
-    The argument is compared **before** it is resolved, because resolution is
-    what erases the distinction: ``Path("").resolve()`` is the working
-    directory, indistinguishable from an operator who meant it.
+    **Two rules, and the order of the second one is the whole control.**
+
+    *Absolute only*, which is the rule ``collect/`` already applies to log
+    sources for this exact reason (AGENTS.md §5: "a relative path means
+    whatever the scheduler's working directory happens to be"). It refuses
+    ``""`` and ``"."`` as instances rather than as special cases, and it
+    refuses every other relative spelling with them.
+
+    *Existence tested on the path as supplied, before ``resolve()``* — because
+    ``resolve()`` does not merely normalize a path, it **invents a real one**.
+    With ``strict=False`` (the default) it collapses ``..`` lexically against
+    components that do not exist, so an absolute ``/srv/absent/..`` resolves to
+    an existing ``/srv`` and sails through any check made afterwards. Measured,
+    on the first version of this function: ``--root missing/..`` gave
+    ``Path.resolve().is_dir() == True``, and ``scripts/run_pipeline.py`` exited
+    ``0`` with "idle: no new events" after writing a complete shadow tree —
+    ``data/events/events.sqlite3`` included — into the working directory. That
+    version had **regressed** the per-CLI guards it replaced: their
+    ``args.root.is_dir()`` stated the *unresolved* path, and the kernel refuses
+    to walk ``..`` out of a component that is not there, so they rejected the
+    spelling this one accepted. Found by the automated reviewer on the pull
+    request that introduced it, against the enumeration of spellings that
+    pull request asked it to break.
+
+    ``..`` is not refused separately: with both rules above, a surviving ``..``
+    means every component on the way to it exists, so nothing has been invented
+    and the operator has named a real directory the long way round.
 
     One implementation, because four copies of a guard is how three of them
     stay fixed and one does not — which is the shape this very defect took.
@@ -128,20 +152,24 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
         error: The exception type to raise, so each caller keeps its taxonomy.
         what: A noun for the message.
 
+    Returns:
+        ``root`` resolved, so every later join is unambiguous.
+
     Raises:
-        error: If ``root`` is empty, ``.``, or not an existing directory.
+        error: If ``root`` is relative (including ``""`` and ``"."``), or does
+            not already exist as a directory when stated as supplied.
     """
-    if str(root) in {"", "."}:
+    if not root.is_absolute():
         raise error(
-            f"{what} must be named explicitly; an empty or '.' root is how an unset "
-            "shell variable becomes a shadow data tree that reports success. Pass an "
-            "absolute path."
+            f"{what} must be an absolute path, got {str(root)!r}; a relative root means "
+            "whatever the scheduler's working directory happens to be, which is how an "
+            "unset shell variable becomes a shadow data tree that reports success"
         )
-    resolved = root.resolve()
-    if not resolved.is_dir():
+    # Stated as supplied. Resolving first is what let `/srv/absent/..` through.
+    if not root.is_dir():
         raise error(
             f"{what} {root} is not an existing directory; data/ is created beneath the "
             "root but never the root itself, so this is a typo or an unmounted volume "
             "rather than a fresh deployment"
         )
-    return resolved
+    return root.resolve()
