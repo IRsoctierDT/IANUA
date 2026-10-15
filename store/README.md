@@ -36,6 +36,8 @@ line once, between `ingest/` (normalize) and `correlation/` (resolve).
 | **Contained** | The database lives under gitignored `data/events/`. A filename with a separator, a traversal, or a leading dot is refused. |
 | **Bounded** | Projections over 64 KiB are refused; every query is clamped to 10,000 rows. |
 | **Versioned** | A database written by another schema version is refused, never implicitly migrated. |
+| **Damage is a `StoreError`** | SQLite's two corruption verdicts (`SQLITE_CORRUPT`, `SQLITE_NOTADB`) are mapped to `StoreCorruptionError` at every public method, so a damaged file cannot reach a caller as a raw driver exception. A lock (`SQLITE_BUSY`), a trigger refusal (`IntegrityError`) and a caller bug (`ProgrammingError`) keep their own meaning. |
+| **Verifiable cheaply** | `EventStore.verify_integrity()` runs `PRAGMA quick_check` (1.1-1.5 ms/MiB, measured). `attest()` and `scripts/run_retention.py` both gate on it, because a digest and a count that come from covering indexes describe the indexes and not the rows. |
 
 ## Use
 

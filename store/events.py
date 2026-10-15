@@ -46,20 +46,23 @@ Security considerations (AGENTS.md §3, §5):
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
 import re
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, ParamSpec, Self, TypeVar
 
 from ingest.schema import NormalizedEvent
 from store.errors import (
     IngestionOrderError,
     SchemaVersionError,
+    StoreCorruptionError,
     StoreIntegrityError,
     StorePathError,
 )
@@ -96,6 +99,102 @@ class StoredEvent:
     #: Epoch seconds at which this platform stored it (injected, not read).
     ingested_at: float
     event: NormalizedEvent
+
+
+#: SQLite's two verdicts that mean the file is damaged, by name rather than by
+#: number so the predicate reads as the condition it tests. Measured on this
+#: build: ``SQLITE_CORRUPT`` is 11 ("database disk image is malformed") and
+#: ``SQLITE_NOTADB`` is 26 ("file is not a database").
+_CORRUPTION_NAMES = frozenset({"SQLITE_CORRUPT", "SQLITE_NOTADB"})
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _is_corruption(exc: sqlite3.Error) -> bool:
+    """Whether ``exc`` means the database file is damaged, and nothing else.
+
+    The three exclusions are each a measured false positive, not caution. All
+    three are ``sqlite3.DatabaseError`` subclasses, so a mapping written on the
+    class alone relabels every one of them as evidence damage:
+
+    * ``IntegrityError`` is **the append-only trigger firing** —
+      ``SQLITE_CONSTRAINT_TRIGGER`` (1811), measured, with the message
+      ``events is append-only: rewriting a stored event is refused``. Mapping
+      it would report a security control *working* as a damaged store.
+    * ``ProgrammingError`` is a caller bug: a closed store, a bad bind type.
+      Reporting corruption for it sends an operator to the backups over a
+      programming mistake.
+    * ``SQLITE_BUSY`` (5, ``OperationalError``, "database is locked") is
+      contention. Measured on the blocked connection at that very moment,
+      ``PRAGMA quick_check`` returns ``ok`` — so calling it corruption is a
+      claim the engine contradicts in the same breath, and
+      ``sli.measure_store_readable`` grades any ``StoreError`` as ``0.0``, a
+      breach. A second writer must not breach the store's health indicator.
+
+    Gated on the error *name* rather than the class alone for exactly that
+    reason: the class hierarchy does not carry the distinction.
+    """
+    if isinstance(exc, sqlite3.IntegrityError | sqlite3.ProgrammingError):
+        return False
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    return getattr(exc, "sqlite_errorname", "") in _CORRUPTION_NAMES
+
+
+def _refuse_corruption(method: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Turn a damaged-file error out of ``method`` into a ``StoreError``.
+
+    Applied at the **public method boundary**, which is the one placement the
+    measurements permit, and both halves of that were found by measuring:
+
+    * Not at the connection. ``tests/security`` proves the append-only trigger
+      lives in the engine by running ``UPDATE`` through ``store._conn``
+      directly and asserting ``sqlite3.IntegrityError``; a connection-level
+      proxy is the only wrap shape that breaks the suite, and that is the test
+      it breaks.
+    * Not through a ``self._execute(sql, params)`` choke point. Seven of the
+      nineteen SQL sites here run on a *local* ``conn`` with no instance in
+      scope (``open``, ``_apply_schema``, ``_has_meta``), so a method on the
+      instance cannot reach them — and a wrapper that hands back a cursor
+      cannot see an error raised during the *fetch*. ``PRAGMA quick_check``
+      raises at ``fetchone()``, not at ``execute()``, measured on two damaged
+      pages, so :meth:`EventStore.verify_integrity` could not be written
+      through such a wrapper at all.
+
+    Wrapping the whole body covers the fetch by construction, which is the
+    point. One copy of the policy, because eight copies is how seven stay
+    fixed and one does not — a shape ``_resolve``'s own comment in this module
+    records this repository already paying for.
+    """
+
+    @functools.wraps(method)
+    def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        try:
+            return method(*args, **kwargs)
+        except sqlite3.DatabaseError as exc:
+            if not _is_corruption(exc):
+                raise
+            raise StoreCorruptionError(
+                f"the event store's database is damaged, so {method.__name__}() "
+                f"cannot be trusted: {exc}"
+            ) from exc
+
+    return guarded
+
+
+def _verdict_reason(verdict: str) -> str:
+    """The informative part of a ``quick_check`` verdict, bounded.
+
+    The first line is sometimes only the banner ``*** in database main ***``,
+    which tells an operator nothing — the reason is on the next line
+    (``Tree 4 page 185: btreeInitPage() returns error``). Measured both ways on
+    one page-zeroing construction: which of the two shapes SQLite produces
+    depends on which pages were lost. Bounded at three lines because the
+    verdict is a report whose length is not this module's to choose.
+    """
+    lines = [line.strip() for line in verdict.splitlines() if line.strip()]
+    return " / ".join(lines[:3]) if lines else "no verdict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +365,7 @@ class EventStore:
     # -- lifecycle ---------------------------------------------------------
 
     @classmethod
+    @_refuse_corruption
     def open(cls, root: Path, *, filename: str = DEFAULT_FILENAME) -> Self:
         """Open (creating if absent) the store under ``root/data/events/``.
 
@@ -388,6 +488,7 @@ class EventStore:
 
     # -- writes ------------------------------------------------------------
 
+    @_refuse_corruption
     def append(self, event: NormalizedEvent, *, ingested_at: float) -> str:
         """Store one event and return its content address.
 
@@ -408,6 +509,7 @@ class EventStore:
             self._advance_high_water(stamp)
         return identifier
 
+    @_refuse_corruption
     def append_many(self, events: tuple[NormalizedEvent, ...], *, ingested_at: float) -> int:
         """Store a batch in one transaction; return how many were *new*.
 
@@ -447,6 +549,7 @@ class EventStore:
             self._advance_high_water(stamp)
         return self.count() - before
 
+    @_refuse_corruption
     def high_water_mark(self) -> float | None:
         """The highest ``ingested_at`` ever written, or ``None`` if never written.
 
@@ -478,6 +581,7 @@ class EventStore:
             return None
         return float(derived["mark"])
 
+    @_refuse_corruption
     def next_stamp(self, now: float) -> float:
         """An ``ingested_at`` that is safe to write, at or after ``now``.
 
@@ -627,11 +731,61 @@ class EventStore:
 
     # -- reads -------------------------------------------------------------
 
+    @_refuse_corruption
     def count(self) -> int:
         """Total events held."""
         row = self._conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
 
+    @_refuse_corruption
+    def verify_integrity(self) -> None:
+        """Refuse if the database file is damaged. Cheap enough to gate on.
+
+        One copy, because it has two callers that each need it for a different
+        reason, and a check a caller must remember is a check three callers
+        keep and one forgets:
+
+        * :meth:`attest` — its digest and its count are both covering-index
+          scans, so without this they describe the *indexes* and say nothing
+          about whether a row body is readable. Zeroing a 400-event store's
+          134 table leaf pages produced a bit-identical digest and count.
+        * ``scripts/run_retention.py`` — it reports from :meth:`count` and
+          :meth:`count_before`, which are *also* covering-index reads, so it
+          exited ``0`` on a store from which no row could be read and wrote
+          ``would remove 200 of 200 event(s)`` into a hash chain that then
+          verified. That is the same defect as attest's, in the one CLI that
+          can delete evidence.
+
+        ``quick_check`` rather than ``integrity_check``, priced at three sizes
+        rather than guessed:
+
+            events     MiB   quick_check   integrity_check   50+50 sample
+             10,000   16.7       24.4 ms           67.5 ms       10.40 ms
+             40,000   67.1       90.3 ms          419.0 ms       14.76 ms
+            120,000  202.2      220.2 ms         1439.7 ms       12.07 ms
+
+        ``quick_check`` is roughly linear at 1.1-1.5 ms/MiB and is cheaper than
+        a full table scan (144 ms at 67.1 MiB), because it walks pages without
+        decoding rows into Python. ``integrity_check`` is *super*-linear and is
+        therefore not a candidate for anything on a ``*/5`` schedule.
+
+        What it does **not** catch is a structurally valid page carrying
+        another generation's rows. That needs ``integrity_check``, and it is
+        only reachable through a page- or frame-shipping replication scheme
+        this repository does not have — ``DESIGN.md`` §11 records an
+        ``integrity_check`` on promotion as a precondition of any such scheme.
+
+        Raises:
+            StoreCorruptionError: if the file is damaged, whether SQLite
+                reports that as a verdict or raises it.
+        """
+        verdict = str(self._conn.execute("PRAGMA quick_check").fetchone()[0])
+        if verdict != "ok":
+            raise StoreCorruptionError(
+                f"the event store's database is damaged: {_verdict_reason(verdict)}"
+            )
+
+    @_refuse_corruption
     def attest(self) -> Attestation:
         """Attest what this store holds, so a copy of it can be verified.
 
@@ -695,41 +849,20 @@ class EventStore:
         The digest's *definition* is deliberately unchanged, so every manifest
         already written stays valid; this adds a gate, not a new preimage.
 
-        Both of SQLite's answers are handled, because it gives two. On the
-        same page-zeroing construction it *raised* ``database disk image is
-        malformed`` for single-page and mixed losses and *reported* ``*** in
-        database main *** Tree 4 page 185: btreeInitPage() returns error`` for
-        a wholesale loss of the table's leaf pages. A raw ``sqlite3`` error out
-        of this method would reach callers that catch ``StoreError`` and sail
-        past them, so both become :class:`StoreIntegrityError`.
-
-        What ``quick_check`` does **not** catch is a structurally valid page
-        carrying another generation's rows. That needs ``integrity_check``,
-        and it is only reachable through a page- or frame-shipping replication
-        scheme this repository does not have — if one is ever built, the
-        promotion path owes an ``integrity_check``, which ``DESIGN.md`` §11
-        records as a precondition rather than leaving to be rediscovered.
+        That gate now lives in :meth:`verify_integrity` rather than inline
+        here, because it acquired a second caller that needs it for the same
+        reason: ``scripts/run_retention.py`` reports from :meth:`count` and
+        :meth:`count_before`, which are *also* covering-index reads, and so
+        exited ``0`` on a store from which no row could be read. Both of
+        SQLite's answers — it raises for some losses and reports a verdict for
+        others, measured both ways on one construction — are handled there, and
+        the pricing is recorded there too.
 
         Raises:
-            StoreIntegrityError: if the store is not structurally intact, or
-                if the count and the id stream disagree.
+            StoreCorruptionError: if the database file is damaged.
+            StoreIntegrityError: if the count and the id stream disagree.
         """
-        try:
-            verdict = str(self._conn.execute("PRAGMA quick_check").fetchone()[0])
-        except sqlite3.DatabaseError as exc:
-            # SQLite *raises* for some damage and *reports* for other damage,
-            # measured both ways on the same construction — the difference is
-            # which pages were lost, so a caller cannot be asked to handle the
-            # two differently. Both become the one refusal every caller of
-            # this module already catches.
-            raise StoreIntegrityError(
-                f"the store is not structurally intact, so it cannot be attested: {exc}"
-            ) from exc
-        if verdict != "ok":
-            raise StoreIntegrityError(
-                "the store is not structurally intact, so it cannot be attested: "
-                f"{verdict.splitlines()[0]}"
-            )
+        self.verify_integrity()
         counts = self._conn.execute(
             "SELECT (SELECT COUNT(*) FROM events) AS events, "
             "(SELECT COUNT(*) FROM observables) AS observables"
@@ -758,6 +891,7 @@ class EventStore:
             schema_version=SCHEMA_VERSION,
         )
 
+    @_refuse_corruption
     def count_before(self, *, before: float) -> int:
         """How many events :meth:`prune` would delete at this threshold.
 
@@ -779,6 +913,7 @@ class EventStore:
         ).fetchone()
         return int(row["n"])
 
+    @_refuse_corruption
     def query(self, spec: Query = ALL) -> tuple[StoredEvent, ...]:
         """Return matching events, newest first by default.
 
@@ -850,6 +985,7 @@ class EventStore:
 
     # -- retention ---------------------------------------------------------
 
+    @_refuse_corruption
     def prune(self, *, before: float) -> int:
         """Delete events stored before ``before`` (epoch seconds); return count.
 

@@ -313,12 +313,31 @@ def _run(
 
     try:
         with EventStore.open(args.root) as store:
+            # Before the counts, because both of them lie on a damaged store.
+            # Measured: `count()` plans as `SCAN events USING COVERING INDEX
+            # events_ingested_at` and `count_before()` as `SEARCH ... COVERING
+            # INDEX`, so neither reads a table page. With the events table's
+            # row-bearing pages destroyed and its indexes intact, both returned
+            # the full pristine count while every route to an actual row raised
+            # `database disk image is malformed` — and this pass exited 0 with a
+            # report no field of which distinguished that store from a healthy
+            # one, then recorded "would remove 200 of 200 event(s)" into a hash
+            # chain that verified. Proven causally: damaging
+            # `events_ingested_at` as well makes both counts raise.
+            #
+            # Here and not inside `count()`, because the counts are not wrong —
+            # they are answers to a question about the index, and other callers
+            # ask it cheaply and often. What is wrong is reporting them, and
+            # acting on them, as a census of readable evidence.
+            store.verify_integrity()
             total = store.count()
             matching = store.count_before(before=threshold)
             removed = store.prune(before=threshold) if args.apply else None
     except (StoreError, sqlite3.Error, ValueError, OSError) as exc:
-        # sqlite3.Error is neither OSError nor StoreError, so a corrupt or
-        # locked database would otherwise escape as a traceback in cron mail.
+        # sqlite3.Error is neither OSError nor StoreError. `store/` now maps
+        # SQLite's two corruption verdicts to `StoreCorruptionError`, so this
+        # clause is defence in depth for the rest — a locked database
+        # (SQLITE_BUSY) still arrives here as itself, deliberately.
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

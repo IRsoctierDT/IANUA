@@ -44,6 +44,7 @@ from __future__ import annotations
 from store.errors import (
     IngestionOrderError,
     SchemaVersionError,
+    StoreCorruptionError,
     StoreError,
     StoreIntegrityError,
     StorePathError,
@@ -79,6 +80,7 @@ __all__ = [
     "IngestionOrderError",
     "Query",
     "SchemaVersionError",
+    "StoreCorruptionError",
     "StoreError",
     "StoreIntegrityError",
     "StorePathError",

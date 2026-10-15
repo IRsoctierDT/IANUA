@@ -316,23 +316,28 @@ def measure_store_readable(root: Path, now: float) -> Measurement:
     rows are the ones a cycle reads next while the oldest are the ones a
     report reads. ``1.0`` means both samples came back.
 
-    ``0.0`` means the store accepts writes and cannot be read — but **only for
-    the damage that arrives as a** :class:`StoreError`, and that is narrower
-    than this docstring first claimed. Measured: a store with one table page
-    zeroed makes ``query`` raise ``sqlite3.DatabaseError`` directly, which is
-    not a ``StoreError``, so it is not caught here. The report still fails
-    closed, because :func:`sli.report.measure` guards every probe and grades a
-    raising one ``UNKNOWN`` — the CLI exits non-zero either way. What is lost
-    is the *sentence*: "the store cannot be read: database disk image is
-    malformed" is the actionable diagnostic, and the generic unmeasurable note
-    replaces it.
+    ``0.0`` means the store accepts writes and cannot be read, and that now
+    includes a damaged file. It did not when this indicator was written:
+    ``query`` raised ``sqlite3.DatabaseError`` directly, which is not a
+    ``StoreError``, so the probe escaped this ``except`` and
+    :func:`sli.report.measure`'s per-probe guard graded it ``UNKNOWN`` — fail
+    closed, but the detail read ``the probe raised DatabaseError`` instead of
+    naming the fault. ``store/`` maps SQLite's two corruption verdicts to
+    :class:`store.StoreCorruptionError` (a ``StoreIntegrityError`` subclass, so
+    this ``except`` catches it), and the detail now carries the engine's own
+    sentence. Deliberately *not* fixed by widening this clause: a monitor
+    importing ``sqlite3`` to catch a driver error through two layers is the
+    wrong shape, and the leak was on seven of ten store entry points rather
+    than only this one.
 
-    The fix is not to widen this ``except`` — a monitor importing ``sqlite3``
-    to catch a driver error through two layers is the wrong shape, and
-    ``EventStore.attest`` has just had to wrap the same leak itself. It is for
-    ``store/`` to raise :class:`StoreIntegrityError` for a malformed database
-    on the read path as it now does on the attest path, which changes every
-    caller's behaviour and so is its own change rather than a drive-by here.
+    **The sample is still a sample, and that is the remaining gap.** Measured
+    on a 1200-event / 525-page store, zeroing each page in turn: 116 of 524
+    losses (22%) leave this probe reading ``1.0`` and the sentence "read 50
+    newest and 50 oldest row(s) without error" while ``integrity_check``
+    raises. ``EventStore.verify_integrity`` is the primitive that closes it,
+    priced at 1.1-1.5 ms/MiB, and whether this indicator should carry it or a
+    second objective should is a judgement about what one indicator may mean —
+    tracked, not silently folded in here.
     """
     del now
     path = _store_path(root)
