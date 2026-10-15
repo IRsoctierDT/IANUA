@@ -31,7 +31,9 @@ import pytest
 
 from compliance.controls import check_self_monitoring_defined
 from compliance.engine import run_controls
+from pipeline import Cursor, cursor_path, save_cursor
 from sli import CHAIN_FILES, Status, measure
+from store import EventStore
 from tests.security.test_cli_startup_failclosed import RELATIVE_ROOTS
 
 _SLI_ROOT = Path(__file__).resolve().parents[2] / "sli"
@@ -413,6 +415,65 @@ def test_an_aborted_copy_cannot_produce_a_healthy_report(tmp_path: Path) -> None
     # And the empty store really did open and read cleanly, so the verdict
     # rests on the grading rather than on the probe failing.
     assert by_id["store-readable"].value == 1.0, by_id["store-readable"].detail
+
+
+@pytest.mark.security
+def test_every_cursor_reading_indicator_refuses_a_cursor_ahead_of_the_store(
+    tmp_path: Path,
+) -> None:
+    """The cursor-sensitive indicators are *discovered*, so a third one is covered.
+
+    Naming them would pin the two that exist. The fix this guards came from
+    finding that ``detection-backlog`` failed open in a state
+    ``detection-lag`` already refused, and a list of names is exactly the
+    artifact that would have let the next indicator repeat it. So the set is
+    derived by differential — measure the same root twice, once with the
+    cursor the cycle wrote and once with it a day ahead of the newest stored
+    row, and take the indicators whose reading moved.
+
+    The property asserted of that set is the one that matters: a cursor past
+    the store's high-water mark is the one unrecoverable skew
+    ``docs/RESTORE.md`` records, so an indicator that *notices* it and still
+    grades ``MET`` is reporting an unrecoverable platform as healthy.
+
+    Non-vacuity is asserted in three places, because each of them has been
+    the way a test like this measured nothing: the control readings must be
+    ``MET`` (or "not MET afterwards" is free), the discovered set must contain
+    the two known members (or an empty set passes the loop), and the detail
+    text must change (or the two states stay indistinguishable to the operator
+    reading the report, which is how this defect survived its first test).
+    """
+    root = _collected(tmp_path)
+    with EventStore.open(root) as store:
+        mark = store.high_water_mark()
+    assert mark is not None, "the fixture stored no events"
+    now = mark + 1.0
+
+    def readings() -> dict[str, tuple[Status, float | None, str]]:
+        return {
+            item.objective.id: (item.status, item.value, item.detail)
+            for item in measure(root, now=now).indicators
+        }
+
+    control = readings()
+    assert control["detection-lag"][0] is Status.MET, control["detection-lag"]
+    assert control["detection-backlog"][0] is Status.MET, control["detection-backlog"]
+
+    save_cursor(cursor_path(root), Cursor(ingested_at=mark + 86_400.0, event_id="z" * 64))
+    skewed = readings()
+
+    sensitive = {name for name, reading in control.items() if reading != skewed[name]}
+    assert {"detection-lag", "detection-backlog"} <= sensitive, (
+        f"an indicator stopped reading the cursor; discovered {sorted(sensitive)}"
+    )
+    for name in sorted(sensitive):
+        assert skewed[name][0] is not Status.MET, (
+            f"{name} graded {skewed[name][0].value} with the cursor a day ahead "
+            f"of the store: {skewed[name][2]}"
+        )
+        assert skewed[name][2] != control[name][2], (
+            f"{name} prints the same sentence caught up and skewed"
+        )
 
 
 @pytest.mark.security

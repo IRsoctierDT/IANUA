@@ -285,6 +285,14 @@ def test_a_cursor_ahead_of_the_store_is_reported_not_scored(tmp_path: Path) -> N
     not the cursor, so after a backward clock step re-collected events are
     stamped below the cursor and the strictly-after keyset never reads them.
     Grading it ``MET`` would report the unrecoverable state as healthy.
+
+    **Both** cursor-reading indicators are asserted, which is the fix to this
+    test rather than to the code it guards. The first version built this exact
+    state and checked ``detection-lag`` alone, while ``detection-backlog`` sat
+    in the same report reading ``met, 0 event(s) not yet processed`` —
+    character-for-character the caught-up sentence. A strictly-after count
+    cannot see the events stranded behind the cursor, so zero is what it must
+    return; the defect was grading that zero.
     """
     root = _populated(tmp_path)
     with EventStore.open(root) as store:
@@ -296,6 +304,70 @@ def test_a_cursor_ahead_of_the_store_is_reported_not_scored(tmp_path: Path) -> N
     lag = next(i for i in report.indicators if i.objective.id == "detection-lag")
     assert lag.status is Status.UNKNOWN, lag.detail
     assert "ahead" in lag.detail
+
+    backlog = next(i for i in report.indicators if i.objective.id == "detection-backlog")
+    assert backlog.status is Status.UNKNOWN, backlog.detail
+    assert backlog.value is None, "a count of the reachable rows was graded as the backlog"
+    assert "ahead" in backlog.detail and "stranded" in backlog.detail
+
+
+@pytest.mark.unit
+def test_a_retention_pass_that_empties_the_store_still_measures_met(tmp_path: Path) -> None:
+    """The false alarm the fix above was one condition away from inventing.
+
+    ``high_water_mark`` is a stored mark rather than a ``MAX`` over the rows,
+    so it outlives them: after pruning every event the mark still reads, and
+    the cursor still names a row that is gone. Measured before the cursor-ahead
+    branch was written, precisely because the tempting spelling of that branch
+    — refuse whenever the cursor names an event the store no longer holds —
+    turns a retention pass doing its job into a breach. A true backlog of zero
+    is zero.
+    """
+    root = _populated(tmp_path)
+    with EventStore.open(root) as store:
+        mark = store.high_water_mark()
+        assert mark is not None
+        assert store.prune(before=mark + 1.0) == 2
+
+    report = measure(root, now=mark + 2.0)
+    by_id = {indicator.objective.id: indicator for indicator in report.indicators}
+    assert by_id["detection-backlog"].status is Status.MET, by_id["detection-backlog"].detail
+    assert by_id["detection-backlog"].value == 0.0
+    assert by_id["detection-lag"].status is Status.MET, by_id["detection-lag"].detail
+
+
+@pytest.mark.unit
+def test_an_offset_past_the_recorded_size_is_not_a_fully_read_source(tmp_path: Path) -> None:
+    """The second site of the same shape: a clamped negative read as the best news.
+
+    ``max(0, size - offset)`` made an offset past the observed size zero, and
+    zero pending bytes printed *the caught-up sentence* — so the two states
+    were indistinguishable in the report, which this test asserts they are
+    not. The collector never writes this: ``collect.tail._resume_from`` returns
+    ``(0, "truncated")`` whenever the file is shorter than the stored offset,
+    which is why the refusal belongs in the monitor and not in ``load``.
+    """
+    root = _root(tmp_path)
+    caught_up = Position(offset=4096, inode=1, device=1, size=4096)
+    save_offsets(offsets_path(root), {"/var/log/app.log": caught_up})
+    healthy = next(
+        i
+        for i in measure(root, now=time.time()).indicators
+        if i.objective.id == "collection-pending"
+    )
+    assert healthy.status is Status.MET, healthy.detail
+
+    impossible = Position(offset=9000, inode=1, device=1, size=4096)
+    save_offsets(offsets_path(root), {"/var/log/app.log": impossible})
+    damaged = next(
+        i
+        for i in measure(root, now=time.time()).indicators
+        if i.objective.id == "collection-pending"
+    )
+    assert damaged.status is Status.UNKNOWN, damaged.detail
+    assert damaged.value is None
+    assert damaged.detail != healthy.detail, "damage and a caught-up source read alike"
+    assert "app.log" in damaged.detail and "damaged" in damaged.detail
 
 
 @pytest.mark.unit

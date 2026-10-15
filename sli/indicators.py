@@ -127,7 +127,21 @@ def measure_collection_pending(root: Path, now: float) -> Measurement:
 
     A corrupt offsets file is ``UNKNOWN`` rather than zero: ``load`` refuses
     it deliberately, because "never collected" and "position lost" demand
-    different responses.
+    different responses. One corruption *parses*, though, and used to read as
+    the healthiest possible answer: an ``offset`` past the recorded ``size``
+    made ``max(0, size - offset)`` zero, so the report said "all source(s)
+    fully read at the last pass" — byte-identical to a caught-up collector.
+    Measured, not argued. It is now ``UNKNOWN``, which is what this
+    docstring claimed all along.
+
+    The refusal is here and **not** in ``load_offsets``, deliberately. A
+    collector handed that file is not harmed by it: ``collect/tail.py``
+    ``_resume_from`` already returns ``(0, "truncated")`` whenever the file is
+    shorter than the stored offset, so the pass self-heals and reports why.
+    Pushing the check down into the loader would turn a case the collector
+    recovers from into a refused pass — fail-closed applied to the one layer
+    that was already right. The collector never *writes* this state, so inside
+    the monitor it only ever means the file was damaged or hand-edited.
     """
     del now  # Not a time-based measurement; the signature is uniform.
     path = offsets_path(root)
@@ -137,6 +151,18 @@ def measure_collection_pending(root: Path, now: float) -> Measurement:
         return Measurement(None, f"offsets are unreadable ({type(exc).__name__})")
     if not positions:
         return Measurement(None, "no collector pass has recorded a position yet")
+    impossible = sorted(
+        key.rsplit("/", 1)[-1]
+        for key, position in positions.items()
+        if position.offset > position.size
+    )
+    if impossible:
+        return Measurement(
+            None,
+            f"{len(impossible)} of {len(positions)} source(s) record an offset past "
+            f"the size observed with it: {', '.join(impossible[:4])}; the collector "
+            "never writes that, so the position file is damaged",
+        )
     pending = sum(max(0, position.size - position.offset) for position in positions.values())
     behind = [
         key.rsplit("/", 1)[-1]
@@ -222,6 +248,25 @@ def measure_detection_backlog(root: Path, now: float) -> Measurement:
     and the exact figure does not change the verdict — which is also what
     keeps the cost bounded, since a monitor must not table-scan a
     15-million-row store every five minutes.
+
+    A cursor *ahead* of the store's high-water mark grades ``UNKNOWN``, for
+    the same reason :func:`measure_detection_lag` does and found the same way:
+    by measurement. A strictly-after count is the count of events the cycle
+    *will* read next, which equals "events stored but not yet processed" —
+    this objective's actual title — only while the cursor sits at or below the
+    newest stored row. Past it, every stranded event is behind the keyset and
+    the count is zero, so the report read ``met, 0 event(s) not yet
+    processed``: a sentence indistinguishable from a caught-up SOC, printed
+    beside a sibling indicator correctly saying the cursor is a day ahead and
+    nothing will ever be read. ``tests/unit/test_sli.py`` already built that
+    state and asserted only the sibling.
+
+    Note what is **not** refused. An emptied store beneath a live cursor reads
+    ``met`` and should: ``high_water_mark`` is a stored mark rather than a
+    ``MAX`` over the rows, so it outlives them, and a retention pass that
+    deletes every processed event leaves a true backlog of zero. Measured
+    before this branch was written, because refusing it would have invented a
+    breach out of retention working.
     """
     del now
     path = _store_path(root)
@@ -239,9 +284,19 @@ def measure_detection_backlog(root: Path, now: float) -> Measurement:
     )
     try:
         with EventStore.open(root) as store:
+            # One open for both: the mark decides whether the count means
+            # anything, so reading it in a second connection would let the two
+            # disagree about which store they measured.
+            mark = store.high_water_mark()
             pending = len(store.query(spec))
     except (StoreError, OSError) as exc:
         return Measurement(None, f"the event store could not be queried ({type(exc).__name__})")
+    if cursor is not None and mark is not None and mark < cursor.ingested_at:
+        return Measurement(
+            None,
+            f"the cursor is {cursor.ingested_at - mark:.0f}s ahead of the newest stored "
+            "event; a strictly-after count cannot see the events stranded behind it",
+        )
     if pending >= probe:
         return Measurement(
             float(pending), f"at least {pending} event(s) not yet processed (probe limit)"
