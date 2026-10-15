@@ -585,6 +585,88 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     assert _MARKER not in json.dumps(claimed.to_dict(), default=str)
 
 
+#: Records that produced the two review findings on this function, kept as
+#: fixtures so the property below is exercised against the shapes that broke
+#: it rather than only against well-behaved telemetry. ``@timestamp``,
+#: ``Channel``, ``CommandLine`` and ``Subject`` are all declared paths; the
+#: renamed provider key is what makes the record unclaimed.
+_HOSTILE_PROJECTIONS: tuple[dict[str, object], ...] = (
+    # Round one: a modelled field sorting after a long one. The URL is inside
+    # the excerpt bound, so it must be scanned.
+    {"ProviderV2": "x", "@timestamp": "T" * 2048, "Subject": "visit http://a.example/p"},
+    # Round two: the projection exceeds MAX_RAW_EXCERPT, so the URL is cut
+    # from the excerpt and must therefore NOT be scanned.
+    {
+        "ProviderV2": "x",
+        "@timestamp": "T" * 2048,
+        "Channel": "C" * 2048,
+        "CommandLine": "L" * 2048,
+        "Subject": "visit http://b.example/p",
+    },
+    # An un-modelled field alongside modelled ones: neither retained nor scanned.
+    {"ProviderV2": "x", "Subject": "s", "Body": "Mr.Jones at evil.example.com"},
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("name", _fixture_names())
+@pytest.mark.parametrize("claimed", [True, False], ids=["claimed", "unclaimed"])
+def test_every_observable_is_findable_in_the_stored_event(name: str, claimed: bool) -> None:
+    """No indicator may exist in the store that its own event cannot account for.
+
+    This is the retention invariant stated as a property rather than reasoned
+    about per call site, which is what this layer needed: the scan source has
+    now been wrong in **both** directions, narrower than the evidence and then
+    wider than it, and each time the argument for correctness was a docstring.
+
+    An observable may be sourced from a *typed* field rather than from
+    ``raw_excerpt`` — auditd is the shipped example, where ``a0``/``a1``/``a2``
+    drop from the excerpt by declaration while the reassembled argv is
+    retained in ``Actor.command_line``, so the URL inside it is accounted for
+    even though the excerpt does not show it. That is why the general
+    invariant is "somewhere in the event" and the stricter one below is
+    scoped to the unclaimed path.
+    """
+    record = _load(name)
+    if not claimed:
+        record = {
+            ("ProviderV2" if key == "Provider" else key): value for key, value in record.items()
+        }
+        record = {**record, "RenamedUpstream": "breaks recognition"}
+    event = normalize(record)
+
+    dumped = json.dumps(event.to_dict(), default=str)
+    for observable in event.observables:
+        assert observable in dumped, (
+            f"{name}: observable {observable!r} appears nowhere in the stored event"
+        )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "record", _HOSTILE_PROJECTIONS, ids=["round-one", "round-two", "unmodelled"]
+)
+def test_an_unclaimed_records_observables_are_all_inside_its_excerpt(
+    record: dict[str, object],
+) -> None:
+    """On the unclaimed path the excerpt *is* the evidence, so it must contain them.
+
+    The stricter half of the invariant, scoped to where ``_Excerpt`` governs.
+    Both review findings on this function are in the fixture table above: one
+    where an indicator inside the bound was not scanned, one where an
+    indicator outside it was. A single assertion catches both directions,
+    which is the point — the previous two fixes each closed one direction and
+    opened the other.
+    """
+    event = normalize(record)
+
+    assert event.vendor == "unrecognized", "fixture must take the unclaimed path"
+    for observable in event.observables:
+        assert observable in event.raw_excerpt, (
+            f"observable {observable!r} was scanned from outside the retained excerpt"
+        )
+
+
 @pytest.mark.security
 def test_a_modelled_field_is_scanned_however_late_it_sorts() -> None:
     """``observables()`` bounds each value, so it must be given values.
