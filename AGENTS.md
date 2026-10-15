@@ -251,12 +251,29 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   to project in those cases and dropping the text would manufacture the blind spot rule 2
   exists to close, so the behaviour stands — but it is a residual of the control, not an
   exception for prose, and the earlier wording here understated it.
-- **Indicators are modelled and therefore kept.** An unclaimed record is still *scanned*
-  for URLs, hashes and addresses — within `MAX_FIELD_LEN`, not "in full", because
-  `observables()` coerces each input through `text()` at that bound; an indicator past
-  character 2048 of one record is not extracted. They are typed, bounded fields with their own
-  join deny-list in `correlation/entities.py`. The indicator survives the narrowing; the
-  sentence around it does not.
+- **Indicators come from modelled content only** — on every path, and this replaces an
+  earlier rule that said the opposite. An unclaimed record used to be *scanned* in full
+  for indicators while only its modelled paths were retained, on the reasoning that "the
+  indicator survives the narrowing; the sentence around it does not". **The sentence
+  survived too.** `_DOMAIN` matches any `word.Word` with no plausibility check, so an
+  un-modelled `Body` reading "Dear Mr.Jones, please urgently.Reply … invoice 44.Smith at
+  acct-7781.Watson" produced a `raw_excerpt` of `{}` — the withholding worked — and five
+  observables: `Mr.Jones`, `urgently.Reply`, `44.Smith`, `acct-7781.Watson`,
+  `Ms.Delacroix`. Personal names, in a table that is indexed, append-only and clearable
+  only by deleting whole rows, and false correlation join keys besides. Measured on merged
+  code, not argued.
+
+  Extraction now reads the *retained* evidence, so there is no wider string to read and the
+  separate one that existed for it is gone. **The cost is real and is the trade:** an
+  indicator appearing only in an un-modelled field is no longer extracted, which is exactly
+  the route the previous rule cared about — a vendor renaming the key a signature matches.
+  What compensates is the withheld-key note, which names what was dropped so an operator
+  can write the signature; what does not compensate is anything automatic. A
+  plausible-TLD check was weighed and refused: a public-suffix list is a third-party
+  dependency that goes stale, and a hand-kept allow-list would silently drop legitimate
+  internal domains like `host.corp`. Indicators remain typed, bounded fields with their own
+  join deny-list in `correlation/entities.py`, and the `MAX_FIELD_LEN` bound still applies —
+  an indicator past character 2048 of one field is not extracted.
 - **Volume is bounded by a gated pass, not by hope.** `scripts/run_retention.py` reports
   by default and deletes only under a committed `destructive` grant. Measured at roughly
   1.8 KB per event, a `*/5` schedule at the default batch size is ~15 GB/month, so a
