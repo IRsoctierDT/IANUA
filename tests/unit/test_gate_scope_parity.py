@@ -36,6 +36,7 @@ PACKAGES = {
     "dashboard",
     "scripts",
     "compliance",
+    "sli",
 }
 MYPY_SCOPE = {
     "agents",
@@ -52,6 +53,7 @@ MYPY_SCOPE = {
     "mcp",
     "rag",
     "compliance",
+    "sli",
 }
 COVERAGE_SCOPE = {
     "agents",
@@ -65,6 +67,7 @@ COVERAGE_SCOPE = {
     "compliance",
     "rag",
     "mcp",
+    "sli",
 }
 # Bandit covers the packages that parse untrusted or externally influenced
 # input (agent pipeline, corpus loaders, operational scripts, MCP surface).
@@ -79,6 +82,7 @@ BANDIT_SCOPE = {
     "collect",
     "scripts",
     "mcp",
+    "sli",
 }
 
 #: Top-level directories holding Python that are deliberately outside

@@ -20,6 +20,18 @@
       "title": "Tamper-evident audit logging"
     },
     {
+      "category": "Audit & Monitoring",
+      "id": "AUD-02",
+      "status": "pass",
+      "title": "The platform measures its own service level"
+    },
+    {
+      "category": "Audit & Monitoring",
+      "id": "AUD-03",
+      "status": "manual",
+      "title": "Service-level objectives met on the deployed node"
+    },
+    {
       "category": "Secrets & Data Protection",
       "id": "SEC-01",
       "status": "pass",
@@ -108,21 +120,21 @@
   "frameworks": [
     {
       "name": "NIST CSF 2.0",
-      "passing": 15,
-      "percent": 88,
-      "total": 17
+      "passing": 16,
+      "percent": 84,
+      "total": 19
     },
     {
       "name": "SOC 2 (Trust Services Criteria)",
-      "passing": 15,
-      "percent": 88,
-      "total": 17
+      "passing": 16,
+      "percent": 84,
+      "total": 19
     },
     {
       "name": "ISO/IEC 27001:2022",
-      "passing": 15,
-      "percent": 88,
-      "total": 17
+      "passing": 16,
+      "percent": 84,
+      "total": 19
     }
   ],
   "score": 100,
@@ -130,7 +142,7 @@
     "attested": 1,
     "error": 0,
     "fail": 0,
-    "manual": 2,
-    "pass": 14
+    "manual": 3,
+    "pass": 15
   }
 }

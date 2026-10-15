@@ -29,6 +29,7 @@ from enum import Enum
 from pathlib import Path
 
 from compliance.frameworks import Framework, FrameworkRef
+from sli import MEASURERS, OBJECTIVES, Status
 
 
 class ControlStatus(Enum):
@@ -170,6 +171,49 @@ def check_audit_logging_present(root: Path) -> CheckResult:
     return CheckResult(
         ControlStatus.PASS,
         f"hash-chained logger present with {len(audit_tests)} security test module(s)",
+    )
+
+
+def check_self_monitoring_defined(root: Path) -> CheckResult:
+    """The platform's own service level is defined, derived, and fails closed.
+
+    Structural, and deliberately separate from whether the objectives are
+    currently *met*: a framework asks both "is there monitoring" and "is it
+    green", and conflating them means a platform with no monitoring at all
+    reports the same as one that is simply healthy.
+
+    Three properties, each of which has been a defect somewhere in this
+    repository rather than a hypothetical:
+
+    * every objective has a measurer and every measurer an objective — the
+      shape that let ``EventStore.prune`` ship with no caller at all;
+    * every target records where its number came from, so a threshold is not
+      something the next engineer either dare not change or changes blind;
+    * an unmeasurable indicator is **not** healthy. ``DESIGN.md`` §11 records
+      three signals that read healthy while the subsystem behind them was
+      not, and this is the assertion that the lesson is still implemented.
+    """
+    del root  # Definitional: it reads the committed objective table, not the tree.
+    objective_ids = {objective.id for objective in OBJECTIVES}
+    missing = sorted(objective_ids - set(MEASURERS))
+    orphaned = sorted(set(MEASURERS) - objective_ids)
+    unexplained = sorted(objective.id for objective in OBJECTIVES if not objective.rationale)
+    if missing or orphaned or unexplained:
+        return CheckResult(
+            ControlStatus.FAIL,
+            f"objectives without a measurer: {missing or 'none'}; "
+            f"measurers without an objective: {orphaned or 'none'}; "
+            f"targets with no recorded derivation: {unexplained or 'none'}",
+        )
+    if Status.UNKNOWN.healthy:
+        return CheckResult(
+            ControlStatus.FAIL,
+            "an unmeasurable indicator counts as healthy; the monitoring fails open",
+        )
+    return CheckResult(
+        ControlStatus.PASS,
+        f"{len(OBJECTIVES)} service-level objective(s) defined, each with a "
+        f"recorded derivation; an unmeasurable indicator is not a pass",
     )
 
 
@@ -405,6 +449,57 @@ def registry() -> tuple[Control, ...]:
                 (Framework.ISO_27001, "A.8.15"),
             ),
             check=check_audit_logging_present,
+        ),
+        Control(
+            id="AUD-02",
+            title="The platform measures its own service level",
+            description=(
+                "Service-level objectives for collection, ingest freshness, "
+                "detection lag, store readability, audit-chain integrity and "
+                "recoverability are defined with recorded derivations, and an "
+                "indicator that cannot be measured is not counted as healthy."
+            ),
+            category=Category.AUDIT,
+            severity=Severity.HIGH,
+            framework_refs=_refs(
+                (Framework.NIST_CSF, "DE.CM-09"),
+                (Framework.SOC_2, "CC7.2"),
+                (Framework.ISO_27001, "A.8.16"),
+            ),
+            check=check_self_monitoring_defined,
+        ),
+        Control(
+            id="AUD-03",
+            title="Service-level objectives met on the deployed node",
+            description=(
+                "A human has run scripts/report_sli.py against the deployed "
+                "lab root and either found every objective met or acted on "
+                "what was not. Manual by necessity rather than by preference: "
+                "the objectives measure a *running* platform — a collector "
+                "keeping up, a store that is fresh and readable, a cycle that "
+                "is not behind, chains that verify, a backup to restore from — "
+                "and a repository checkout is not one, so an automated check "
+                "here would be permanently red everywhere the control suite "
+                "runs. A control that can never pass is a control people learn "
+                "to ignore. The gate on the deployed node is the CLI's exit "
+                "code, which is non-zero for any objective breached *or* "
+                "unmeasurable; this expiring attestation is what stops a node "
+                "nobody has looked at from silently claiming currency, which "
+                "is the same argument MAN-03 makes for corpus freshness."
+            ),
+            category=Category.AUDIT,
+            severity=Severity.HIGH,
+            framework_refs=_refs(
+                (Framework.NIST_CSF, "DE.CM-09"),
+                (Framework.SOC_2, "A1.1"),
+                (Framework.ISO_27001, "A.8.6"),
+            ),
+            attestation_hint=(
+                "On the deployed node: python scripts/report_sli.py --root "
+                "<lab root> --json. Exit 0 means every objective is met; 1 "
+                "means at least one is breached or could not be measured, and "
+                "the JSON names which. Attest with that output as evidence."
+            ),
         ),
         Control(
             id="SEC-01",

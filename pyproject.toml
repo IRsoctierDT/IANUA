@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = [
   "agents*", "attack*", "intel*", "ingest*", "store*", "correlation*", "pipeline*", "collect*", "rag*",
-  "mcp*", "dashboard*", "scripts*", "compliance*",
+  "mcp*", "dashboard*", "scripts*", "compliance*", "sli*",
 ]
 exclude = ["tests*"]
 
@@ -112,7 +112,7 @@ ignore = [
 # through `tool.ruff.src` above.
 known-first-party = [
   "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "scripts", "tests",
-  "dashboard", "mcp", "rag", "compliance",
+  "dashboard", "mcp", "rag", "compliance", "sli",
 ]
 
 [tool.ruff.format]
@@ -127,7 +127,7 @@ exclude = ["*.md"]
 python_version = "3.11"
 files = [
   "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "scripts", "tests",
-  "dashboard", "mcp", "rag", "compliance",
+  "dashboard", "mcp", "rag", "compliance", "sli",
 ]
 warn_unused_configs = true
 warn_redundant_casts = true
@@ -183,6 +183,7 @@ addopts = [
   "--cov=compliance",
   "--cov=rag",
   "--cov=mcp",
+  "--cov=sli",
   "--cov-report=term-missing",
   "--cov-fail-under=85",
 ]
@@ -196,7 +197,7 @@ markers = [
 branch = true
 source = [
   "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "compliance",
-  "rag", "mcp",
+  "rag", "mcp", "sli",
 ]
 omit = ["tests/*", "*/__init__.py"]
 

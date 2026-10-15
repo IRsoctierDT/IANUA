@@ -124,6 +124,7 @@ ianua/
 ├── store/                     # Durable append-only event store (SOC memory; stdlib sqlite3)
 ├── correlation/               # Entity resolution across domains + incident assembly
 ├── pipeline/                  # Scheduled detection cycle (at-least-once, resumable cursor)
+├── sli/                       # Service-level indicators for the platform itself (fail-closed)
 ├── collect/                   # Local log collection (declared sources; reaches outside the project)
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
@@ -385,10 +386,10 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance
+mypy agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance sli
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp sli
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
@@ -437,11 +438,11 @@ in the pipeline."
 
 1. **Setup** — pinned toolchain, cached deps, reproducible install.
 2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy` over the same
-   fourteen packages §7 names (`agents attack intel ingest store correlation pipeline
-   collect scripts tests dashboard mcp rag compliance`). §8 claims §7 is mirrored
+   fifteen packages §7 names (`agents attack intel ingest store correlation pipeline
+   collect scripts tests dashboard mcp rag compliance sli`). §8 claims §7 is mirrored
    exactly, so this list is part of that claim: it had drifted to six of the fourteen,
-   and `tests/unit/test_gate_scope_parity.py` pins the §7 block against CI but not this
-   prose. Keep the two in step.
+   and `tests/unit/test_gate_scope_parity.py` now pins this prose as well as the §7
+   block. Keep the two in step — the parity test is what caught `sli` missing here.
 3. **Security** — `bandit` (SAST), `pip-audit` (SCA), `gitleaks` (secrets), CodeQL.
    Any finding above the agreed severity threshold **blocks merge**.
 4. **Tests** — `pytest` on 3.11 and 3.12 with coverage gate (`--cov-fail-under=85`);
