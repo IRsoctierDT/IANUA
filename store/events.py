@@ -166,6 +166,16 @@ def _refuse_corruption(method: Callable[_P, _R]) -> Callable[_P, _R]:
     point. One copy of the policy, because eight copies is how seven stay
     fixed and one does not — a shape ``_resolve``'s own comment in this module
     records this repository already paying for.
+
+    Applied to the methods that **execute** SQL, which is why
+    :meth:`EventStore.next_stamp` does not carry it: it runs no statement of
+    its own and delegates to :meth:`high_water_mark`, so a corruption error is
+    already mapped before it returns. It had the decorator briefly, and a plant
+    removing it stayed green in every regime — a guard no test can make fire is
+    the shape this module has spent the day removing, so it went rather than
+    becoming decoration. ``tests/security`` still exercises ``next_stamp``,
+    because the property asserted there is about what reaches a *caller*, not
+    about where the guard sits.
     """
 
     @functools.wraps(method)
@@ -581,7 +591,6 @@ class EventStore:
             return None
         return float(derived["mark"])
 
-    @_refuse_corruption
     def next_stamp(self, now: float) -> float:
         """An ``ingested_at`` that is safe to write, at or after ``now``.
 

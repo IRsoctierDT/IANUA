@@ -54,6 +54,7 @@ from store import (
     canonical_json,
     event_id,
 )
+from store.schema import HIGH_WATER_KEY
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORE_ROOT = _REPO_ROOT / "store"
@@ -709,7 +710,6 @@ def test_an_existing_store_written_before_this_control_is_not_defenceless(
     import sqlite3
 
     from store import IngestionOrderError
-    from store.schema import HIGH_WATER_KEY
 
     with EventStore.open(tmp_path) as store:
         store.append_many((normalize(_RECORD),), ingested_at=1_000.0)
@@ -1083,48 +1083,82 @@ def test_no_public_entry_point_hands_a_caller_a_raw_sqlite_error(tmp_path: Path)
         folding.close()
     pristine = database.read_bytes()
     pages = len(pristine) // page_size
-
-    leaked: dict[str, list[int]] = {}
-    other: dict[str, int] = {}
-    refused_at_open = 0
-    reached = 0
-    for pageno in range(2, pages + 1):
-        offset = (pageno - 1) * page_size
-        database.write_bytes(pristine[:offset] + bytes(page_size) + pristine[offset + page_size :])
-        try:
-            EventStore.open(root).close()
-        except StoreError:
-            refused_at_open += 1
-            continue
-        except sqlite3.Error:
-            leaked.setdefault("open", []).append(pageno)
-            continue
-        for name, call in _SQL_ENTRY_POINTS.items():
-            try:
-                with EventStore.open(root) as store:
-                    call(store)
-            except StoreError:
-                reached += 1
-            except sqlite3.Error:
-                leaked.setdefault(name, []).append(pageno)
-            except (ValueError, OSError) as exc:
-                # Neither is the leak under test: `next_stamp` rejects a
-                # non-finite clock with ValueError, and an OSError is the
-                # filesystem. Counted rather than swallowed so a fixture that
-                # starts failing for one of these cannot look like coverage.
-                other[f"{name}:{type(exc).__name__}"] = (
-                    other.get(f"{name}:{type(exc).__name__}", 0) + 1
-                )
-    database.write_bytes(pristine)
-
     assert pages > 50, f"the fixture is {pages} pages; too small to sweep meaningfully"
+
+    def sweep(baseline: bytes) -> tuple[dict[str, list[int]], int, dict[str, int]]:
+        leaked: dict[str, list[int]] = {}
+        other: dict[str, int] = {}
+        reached = 0
+        for pageno in range(2, pages + 1):
+            offset = (pageno - 1) * page_size
+            database.write_bytes(
+                baseline[:offset] + bytes(page_size) + baseline[offset + page_size :]
+            )
+            try:
+                EventStore.open(root).close()
+            except StoreError:
+                continue
+            except sqlite3.Error:
+                leaked.setdefault("open", []).append(pageno)
+                continue
+            for name, call in _SQL_ENTRY_POINTS.items():
+                try:
+                    with EventStore.open(root) as store:
+                        call(store)
+                except StoreError:
+                    reached += 1
+                except sqlite3.Error:
+                    leaked.setdefault(name, []).append(pageno)
+                except (ValueError, OSError) as exc:
+                    # Neither is the leak under test: `next_stamp` rejects a
+                    # non-finite clock with ValueError, and an OSError is the
+                    # filesystem. Counted rather than swallowed so a fixture
+                    # that starts failing for one of these cannot look like
+                    # coverage.
+                    key = f"{name}:{type(exc).__name__}"
+                    other[key] = other.get(key, 0) + 1
+        database.write_bytes(baseline)
+        return leaked, reached, other
+
+    # Regime 1: the stored high-water row present, which is every store this
+    # platform writes today.
+    leaked, reached, other = sweep(pristine)
     assert reached, "no entry point refused on any damaged page, so nothing was exercised"
-    assert not leaked, "a raw sqlite3 error reached a caller from: " + ", ".join(
-        f"{name} on {len(hits)} page(s)" for name, hits in sorted(leaked.items())
+    assert not leaked, (
+        "with the high-water row present, a raw sqlite3 error reached a caller from: "
+        + ", ".join(f"{name} on {len(hits)} page(s)" for name, hits in sorted(leaked.items()))
+        + f" (non-leak failures seen: {other})"
     )
-    # Reported, not asserted on: these are the non-leak failures the sweep met,
-    # and naming them is what keeps "nothing leaked" from meaning "nothing ran".
-    assert refused_at_open or reached, f"the sweep exercised nothing; other={other}"
+
+    # Regime 2: the row ABSENT — the pre-control database state, reachable on an
+    # upgraded store. A different code path, not a different fixture:
+    # `high_water_mark` falls back to `SELECT MAX(ingested_at)`, which plans as
+    # `SEARCH events USING COVERING INDEX events_ingested_at` and so leaks on
+    # that index's page, where the stored-row path leaks on none. The first
+    # version of this test swept only regime 1 and so proved one of two.
+    stripping = sqlite3.connect(database)
+    try:
+        stripping.execute("DELETE FROM meta WHERE key = ?", (HIGH_WATER_KEY,))
+        assert stripping.total_changes == 1, "the high-water row was not there to remove"
+        stripping.commit()
+        stripping.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        stripping.close()
+    without_mark = database.read_bytes()
+    with EventStore.open(root) as store:
+        assert store.high_water_mark() is not None, (
+            "the fallback returned nothing, so regime 2 does not exercise the path "
+            "it is written for"
+        )
+
+    leaked, reached, other = sweep(without_mark)
+    database.write_bytes(pristine)
+    assert reached, "regime 2 exercised nothing"
+    assert not leaked, (
+        "with the high-water row absent, a raw sqlite3 error reached a caller from: "
+        + ", ".join(f"{name} on {len(hits)} page(s)" for name, hits in sorted(leaked.items()))
+        + f" (non-leak failures seen: {other})"
+    )
 
 
 @pytest.mark.security
