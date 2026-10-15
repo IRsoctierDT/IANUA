@@ -26,9 +26,7 @@ from __future__ import annotations
 import ast
 import base64
 import dataclasses
-import inspect
 import json
-import re
 import sys
 import typing
 from pathlib import Path
@@ -55,11 +53,6 @@ from store import DEFAULT_FILENAME, EventStore
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INGEST_ROOT = _REPO_ROOT / "ingest"
 LAYER = "ingest"
-
-
-def _source_of(function: Any) -> str:
-    """The source text of ``function``, for tests that pin what it references."""
-    return inspect.getsource(function)
 
 
 # --------------------------------------------------------------------------
@@ -610,16 +603,20 @@ _INDICATOR_URL = "http://indicator.example/p"
 #: ``@timestamp``, ``Channel``, ``CommandLine`` and ``Subject`` are all
 #: declared paths; ``Body`` is declared by no parser; the renamed provider key
 #: is what makes each record unclaimed.
-_INDICATOR_POSITIONS: tuple[tuple[str, dict[str, object]], ...] = (
+#: ``(id, record, must_be_extracted)``. The third element is the whole point:
+#: it is stated per row rather than derived, so neither direction of the
+#: property can drift into the other.
+_INDICATOR_POSITIONS: tuple[tuple[str, dict[str, object], bool], ...] = (
     # The easy case, first so that a change breaking everything is not read as
     # a change breaking only the hard cases.
-    ("first-leaf", {"ProviderV2": "x", "@timestamp": _INDICATOR_URL, "Subject": "s"}),
+    ("first-leaf", {"ProviderV2": "x", "@timestamp": _INDICATOR_URL, "Subject": "s"}, True),
     # Round one (#214): a modelled field sorting after a long one. Retained at
     # index 2085, and the per-value bound had been applied to the
     # concatenation, so it was not scanned.
     (
         "late-sorting",
         {"ProviderV2": "x", "@timestamp": "T" * 2048, "Subject": f"visit {_INDICATOR_URL}"},
+        True,
     ),
     # Round five (review of 42aece5): the 4096 slice falls *inside* Subject,
     # whose value begins with the URL. Retained and readable at index 3594,
@@ -633,6 +630,8 @@ _INDICATOR_POSITIONS: tuple[tuple[str, dict[str, object]], ...] = (
             "Channel": "C" * 1500,
             "Subject": _INDICATOR_URL + " " + "P" * 3000,
         },
+        # Retained and NOT extracted: the accepted loss. See the docstring.
+        False,
     ),
     # Round two (#215): the projection exceeds MAX_RAW_EXCERPT and Subject
     # lands wholly past the cut, so the URL is in no retained field and must
@@ -646,21 +645,23 @@ _INDICATOR_POSITIONS: tuple[tuple[str, dict[str, object]], ...] = (
             "CommandLine": "L" * 2048,
             "Subject": f"visit {_INDICATOR_URL}",
         },
+        False,
     ),
     # Stage 6: a field no parser models. Neither retained nor scanned.
-    ("un-modelled", {"ProviderV2": "x", "Subject": "s", "Body": f"see {_INDICATOR_URL}"}),
+    ("un-modelled", {"ProviderV2": "x", "Subject": "s", "Body": f"see {_INDICATOR_URL}"}, False),
 )
 
-_POSITION_IDS = [position for position, _ in _INDICATOR_POSITIONS]
-_POSITION_RECORDS = [record for _, record in _INDICATOR_POSITIONS]
+_POSITION_IDS = [position for position, _, _ in _INDICATOR_POSITIONS]
+_POSITION_CASES = [(record, extracted) for _, record, extracted in _INDICATOR_POSITIONS]
+_POSITION_RECORDS = [record for _, record, _ in _INDICATOR_POSITIONS]
 
 
 @pytest.mark.security
-@pytest.mark.parametrize("record", _POSITION_RECORDS, ids=_POSITION_IDS)
-def test_an_indicator_is_extracted_exactly_when_the_excerpt_retains_it(
-    record: dict[str, object],
+@pytest.mark.parametrize(("record", "extractable"), _POSITION_CASES, ids=_POSITION_IDS)
+def test_an_indicator_is_extracted_only_when_the_excerpt_retains_it(
+    record: dict[str, object], extractable: bool
 ) -> None:
-    """Extracted if and only if retained — a biconditional, not an implication.
+    """Never extracted unless retained, and extracted where we can attribute it.
 
     This is the assertion the previous four rounds needed and none of them
     made. Each earlier test said *if* an observable exists *then* something
@@ -690,9 +691,18 @@ def test_an_indicator_is_extracted_exactly_when_the_excerpt_retains_it(
     assert event.vendor == "unrecognized", "fixture must take the unclaimed path"
     retained = _INDICATOR_URL in event.raw_excerpt
     extracted = _INDICATOR_URL in event.observables
-    assert extracted == retained, (
-        f"indicator is {'retained' if retained else 'absent'} in the excerpt but "
-        f"{'was' if extracted else 'was not'} extracted"
+
+    # Direction one, unconditional: nothing is extracted that the evidence
+    # cannot account for. This is the half that must never weaken.
+    if extracted:
+        assert retained, (
+            "indicator was extracted but is in no retained field — a fabricated "
+            "join key in an append-only index"
+        )
+    # Direction two, per row: where the row says the indicator is attributable,
+    # it must actually be extracted, so narrowing cannot quietly lose it.
+    assert extracted is extractable, (
+        f"row expects extracted={extractable} and got {extracted} (retained={retained})"
     )
 
 
@@ -881,77 +891,6 @@ def test_the_leaf_walk_tolerates_an_unsorted_declaration() -> None:
 
 
 @pytest.mark.security
-def test_no_extractor_can_match_across_an_indicator_terminator() -> None:
-    """The trim is only sound if no extractor's class contains a terminator.
-
-    ``_retained_values`` cuts the excerpt tail back past its last
-    ``INDICATOR_TERMINATORS`` character and relies on that leaving a string
-    which cannot be ending *inside* a match. That holds because every
-    extractor's character class is a subset of ``_URL``'s
-    ``[^\\s"'<>\\]`` — and that is a claim about five regexes, which is
-    exactly the kind of claim this layer has had wrong five times. So it is
-    asserted here rather than argued in a docstring: widen any extractor to
-    accept a terminator and this test fails before the trim silently starts
-    severing indicators again.
-    """
-    from ingest import _coerce
-
-    # Scoped to the patterns ``observables()`` itself matches with, read out of
-    # its own source rather than guessed from the module namespace. The first
-    # draft of this test collected every upper-case compiled regex in
-    # ``_coerce`` and failed on ``_WHITESPACE_RUN`` — a normalizer used by
-    # ``text()``, not an extractor. Reading the function keeps the set correct
-    # when one is added, and keeps a non-extractor out of it.
-    function = _source_of(_coerce.observables)
-    names = sorted(
-        {match.group(1) for match in re.finditer(r"\b(_[A-Z0-9_]+)\.find(?:all|iter)\(", function)}
-    )
-    assert names == ["_DOMAIN", "_HASH", "_IPV4", "_IPV6", "_URL"], (
-        f"the extractor set ``observables()`` uses has changed: {names}. "
-        "Re-derive INDICATOR_TERMINATORS against the new set before updating "
-        "this list — the tail trim in _retained_values depends on it."
-    )
-    patterns = {name: getattr(_coerce, name) for name in names}
-
-    # Expanded, not compressed. `_IPV6` has no `::` support, so the probe
-    # `2001:db8::1` this test shipped with produced ZERO matches and the IPv6
-    # extractor executed no assertion at all. Found by review; the
-    # every-extractor guard below is the general form of that mistake.
-    #
-    # One honest limit, measured: this catches a crossing only where the probe
-    # layout lets one form. Widening `_URL` to accept whitespace is caught
-    # (`_URL matched across '\t'`); widening `_IPV6` to accept whitespace
-    # inside a hex group is NOT, because a crossing group would have to span
-    # `7\t2001:` — six characters against `{1,4}`. So the per-extractor
-    # assertion is only as strong as the adjacency the corpus happens to
-    # create, while the guard below is unconditional.
-    probes = (
-        "http://a.example/p",
-        "198.51.100.7",
-        "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-        "a" * 64,
-        "evil.example.com",
-    )
-    assertions = dict.fromkeys(patterns, 0)
-    for terminator in sorted(_coerce.INDICATOR_TERMINATORS):
-        probe = terminator.join(probes)
-        for name, pattern in patterns.items():
-            for match in pattern.findall(probe):
-                found = match if isinstance(match, str) else "".join(match)
-                assertions[name] += 1
-                assert terminator not in found, (
-                    f"{name} matched across {terminator!r}: {found!r} — the "
-                    f"tail trim in _retained_values is unsound"
-                )
-
-    unexercised = sorted(name for name, count in assertions.items() if not count)
-    assert not unexercised, (
-        f"{unexercised} matched nothing in the probe corpus, so this test "
-        f"asserted nothing about them. Add a probe each extractor recognises."
-    )
-
-
-@pytest.mark.security
 def test_the_indicator_position_table_covers_both_sides_of_that_equality() -> None:
     """A table that drifted to one side would make the equality unfalsifiable.
 
@@ -961,7 +900,7 @@ def test_the_indicator_position_table_covers_both_sides_of_that_equality() -> No
     """
     retaining = {
         position
-        for position, record in _INDICATOR_POSITIONS
+        for position, record, _ in _INDICATOR_POSITIONS
         if _INDICATOR_URL in normalize(record).raw_excerpt
     }
     dropping = set(_POSITION_IDS) - retaining

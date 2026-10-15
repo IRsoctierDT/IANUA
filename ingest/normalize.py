@@ -41,15 +41,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ingest import keyvalue
-from ingest._coerce import (
-    CUT_TOKEN,
-    ESCAPED_TOKEN,
-    FieldPath,
-    depth_within,
-    observables,
-    project,
-    text,
-)
+from ingest._coerce import FieldPath, depth_within, observables, project, text
 from ingest.errors import UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
 from ingest.schema import (
@@ -393,65 +385,63 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
     the *attribution* is wrong, and the sentence asserting it cannot happen
     was simply untrue.
 
-    **Stopping the walk is not the same as discarding the rest of the text,
-    and conflating the two was the fifth round.** The third version simply
-    ``break``-ed on the leaf the slice had cut, which threw away the part of
-    that leaf ``rendered`` still held. Measured on the merged code, with
-    ``@timestamp`` at 2048 characters, ``Channel`` at 1500, and a ``Subject``
-    whose value *begins* with a URL:
+    **The walk stops and nothing is salvaged, and that is the end of three
+    rounds of trying to salvage.** Round five observed that simply breaking on
+    the cut leaf throws away the part of it the excerpt still holds — an
+    indicator readable at index 3594 of a 4096-character excerpt, extracted
+    into nothing — and added a scan of the remaining text. The two rounds that
+    followed were both defects *in that addition*, and both **fabricated**
+    rather than lost:
 
-        raw_excerpt : 4096 chars, URL present and readable at index 3594
-        observables : ()
+    ====  ============================================  =====================
+    rd    what the tail scan did                        outcome
+    ====  ============================================  =====================
+    5     added, to recover a retained indicator        recovers it
+    6     matched a token the 4096 slice had severed    a sha1/md5 from a cut
+                                                        sha256, 19/50 offsets
+                                                        for a URL
+    8     matched a token up to a JSON unicode escape      a URL that never
+                                                        existed, 10/148
+    9     ``observables()`` re-sliced the tail at        a 40-char sha1 from a
+          ``MAX_FIELD_LEN`` **after** both guards        50-char hex run that
+                                                        matches no hash
+    ====  ============================================  =====================
 
-    All three fields are modelled and the indicator is in the evidence an
-    operator can read — which is round one's defect reached by a new route,
-    and the reason it survived two property tests is that both are
-    *implications* over ``event.observables``: an empty tuple satisfies them
-    with zero iterations. Found by review.
+    Round nine is why the mechanism is gone rather than patched again. Both of
+    round six's and eight's guards operated on the tail *as it was built*, and
+    round nine's cut happens downstream in ``text()``, where they cannot
+    reach. Token-safety at construction cannot survive a later slice, so
+    making the tail sound would mean token-safety at every boundary the value
+    crosses — an open-ended blacklist, and three rounds of evidence that I
+    guess its membership wrong.
 
-    The tail is therefore handed over as one more value, with its final token
-    trimmed off. **The trim is round six, and it is the first defect here
-    that added something false rather than losing something true.** A hard
-    character slice can land inside an indicator, and the untrimmed tail
-    handed the severed prefix to ``observables()`` as though it were whole.
-    Measured across padding offsets that move the cut through a ``Subject``:
+    So the trade was measured and taken the other way. Removing the salvage
+    loses exactly one case and removes three:
 
-        19 of 50 offsets yielded a truncated URL
-        2 offsets yielded a truncated *hash* — a 64-character sha256 cut at
-        40 and at 32 characters, which are well-formed sha1 and md5 shapes
+    ===============================  ==========  ==========  ============
+    case                             retained    with tail   without
+    ===============================  ==========  ==========  ============
+    round 5, cut leaf, URL first     yes         exact       **none**
+    round 9, 50-hex run              yes         fabricated  none
+    round 6, cut mid-URL             no          none        none
+    round 2, past the cut            no          none        none
+    round 1, late-sorting            yes         exact       exact
+    first leaf                       yes         exact       exact
+    ===============================  ==========  ==========  ============
 
-    The hash case is the one that matters. A lost indicator is a gap; a
-    40-character hex string that never hashed anything is a plausible IOC in
-    an indexed, append-only join-key column, and ``correlation/entities.py``
-    will join on it. The biconditional did not catch it, because that asks
-    about one exact string and the exact string was neither retained nor
-    extracted — ``False == False``. Found by review.
+    One gap against zero false keys. ``AGENTS.md`` §3 orders that trade —
+    most secure, fail closed — and the asymmetry is real rather than
+    aesthetic: a missing indicator is a gap an operator can see in the excerpt
+    and act on, while a fabricated one is an indexed, append-only join key
+    that ``correlation/entities.py`` will join entities on, cannot be edited
+    (``UPDATE`` is refused), and reads exactly like a real IOC.
 
-    So the tail is cut back past its last
-    :data:`~ingest._coerce.INDICATOR_TERMINATORS` character. Every extractor's
-    character class is a subset of ``_URL``'s, so a string ending on a
-    terminator cannot be ending inside a match, and a test pins that
-    derivation rather than trusting this paragraph. The cost is the mirror of
-    the gain: an indicator genuinely ending at the excerpt boundary is now
-    dropped, because nothing in the retained text distinguishes it from one
-    the slice severed.
-
-    It still needs no argument about its relationship to the excerpt, because
-    it **is a slice of the excerpt** — ``rendered[offset:]``, trimmed, not
-    something re-derived from the projection and then reasoned about. Every earlier version of this function
-    derived its scan source from the projection and argued the correspondence;
-    each argument was true of the case in front of it and false of another.
-    The containment here is syntactic, so round two cannot return through it:
-    an indicator past the cut is not in ``rendered`` at all, and so not in any
-    slice of it (measured — the round-two record's tail is 2031 characters and
-    does not contain its URL).
-
-    Two residuals, stated rather than implied. The tail is one value, so
-    ``MAX_FIELD_LEN`` bounds it once: when the walk stops early enough that
-    the tail exceeds 2048 characters, an indicator in its later part is still
-    not extracted. And key *names* in ``rendered`` are retained but scanned
-    only when they fall inside this tail, so "every indicator in the excerpt
-    is extracted" is true of values and not of keys.
+    **What this costs, stated plainly so nobody re-adds it by accident.** An
+    indicator inside the leaf the excerpt slice cut is retained and readable
+    and is *not* extracted.
+    ``test_an_indicator_is_extracted_only_when_the_excerpt_retains_it``
+    pins that as the ``in-the-cut-leaf`` row with ``must_be_extracted=False``,
+    so the loss is asserted rather than incidental.
 
     **The sort, measured rather than reasoned about.** An earlier version of
     this paragraph said the sort was not load-bearing "because ``project``
@@ -507,22 +497,10 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
             break
         found = rendered.find(fragment, offset)
         if found < 0:
-            # Either the slice cut this leaf in half, or ``_serialize`` fell
-            # back and this leaf is not in the text at all. Both stop the walk:
-            # past this point no leaf is reliably placed. But whatever
-            # ``rendered`` still holds from ``offset`` on **is** retained
-            # evidence, so it is handed over as one value rather than
-            # discarded — that omission was the fifth round on this function.
-            # Trimmed, because the slice can land mid-indicator and a severed
-            # indicator is worse than a lost one: it is a *false* join key in
-            # an append-only index. See the docstring for the measurement.
-            tail = CUT_TOKEN.sub("", rendered[offset:])
-            # And drop any token carrying a backslash: the tail is escaped
-            # JSON, so a token containing one has content the tail cannot
-            # recover, and matching up to the escape fabricates an indicator.
-            tail = ESCAPED_TOKEN.sub("", tail)
-            if tail:
-                kept.append(tail)
+            # The slice cut this leaf, or ``_serialize`` fell back and the
+            # leaf is not in the text at all. Either way the walk stops,
+            # and nothing is salvaged from the text that remains — see the
+            # docstring for the three rounds that salvaging cost.
             break
         kept.append(value)
         offset = found + len(fragment)

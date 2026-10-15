@@ -45,46 +45,6 @@ _HASH = re.compile(r"\b(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})\b")
 _URL = re.compile(r"\bhttps?://[^\s\"'<>\\]{3,256}", re.IGNORECASE)
 _DOMAIN = re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.){1,6}[A-Za-z]{2,24}\b")
 
-#: Characters no extractor above can match: whitespace plus ``_URL``'s five
-#: exclusions. ``_URL``'s class is the widest of the five — ``_IPV4`` is digits
-#: and dot, ``_IPV6`` hex and colon, ``_HASH`` hex, ``_DOMAIN`` alnum, dot and
-#: hyphen — so a string ending on one of these cannot be ending *inside* a
-#: match. Kept here rather than at the call site so it cannot drift from the
-#: patterns it is derived from, and
-#: ``tests/security/test_ingest_hardening.py`` pins that every extractor is in
-#: fact terminated by every one of them.
-INDICATOR_TERMINATORS = frozenset(" \t\n\r\f\v\"'<>\\")
-
-#: The trailing run of an excerpt tail that a hard character slice may have
-#: cut in half — everything after its last :data:`INDICATOR_TERMINATORS`
-#: character. Trimming it is what keeps a severed indicator out of the
-#: observable set; see ``normalize._retained_values``.
-CUT_TOKEN = re.compile(r"[^\s\"'<>\\]+\Z")
-
-#: A token in an excerpt tail that carries a backslash, and therefore a token
-#: whose true content is not known from the tail alone.
-#:
-#: The tail is *serialized* text: ``_serialize`` renders with ``json.dumps``'s
-#: default ``ensure_ascii=True``, so ``é`` becomes ``\u00e9``. Backslash is an
-#: :data:`INDICATOR_TERMINATORS` member — correctly, since no extractor's class
-#: contains it — which means ``_URL`` stops there, and the part *before* it
-#: matches as though it were a whole URL. Measured on the version that shipped
-#: the tail scan: a ``Subject`` containing
-#: ``http://indicator.example/pay/café`` produced the observable
-#: ``http://indicator.example/pay/caf`` at 10 of 148 cut offsets — a plausible
-#: URL that never existed anywhere, in an indexed append-only column.
-#:
-#: So a backslash-bearing token is dropped whole rather than matched up to the
-#: escape. That loses an indicator inside escaped content, which is the same
-#: trade the trim itself makes: in a tail, when the true text cannot be
-#: recovered, lose it rather than invent it. It applies to the tail **only** —
-#: ordinary leaf values are scanned unescaped and are unaffected.
-#:
-#: The underlying asymmetry (the excerpt is escaped, the extractors read
-#: literal text) is wider than the tail and is tracked separately; this closes
-#: the route the tail scan opened.
-ESCAPED_TOKEN = re.compile(r"[^\s\"'<>]*\\[^\s\"'<>]*")
-
 
 def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
     """Coerce a scalar to a bounded, printable string, or ``None``.
