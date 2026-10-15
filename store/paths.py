@@ -95,3 +95,144 @@ def confine(
         # loosening that pattern does not silently open a traversal.
         raise error(f"{what} path {candidate} escapes {directory}")
     return candidate
+
+
+def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data root") -> Path:
+    """Return ``root`` resolved, or raise ``error`` if it is not a usable root.
+
+    Every scheduled entry point takes a ``--root`` and creates ``data/``
+    beneath it, never the root itself — so a root that does not already exist
+    is a typo or an unmounted volume, not a fresh deployment. Three of the
+    four CLIs each carried their own copy of that check, one carried none, and
+    **all four shared a hole**: ``Path("") == Path(".")`` and
+    ``Path(".").is_dir()`` is ``True``, so an unset shell variable in the
+    documented scheduler line — ``--root "$IANUA_ROOT"`` with nothing in it —
+    passed the check and built a complete shadow ``data/`` tree in whatever
+    the working directory happened to be.
+
+    Measured on all four CLIs: exit 0 every time, and the collector silently
+    wrote an ``events.sqlite3`` into the shadow tree. That is the failure
+    ``docs/PRODUCTION_SOC_PLAN.md`` names as the catastrophic one — "every
+    signal reading healthy while the SOC sees nothing" — reached by the
+    likeliest misconfiguration there is.
+
+    **Two rules, and the order of the second one is the whole control.**
+
+    *Absolute only*, which is the rule ``collect/`` already applies to log
+    sources for this exact reason (AGENTS.md §5: "a relative path means
+    whatever the scheduler's working directory happens to be"). It refuses
+    ``""`` and ``"."`` as instances rather than as special cases, and it
+    refuses every other relative spelling with them.
+
+    *Existence tested on the path as supplied, before ``resolve()``* — because
+    ``resolve()`` does not merely normalize a path, it **invents a real one**.
+    With ``strict=False`` (the default) it collapses ``..`` lexically against
+    components that do not exist, so an absolute ``/srv/absent/..`` resolves to
+    an existing ``/srv`` and sails through any check made afterwards. Measured,
+    on the first version of this function: ``--root missing/..`` gave
+    ``Path.resolve().is_dir() == True``, and ``scripts/run_pipeline.py`` exited
+    ``0`` with "idle: no new events" after writing a complete shadow tree —
+    ``data/events/events.sqlite3`` included — into the working directory. That
+    version had **regressed** the per-CLI guards it replaced: their
+    ``args.root.is_dir()`` stated the *unresolved* path, and the kernel refuses
+    to walk ``..`` out of a component that is not there, so they rejected the
+    spelling this one accepted. Found by the automated reviewer on the pull
+    request that introduced it, against the enumeration of spellings that
+    pull request asked it to break.
+
+    ``..`` is not refused separately: with both rules above, a surviving ``..``
+    means every component on the way to it exists, so nothing has been invented
+    and the operator has named a real directory the long way round.
+
+    *The filesystem root is refused*, and it is the only absolute path given a
+    rule of its own, because it is the only one a misconfigured scheduler
+    produces **by accident**. Measured: with the variable unset,
+    ``--root "$IANUA_ROOT"`` is ``""`` and refused by the first rule, but
+    ``--root "$IANUA_ROOT/"`` — the same line with an ordinary trailing slash —
+    is exactly ``"/"``, which is absolute, is a directory, and was accepted.
+    That puts the event store at ``/data`` with every signal reading healthy:
+    one character from the hole this function was written to close, and in the
+    same catastrophic class. ``//``, ``/.``, ``/..``, ``/../../..`` and
+    ``/proc/self/root`` all resolve there too, so the test is on the resolved
+    path — a path that is its own parent.
+
+    **The limit of the absolute rule, stated rather than implied.** "Absolute"
+    removes the *accidental* dependence on the working directory, not every
+    possible one. ``/proc/self/cwd`` is absolute, is a directory, and resolves
+    to the process's working directory; measured, it is accepted and the tree
+    lands there, as it is for ``/proc/thread-self/cwd`` and ``/dev/fd/N``
+    entries. Those are **not** refused, deliberately: no scheduler
+    misconfiguration produces them — an unset variable yields ``""`` or ``"/"``,
+    both now refused — and banning ``/proc`` would refuse paths that are
+    legitimate on Linux. An operator who writes one has named that directory on
+    purpose, which is the line this function draws. It also cannot catch
+    ``--root "$IANUA_ROOT/data"`` with the variable unset, which yields
+    ``/data``: that is an absolute path to a plausible lab-data root, and
+    nothing here can distinguish it from an operator who meant it.
+
+    One implementation, because four copies of a guard is how three of them
+    stay fixed and one does not — which is the shape this very defect took.
+
+    Args:
+        root: The ``--root`` argument, exactly as the operator supplied it.
+        error: The exception type to raise, so each caller keeps its taxonomy.
+        what: A noun for the message.
+
+    Returns:
+        ``root`` resolved, so every later join is unambiguous.
+
+    Raises:
+        error: If ``root`` is relative (including ``""`` and ``"."``), does not
+            already exist as a directory when stated as supplied, cannot be
+            stated at all, or resolves to the filesystem root.
+    """
+    if not root.is_absolute():
+        raise error(
+            f"{what} must be an absolute path, got {str(root)!r}; a relative root means "
+            "whatever the scheduler's working directory happens to be, which is how an "
+            "unset shell variable becomes a shadow data tree that reports success"
+        )
+    # Stated as supplied. Resolving first is what let `/srv/absent/..` through.
+    try:
+        is_directory = root.is_dir()
+    except OSError as exc:
+        # `Path.is_dir()` swallows ENOENT, ENOTDIR, EBADF and ELOOP and returns
+        # False, but *not* ENAMETOOLONG, which propagated as a bare `OSError`
+        # and broke the `error` contract above. Measured: a 256-byte component
+        # raised `[Errno 36] File name too long` straight through. The four
+        # CLIs happen to catch `OSError` as well, so the exit code was right by
+        # accident, which is not the same as the contract holding.
+        raise error(f"{what} {root} cannot be stated: {exc}") from exc
+    if not is_directory:
+        raise error(
+            f"{what} {root} is not an existing directory; data/ is created beneath the "
+            "root but never the root itself, so this is a typo or an unmounted volume "
+            "rather than a fresh deployment"
+        )
+    # Not wrapped: the path was just stat-ed successfully, so a failure here
+    # would be a race rather than a reachable argument.
+    resolved = root.resolve()
+    # The path validated and the path returned are different paths whenever a
+    # symlink is involved, and callers create `data/` beneath the *returned*
+    # one. An atomic deployment symlink swap — `/srv/ianua` repointed from one
+    # release to the next between these two calls — would otherwise hand back
+    # a target nothing had checked, including one that does not exist, which
+    # `mkdir(parents=True)` would then create. Re-stating it closes that
+    # ordinary-operations case. It does **not** close an adversary racing the
+    # two calls deliberately; §5 of the charter already records why that race
+    # is unwinnable, and this is two syscalls apart like any other.
+    if resolved != root and not resolved.is_dir():
+        raise error(
+            f"{what} {root} resolved to {resolved}, which is not a directory; a symlinked "
+            "root that moved between the check and the return is the deployment case, and "
+            "data/ must not be created under a path nothing validated"
+        )
+    if resolved.parent == resolved:
+        raise error(
+            f"{what} must not be the filesystem root, got {str(root)!r} (resolves to "
+            f"{resolved}); data/ is created beneath the root, so this would put the "
+            "event store at /data. It is the one absolute path a misconfigured "
+            'scheduler writes by accident: --root "$IANUA_ROOT/" with the variable '
+            'unset is exactly "/"'
+        )
+    return resolved

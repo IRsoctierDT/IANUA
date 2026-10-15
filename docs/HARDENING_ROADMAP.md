@@ -96,6 +96,36 @@ and `scripts/audit_maintenance.py` is a fail-closed CLI for a scheduler: it veri
 policy and prints a JSON summary. The script docstring carries crontab / systemd-timer examples.
 Covered by `tests/unit/test_audit_maintenance.py`.
 
+**Two ways it was not fail-closed — found by a later survey, both now shut.** A *nonexistent*
+log verified as intact, because an empty chain is a valid chain: a job pointed at a typo
+printed `{"verified": true}`, exited `0`, and built the wrong path on the way out through
+`apply_retention`'s `mkdir(parents=True)`. Its own documented cron line pointed at
+`data/audit.log`, which no writer in the platform creates — there is one chain per subsystem —
+so the example *was* the typo. Separately, it resolved only `AUDIT_HMAC_KEY`, so on an
+Ed25519-signed chain (the scheme whose whole point is that a verifier holds only the public
+key) it configured no signer, reported the head signature as `unsigned`, verified the chain
+alone, and rotated — a stale or forged signature could not stop the one job in the platform
+that *deletes* evidence. Both now resolve through the same
+`agents/policies/audit.py::verifier_from_env` the read-only verifier uses, so this job cannot
+rotate a log `scripts/audit_verify.py` would reject; a missing log exits `2` with the
+verifier's own `failure` text and is **not** skipped by `--no-verify`, and key material that
+exists but cannot be used exits `3` instead of degrading to a chain-only pass.
+
+**A third way, found in review, and the most destructive.** Chain discovery used
+`Path.exists()`, which is true of a *directory*, and `apply_retention` acts on what it
+discovers: a `--log` one component short of the log made `_rotate` **rename the whole
+subsystem directory** to `<name>.1` — audit chain and pipeline cursor with it — reporting
+`{"rotated": true, "archives": 1}` at exit `0`, and with `--log …/data` it took the entire
+lab-data root including the event store. The next run then tracebacked out of `_prune`'s
+`unlink()` at exit 1, so the rename was always discovered too late. A chain is made of
+files and nothing said so; every discovery now requires a regular, non-symlink file
+(`AuditLogger._is_segment`), in the library rather than in the CLI because `AuditLogger` is
+public API — a plant proved that necessary, since the CLI-level test stayed green when
+`_should_rotate` alone was reverted. Both CLIs now distinguish "nothing was ever logged
+here" from "this path is not a log", because a mistyped path is the reachable cause and
+"not found" sends the operator looking for the wrong thing. Covered by
+`tests/security/test_audit_maintenance_failclosed.py`.
+
 **Asymmetric signing — shipped.** Signing is now pluggable (`agents/policies/signing.py`,
 `Signer` protocol): `HmacSigner` (symmetric, default) and **`Ed25519Signer` / `Ed25519Verifier`**
 (asymmetric). With Ed25519 a verifier confirms the head with only the **public** key — no shared

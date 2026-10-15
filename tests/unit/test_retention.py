@@ -255,7 +255,10 @@ def test_a_declined_lock_exits_zero_and_changes_nothing(tmp_path: Path, capsys: 
     root = _root(tmp_path)
     _seed(root, old=3, recent=1)
     lock = _prepare_lock(root / LOCK_SUBDIR)
-    assert lock.name == LOCK_FILE
+    # ``_prepare_lock`` returns the open handle now, not the path, so the
+    # ``open`` sits inside the caller's startup ``try`` with the rest of it.
+    # The file it holds is still the declared lock.
+    assert Path(lock.name).name == LOCK_FILE
 
     with _single_instance(lock) as held:
         assert held is True

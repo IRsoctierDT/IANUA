@@ -31,6 +31,7 @@ from agents.policies.audit import (
     escape_delimiter,
     reject_delimiter,
     signing_key_from_env,
+    verifier_from_env,
 )
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle
 from agents.policies.principal import Principal, PrincipalError, coerce
@@ -71,6 +72,7 @@ __all__ = [
     "load_bundle",
     "reject_delimiter",
     "signing_key_from_env",
+    "verifier_from_env",
 ]
 
 
