@@ -546,12 +546,14 @@ def test_two_passes_cannot_run_at_once(tmp_path: Path) -> None:
 
     root = tmp_path / "root"
     root.mkdir()
-    lock = _prepare_lock(offsets_path(root).parent)
-    with _single_instance(lock) as first:
+    # One ``_prepare_lock`` per attempt rather than one handle reused:
+    # ``flock`` is held by the open file *description*, so re-locking a
+    # single handle succeeds and would make this test vacuous.
+    with _single_instance(_prepare_lock(offsets_path(root).parent)) as first:
         assert first is True
-        with _single_instance(lock) as second:
+        with _single_instance(_prepare_lock(offsets_path(root).parent)) as second:
             assert second is False, "a second pass acquired the lock concurrently"
-    with _single_instance(lock) as third:
+    with _single_instance(_prepare_lock(offsets_path(root).parent)) as third:
         assert third is True, "the lock was not released"
 
 

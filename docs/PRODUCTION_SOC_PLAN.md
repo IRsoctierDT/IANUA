@@ -201,6 +201,58 @@ forever — every signal reading healthy while the SOC sees nothing. A missing
 root now exits `2`. Create it as part of deployment, not by running the
 pipeline.
 
+An `is_dir()` check was not enough, and the gap was the likeliest
+misconfiguration there is. `Path("") == Path(".")`, and the working directory
+is always a directory, so `--root "$IANUA_ROOT"` with the variable unset passed
+the check and built exactly the shadow tree described above — measured on all
+four scheduled CLIs (pipeline, collector, retention, backup), one of which
+stored events into it, and retention had no root check at all.
+
+**The root must now be absolute**, through one shared
+`store.paths.validated_root` rather than a copy per CLI. That is the rule §5 of
+the charter already applies to `collect/`'s log sources, for the same reason in
+the same words: *a relative path means whatever the scheduler's working
+directory happens to be.* An empty, `.`, or any other relative root exits `2`
+with a message quoting what was passed, and a refused startup creates nothing —
+not the shadow tree, not the root, not its own lock file.
+
+**Existence is tested on the path as supplied, before it is resolved**, and
+that ordering is the control rather than a detail. `Path.resolve()` does not
+merely normalize: with `strict=False` it collapses `..` lexically against
+components that *do not exist*, so `missing/..` becomes the working directory
+and `/srv/absent/..` becomes `/srv`. The first version of this fix resolved
+first and tested afterwards, which **regressed** the per-CLI guards it
+replaced — those had stated `args.root.is_dir()` on the unresolved path, where
+the kernel refuses to walk `..` out of a component that is not there, so they
+rejected a spelling the shared guard accepted. Measured: `--root missing/..`
+exited `0` with "idle: no new events" after writing
+`data/events/events.sqlite3` into the working directory. Found by the automated
+reviewer on the pull request, against the enumeration of spellings that pull
+request had asked it to break — the enumeration was wrong, and asking was what
+caught it.
+
+A `..` that survives both rules is *not* refused: every component on the way to
+it exists, so nothing was invented and the operator named a real directory the
+long way round. That non-refusal has its own test, so over-tightening it into a
+blanket `..` ban shows up as a failing test rather than as a refused
+deployment.
+
+**The filesystem root is refused**, and it is the only absolute path with a
+rule of its own, because it is the only one a misconfiguration produces by
+accident. With the variable unset, `--root "$IANUA_ROOT"` is `""` and refused
+as relative — but `--root "$IANUA_ROOT/"`, the same line with an ordinary
+trailing slash, is exactly `/`, which is absolute and *is* a directory. That
+puts the event store at `/data` with every signal reading healthy: one
+character from the original hole, in the same catastrophic class. `//`, `/.`,
+`/..` and `/proc/self/root` all resolve there too, so the test is on the
+resolved path. What it still cannot catch is `--root "$IANUA_ROOT/data"`, which
+yields `/data` — an absolute path to a plausible root, indistinguishable from
+an operator who meant it. **Name the root in the unit or crontab literally, not
+through a variable**, and the whole class goes away.
+
+Pinned for all four CLIs by `tests/security/test_cli_startup_failclosed.py`,
+which also fails if a fifth scheduled CLI is added without a row in it.
+
 **Exit codes**, which are the whole interface a scheduler sees: `0` the cycle
 ran (including the common idle case — a non-zero exit for "nothing new" would
 page someone nightly), `1` the cycle or a persisted cursor failed, `2` bad

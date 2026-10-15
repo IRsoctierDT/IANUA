@@ -44,7 +44,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agents.policies.signing import HmacSigner, Signer
+from agents.policies.signing import HmacSigner, Signer, ed25519_verifier_from_env
 
 _GENESIS_HASH = "0" * 64
 #: Default environment variable holding the audit-log HMAC signing key.
@@ -59,6 +59,44 @@ def signing_key_from_env(var: str = _SIGNING_KEY_ENV) -> bytes | None:
     """
     value = os.environ.get(var, "")
     return value.encode("utf-8") if value else None
+
+
+def verifier_from_env() -> Signer | None:
+    """Pick the head-signature scheme from the environment, or ``None``.
+
+    HMAC (``AUDIT_HMAC_KEY``) wins when both are set — holding the shared secret
+    also detects a *wrong* key — and the Ed25519 path (``AUDIT_ED25519_PUBLIC_KEY``)
+    needs only the **public** key, so an auditor or CI can verify a log signed
+    elsewhere without ever holding a key that could forge it.
+
+    ``None`` means no key material is available at all: the caller falls back to
+    chain-only verification (reported as ``unsigned``) or refuses outright. It is
+    deliberately *not* a silent fallback for key material that exists but cannot
+    be used — a bad hex key, or Ed25519 without the ``.[crypto]`` extra, raises
+    (``ValueError`` / ``RuntimeError``) so a caller cannot mistake an unusable
+    key for an unsigned log and proceed as if it had verified one.
+
+    **Every tool that *reads* a chain resolves its verifier here**, so a log the
+    read-only verifier would reject cannot be rotated or pruned by a maintenance
+    job that resolved a weaker scheme — nor recorded as ``intact`` in a backup
+    manifest by one. The readers are :mod:`scripts.audit_verify`,
+    :mod:`scripts.audit_maintenance`, ``scripts.run_backup._verify_chains`` and
+    :func:`compliance.evidence.verify_chain`; the first draft of this sentence
+    claimed all of them and only the first two were true, which is how the
+    third kept reporting a stale Ed25519 head signature as intact.
+
+    *Writers* do **not** use this: they need a key that can sign, and
+    :class:`Ed25519Verifier` deliberately cannot. They resolve
+    :func:`signing_key_from_env` instead, which is HMAC-only — so an Ed25519
+    deployment's chains are written unsigned. That is a real gap and a wider
+    one than this function; it is recorded rather than implied here, because
+    closing it means deciding whether the platform wants an Ed25519 *signing*
+    posture at all (``ed25519_signer_from_env`` exists and no writer calls it).
+    """
+    hmac_key = signing_key_from_env()
+    if hmac_key is not None:
+        return HmacSigner(hmac_key)
+    return ed25519_verifier_from_env()
 
 
 def _utc_now() -> str:
@@ -258,34 +296,62 @@ class AuditLogger:
         self._archive_re = re.compile(rf"^{re.escape(self.path.name)}\.(\d+)$")
 
     # ---------------------------------------------------------------- segments
+    @staticmethod
+    def _is_segment(path: Path) -> bool:
+        """True iff ``path`` could be a chain segment: a real, regular file.
+
+        **A chain is made of files, and this is the only thing that said so.**
+        Every discovery below used :meth:`Path.exists`, which is true of a
+        *directory* — and :meth:`apply_retention` acts on what it discovers.
+        Measured on the version of this file before this check existed: a
+        mistyped ``--log /srv/ianua/data/pipeline`` (one path component short
+        of ``…/pipeline/audit.log``) made ``_rotate`` **rename the whole
+        subsystem directory** to ``pipeline.1``, carrying the audit chain and
+        the pipeline cursor with it, and reported ``{"rotated": true,
+        "archives": 1}`` at exit ``0``. ``--log …/data`` renamed the entire
+        lab-data root — event store included — the same way. The run after
+        that tracebacked out of ``_prune``'s ``unlink()`` with exit 1, so an
+        operator learns of it only once the damage is a commit behind them.
+
+        ``is_symlink()`` is excluded as well, which is the discipline §5 of the
+        charter already states for the log files ``collect/`` reads: a link at
+        the chain means the chain is not where it is believed to be. It does
+        **not** close :meth:`record`'s append-through-a-symlink path, which
+        never consults this predicate — a separate concern, recorded rather
+        than implied.
+        """
+        return path.is_file() and not path.is_symlink()
+
     def _archive_paths(self) -> list[Path]:
         """Archived segments, oldest → newest (ascending numeric suffix)."""
         parent = self.path.parent
-        if not parent.exists():
+        if not parent.is_dir():
             return []
         indexed: list[tuple[int, Path]] = []
         for child in parent.iterdir():
             m = self._archive_re.match(child.name)
-            if m:
+            if m and self._is_segment(child):
                 indexed.append((int(m.group(1)), child))
         return [p for _, p in sorted(indexed)]
 
     def _segments_in_order(self) -> list[Path]:
         """All chain segments oldest → newest: archives then the active log."""
         segments = self._archive_paths()
-        if self.path.exists():
+        if self._is_segment(self.path):
             segments.append(self.path)
         return segments
 
     def exists(self) -> bool:
-        """True iff any trace of the log exists on disk.
+        """True iff any trace of the log exists on disk, as a chain.
 
         Checks the active file, archived segments, and the retention
-        checkpoint. Lets a verifier distinguish a wrong/missing path (nothing
-        was ever logged here — a monitor must fail closed) from a legitimately
-        empty existing log.
+        checkpoint — each of which must be a regular, non-symlink file (see
+        :meth:`_is_segment`). Lets a verifier distinguish a wrong/missing path
+        (nothing was ever logged here — a monitor must fail closed) from a
+        legitimately empty existing log, and refuses to call a *directory* a
+        log, which is what made rotation rename one.
         """
-        return bool(self._segments_in_order()) or self._checkpoint_path.exists()
+        return bool(self._segments_in_order()) or self._is_segment(self._checkpoint_path)
 
     def _last_event(self, segment: Path) -> AuditEvent | None:
         if not segment.exists():
@@ -309,7 +375,7 @@ class AuditLogger:
 
     # ---------------------------------------------------------------- checkpoint
     def _read_checkpoint(self) -> tuple[int, str] | None:
-        if not self._checkpoint_path.exists():
+        if not self._is_segment(self._checkpoint_path):
             return None
         data = json.loads(self._checkpoint_path.read_text(encoding="utf-8"))
         return int(data["pruned_through_seq"]), str(data["pruned_through_hash"])
@@ -344,9 +410,12 @@ class AuditLogger:
             oldest.unlink()
 
     def _should_rotate(self) -> bool:
+        # ``_is_segment`` rather than ``exists()``: a directory's ``st_size``
+        # is its own block size — 4096 on ext4 — so any ``max_bytes`` below
+        # that made a mistyped path "due for rotation".
         return (
             self.max_bytes is not None
-            and self.path.exists()
+            and self._is_segment(self.path)
             and self.path.stat().st_size >= self.max_bytes
         )
 
