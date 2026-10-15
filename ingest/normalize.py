@@ -306,7 +306,7 @@ class _Excerpt:
     matching each leaf against the rendered string
     (:func:`_retained_values`), so a leaf the excerpt truncated away is not
     scanned either. Asserted directly rather than reasoned about — see
-    ``test_every_observable_is_findable_in_the_retained_excerpt`` — because
+    ``test_every_observable_is_findable_in_the_retained_evidence`` — because
     this function has now been wrong in both directions.
 
     They are both needed because they are bounded differently.

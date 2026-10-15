@@ -875,6 +875,46 @@ def test_the_indicator_position_table_covers_both_sides_of_that_equality() -> No
     assert len(dropping) >= 2, f"no dropped-indicator rows left: {sorted(dropping)}"
 
 
+#: Members of ``to_dict()`` that are **not** evidence and so may not satisfy
+#: the invariant below. Both were found by review, and both arguments for
+#: including them were mine and wrong.
+#:
+#: ``observables`` — ``to_dict()`` serializes it, so every observable matched
+#: itself and the assertion could not fail. That was round four.
+#:
+#: ``notes`` — my stated reason for keeping it was that an unclaimed record's
+#: withheld-key note names key *names*, and a key name is modelled content.
+#: Both halves are false. ``project()`` excludes the withheld keys **by
+#: construction**, so the note's key names are precisely the strings that are
+#: in no other retained field, and whoever wrote the record chooses them
+#: verbatim. Measured — a record with two indicator-shaped keys nobody models:
+#:
+#:     raw_excerpt : {"Subject": "ordinary subject"}
+#:     notes       : "...their values are withheld from the excerpt (keys:
+#:                    evil-keyname.example.com,
+#:                    http://planted-keyname.example/x)"
+#:     both keys   : in raw_excerpt False · in notes True
+#:
+#: And notes do not carry only key names: ``ingest/parsers/network.py``'s
+#: unrecognized-stream note and ``ingest/parsers/endpoint.py``'s unmapped-event
+#: note both interpolate payload *values* (measured: ``"unrecognized Zeek
+#: stream 'stream-value.example.com'"``).
+#:
+#: **What this is and is not, measured rather than assumed.** It is a *latent*
+#: masking channel, not a live bypass: on current code neither of those
+#: records yields any observable at all — ``observables == ()`` for both — so
+#: nothing is masked today, because an un-modelled key's *name* is not
+#: scanned. Review's demonstration ran against a plant that made the withheld
+#: key names part of the scan source, and that plant left the entire security
+#: file green. The plant is a realistic future change, since AGENTS.md §5 says
+#: in as many words that a key name is modelled content. So ``notes`` is
+#: excluded because the justification for including it was false and because
+#: it would hide exactly that regression — not because it hides something now.
+#: Excluding it costs nothing on the committed corpus (measured: no test
+#: changes outcome), which is the whole argument for doing it pre-emptively.
+_NOT_EVIDENCE = frozenset({"observables", "notes"})
+
+
 @pytest.mark.security
 @pytest.mark.parametrize("name", _fixture_names())
 @pytest.mark.parametrize("claimed", [True, False], ids=["claimed", "unclaimed"])
@@ -906,6 +946,29 @@ def test_every_observable_is_findable_in_the_retained_evidence(
     cannot fail is worse than no test, because it is cited as proof. Found by
     review; the plant above is now the regression case.
 
+    ``ensure_ascii=False`` is load-bearing and also a review finding.
+    ``json.dumps`` defaults to escaping non-ASCII, while ``event.observables``
+    holds literal characters — so on the **claimed** path a non-ASCII URL that
+    *is* correctly retained in the typed ``email.urls`` field was reported as a
+    violation. Measured on the shipped defender parser with
+    ``http://partner.example/pay/café``: present in ``email.urls``, found in
+    the haystack at ``ensure_ascii=False``, absent at ``ensure_ascii=True``.
+    The corpus is pure ASCII so this fires on no committed fixture today; it
+    would have fired on the first person to add one, and pointed them at the
+    parsers instead of at the dump.
+
+    **What these thirty legs do not cover, stated because the first version of
+    this docstring implied otherwise.** Every defect in this function's history
+    is a *truncation* defect, visible only once ``raw_excerpt`` reaches
+    ``MAX_RAW_EXCERPT`` or ``message`` reaches ``MAX_FIELD_LEN``. Measured over
+    the committed corpus: the longest ``raw_excerpt`` is 679 of 4096 (16%) and
+    the longest ``message`` is 207 of 2048 (10%). **No fixture truncates**, so
+    these legs cannot express either direction of rounds one, two, five or six
+    — replanting round one or round two leaves all thirty green. The real
+    regression coverage is the position table and the cut sweep below; what
+    these legs add is breadth of *shape*, not of bound. Review measured this
+    against the version that cited it as proof.
+
     The unclaimed leg empties the signature registry rather than renaming a
     key, for the same reason. Renaming ``Provider`` unclaimed exactly *one* of
     the fifteen committed fixtures — the other fourteen stayed claimed, so the
@@ -927,8 +990,9 @@ def test_every_observable_is_findable_in_the_retained_evidence(
         f"{name}: the {'claimed' if claimed else 'unclaimed'} leg took the other path"
     )
     retained = json.dumps(
-        {key: value for key, value in event.to_dict().items() if key != "observables"},
+        {key: value for key, value in event.to_dict().items() if key not in _NOT_EVIDENCE},
         default=str,
+        ensure_ascii=False,
     )
     for observable in event.observables:
         assert observable in retained, (
