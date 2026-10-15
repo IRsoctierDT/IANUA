@@ -309,6 +309,20 @@ def test_the_charters_secret_scan_can_actually_run() -> None:
     different route. Pinned on the shape rather than by executing
     detect-secrets, because the suite should not depend on a dev tool being
     installed to tell whether the charter is self-consistent.
+
+    A **third** route was found in review of the fix for the second, and it is
+    the worst because it exits ``0`` rather than ``2``: ``xargs`` appends the
+    paths as plain arguments, so one tracked file whose name begins with a
+    dash is read as a flag. Measured in a throwaway repository holding one
+    AWS-access-key-shaped literal and a file named ``--help``, the command
+    without an option terminator printed usage and exited ``0`` with that key
+    unscanned; with ``--`` the same repository exits ``1`` and names ``AWS
+    Access Key`` at ``planted.py:1``. The literal is deliberately not
+    reproduced here — this gate flags it, correctly, and §5 forbids a key in a
+    docstring as much as in source. ``git add -- --help`` commits such a
+    name, so any pull request can reach it. Hence the terminator assertion
+    below — a leading-dash filename is covered by requiring the shape that
+    neutralises it, not by committing one.
     """
     runnable = _secret_gate_lines()
     gate = [line for line in runnable if "detect-secrets-hook" in line]
@@ -323,6 +337,12 @@ def test_the_charters_secret_scan_can_actually_run() -> None:
     assert any("-z" in line and "xargs -0" in line for line in gate), (
         "§7.1's secret gate must hand paths over NUL-delimited; any whitespace-"
         "delimited form breaks on the repo's own tracked filenames"
+    )
+    assert any(line.rstrip().endswith(" --") for line in gate), (
+        "§7.1's secret gate must end option parsing with `--` before xargs appends "
+        "the paths. Without it a tracked file named e.g. `--help` is read as a flag "
+        "and the gate exits 0 having scanned nothing — measured, with a live AWS key "
+        "in the repository and the gate reporting green."
     )
 
 

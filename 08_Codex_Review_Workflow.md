@@ -4,7 +4,7 @@
 
 Use Codex as a disciplined review partner for bugs, edge cases, test gaps,
 security risks, and repository consistency — on top of the automated gates
-(ruff, mypy, bandit, pip-audit, gitleaks, CodeQL, pytest + coverage, drift
+(ruff, mypy, bandit, pip-audit, detect-secrets, gitleaks, CodeQL, pytest + coverage, drift
 gates), which run on every pull request.
 
 ## PR Review Prompt

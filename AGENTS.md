@@ -498,7 +498,20 @@ pip-audit
 # build on any detected credential", which is the one thing the line above
 # claims it does, so the previous form was a second way of saying the same
 # defect this block already records.
-git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
+#
+# The trailing `--` is the same defect's third route, and it is the worst of
+# the three because it exits **0**. `xargs` appends the paths as plain
+# arguments, so one tracked file whose name begins with a dash is read as a
+# flag: measured in a throwaway repo holding one AWS-access-key-shaped
+# literal and a file named `--help`, the form without a terminator printed
+# usage and exited 0 with that key unscanned — a secret-scanning gate
+# reporting green over a committed credential. With `--` the same repo exits
+# 1 and names `AWS Access Key` at `planted.py:1`. (The literal itself is
+# deliberately not reproduced here: this gate flags it, correctly, and §5
+# forbids a key in a comment as much as in source.) A dash-led name is legal
+# and `git add -- --help` commits it, so this is reachable from any pull
+# request. Found by review, not by us.
+git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --
 #
 # If this prints "Your baseline file (.secrets.baseline) is unstaged" and exits
 # 3, that is not a finding — the hook refuses to run against a baseline with
@@ -542,7 +555,12 @@ in the pipeline."
    exactly, so this list is part of that claim: it had drifted to six of the fourteen,
    and `tests/unit/test_gate_scope_parity.py` now pins this prose as well as the §7
    block. Keep the two in step — the parity test is what caught `sli` missing here.
-3. **Security** — `bandit` (SAST), `pip-audit` (SCA), `gitleaks` (secrets), CodeQL.
+3. **Security** — `bandit` (SAST), `pip-audit` (SCA), **both** secret scanners
+   (`detect-secrets` against the reviewed baseline, and `gitleaks`), CodeQL.
+   The two are not interchangeable and both are required: measured on one tree,
+   `gitleaks` was green while `detect-secrets` was red on two findings — which
+   is how a red §7.1 gate sat behind a green pipeline for three merges while
+   CI ran only `gitleaks`.
    Any finding above the agreed severity threshold **blocks merge**.
 4. **Tests** — `pytest` on 3.11 and 3.12 with coverage gate (`--cov-fail-under=85`);
    `tests/security` must be green; sandbox enforcement runs in a Linux container.
