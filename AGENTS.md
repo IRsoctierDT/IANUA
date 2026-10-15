@@ -225,10 +225,14 @@ identifiers would be claiming not to work. So the posture is not "no personal da
 
 - **The excerpt is rebuilt, never copied.** Each signature in `ingest/parsers/` declares
   the payload paths it reads, and `raw_excerpt` is re-serialized from those paths alone
-  (`ingest/_coerce.py::project`). A field no parser models — a mail `Body`, a column a
-  vendor added last week, a key an attacker chose — has no route into a stored event. A
-  declared path that lands on an object contributes its key *names* and not its values,
-  so an over-broad declaration degrades to shape rather than to content.
+  (`ingest/_coerce.py::project`). **For any record that decodes to a mapping**, a field
+  no parser models — a mail `Body`, a column a vendor added last week, a key an attacker
+  chose — has no route into a stored event. That qualifier is load-bearing and was missing
+  from the first version of this amendment: see the residual below, which is wider than
+  that version said. A declared path that lands on an object contributes its key *names*
+  and not its values, so an over-broad declaration degrades to shape rather than to
+  content — for an object. A declared path landing on a *list* contributes its values, up
+  to the entry bound.
 - **Because redaction is not available.** The store refuses `UPDATE` and `event_id` is a
   sha256 over the projection, so a stored event cannot be edited — only the whole row can
   be pruned. That is deliberate (evidence integrity), and its consequence is that
@@ -238,12 +242,19 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   rebuilt from the union of every parser's declared paths, with a note naming the keys
   whose values were withheld. Recognition breaking upstream is the likeliest route by
   which a body would otherwise reach an append-only store, so this path carries the same
-  rule as the recognized one rather than falling back to the raw text. Free-form text
-  that never decoded into a record at all — ordinary syslog prose — is still carried
-  verbatim, because there is no structure there to project; that residual is recorded in
-  `DESIGN.md` rather than left implicit.
+  rule as the recognized one rather than falling back to the raw text. **Anything that
+  never decoded into a mapping is still carried verbatim**, and that is not only prose:
+  measured on merged code, a JSON record with a trailing comma, a JSON *array* rather
+  than an object, and a record over the `MAX_RAW_BYTES` ceiling each carried an
+  un-modelled mail body into both `message` and `raw_excerpt`. A log line truncated
+  mid-write by rotation is a realistic instance, not a contrived one. There is no mapping
+  to project in those cases and dropping the text would manufacture the blind spot rule 2
+  exists to close, so the behaviour stands — but it is a residual of the control, not an
+  exception for prose, and the earlier wording here understated it.
 - **Indicators are modelled and therefore kept.** An unclaimed record is still *scanned*
-  in full for URLs, hashes and addresses, which are typed, bounded fields with their own
+  for URLs, hashes and addresses — within `MAX_FIELD_LEN`, not "in full", because
+  `observables()` coerces each input through `text()` at that bound; an indicator past
+  character 2048 of one record is not extracted. They are typed, bounded fields with their own
   join deny-list in `correlation/entities.py`. The indicator survives the narrowing; the
   sentence around it does not.
 - **Volume is bounded by a gated pass, not by hope.** `scripts/run_retention.py` reports

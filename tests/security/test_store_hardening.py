@@ -24,11 +24,22 @@ must not survive reconstruction.
 from __future__ import annotations
 
 import ast
+import dataclasses
+import json
 import sqlite3
+import typing
 from pathlib import Path
+from typing import Any
 
 import pytest
-from ingest.schema import MAX_RAW_EXCERPT, NormalizedEvent
+from ingest.errors import MalformedProjectionError
+from ingest.schema import (
+    MAX_FIELD_LEN,
+    MAX_NOTES,
+    MAX_OBSERVABLES,
+    MAX_RAW_EXCERPT,
+    NormalizedEvent,
+)
 from store import (
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
@@ -330,6 +341,183 @@ def test_an_oversized_projection_is_refused(tmp_path: Path) -> None:
         with pytest.raises(StoreIntegrityError, match="ceiling"):
             store.append(huge, ingested_at=1.0)
         assert store.count() == 0, "a refused event must leave nothing behind"
+
+
+# --------------------------------------------------------------------------
+# What is writable must be readable back
+#
+# `query` rebuilds every row it returns through `NormalizedEvent.from_dict`
+# and raises on the first bad one, so a single unreadable row denied the whole
+# window and the cursor could never advance past it. `UPDATE` is
+# trigger-refused and `prune` takes only a time cutoff, so the sanctioned
+# recovery was destroying the store. These assert that the store refuses on
+# write exactly what it would refuse on read.
+# --------------------------------------------------------------------------
+
+
+def _hand_built(**overrides: Any) -> NormalizedEvent:
+    """An event that skipped ingest/'s bounds, as a direct caller would build."""
+    base: dict[str, Any] = {
+        "source_type": "unknown",
+        "vendor": "hand-built",
+        "vendor_event_id": None,
+        "timestamp": None,
+        "message": "m",
+        "activity": None,
+        "parse_status": "text",
+    }
+    return NormalizedEvent(**{**base, **overrides})
+
+
+#: One case per bound `from_dict` enforces that the size ceiling does not
+#: catch. Each is far under MAX_PROJECTION_BYTES, which is the whole point.
+_UNREADABLE: dict[str, dict[str, Any]] = {
+    "message": {"message": "x" * (MAX_FIELD_LEN + 1)},
+    "raw_excerpt": {"raw_excerpt": "y" * (MAX_RAW_EXCERPT + 1)},
+    "one_long_note": {"notes": ("z" * (MAX_FIELD_LEN + 1),)},
+    "too_many_notes": {"notes": tuple(f"n{index}" for index in range(MAX_NOTES + 1))},
+    "too_many_observables": {
+        "observables": tuple(f"10.0.0.{index}" for index in range(MAX_OBSERVABLES + 1))
+    },
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_UNREADABLE), ids=lambda value: value)
+def test_append_refuses_exactly_what_query_would_refuse(tmp_path: Path, case: str) -> None:
+    """The symmetry, asserted as one property rather than two bound lists.
+
+    Both sides must reject the same event, and with the same error — which is
+    what makes "append refuses iff query refuses" checkable instead of a
+    comment. The projection is well inside the byte ceiling in every case, so
+    the pre-existing size check cannot be what catches it.
+    """
+    event = _hand_built(**_UNREADABLE[case])
+    projection = canonical_json(event.to_dict())
+    assert len(projection.encode("utf-8")) < MAX_PROJECTION_BYTES, "size check would mask this"
+
+    # The read path refuses it...
+    with pytest.raises(MalformedProjectionError):
+        NormalizedEvent.from_dict(json.loads(projection))
+
+    # ...so the write path must too, and must leave nothing behind.
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize("sshd: session opened for user root"), ingested_at=1.0)
+        with pytest.raises(MalformedProjectionError):
+            store.append(event, ingested_at=2.0)
+        assert store.count() == 1
+        assert len(store.query()) == 1, "the store must still read after a refusal"
+
+
+@pytest.mark.security
+def test_one_unreadable_row_can_no_longer_wedge_every_later_query(tmp_path: Path) -> None:
+    """The consequence, asserted through the store rather than argued.
+
+    Before this, the refused event was *stored*: `append` returned an id and
+    every subsequent `query` raised for the entire result set, so detection
+    stopped permanently while the collector kept exiting 0.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(
+            normalize("Failed password for a from 203.0.113.1 port 22 ssh2"), ingested_at=1.0
+        )
+        with pytest.raises(MalformedProjectionError):
+            store.append(_hand_built(message="x" * (MAX_FIELD_LEN + 1)), ingested_at=2.0)
+        # The store keeps working: reads succeed and later writes still land,
+        # which is what the cursor needs in order to advance.
+        store.append(
+            normalize("Failed password for b from 203.0.113.2 port 22 ssh2"), ingested_at=3.0
+        )
+        assert store.count() == 2
+        assert len(store.query()) == 2
+    # And again after a reopen, since the row is simply not there.
+    with EventStore.open(tmp_path) as store:
+        assert len(store.query()) == 2
+
+
+@pytest.mark.security
+def test_a_batch_holding_one_unreadable_event_is_refused_whole(tmp_path: Path) -> None:
+    """All-or-nothing: the projection pass completes before the transaction opens."""
+    good = normalize("Accepted password for v from 10.0.0.1 port 22 ssh2")
+    with EventStore.open(tmp_path) as store:
+        with pytest.raises(MalformedProjectionError):
+            store.append_many(
+                (good, _hand_built(message="x" * (MAX_FIELD_LEN + 1))), ingested_at=1.0
+            )
+        assert store.count() == 0, "a refused batch must not store its good events"
+        assert store.append_many((good,), ingested_at=1.0) == 1
+
+
+#: Fields no value can overfill: two closed vocabularies and an epoch float.
+#: Named so the reflection below cannot quietly cover nothing and pass.
+_UNOVERFILLABLE = frozenset({"source_type", "parse_status", "timestamp"})
+
+
+def _one_overfilled_field(name: str) -> NormalizedEvent:
+    """An event valid everywhere except ``name``, which is one past its bound.
+
+    One field at a time, deliberately. An event overfilled in *every* field
+    exceeds MAX_PROJECTION_BYTES and is caught by the size ceiling, so it
+    never reaches the read-back — it is the few-fields case that falls in the
+    gap between the two checks, and that is the case this covers.
+    """
+    if name in _UNOVERFILLABLE:
+        raise AssertionError(f"{name} has no overfillable value")
+    hints = typing.get_type_hints(NormalizedEvent)
+    annotation = hints[name]
+    long_text = "A" * (MAX_FIELD_LEN + 1)
+    if name == "raw_excerpt":
+        return _hand_built(raw_excerpt="A" * (MAX_RAW_EXCERPT + 1))
+    if dataclasses.is_dataclass(annotation) and isinstance(annotation, type):
+        group = typing.cast("type[Any]", annotation)
+        group_hints = typing.get_type_hints(group)
+        scalar = next(f.name for f in dataclasses.fields(group) if group_hints[f.name] is not tuple)
+        return _hand_built(**{name: group(**{scalar: long_text})})
+    if typing.get_origin(annotation) is tuple:
+        return _hand_built(**{name: (long_text,)})
+    return _hand_built(**{name: long_text})
+
+
+#: Parametrized over the overfillable fields only, so the test body carries no
+#: skip branch. The coverage check below is what stops this list from quietly
+#: shrinking to nothing.
+_OVERFILLABLE = sorted(
+    f.name for f in dataclasses.fields(NormalizedEvent) if f.name not in _UNOVERFILLABLE
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("name", _OVERFILLABLE)
+def test_every_field_past_its_bound_is_refused_on_write(tmp_path: Path, name: str) -> None:
+    """By reflection over the dataclass, so a new field is covered unasked.
+
+    For each field: one past its bound is refused with the error the *read*
+    path raises, and the same event through ``bounded()`` is accepted. That
+    ties the three pieces together — ``bounded()`` is what makes an event
+    storable, and the store refuses anything it did not fix.
+    """
+    event = _one_overfilled_field(name)
+    projection = canonical_json(event.to_dict())
+    assert len(projection.encode("utf-8")) < MAX_PROJECTION_BYTES, "size check would mask this"
+    with EventStore.open(tmp_path) as store:
+        with pytest.raises(MalformedProjectionError):
+            store.append(event, ingested_at=1.0)
+        assert store.count() == 0
+        store.append(event.bounded(), ingested_at=1.0)
+        assert store.count() == 1
+        assert len(store.query()) == 1
+
+
+@pytest.mark.security
+def test_the_reflection_above_covers_every_field_it_can() -> None:
+    """A parametrized test covering nothing would pass in silence."""
+    names = {f.name for f in dataclasses.fields(NormalizedEvent)}
+    assert names > _UNOVERFILLABLE, "a field named in _UNOVERFILLABLE no longer exists"
+    assert set(_OVERFILLABLE) == names - _UNOVERFILLABLE
+    assert len(_OVERFILLABLE) >= 12, f"only {len(_OVERFILLABLE)} fields exercised"
+    for name in sorted(_UNOVERFILLABLE):
+        with pytest.raises(AssertionError):
+            _one_overfilled_field(name)
 
 
 @pytest.mark.security

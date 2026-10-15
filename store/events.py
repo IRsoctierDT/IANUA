@@ -46,6 +46,7 @@ Security considerations (AGENTS.md §3, §5):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -66,6 +67,7 @@ from store.errors import (
 from store.paths import confine
 from store.schema import (
     DDL,
+    DIGEST_PREFIX,
     HIGH_WATER_KEY,
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
@@ -95,6 +97,48 @@ class StoredEvent:
     #: Epoch seconds at which this platform stored it (injected, not read).
     ingested_at: float
     event: NormalizedEvent
+
+
+@dataclass(frozen=True, slots=True)
+class Attestation:
+    """What this store holds, in a form a later copy can be checked against.
+
+    Content addressing proves every row is what was written. It proves
+    *nothing* about whether all of them are there — deleting 100 of 400 rows
+    leaves ``PRAGMA integrity_check``, :meth:`EventStore.count`,
+    :meth:`EventStore.query` and :meth:`EventStore.high_water_mark` all
+    silent, which was measured before this existed. So a partial copy is
+    indistinguishable from a store that legitimately holds fewer events, and
+    that is the one thing a restore has to be able to tell.
+
+    ``digest`` covers the ``event_id`` of every row, in sorted order, so it is
+    independent of insertion order and of the page layout a copy may differ
+    in. ``events`` and ``observables`` are carried alongside it because a
+    digest that happens to match tells you less than a count that also does.
+    """
+
+    #: Rows in ``events``.
+    events: int
+    #: Rows in ``observables``. Derived from the events, and separately
+    #: truncatable, so it is attested separately.
+    observables: int
+    #: sha256 over the sorted ``event_id`` sequence. See :meth:`EventStore.attest`.
+    digest: str
+    #: The mark at the moment of attestation, or ``None`` for an empty store.
+    high_water: float | None
+    #: The schema the attestation was taken under. A copy restored onto a
+    #: different version is a migration question, not a completeness one.
+    schema_version: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Allow-list projection, for a manifest a human and a gate both read."""
+        return {
+            "events": self.events,
+            "observables": self.observables,
+            "digest": self.digest,
+            "high_water": self.high_water,
+            "schema_version": self.schema_version,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,7 +391,9 @@ class EventStore:
         here, so callers control (and tests pin) the storage timeline.
 
         Raises :class:`IngestionOrderError` if ``ingested_at`` is behind the
-        high-water mark — see :meth:`append_many`.
+        high-water mark — see :meth:`append_many` — and
+        ``MalformedProjectionError`` if the event could not be read back, for
+        the reasons in :meth:`_project`.
         """
         projection, identifier = self._project(event)
         stamp = float(ingested_at)
@@ -378,6 +424,11 @@ class EventStore:
 
         An empty batch is a no-op and is not order-checked: it writes nothing,
         so there is nothing to place out of order.
+
+        One unreadable event also rolls back the whole batch: the projection
+        pass runs to completion before the transaction opens, so a batch
+        containing an event no ``query`` could return is refused in full
+        rather than stored up to the bad one (:meth:`_project`).
         """
         if not events:
             return 0
@@ -485,7 +536,45 @@ class EventStore:
 
     @staticmethod
     def _project(event: NormalizedEvent) -> tuple[str, str]:
-        """Serialize to canonical JSON and content-address it, bound-checked."""
+        """Serialize to canonical JSON, content-address it, and refuse what cannot be read.
+
+        Two checks, and the second exists because the first was not enough.
+
+        **The size ceiling** bounds the whole projection. It caught an event
+        far larger than any ``ingest/`` output, which is what it was for.
+
+        **The read-back** refuses a projection this store could not return.
+        ``_rebuild`` reconstructs every row a query yields through
+        ``NormalizedEvent.from_dict``, which validates each field against *its
+        own* bound — while this method validated only the projection's total
+        size, which a 2049-character ``message`` sails under at 64 KiB. So the
+        store accepted an event and then refused to read it, and because
+        ``query`` rebuilds every row in its window and raises on the first bad
+        one, a single such row stopped **every future detection cycle on that
+        store**: the cursor could not advance past it, ``UPDATE`` is
+        trigger-refused so it could not be repaired, and ``prune`` takes only a
+        time cutoff — so the sanctioned recovery was destroying the whole
+        store. Meanwhile the collector kept exiting 0, so two of the three
+        subsystems read green while detection was dead. Reproduced end to end
+        before the fix.
+
+        This is the third appearance of one defect class in this layer: a bound
+        asserted on read and not applied on write. The first two were
+        ``_unrecognized``'s ``message`` and the parser-assembled ``message``,
+        both fixed inside ``ingest/``. This one is fixed *here*, because the
+        store is the boundary that outlives any single producer — a direct
+        caller, a replay tool, or a future collector that does not route
+        through ``ingest.normalize`` inherits the refusal rather than having to
+        remember the rule. It is deliberately the reader itself that is called,
+        not a second list of bounds, because a list is what drifts.
+
+        Raises:
+            StoreIntegrityError: the projection exceeds the size ceiling.
+            MalformedProjectionError: the projection is within the ceiling but
+                some field is not, so a later ``query`` would refuse it. The
+                same error the read path raises, so "append refuses exactly
+                what query refuses" is one assertion rather than two.
+        """
         projection = canonical_json(event.to_dict())
         size = len(projection.encode("utf-8"))
         if size > MAX_PROJECTION_BYTES:
@@ -494,6 +583,10 @@ class EventStore:
                 "ceiling; ingest/ bounds every field, so an event this large was "
                 "not built through it"
             )
+        # The write-side twin of `_rebuild`'s read. Checked before any insert,
+        # and `append_many` projects the whole batch before opening its
+        # transaction, so a refused event leaves the database untouched.
+        NormalizedEvent.from_dict(json.loads(projection))
         return projection, event_id(projection)
 
     def _insert(
@@ -533,6 +626,47 @@ class EventStore:
         """Total events held."""
         row = self._conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
+
+    def attest(self) -> Attestation:
+        """Attest what this store holds, so a copy of it can be verified.
+
+        The completeness control the store did not have. Read-only, streamed
+        rather than materialized — a 15-million-row store is digested without
+        loading a row into Python beyond one id at a time, which matters
+        because this is meant to be cheap enough to run on every backup.
+
+        The digest commits to the row count as well as the ids, so a store
+        whose ids are a prefix of another's cannot collide with it. Ordered by
+        ``event_id`` rather than by ``ingested_at`` or ``rowid``, because a
+        valid copy may differ in physical layout and must still attest
+        identically; ``event_id`` is a sha256 over the canonical projection,
+        so the order is total and stable.
+
+        This is not a tamper control on its own. An attacker who can rewrite
+        rows can recompute a digest over them — ``UPDATE`` is trigger-refused
+        and the audit chain is the tamper evidence. What this catches is
+        *loss*: a truncated transfer, a copy that raced a writer, a half
+        restore, a prune nobody meant to run.
+        """
+        counts = self._conn.execute(
+            "SELECT (SELECT COUNT(*) FROM events) AS events, "
+            "(SELECT COUNT(*) FROM observables) AS observables"
+        ).fetchone()
+        events = int(counts["events"])
+        running = hashlib.sha256()
+        # The count goes into the preimage first, so a prefix of one store's
+        # ids cannot digest the same as another store's whole set.
+        running.update(f"{DIGEST_PREFIX}{events}\n".encode())
+        for row in self._conn.execute("SELECT event_id FROM events ORDER BY event_id"):
+            running.update(str(row["event_id"]).encode("ascii"))
+            running.update(b"\n")
+        return Attestation(
+            events=events,
+            observables=int(counts["observables"]),
+            digest=running.hexdigest(),
+            high_water=self.high_water_mark(),
+            schema_version=SCHEMA_VERSION,
+        )
 
     def count_before(self, *, before: float) -> int:
         """How many events :meth:`prune` would delete at this threshold.
