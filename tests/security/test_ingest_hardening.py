@@ -696,18 +696,53 @@ def test_an_indicator_is_extracted_exactly_when_the_excerpt_retains_it(
 
 
 #: Offsets that walk the 4096-character excerpt cut across a ``Subject``.
-#: Measured coverage over this range: for the URL payload 44 offsets retain it
-#: complete and 21 cut it; for the sha256 payload 9 complete and 56 cut. Both
-#: regimes have to be present or the sweep proves nothing — asserted below.
-_CUT_SWEEP = range(1930, 2048)
+#: Both regimes — the indicator retained whole, and the cut landing inside it
+#: — have to occur for the sweep to prove anything, which is asserted below
+#: rather than assumed. Measured over these 148 offsets:
+#:
+#:     payload   complete  cut-inside
+#:     url             74          21
+#:     sha256          39          56
+#:     ipv6            64          31
+#:     domain          73          22
+#:     hexrun          53          42
+_CUT_SWEEP = range(1900, 2048)
+
+#: One payload per extractor in :func:`~ingest._coerce.observables`, because a
+#: cut can fabricate an indicator from any of them and the first version of
+#: this test covered the two that are *least* affected. Measured by reverting
+#: the trim, which is how the gap was found — cases produced per payload:
+#:
+#:     ipv6 28 · domain 23 · url 19 · sha256 2 · hexrun 2
+#:
+#: ``hexrun`` is the sharpest of the five and the reason "severed" is the wrong
+#: word for the whole class. Fifty hex characters match **nothing** — ``_HASH``
+#: wants exactly 32, 40 or 64 — so truncating it does not sever a real
+#: indicator, it *manufactures* one that was never there.
+_CUT_PAYLOADS: tuple[tuple[str, str], ...] = (
+    ("url", "http://indicator.example/path"),
+    ("sha256", "a" * 63 + "b"),
+    ("ipv6", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+    ("domain", "deep.sub.indicator.example.com"),
+    ("hexrun", "f" * 50),
+)
+
+_CUT_IDS = [name for name, _ in _CUT_PAYLOADS]
+_CUT_VALUES = [payload for _, payload in _CUT_PAYLOADS]
+
+
+def _cut_at(offset: int, payload: str) -> dict[str, object]:
+    """An unclaimed record whose excerpt boundary falls ``offset`` bytes in."""
+    return {
+        "ProviderV2": "x",
+        "@timestamp": "T" * 2048,
+        "Channel": "C" * offset,
+        "Subject": payload,
+    }
 
 
 @pytest.mark.security
-@pytest.mark.parametrize(
-    "payload",
-    ["http://indicator.example/path", "a" * 63 + "b"],
-    ids=["url", "sha256"],
-)
+@pytest.mark.parametrize("payload", _CUT_VALUES, ids=_CUT_IDS)
 def test_no_observable_is_an_indicator_the_excerpt_slice_cut(payload: str) -> None:
     """A severed indicator is worse than a lost one: it is a *false* join key.
 
@@ -717,9 +752,13 @@ def test_no_observable_is_an_indicator_the_excerpt_slice_cut(payload: str) -> No
     can land inside an indicator, so the severed prefix was extracted as
     though it were whole. Measured on that version across these offsets:
 
-        19 of 50 offsets yielded a truncated URL
-        2 offsets yielded a truncated hash — a 64-character sha256 cut at 40
-        and at 32 characters, which are well-formed sha1 and md5 shapes
+        ipv6 28 · domain 23 · url 19 · sha256 2 · hexrun 2
+
+    offsets per payload, out of 148. The sha256 case is the one review's
+    example reached and it is the *rarest*; the first version of this test
+    covered url and sha256, the two least-affected of the five. Widening it to
+    one payload per extractor was not tidiness — it was finding that the
+    chosen coverage was the weakest available.
 
     The hash case is why this is a security defect and not a precision nit. A
     40-character hex string that never hashed anything is a *plausible* IOC,
@@ -736,14 +775,7 @@ def test_no_observable_is_an_indicator_the_excerpt_slice_cut(payload: str) -> No
     truncated = [
         (offset, observable)
         for offset in _CUT_SWEEP
-        for observable in normalize(
-            {
-                "ProviderV2": "x",
-                "@timestamp": "T" * 2048,
-                "Channel": "C" * offset,
-                "Subject": payload,
-            }
-        ).observables
+        for observable in normalize(_cut_at(offset, payload)).observables
         if observable != payload and payload.startswith(observable)
     ]
 
@@ -753,11 +785,7 @@ def test_no_observable_is_an_indicator_the_excerpt_slice_cut(payload: str) -> No
 
 
 @pytest.mark.security
-@pytest.mark.parametrize(
-    "payload",
-    ["http://indicator.example/path", "a" * 63 + "b"],
-    ids=["url", "sha256"],
-)
+@pytest.mark.parametrize("payload", _CUT_VALUES, ids=_CUT_IDS)
 def test_that_sweep_actually_walks_the_cut_through_the_indicator(payload: str) -> None:
     """Both regimes must occur, or the sweep above is green over nothing.
 
@@ -767,14 +795,7 @@ def test_that_sweep_actually_walks_the_cut_through_the_indicator(payload: str) -
     """
     complete = severed = 0
     for offset in _CUT_SWEEP:
-        excerpt = normalize(
-            {
-                "ProviderV2": "x",
-                "@timestamp": "T" * 2048,
-                "Channel": "C" * offset,
-                "Subject": payload,
-            }
-        ).raw_excerpt
+        excerpt = normalize(_cut_at(offset, payload)).raw_excerpt
         if payload in excerpt:
             complete += 1
         elif payload[:8] in excerpt:
