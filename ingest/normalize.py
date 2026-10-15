@@ -369,10 +369,21 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
     :func:`_leaf_values`' walk order, so one forward pass is enough and a
     value cannot be mistaken for an earlier identical one. ``_serialize`` has
     already sliced ``rendered`` to ``MAX_RAW_EXCERPT``, so a successful
-    ``find`` is within the bound by construction, and a fragment the slice cut
-    in half is not found at all. An explicit second bound check was written,
-    measured to be unreachable, and removed rather than left as decorative
-    defence.
+    ``find`` is within the bound by construction. An explicit second bound
+    check was written, measured to be unreachable, and removed rather than
+    left as decorative defence.
+
+    This docstring also claimed that "a fragment the slice cut in half is not
+    found at all", and **that is false** — found by review, measured. Key
+    names and string values are rendered with identical quoting, so a leaf
+    whose value happens to equal a key name matches the *key name's*
+    occurrence, which precedes the value. At a padding where the ``Subject``
+    value is removed from the excerpt entirely, leaving only the key
+    ``"Subject"``, a leaf whose value is the string ``Subject`` is still kept
+    and scanned. The retention invariant survives it — the key name is itself
+    in the excerpt, so the indicator is still inside the retained text — but
+    the *attribution* is wrong, and the sentence asserting it cannot happen
+    was simply untrue.
 
     **Stopping the walk is not the same as discarding the rest of the text,
     and conflating the two was the fifth round.** The third version simply
@@ -434,13 +445,50 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
     only when they fall inside this tail, so "every indicator in the excerpt
     is extracted" is true of values and not of keys.
 
-    One honest caveat about the sort: a plant that walks in insertion order
-    instead leaves every test green, because :func:`~ingest._coerce.project`
-    happens to build the projection in an order the forward scan tolerates.
-    The sort is therefore **not** currently load-bearing — it makes this
-    function's correctness independent of ``project``'s insertion order rather
-    than dependent on it, which is worth the two characters, and it is
-    recorded as uncovered rather than claimed as tested.
+    **The sort, measured rather than reasoned about.** An earlier version of
+    this paragraph said the sort was not load-bearing "because ``project``
+    happens to build the projection in an order the forward scan tolerates".
+    That reasoning is false, and review was right to push on it. ``project``
+    inserts top-level keys in *declaration* order, and ``sysmon`` is the one
+    signature whose ``fields`` tuple is unsorted — it breaks at index 12
+    (``provider_name`` before ``CommandLine``) and index 30 (``UtcTime``
+    before ``EventData``). On a sysmon projection the two orders disagree, and
+    walking in insertion order keeps **4 of 10** leaves rather than 10: the
+    forward scan's ``offset`` runs past a value it has not reached yet, the
+    ``find`` fails, and the walk stops. That is round one's defect.
+
+    Where that can actually bite is narrower than it sounds, and worth writing
+    down because three call sites look alike:
+
+    ===========================================  ==================  =========
+    call site                                    field list          sort?
+    ===========================================  ==================  =========
+    parse failure on a claimed record            ``signature.fields``  **yes**
+    claimed record, parsed                       ``signature.fields``  no, only
+                                                                       ``.text``
+                                                                       is taken
+    unclaimed record                             ``MODELLED_FIELDS``   no, it is
+                                                                       sorted, so
+                                                                       insertion
+                                                                       order
+                                                                       already
+                                                                       agrees
+    ===========================================  ==================  =========
+
+    So the sort matters on the parse-failure branch alone. That branch is
+    reachable and tested — ``tests/unit/test_evidence_projection.py`` forces an
+    auditd parser failure — but auditd's declaration *is* sorted. For sysmon,
+    the one signature where the sort earns its keep, no record was found that
+    a signature claims and its parser then fails on: roughly a thousand
+    hostile mutations across all fifteen committed fixtures produced zero such
+    records, for all ten vendors.
+
+    The honest summary is therefore neither "not load-bearing" nor
+    "load-bearing": it is **correct insurance on a branch the one signature
+    that needs it is not currently known to reach**, and removing it leaves
+    every test green. ``test_the_leaf_walk_tolerates_an_unsorted_declaration``
+    pins it at this function's own level, since no end-to-end record reaches
+    it.
     """
     kept: list[Any] = []
     offset = 0

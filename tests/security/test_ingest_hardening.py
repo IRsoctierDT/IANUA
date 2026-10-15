@@ -47,6 +47,7 @@ from ingest import (
     NormalizedEvent,
     normalize,
 )
+from ingest._coerce import project
 from ingest.errors import MalformedProjectionError
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore
@@ -803,6 +804,66 @@ def test_that_sweep_actually_walks_the_cut_through_the_indicator(payload: str) -
 
     assert complete >= 5, f"no offset retains {payload!r} whole ({complete})"
     assert severed >= 5, f"no offset cuts into {payload!r} ({severed})"
+
+
+@pytest.mark.security
+def test_the_leaf_walk_tolerates_an_unsorted_declaration() -> None:
+    """``sysmon`` declares its fields unsorted, and the forward scan needs the sort.
+
+    Pinned at ``_retained_values``' own level because no end-to-end record
+    reaches the branch where it matters, which is exactly why it went
+    unnoticed. The three call sites of ``_excerpt_for`` look alike and only
+    one of them both consumes ``.values`` *and* passes a signature's own
+    (possibly unsorted) field list — the parse-failure branch. That branch is
+    reachable and tested for auditd, whose declaration is sorted; for sysmon,
+    the one signature whose declaration is not, roughly a thousand hostile
+    mutations across all fifteen fixtures produced no record that a signature
+    claims and its parser then fails on.
+
+    So this is insurance rather than a live path, and the docstring of
+    ``_retained_values`` says so. What makes it worth a test is that the
+    earlier docstring claimed the opposite — that ``project`` builds
+    projections "in an order the forward scan tolerates" — and that claim is
+    measurably false: sysmon's ``fields`` breaks at index 12
+    (``provider_name`` before ``CommandLine``) and index 30 (``UtcTime``
+    before ``EventData``), insertion order and sorted order disagree, and
+    walking in insertion order keeps 4 of 10 leaves instead of 10. Dropping
+    six modelled leaves out of the scan source is round one's defect.
+    """
+    normalize_module = sys.modules["ingest.normalize"]
+    signature = next(sig for sig in SIGNATURES if sig.vendor == "sysmon")
+    declared = [path[0] if isinstance(path, tuple) else path for path in signature.fields]
+    assert declared != sorted(declared), (
+        "sysmon's declaration is now sorted, so this test no longer exercises "
+        "the divergence it exists for — find another unsorted signature or "
+        "retire it deliberately"
+    )
+
+    record = {
+        "@timestamp": "T" * 900,
+        "Channel": "Microsoft-Windows-Sysmon/Operational",
+        "EventID": "1",
+        "UtcTime": "2026-01-01 00:00:00.000",
+        "Image": "C:\\Windows\\System32\\cmd.exe",
+        "CommandLine": "L" * 900,
+        "provider_name": "P" * 900,
+        "User": "CORP\\alice",
+        "Hashes": "SHA256=" + "ab" * 32,
+        "ProcessId": "4242",
+    }
+    projected = project(record, signature.fields)
+    assert list(projected) != sorted(projected), (
+        "the projection's insertion order now agrees with its sorted order, so "
+        "the forward scan cannot be sensitive to the difference here"
+    )
+
+    excerpt = normalize_module._excerpt_for(signature.fields, record)
+    leaves = list(normalize_module._leaf_values(projected))
+
+    assert len(excerpt.values) == len(leaves), (
+        f"the sorted walk kept {len(excerpt.values)} of {len(leaves)} modelled "
+        f"leaves; an incomplete scan source is round one's defect"
+    )
 
 
 @pytest.mark.security
