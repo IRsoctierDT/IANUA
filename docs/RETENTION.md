@@ -72,13 +72,16 @@ Read four fields before anything else:
 | `events_matching` | What the effective threshold selects **at that instant** (see the warning below) |
 | `effective_threshold` | The window after clamping to the cursor and the correlation margin |
 | `cursor_state` | `present`, `absent`, `ahead-of-store`, each also with ` (override)` |
-| `events_withheld_unprocessed` | Held back because the cycle has not reached them — **read §"The withheld count over-reports" first** |
+| `events_withheld_unprocessed` | Held back because the cycle has not read them — the one of the three withheld figures that calls for action. See §"Three withheld figures" |
 
-The report has 14 JSON fields; `elapsed_seconds` appears only under `--json`. `keep_days`
+The report has 16 JSON fields; `elapsed_seconds` appears only under `--json`. `keep_days`
 is an **int when the flag is defaulted (`90`) and a float when supplied (`90.0`)**, so a
 consumer must accept both. `events_removed` is `null` on every report and an int on every
 applied pass. `cursor_ingested_at` and `effective_threshold` are both `null` exactly when
 `cursor_state` is `absent` or `ahead-of-store` without the override.
+`window_pinned_before` is the `--before` value **if it bound the window** and `null`
+otherwise — the fact, not the input, so a pin the ceiling discarded is never recorded as a
+cause.
 
 ### Granting deletion
 
@@ -113,24 +116,36 @@ already is.
 #    partial copy from a small store, and after the prune it is your only second copy.
 python scripts/run_backup.py --root /srv/ianua --verify /srv/ianua/data/backups/backup-<ts> --caller soc-op --json
 
-# 2. Report, and read it. Do not skip this even though step 3 may not match it.
+# 2. Report, and read it. Note the effective_threshold it prints — step 3 needs it.
 python scripts/run_retention.py --root /srv/ianua --caller soc-op --json
 
-# 3. Apply. Same command plus --apply, with the grant in place.
-python scripts/run_retention.py --root /srv/ianua --caller soc-op --apply --json
+# 3. Apply, pinned to the window you just reviewed. Without --before, step 3
+#    re-derives the boundary from the clock and deletes whatever aged past it
+#    while you were reading step 2.
+python scripts/run_retention.py --root /srv/ianua --caller soc-op --apply     --before <the effective_threshold from step 2> --json
 
 # 4. Verify the pass yourself — report_sli will not do it for you (§"Verifying a pass").
 ```
 
-> **The report does not predict the delete.** The predicate is identical but the threshold
-> is re-derived from `time.time()` on every invocation, so it sweeps forward between the two
-> commands. Measured with no concurrency and no unusual flag, on events arriving one second
-> apart across the boundary: the report said `events_matching: 7`, and the `--apply` **six
-> seconds later** removed **12**. Threshold moved by 6.13 s. The control — the same two-step
-> sequence on events 200 days from the boundary — gave 12 and 12, so this is arrival density
-> times delay, not noise. Read the report for `cursor_state`, the withheld counts and
-> whether the pass is sane at all; do not treat `events_matching` as the number that will be
-> deleted.
+> **Without `--before`, the report does not predict the delete.** The predicate is identical
+> but the threshold is re-derived from `time.time()` on every invocation, so it sweeps
+> forward between the two commands. Measured with no concurrency and no unusual flag, on
+> events arriving one second apart across the boundary: the report said
+> `events_matching: 7`, and the `--apply` **six seconds later** removed **12**. The control —
+> the same sequence on events 200 days from the boundary — gave 12 and 12, so this is arrival
+> density times delay, not noise.
+>
+> `--before` is a **ceiling**: the pass uses `min(--before, now - --keep-days)`, so a stale,
+> mistyped or hostile value can only ever delete *less* than `--keep-days` already permits.
+> It is not a second, ungated way to say "retain nothing", and it cannot silence the
+> whole-store clock guard, which keeps testing the clock-derived window (both pinned by
+> `tests/security/test_retention_failclosed.py`).
+>
+> **It bounds one direction only.** If the cursor is *lost* between the two commands — which
+> `docs/RESTORE.md` step 3 does by design — the apply clamps to nothing whatever the pin
+> holds: measured, 9 reported and 0 removed, `cursor_state: absent`, exit 0. So a pinned dry
+> run is an upper bound on the delete, never an equality, and the closing line says "at
+> most" for that reason.
 
 ### Scheduling
 
@@ -297,28 +312,53 @@ prune did.
 
 ## Reading the report correctly
 
-### The withheld count over-reports, by a whole collector batch
+### Three withheld figures, and why there are three
 
-`prune` and `count_before` use a strict `ingested_at < ?` with no `event_id` tie-break, so
-**every row sharing the cursor's own timestamp** falls into `events_withheld_unprocessed`
-and is described as "not yet processed by the detection cycle". It is not a flag-only
-curiosity, and it is not off-by-one in practice:
+`prune` is a strict `ingested_at < ?` with no `event_id` tie-break, so the commit the cursor
+sits inside is never deletable — correctly, since a threshold takes all of a commit or none
+of it. What was wrong until this was fixed is the *attribution*: every row the bound refused
+was reported under `events_withheld_unprocessed` and described as "not yet processed by the
+detection cycle", with `--include-unprocessed` offered as the remedy.
 
-| Regime | Ground truth (by SQL) | Report says |
+| Regime | Genuinely unprocessed (by SQL) | Old report | Now |
+|---|---|---|---|
+| 12 events in **one** commit, cycle fully caught up, `--keep-days 0` | **0** | **12** | **0** unprocessed, 12 at the cursor's stamp |
+| the same commit, cursor at its midpoint | 6 | **12** | **6** and 6 |
+| 12 events distinct stamps + 4 recent, **shipped `--keep-days 90`** | 4 | 5 | **4** and 1 |
+
+The first row is the one that mattered: the report named 12 events as evidence of a stalled
+cycle on a node whose cycle had just read all 12, and pointed at the flag that on that store
+deletes everything.
+
+**The inflation was the already-read *prefix* of the cursor's commit, not the whole commit** —
+with the cursor at the midpoint of a 12-row commit the tie group is 12 and the inflation is
+6, so subtracting the tie group (the obvious repair) would have reported 0 where 6 rows were
+genuinely unread. Only the cursor's own `(ingested_at, event_id)` order tells them apart,
+which is why `events_withheld_unprocessed` is now **counted** by
+`EventStore.count_before(after=...)` rather than derived by subtracting two timestamp counts.
+
+So the report carries three disjoint figures, which with `events_matching` sum to exactly
+what the window matched:
+
+| Field | Meaning | Does it need you? |
 |---|---|---|
-| 35 events, distinct stamps, cursor on the 10th oldest, **shipped `--keep-days 90`** | 20 unprocessed in window | **21** |
-| 35 events written in `append_many` batches of 10, cursor inside a batch | 20 | **30**, with `events_matching: 0` |
-| 40 events in **one** collector batch, cycle fully caught up | **0** | **40** |
+| `events_withheld_unprocessed` | the cycle has not read them | **Yes** — a stalled cycle stops retention reclaiming anything |
+| `events_withheld_at_cursor_stamp` | it has read them, but they share the cursor's commit | No — the cursor clears it by advancing |
+| `events_withheld_for_correlation` | it has read them and will re-read them as context | No — this is what your `--lookback-margin` costs |
 
-The third row is the operational one. `store/events.py` states that "`append_many` stamps
-one time across a whole batch", and both production writers (`collect/__init__.py`,
-`scripts/run_collector.py`) use `append_many` — so on a real node the inflation is the size
-of the batch the cursor sits in, and the report's suggested remedy is
-`--include-unprocessed`, which on that node would have destroyed the whole store. **Check
-`detection-backlog` before acting on this sentence.** A caught-up node showing a withheld
-count equal to your last batch size is normal; a *growing* one is a stalled cycle. (Tracked
-as a defect in the message, not in the clamp — the clamp is right to refuse the cursor's own
-commit.)
+**All three are window-scoped**, bounded by `--keep-days`. They are not the store-wide
+backlog, and the report says so because the two get confused: measured on one node, the
+unprocessed figure read 4 while `detection-backlog` on the same root read 12. For "is the
+cycle actually behind?", read `scripts/report_sli.py`'s `detection-lag` and
+`detection-backlog` — a non-zero `events_withheld_at_cursor_stamp` with zero unprocessed is
+*also* what a cycle stalled longer than `--keep-days` looks like, and this figure cannot tell
+you which you have.
+
+One note on provenance, since it is easy to get wrong: `scripts/run_collector.py` is the
+**only** production `append_many` writer. `collect/__init__.py` contains what looks like a
+second one, but that package is documentation — its entire body is a module docstring plus
+re-exports, with zero `Call` nodes, and the `events.append_many(...)` line inside it is an
+illustrative sample. An earlier version of this section named both.
 
 ### The cursor clamp, and an absent cursor clamping to nothing
 

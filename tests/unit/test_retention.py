@@ -571,3 +571,243 @@ def test_the_two_withheld_figures_are_disjoint_and_both_reported(
     # The window matched more than the pass will take, and every withheld row
     # is attributed to exactly one cause.
     assert payload["events_matching"] + unprocessed + correlation <= payload["events_total"]
+
+
+# --------------------------------------------------------------------------
+# The withheld figure is counted, not derived (#59)
+# --------------------------------------------------------------------------
+
+
+def _one_commit(root: Path, *, count: int, age_days: float, at: int | None = None) -> int:
+    """One ``append_many`` commit, cursor inside it, and the keyset truth.
+
+    ``append_many`` stamps one ``ingested_at`` across the whole commit — the
+    production shape, since both writers use it — which is the fixture the
+    withheld figure used to be wrong on. ``at`` is the 0-based row the cursor
+    sits on, counting in the store's own ``(ingested_at, event_id)`` order;
+    ``None`` puts it on the newest, i.e. a caught-up cycle. Returns the number
+    of in-window events the cycle genuinely has **not** read, computed by that
+    same total order rather than by subtracting timestamp counts.
+    """
+    now = time.time()
+    with EventStore.open(root) as store:
+        store.append_many(
+            tuple(
+                normalize(_RECORD.replace("svc-deploy", f"row{index}")) for index in range(count)
+            ),
+            ingested_at=now - age_days * 86_400,
+        )
+        rows = store.query(Query(limit=count, newest_first=False))
+        reached = rows[-1 if at is None else at]
+        truth = sum(
+            1
+            for row in rows
+            if (row.ingested_at, row.event_id) > (reached.ingested_at, reached.event_id)
+        )
+    save_cursor(
+        cursor_path(root),
+        Cursor(ingested_at=reached.ingested_at, event_id=reached.event_id),
+    )
+    return truth
+
+
+@pytest.mark.unit
+def test_a_caught_up_cycle_is_not_blamed_for_its_own_commit(tmp_path: Path, capsys: Any) -> None:
+    """The defect: 12 reported as unprocessed where 0 were.
+
+    One commit, the cursor on its newest row, the cycle demonstrably caught
+    up. The old figure was ``window_matching - matching - margin_withheld`` —
+    every row the bound refused — and it named all of them "not yet processed
+    by the detection cycle", then offered ``--include-unprocessed``, which on
+    this store deletes the whole thing.
+    """
+    root = _root(tmp_path)
+    truth = _one_commit(root, count=12, age_days=100)
+    assert truth == 0, "fixture is not caught up, so it cannot show the defect"
+
+    assert _cli_main()(["--root", str(root), "--keep-days", "0", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["events_withheld_unprocessed"] == 0
+    assert payload["events_withheld_at_cursor_stamp"] == 12
+
+
+@pytest.mark.unit
+def test_the_inflation_is_the_read_prefix_and_not_the_whole_commit(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """The counter-test for the fix that was tried and refuted.
+
+    Subtracting the cursor's **tie group** was the obvious repair and it is
+    wrong: with the cursor at the midpoint of a 12-row commit the group is 12
+    and the already-read prefix is 6, so that repair would report 0 where 6
+    rows are genuinely unread — trading an over-report for an under-report on
+    the one figure an operator uses to decide the cycle has stalled. Only the
+    keyset tells the two apart, which is why the figure is counted.
+    """
+    root = _root(tmp_path)
+    truth = _one_commit(root, count=12, age_days=100, at=5)
+    assert truth == 6, "fixture must leave the cursor mid-commit"
+
+    assert _cli_main()(["--root", str(root), "--keep-days", "0", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["events_withheld_unprocessed"] == truth
+    # Not zero, which is what subtracting the whole tie group would give.
+    assert payload["events_withheld_unprocessed"] != 0
+    assert payload["events_withheld_at_cursor_stamp"] == 6
+
+
+@pytest.mark.unit
+def test_the_three_withheld_figures_account_for_the_whole_window(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """The identity, which is what makes the report an account rather than a hint.
+
+    ``matching`` plus the three disjoint withheld figures equals what the
+    window matched. Without the third field in the payload this cannot be
+    checked from JSON at all — ``window_matching`` was never a field — so a
+    reader on a caught-up single-commit node would see a pass that matched
+    nothing and withheld nothing while 12 events sat in the window.
+    """
+    root = _root(tmp_path)
+    _one_commit(root, count=12, age_days=100, at=5)
+
+    assert _cli_main()(["--root", str(root), "--keep-days", "0", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    with EventStore.open(root) as store:
+        window = store.count_before(before=float(payload["threshold_ingested_before"]))
+    assert (
+        payload["events_matching"]
+        + payload["events_withheld_unprocessed"]
+        + payload["events_withheld_at_cursor_stamp"]
+        + payload["events_withheld_for_correlation"]
+    ) == window
+
+
+@pytest.mark.unit
+def test_the_commit_sentence_offers_no_flag_and_claims_nothing_about_the_cycle(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """It must not recommend the destructive flag, nor say the cycle is fine.
+
+    The first is the defect inverted: on this very store
+    ``--include-unprocessed`` deletes every event. The second is a trap an
+    earlier draft of this sentence fell into — ``commit_held`` with zero
+    unprocessed is also what a cycle stalled longer than ``--keep-days`` looks
+    like, so "the cycle is not behind, there is nothing to do" would be false
+    exactly where it is most often printed. The figure is window-scoped and
+    cannot witness either, so the sentence defers to the indicators that can.
+    """
+    root = _root(tmp_path)
+    _one_commit(root, count=12, age_days=100)
+
+    assert _cli_main()(["--root", str(root), "--keep-days", "0"]) == 0
+    out = capsys.readouterr().out
+
+    assert "withheld because the cursor sits in their commit" in out
+    # The flag is named, but to refuse it. An operator who learned the old
+    # message will look for it, so silence would be worse than a refusal —
+    # what must not survive is the old sentence's recommendation.
+    assert "--include-unprocessed is not the remedy" in out
+    assert "overrides it" not in out
+    # And no claim about a cycle this figure cannot see.
+    assert "not behind" not in out
+    assert "nothing to do" not in out
+    assert "detection-backlog" in out
+
+
+# --------------------------------------------------------------------------
+# A dry run can bound the delete it authorizes (#60)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_future_pin_changes_nothing_because_before_is_a_ceiling(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """``--before`` is ``min``-ed with the clock, so it can only ever narrow.
+
+    The property that keeps it from being a second, ungated way to say "retain
+    nothing": a pin past the clock-derived boundary is discarded, and the pass
+    reports exactly what it would have unpinned.
+    """
+    root = _root(tmp_path)
+    _seed(root, old=6, recent=4)
+
+    assert _cli_main()(["--root", str(root), "--json"]) == 0
+    unpinned = json.loads(capsys.readouterr().out)
+
+    assert _cli_main()(["--root", str(root), "--json", "--before", str(time.time() + 86_400)]) == 0
+    pinned = json.loads(capsys.readouterr().out)
+
+    assert pinned["events_matching"] == unpinned["events_matching"]
+    assert pinned["threshold_ingested_before"] == pytest.approx(
+        unpinned["threshold_ingested_before"], abs=5.0
+    )
+    # The pin did not bind, so it is not recorded as a cause of anything.
+    assert pinned["window_pinned_before"] is None
+
+
+@pytest.mark.unit
+def test_a_pin_that_binds_is_recorded_and_named_in_the_text(tmp_path: Path, capsys: Any) -> None:
+    """A pin that emptied the window must say so instead of blaming the window.
+
+    Measured before the fix: 12 events ingested 100 days ago, a 90-day window
+    pinned 200 days back, and the report said "no event was ingested more than
+    90.0 day(s) ago" — false, and the pin named nowhere in the text while the
+    audit chain recorded it.
+    """
+    root = _root(tmp_path)
+    _seed(root, old=6, recent=4)
+    pin = time.time() - 300 * 86_400
+
+    assert _cli_main()(["--root", str(root), "--caller", "pinned", "--before", str(pin)]) == 0
+    out = capsys.readouterr().out
+
+    assert "--before pinned the window" in out
+    assert "no event was ingested more than" not in out
+    assert _held(root) == 10
+
+
+@pytest.mark.unit
+def test_an_apply_removes_no_more_than_a_pinned_dry_run_reported(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """The point of the flag: the window the operator reviewed is the ceiling.
+
+    Unpinned, the threshold is re-derived from ``time.time()`` on each
+    invocation, so whatever ages past the boundary between the two commands is
+    deleted without having been reported — measured at one event a second, 9
+    reported and 15 removed six seconds later. The precondition matters: the
+    cursor must sit above the threshold plus the margin, or this asserts
+    ``0 == 0``.
+    """
+    root = _root(tmp_path)
+    _seed(root, old=6, recent=4)
+    bundle = _granted_bundle(tmp_path, "retain_events:apply")
+
+    assert _cli_main()(["--root", str(root), "--json"]) == 0
+    dry = json.loads(capsys.readouterr().out)
+    assert dry["events_matching"] > 0, "nothing was deletable, so the pin is untested"
+
+    assert (
+        _cli_main()(
+            [
+                "--root",
+                str(root),
+                "--json",
+                "--apply",
+                "--policy",
+                str(bundle),
+                "--before",
+                str(dry["effective_threshold"]),
+            ]
+        )
+        == 0
+    )
+    applied = json.loads(capsys.readouterr().out)
+
+    assert applied["events_removed"] <= dry["events_matching"]
+    assert applied["window_pinned_before"] == pytest.approx(dry["effective_threshold"])
