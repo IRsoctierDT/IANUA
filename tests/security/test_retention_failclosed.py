@@ -487,7 +487,13 @@ def test_the_withheld_count_reaches_the_report_and_the_chain(tmp_path: Path, cap
     assert captured["cursor_state"] == "present"
     assert captured["events_withheld_unprocessed"] > 0
     assert captured["cursor_ingested_at"] is not None
-    assert captured["effective_threshold"] == captured["cursor_ingested_at"]
+    # The cursor is still the binding constraint, pulled back by the
+    # correlation margin. Asserted against the *reported* margin rather than
+    # the literal 900.0, so the report cannot claim one margin while the
+    # clamp applies another — which the equality this replaced could not see.
+    assert captured["effective_threshold"] == (
+        captured["cursor_ingested_at"] - captured["lookback_margin"]
+    )
 
     reasons = [str(record.get("reason", "")) for record in _chain_lines(root)]
     assert any("withheld as" in reason for reason in reasons), (

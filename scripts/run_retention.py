@@ -84,6 +84,31 @@ clock glitch, at the default setting. ``--keep-days 0`` is exempt because by
 the flag's own documentation it means "retain nothing", which is what separates
 a deliberate purge from a clock fault without inventing a tolerance.
 
+**And it stops short of the cursor by a margin, because the cycle reads back
+into it.** The clamp above bounds a pass to *processed* events; the detection
+cycle's lookback exists to re-read *processed* events as correlation context.
+Those are the same rows, which took measuring to see: a three-step story
+straddling the 90-day boundary — all three steps inside one default 900s
+lookback, no concurrency anywhere, every flag defaulted — was reported by the
+cycle at **score 52 across three domains** before a documented retention pass
+and at **score 30 across two** after it. One event deleted, and what an
+analyst reads is still an incident, only smaller and quieter, which is
+indistinguishable from a quieter attack. So a pass leaves
+``--lookback-margin`` seconds of processed history behind the cursor
+(:data:`DEFAULT_LOOKBACK_MARGIN`, which *is* ``pipeline.DEFAULT_LOOKBACK``
+rather than a second copy of the number). An operator running the pipeline
+with a raised ``--lookback`` must raise this to match; the flag's help says so,
+and nothing here can detect it, because the cycle's flag is not recorded
+anywhere this pass can read.
+
+That margin is also why there is **no lock between this pass and the cycle**.
+The hazard was first written down as a mutual-exclusion problem, and the
+measurement refuted it: driving a prune deterministically between the cycle's
+two queries gave the *same* degraded score as running the two passes strictly
+in sequence, since the row is gone either way. With the margin the two touch
+disjoint row ranges by construction, which is stronger than a lock because it
+does not depend on every future writer remembering to take one.
+
 One residual, measured and accepted: ``prune`` is ``DELETE ... WHERE
 ingested_at < ?`` with no ``event_id`` tie-break, while the cursor is a
 ``(ingested_at, event_id)`` pair. One ``append_many`` commit stamps every row
@@ -124,7 +149,12 @@ from agents.policies.bundle import (  # noqa: E402
     load_bundle,
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
-from pipeline import CursorError, cursor_path, load_cursor  # noqa: E402
+from pipeline import (  # noqa: E402
+    DEFAULT_LOOKBACK,
+    CursorError,
+    cursor_path,
+    load_cursor,
+)
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -134,6 +164,23 @@ from store.paths import confine, validated_root  # noqa: E402
 #: It is not a recommendation — see the runbook, which states the storage cost
 #: per day so an operator can pick their own.
 DEFAULT_KEEP_DAYS = 90
+
+#: Seconds of already-processed history a pass must leave behind the cursor,
+#: because the detection cycle reads back into it.
+#:
+#: Tied to ``pipeline.DEFAULT_LOOKBACK`` rather than restated, so the two
+#: cannot drift apart silently — the number is the cycle's, and retention is
+#: the side that has to respect it.
+#:
+#: **Why this exists.** The cursor clamp bounds a pass to *processed* events;
+#: the cycle's lookback exists to re-read *processed* events for correlation
+#: context. Those are the same rows, which nobody noticed until it was
+#: measured: a story straddling the 90-day boundary, under every shipped
+#: default and with no concurrency anywhere, was reported by the cycle at
+#: score 52 across three domains before the documented retention pass and at
+#: score 30 across two domains after it. One event deleted, and the incident
+#: an analyst sees is still an incident — just a quieter, smaller, wrong one.
+DEFAULT_LOOKBACK_MARGIN = DEFAULT_LOOKBACK
 
 #: Where the lock lives: beside the store it guards.
 LOCK_SUBDIR = Path("data") / "events"
@@ -244,6 +291,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--lookback-margin",
+        type=float,
+        default=DEFAULT_LOOKBACK_MARGIN,
+        help=(
+            f"Seconds of processed history to leave behind the cursor for the "
+            f"detection cycle to correlate against (default: "
+            f"{DEFAULT_LOOKBACK_MARGIN:.0f}, which is the cycle's own default "
+            "--lookback). Set this to at least the --lookback the pipeline "
+            "runs with: a pass that deletes inside the correlation window "
+            "degrades incidents the cycle has not finished assembling, and "
+            "reports a smaller one rather than failing. 0 restores the "
+            "previous behaviour of pruning right up to the cursor."
+        ),
+    )
+    parser.add_argument(
         "--caller",
         default=None,
         help="Who this pass is for, recorded in the audit chain. Never inferred.",
@@ -270,6 +332,8 @@ def _report(
     effective_threshold: float | None,
     withheld: int,
     cursor_state: str,
+    lookback_margin: float,
+    margin_withheld: int,
 ) -> dict[str, object]:
     """The pass's outcome, as data.
 
@@ -292,6 +356,8 @@ def _report(
         "cursor_state": cursor_state,
         "effective_threshold": effective_threshold,
         "events_withheld_unprocessed": withheld,
+        "lookback_margin": lookback_margin,
+        "events_withheld_for_correlation": margin_withheld,
     }
 
 
@@ -325,38 +391,87 @@ def _withheld_line(payload: dict[str, object]) -> str | None:
     return None
 
 
+def _margin_line(payload: dict[str, object]) -> str | None:
+    """One sentence naming what the correlation margin held back, or ``None``.
+
+    Separate from :func:`_withheld_line` because the two reasons call for
+    opposite responses: events withheld as unprocessed mean the detection
+    cycle has stalled and an operator should go and look, while events
+    withheld for correlation mean the cycle is working and the margin is doing
+    its job. One number covering both would be unactionable.
+    """
+    held = int(payload["events_withheld_for_correlation"])  # type: ignore[call-overload]
+    margin = float(payload["lookback_margin"])  # type: ignore[arg-type]
+    if not held:
+        return None
+    return (
+        f"{held} event(s) were processed but withheld anyway: they lie within "
+        f"{margin:.0f}s of the cursor, which the detection cycle re-reads as "
+        "correlation context. Pruning inside that window degrades incidents "
+        "the cycle has not finished assembling — measured at score 52 over "
+        "three domains before a pass and 30 over two after it. Lower "
+        "--lookback-margin only together with the pipeline's --lookback."
+    )
+
+
+def _notes(payload: dict[str, object]) -> tuple[str, ...]:
+    """Every held-back explanation that applies, in a stable order."""
+    return tuple(
+        line for line in (_withheld_line(payload), _margin_line(payload)) if line is not None
+    )
+
+
 def _print_text(payload: dict[str, object]) -> None:
     matching = int(payload["events_matching"])  # type: ignore[call-overload]
     total = int(payload["events_total"])  # type: ignore[call-overload]
-    withheld_line = _withheld_line(payload)
+    notes = _notes(payload)
     if payload["applied"]:
         print(f"removed {payload['events_removed']} of {total} event(s)")
-        if withheld_line:
-            print(f"  {withheld_line}")
+        for note in notes:
+            print(f"  {note}")
         return
     if matching == 0:
         print(
             f"nothing to remove: no event was ingested more than "
             f"{payload['keep_days']} day(s) ago ({total} held)."
-            if withheld_line is None
+            if not notes
             else f"nothing to remove under the cursor bound ({total} held)."
         )
-        if withheld_line:
-            print(f"  {withheld_line}")
+        for note in notes:
+            print(f"  {note}")
         return
     print(
         f"would remove {matching} of {total} event(s) ingested before "
         f"{payload['effective_threshold']} "
         f"({payload['keep_days']} day(s) ago); {payload['events_retained']} retained."
     )
-    if withheld_line:
-        print(f"  {withheld_line}")
+    for note in notes:
+        print(f"  {note}")
     print(
         f"  nothing was deleted. Re-run with --apply, which requires "
         f"'{ACTION_NAME}:apply' on the policy bundle's allow list. Deletion is "
         "final: the collector's offsets are not rewound, so pruned content "
         "cannot be re-collected."
     )
+
+
+def _margined(bound: float, margin: float) -> float:
+    """Pull ``bound`` back by ``margin`` so the correlation window survives.
+
+    Takes a plain ``float``, not ``float | None``: the one caller applies this
+    inside the branch where the cursor position is known, and an unknown
+    position already clamps the pass to nothing — a margin cannot make
+    "nothing" safer. Accepting ``None`` here would have been an unreachable
+    branch with a docstring explaining it.
+
+    No floor is applied to the result. A margin reaching below the oldest
+    stored event simply matches no rows, which the report states as a withheld
+    count; clamping at zero would instead mean an epoch-relative bound quietly
+    deleting from a store whose stamps are small, and the test suite uses
+    exactly such stamps. ``count_before`` requires only that the bound be
+    finite, which :func:`main` validates on the flag.
+    """
+    return bound - margin
 
 
 def _processed_bound(root: Path, store: EventStore) -> tuple[float | None, str]:
@@ -406,6 +521,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not math.isfinite(args.keep_days) or args.keep_days < 0:
             raise ValueError(f"--keep-days must be finite and >= 0, got {args.keep_days!r}")
+        if not math.isfinite(args.lookback_margin) or args.lookback_margin < 0:
+            raise ValueError(
+                f"--lookback-margin must be finite and >= 0, got {args.lookback_margin!r}"
+            )
         # This CLI had **no** root check at all, so `--root ""` reported on a
         # shadow store in the working directory and `--apply` would have
         # pruned it. Shared with every other entry point now.
@@ -543,12 +662,39 @@ def _run(
                 # that whole tie group and destroys the rows the cursor has not
                 # passed: 490 of 500 in one measurement. The strict `<` means
                 # `min` can only ever under-delete, which is the safe direction.
-                effective = min(threshold, bound)
+                #
+                # The margin is subtracted from the cursor, not from the
+                # threshold: the hazard is not "delete too recently", it is
+                # "delete inside the window the detection cycle is about to
+                # re-read", and that window is anchored on the cursor.
+                effective = min(threshold, _margined(bound, args.lookback_margin))
             if effective is None:
                 matching = 0
                 removed = 0 if args.apply else None
+                # Nothing was deletable anyway: an unknown cursor position
+                # already clamps the pass to nothing, so the margin held
+                # nothing back of its own and must not claim to have.
+                margin_withheld = 0
             else:
                 matching = store.count_before(before=effective)
+                # Attributed separately, with its own count, because folding
+                # it into `withheld` would make the report explain these rows
+                # as "not yet processed by the detection cycle" — the opposite
+                # of true. They are withheld *because* they were processed and
+                # the cycle still needs them as context. An operator watching
+                # a withheld figure grow has to be able to tell a stalled
+                # cycle (act now) from the margin (bounded, working).
+                #
+                # Counted BEFORE the prune below, deliberately: afterwards the
+                # `matching` rows are gone, so `count_before(unmargined)`
+                # would already equal the margin's own set and subtracting
+                # `matching` a second time would report 0 on every applied
+                # pass — the figure wrong in exactly the regime it matters.
+                if bound is not None and not args.include_unprocessed and args.lookback_margin > 0:
+                    unmargined = store.count_before(before=min(threshold, bound))
+                    margin_withheld = max(0, unmargined - matching)
+                else:
+                    margin_withheld = 0
                 removed = store.prune(before=effective) if args.apply else None
     except CursorError as exc:
         # Not a StoreError and not a ValueError — `CursorError` derives from
@@ -576,8 +722,17 @@ def _run(
         removed=removed,
         cursor_ingested_at=bound,
         effective_threshold=effective,
-        withheld=window_matching - matching,
+        # Disjoint, not overlapping. `window_matching - matching` is every
+        # row the window wanted and the bound refused, which now has two
+        # causes; attributing all of it to "not yet processed" made the text
+        # form say "3 withheld as not yet processed" about events the cycle
+        # had demonstrably processed (measured: 3 reported, of which 2 were
+        # the margin's). Subtracting here keeps each sentence true and keeps
+        # the two figures summing to the total withheld.
+        withheld=window_matching - matching - margin_withheld,
         cursor_state=cursor_state,
+        lookback_margin=args.lookback_margin,
+        margin_withheld=margin_withheld,
     )
 
     # Audited before the report, as elsewhere here: the deletion has already
@@ -593,8 +748,9 @@ def _run(
                 f"{'removed' if args.apply else 'would remove'} "
                 f"{removed if args.apply else matching} of {total} event(s) ingested "
                 f"before {effective} ({args.keep_days} day(s), cursor "
-                f"{cursor_state}, {window_matching - matching} withheld as "
-                f"unprocessed); "
+                f"{cursor_state}, {window_matching - matching - margin_withheld} "
+                f"withheld as unprocessed, {margin_withheld} withheld within the "
+                f"{args.lookback_margin:.0f}s correlation margin); "
                 f"{'applied' if args.apply else 'dry run, nothing deleted'}"
             ),
         )

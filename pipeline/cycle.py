@@ -89,6 +89,20 @@ class CycleResult:
     cursor: Cursor | None = None
     #: The cursor this cycle started from, for the audit record.
     started_from: Cursor | None = None
+    #: Whether the correlation window's trailing context was cut short by the
+    #: row budget rather than by the lookback's own time bound.
+    #:
+    #: The budget is reserved before the progress window can spend it, so it is
+    #: never zero when an overlap was asked for — but a lookback window holding
+    #: more events than the reserve is still read only in part, and silently.
+    #: The whole defect this stage was fixed for twice is a window narrowing
+    #: with nothing said about it, so this says it.
+    #:
+    #: Inferred from the read returning exactly its limit, which is the usual
+    #: "there may be more" signal and can also fire when the context happens to
+    #: fill the budget exactly. It errs toward reporting a truncation that did
+    #: not happen rather than hiding one that did.
+    context_limited: bool = False
     #: Incidents involving at least one event this cycle had not seen before.
     #: The rest are re-assemblies of history the lookback pulled back in, and
     #: an earlier cycle already reported them.
@@ -147,12 +161,29 @@ def run_cycle(
     oldest-first within each: a pipeline advances through history forwards,
     which is the opposite of the newest-first default a dashboard wants.
 
+    The two share one row ceiling, because ``assemble`` truncates its input at
+    ``max_events`` and a cycle must never advance the cursor over events
+    nothing looked at. Half of that ceiling is **reserved for context before
+    the progress window can spend any of it**, so ``batch`` is clamped to the
+    remainder whenever an overlap was asked for. That clamp is the point: a
+    batch at or above the ceiling used to leave the overlap a budget of zero
+    and lose a straddling story outright, reporting ``0 incident(s)`` and
+    exit 0. ``lookback=0`` reserves nothing, so the documented partitioning
+    mode keeps the full batch.
+
     Raises :class:`ValueError` for a non-positive ``batch`` or a negative
     ``lookback`` rather than clamping — a scheduler configured with a batch of
     zero would otherwise appear to run forever while processing nothing, which
     is worse than a refusal at startup. A ``lookback`` of exactly zero is
     allowed and means "no overlap", which is the old partitioning behaviour and
     is occasionally what a backfill wants.
+
+    A ``batch`` above the ceiling is still *clamped* rather than refused, as it
+    always was: asking for more than the store will serve is a cap and not a
+    caller error, and the reserve above means the clamp now also protects the
+    overlap. :attr:`CycleResult.context_limited` reports the one narrowing the
+    reserve cannot prevent — a lookback window holding more events than the
+    reserve itself.
     """
     if batch < 1:
         raise ValueError(f"batch must be >= 1, got {batch}")
@@ -170,11 +201,40 @@ def run_cycle(
     # refuses, because asking for more than the store will serve is a cap, not
     # a caller error.
     ceiling = min(thresholds.max_events, MAX_QUERY_LIMIT)
+
+    # Reserve the context half of the ceiling BEFORE the progress window can
+    # spend it. The budget below used to be whatever ``ceiling`` had left after
+    # the progress read, which made the overlap a silent casualty of a raised
+    # ``batch``: measured through the CLI on a 10_003-event store, ``--batch
+    # 1000`` read 1000 and correlated 1002 and reported a three-domain
+    # score-52 incident, while ``--batch 10000`` on the same store read 10000,
+    # correlated 10000, reported **zero** incidents and exited 0. ``--batch
+    # 9999`` is worse than either: one row of context buys a *partially*
+    # assembled story — score 30 over two domains instead of 52 over three —
+    # which reads to an analyst exactly like the whole picture.
+    #
+    # The split is equal because the two windows have no a-priori claim on each
+    # other and equal is the only symmetric answer; a fraction would be a
+    # number nobody could defend. What makes clamping *progress* the right side
+    # of the trade is that the costs are not symmetric: events the batch does
+    # not reach are read by the next cycle, while context the budget does not
+    # buy is gone the moment the cursor passes it. That is this module's own
+    # stated reasoning — a duplicate incident is noise an analyst dismisses,
+    # a skipped window is a blind spot nobody is told about.
+    #
+    # The cost is named rather than hidden: an operator who sets ``--batch``
+    # at or above the ceiling to work through a backlog now advances over half
+    # as many events per cycle. They also get a correlation window, which the
+    # backlog is precisely when they need one. The halved throughput is
+    # *observable* rather than something to take on trust — ``sli/`` grades
+    # ``detection-backlog`` from the cursor against the store, so a backlog
+    # this cannot work through shows up there instead of being inferred.
+    reserve = ceiling // 2 if lookback > 0 else 0
     progress = store.query(
         Query(
             ingested_after=cursor.as_keyset() if cursor is not None else None,
             newest_first=False,
-            limit=min(batch, ceiling),
+            limit=max(1, min(batch, ceiling - reserve)),
         )
     )
     if not progress:
@@ -203,6 +263,7 @@ def run_cycle(
     # filter can drop an event the cursor is about to cross.
     window = progress
     budget = ceiling - len(progress)
+    context_limited = False
     if lookback > 0 and budget > 0:
         first = progress[0]
         context = store.query(
@@ -216,6 +277,7 @@ def run_cycle(
         # Newest-first so the budget buys the most recent context, then reversed
         # so the window stays in ingestion order for ``assemble``.
         window = tuple(reversed(context)) + progress
+        context_limited = len(context) == budget
 
     incidents = assemble(window, thresholds=thresholds)
     if window is not progress:
@@ -264,6 +326,7 @@ def run_cycle(
         cursor=advanced,
         started_from=cursor,
         fresh=fresh,
+        context_limited=context_limited,
     )
 
 

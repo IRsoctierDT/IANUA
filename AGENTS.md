@@ -291,6 +291,32 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   analysed. That cannot be engineered away; it is *authorized*, by
   `--include-unprocessed` under its own `retain_events:apply-unprocessed` grant, which
   `retain_events:apply` deliberately does not confer.
+- **And it stops short of the cursor, because the cycle reads back into it.** The clamp
+  above bounds a pass to *processed* events; the detection cycle's lookback exists to
+  re-read *processed* events as correlation context. Those are the same rows. Measured
+  with no concurrency, no unusual flag and no short window: a three-step story straddling
+  the 90-day boundary, all three steps inside one default 900s lookback, was reported by
+  the cycle at **score 52 over three domains** before the documented retention pass and
+  **score 30 over two** after it. The damage is not an error an operator sees — what they
+  read is still an incident, only smaller and quieter, which is indistinguishable from a
+  quieter attack. A pass therefore leaves `--lookback-margin` seconds of processed history
+  behind the cursor, defaulting to `pipeline.DEFAULT_LOOKBACK` (imported, not restated, so
+  the two cannot drift apart). An operator who raises the pipeline's `--lookback` **must**
+  raise this to match: the cycle's flag is not recorded anywhere this pass can read, so
+  the mismatch is undetectable by design rather than by omission. The margin is 900
+  seconds and not an amnesty — a 200-day-old event is still reclaimed — and
+  `--include-unprocessed` bypasses it, since that flag is where an operator says they mean
+  it.
+
+  An agent should note what this is *instead of*: the hazard was first written down as a
+  locking problem ("retention and the cycle hold different locks, so a prune can run
+  mid-cycle") and that framing is **refuted by measurement**. Driving a prune
+  deterministically between the cycle's two queries produced the same degraded score as
+  running the passes strictly in sequence, so a lock would have serialised them and
+  changed nothing. The margin makes the two passes touch disjoint row ranges, which is a
+  stronger guarantee than mutual exclusion precisely because it does not depend on every
+  future writer remembering to take a lock. Do not add one here on the theory that
+  concurrent passes are the risk.
 
 This amendment changes **nothing** about secrets: a credential, token, key or password is
 never written to source, tests, fixtures, comments, commit messages, or logs, and
