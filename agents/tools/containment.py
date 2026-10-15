@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Defensive containment toolkit — stop or contain an active payload (lab-scoped).
 
 Gives agents the sanctioned ability to contain or shut down malicious payloads
@@ -56,7 +59,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from agents.policies import AuditLogger, PolicyEngine
+from agents.policies import (
+    AuditLogger,
+    PolicyEngine,
+    Principal,
+    coerce,
+    escape_delimiter,
+)
 from agents.tools.attack_mapping import attack_coverage as _attack_coverage
 from agents.tools.attack_mapping import get_mapping
 from agents.tools.guarded import enforce
@@ -125,7 +134,10 @@ class ContainmentToolkit:
             decision and execution outcome.
         executor: Optional lab executor for host/network/account actions;
             without one those capabilities fail closed.
-        actor: Actor label recorded on audit entries.
+        actor: Who is asking. A :class:`~agents.policies.Principal` records
+            both the component and the caller it acts for; a plain string
+            is accepted for compatibility and validated to the same
+            alphabet. Recorded on every audit entry this toolkit writes.
     """
 
     def __init__(
@@ -135,7 +147,7 @@ class ContainmentToolkit:
         engine: PolicyEngine | None = None,
         audit: AuditLogger | None = None,
         executor: ContainmentExecutor | None = None,
-        actor: str = "containment",
+        actor: Principal | str = "containment",
     ) -> None:
         resolved = Path(root).resolve()
         if not resolved.is_dir():
@@ -166,12 +178,17 @@ class ContainmentToolkit:
     def _record_outcome(self, capability: str, target: str, detail: str) -> None:
         """Append the execution outcome to the audit trail (decision ≠ execution)."""
         if self.audit is not None:
+            # `target` is a filename or host identifier the caller supplied,
+            # and `detail` is free text; either may legitimately contain the
+            # audit preimage delimiter. Escape rather than reject: this record
+            # is written AFTER the effect, so a rejection here would leave the
+            # action done and the trail missing.
             self.audit.record(
-                actor=self.actor,
-                action=f"containment:{capability}:{target[:120]}",
+                actor=coerce(self.actor),
+                action=f"containment:{capability}:{escape_delimiter(target[:120])}",
                 action_class="containment",
                 decision="allow",
-                reason=detail[:200],
+                reason=escape_delimiter(detail[:200]),
             )
 
     def _action(

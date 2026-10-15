@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Determinism contracts: same shards -> same corpus, pure freshness."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Read-only view over the Agent Trust Broker's escalation queue.
 
 Surfaces the broker's outstanding human approvals in the dashboard by reading

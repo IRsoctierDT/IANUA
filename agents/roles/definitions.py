@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Agent role specifications — codifies the AGENTS.md §6 operating roles.
 
 Work in this repository is organized around four cooperating roles. The charter

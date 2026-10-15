@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """MITRE ATT&CK® mapping for the agents' containment capabilities.
 
 Every containment capability in :mod:`agents.tools.containment` is mapped to the

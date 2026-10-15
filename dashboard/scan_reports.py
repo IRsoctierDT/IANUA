@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Bounded, offline import and comparison of untrusted IANUA-Broker JSON reports.
 
 Only display fields are retained. Strings remain untrusted plain text: callers must

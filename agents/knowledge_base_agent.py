@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Knowledge Base Agent — grounds analysis in the curated cybersecurity corpus.
 
 Given a query (or a SOC/MITRE result), this agent retrieves the most relevant

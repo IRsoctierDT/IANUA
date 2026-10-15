@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The canonical normalized event — one shape for five telemetry domains.
 
 Today the platform reasons over syslog-shaped text through a keyword
@@ -29,8 +32,17 @@ Design (DESIGN.md §5, new boundary 9):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal, TypeVar, cast, get_args
+
+from ingest.errors import MalformedProjectionError
+
+#: One of the nested groups whose every field is an optional string. Named so
+#: :func:`_clip_group` keeps the group's own type rather than widening every
+#: caller's. ``EmailContext`` is excluded: it also carries two collections,
+#: so it is bounded field by field.
+_GroupT = TypeVar("_GroupT", "Actor", "Device", "Endpoint", "CloudContext")
 
 #: The five telemetry domains the platform ingests. ``unknown`` is a real
 #: outcome, not a failure to try: a source that cannot be confidently
@@ -43,12 +55,28 @@ SourceType = Literal["endpoint", "network", "cloud", "identity", "email", "unkno
 #: ``text``       — no parser claimed it; carried as opaque text.
 ParseStatus = Literal["structured", "partial", "text"]
 
+#: Literal members for read-time validation, derived from the types above
+#: via ``get_args`` so a new source type or parse status cannot be accepted
+#: by one and rejected by the other.
+SOURCE_TYPE_VALUES: frozenset[str] = frozenset(get_args(SourceType))
+PARSE_STATUS_VALUES: frozenset[str] = frozenset(get_args(ParseStatus))
+
 #: Bounds applied to every untrusted field. Telemetry arrives from systems the
 #: platform does not control; an oversized field is either a bug upstream or
 #: an attempt to exhaust memory downstream, and neither should be honored.
 MAX_FIELD_LEN = 2048
 MAX_RAW_EXCERPT = 4096
 MAX_OBSERVABLES = 64
+#: How many entries a single declared evidence path may contribute when it
+#: lands on a container. A record carrying a thousand-element list must not
+#: be able to inflate an excerpt, and a parser that models a list models a
+#: bounded one — ``email``'s recipient cap is the same number for the same
+#: reason.
+MAX_PROJECTED_ITEMS = 32
+#: Parser notes per event. Bounded for the same reason as observables:
+#: on read the ceiling is what distinguishes a record this platform wrote
+#: from one that grew outside it.
+MAX_NOTES = 64
 MAX_NESTING_DEPTH = 32
 #: Hard ceiling on a single record. Beyond this the record is not parsed at
 #: all — it is carried as a bounded excerpt with a note, so the event is
@@ -212,6 +240,113 @@ class NormalizedEvent:
             "notes": list(self.notes),
         }
 
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> NormalizedEvent:
+        """Rebuild an event from :meth:`to_dict`, validating fail-closed.
+
+        The inverse of the allow-list projection, and deliberately the *only*
+        one: a second hand-rolled reader living beside the writer is how two
+        definitions of one shape drift apart. ``store/`` reads events back
+        through this method rather than reimplementing the mapping.
+
+        Unlike :func:`ingest.normalize`, this does **not** degrade. A
+        projection is not raw telemetry — it is a record this platform wrote
+        itself. A missing key, a wrong type, an undeclared key, or a field
+        past its bound means the row is corrupt or was edited outside this
+        platform, and rebuilding a plausible-looking event from a damaged row
+        would launder that damage into every analysis drawn from it.
+
+        Bounds are re-asserted rather than trusted: the writer applied them,
+        but the bytes have been outside this process since.
+        """
+        if not isinstance(payload, Mapping):
+            raise MalformedProjectionError(
+                f"event projection must be a mapping, got {type(payload).__name__}"
+            )
+        _require_exact_keys(payload, _EVENT_KEYS, "event")
+        return cls(
+            source_type=cast(
+                SourceType, _literal(payload, "source_type", SOURCE_TYPE_VALUES, "event")
+            ),
+            vendor=_text(payload, "vendor", "event", required=True),
+            vendor_event_id=_optional_text(payload, "vendor_event_id", "event"),
+            timestamp=_optional_epoch(payload, "timestamp", "event"),
+            message=_text(payload, "message", "event", required=False),
+            activity=_optional_text(payload, "activity", "event"),
+            parse_status=cast(
+                ParseStatus, _literal(payload, "parse_status", PARSE_STATUS_VALUES, "event")
+            ),
+            actor=Actor(**_group(payload, "actor", _ACTOR_KEYS)),
+            device=Device(**_group(payload, "device", _DEVICE_KEYS)),
+            src_endpoint=Endpoint(**_group(payload, "src_endpoint", _ENDPOINT_KEYS)),
+            dst_endpoint=Endpoint(**_group(payload, "dst_endpoint", _ENDPOINT_KEYS)),
+            cloud=CloudContext(**_group(payload, "cloud", _CLOUD_KEYS)),
+            email=_email_from(payload),
+            observables=_str_tuple(payload, "observables", "event", MAX_OBSERVABLES),
+            raw_excerpt=_text(
+                payload, "raw_excerpt", "event", required=False, limit=MAX_RAW_EXCERPT
+            ),
+            notes=_str_tuple(payload, "notes", "event", MAX_NOTES),
+        )
+
+    def bounded(self) -> NormalizedEvent:
+        """Return this event with every read-time bound applied on write.
+
+        The write-side twin of the validation in :meth:`from_dict`, kept
+        beside it for the reason ``from_dict`` itself exists: a bound
+        *asserted* in one place and *applied* in another drifts, and when
+        this one drifted the symptom was not a rejected record but a stored
+        one that could never be read back.
+
+        **The defect this closes.** Every individual field a parser writes is
+        bounded by ``text()`` at :data:`MAX_FIELD_LEN`. ``message`` is not a
+        field — it is assembled from several of them, and nothing re-bounded
+        the result, while ``from_dict`` validates it at ``MAX_FIELD_LEN``
+        like any other. An ordinary encoded-PowerShell ``CommandLine`` —
+        the single most common malicious artifact in endpoint telemetry —
+        produces a 2168-character message, which ``append`` accepted and
+        every subsequent ``query`` then refused with
+        ``MalformedProjectionError``. ``run_cycle`` does not catch it, so one
+        such record stopped every later detection cycle on that store, for
+        good. Nine of the fifteen ingest fixtures reproduce it under
+        ``MAX_FIELD_LEN``-length field values, across eight of the ten
+        vendors. Measured end to end before the fix, and the same defect
+        class as the ``_unrecognized`` message bound recorded in
+        ``ingest/normalize.py`` — found by looking for its siblings.
+
+        Truncation is mechanical and silent *here*; ``ingest.normalize``
+        notes it and demotes ``parse_status``, because a summary cut short can
+        drop the only copy of a value that lives nowhere else (a CloudTrail
+        ``mfaAuthenticated``, a Defender ``ThreatTypes``), and a reader must
+        be able to tell a complete summary from a cut one.
+        """
+        return replace(
+            self,
+            vendor=self.vendor[:MAX_FIELD_LEN],
+            vendor_event_id=_clip(self.vendor_event_id),
+            message=self.message[:MAX_FIELD_LEN],
+            activity=_clip(self.activity),
+            actor=_clip_group(self.actor, _ACTOR_KEYS),
+            device=_clip_group(self.device, _DEVICE_KEYS),
+            src_endpoint=_clip_group(self.src_endpoint, _ENDPOINT_KEYS),
+            dst_endpoint=_clip_group(self.dst_endpoint, _ENDPOINT_KEYS),
+            cloud=_clip_group(self.cloud, _CLOUD_KEYS),
+            # ``email`` is spelled out because it is the one group with
+            # collection fields as well as scalars — the same reason
+            # ``_email_from`` reads it by hand rather than through ``_group``.
+            email=EmailContext(
+                sender=_clip(self.email.sender),
+                subject=_clip(self.email.subject),
+                message_id=_clip(self.email.message_id),
+                delivery_action=_clip(self.email.delivery_action),
+                recipients=_clip_each(self.email.recipients, MAX_OBSERVABLES),
+                urls=_clip_each(self.email.urls, MAX_OBSERVABLES),
+            ),
+            observables=_clip_each(self.observables, MAX_OBSERVABLES),
+            raw_excerpt=self.raw_excerpt[:MAX_RAW_EXCERPT],
+            notes=_clip_each(self.notes, MAX_NOTES),
+        )
+
     def to_match_view(self) -> dict[str, str]:
         """Flatten to the string map detection rules match against.
 
@@ -253,3 +388,181 @@ class NormalizedEvent:
             if value:
                 flat[key] = value
         return flat
+
+
+# --------------------------------------------------------------------------
+# Read-time validation for :meth:`NormalizedEvent.from_dict`.
+#
+# These exist because a stored projection is untrusted on the way back in.
+# The writer bounded every field, but the bytes have since been on disk,
+# where anything with write access could have changed them. Each helper
+# therefore checks rather than coerces, and names the offending key in the
+# error so a corrupt row is diagnosable without dumping telemetry into a log.
+#
+# The declared-key tuples mirror :meth:`NormalizedEvent.to_dict` exactly.
+# ``_require_exact_keys`` enforces the mirror in *both* directions, which is
+# what lets ``store/`` treat a schema change as a versioned migration instead
+# of silently reading old rows into a new shape.
+# --------------------------------------------------------------------------
+
+_ACTOR_KEYS = (
+    "user_name",
+    "user_uid",
+    "user_principal",
+    "identity",
+    "process_name",
+    "process_pid",
+    "parent_process_name",
+    "command_line",
+)
+_DEVICE_KEYS = ("hostname", "device_id", "ip", "os")
+_ENDPOINT_KEYS = ("ip", "port", "domain")
+_CLOUD_KEYS = ("provider", "account_uid", "region", "service")
+#: Scalar email fields. Note what is absent: there is no ``body`` key, and
+#: ``_require_exact_keys`` rejects one if a row ever carries it — the
+#: no-message-body invariant (DESIGN.md §4) holds on read, not just on parse.
+_EMAIL_SCALAR_KEYS = ("sender", "subject", "message_id", "delivery_action")
+_EMAIL_KEYS = (*_EMAIL_SCALAR_KEYS, "recipients", "urls")
+_EVENT_KEYS = (
+    "source_type",
+    "vendor",
+    "vendor_event_id",
+    "timestamp",
+    "message",
+    "activity",
+    "parse_status",
+    "actor",
+    "device",
+    "src_endpoint",
+    "dst_endpoint",
+    "cloud",
+    "email",
+    "observables",
+    "raw_excerpt",
+    "notes",
+)
+
+
+def _require_exact_keys(payload: Mapping[str, Any], declared: tuple[str, ...], where: str) -> None:
+    """Both directions: no undeclared keys, no missing ones."""
+    present = set(payload)
+    expected = set(declared)
+    if undeclared := sorted(present - expected):
+        raise MalformedProjectionError(f"{where}: undeclared key(s) {undeclared}")
+    if missing := sorted(expected - present):
+        raise MalformedProjectionError(f"{where}: missing key(s) {missing}")
+
+
+def _text(
+    payload: Mapping[str, Any],
+    key: str,
+    where: str,
+    *,
+    required: bool,
+    limit: int = MAX_FIELD_LEN,
+) -> str:
+    """A present, bounded ``str``. ``required`` additionally forbids empty."""
+    value = payload[key]
+    if not isinstance(value, str):
+        raise MalformedProjectionError(f"{where}.{key}: expected str, got {type(value).__name__}")
+    if required and not value:
+        raise MalformedProjectionError(f"{where}.{key}: must not be empty")
+    if len(value) > limit:
+        raise MalformedProjectionError(
+            f"{where}.{key}: {len(value)} chars exceeds the {limit}-char bound"
+        )
+    return value
+
+
+def _optional_text(payload: Mapping[str, Any], key: str, where: str) -> str | None:
+    """``None`` or a bounded ``str`` — the shape every optional field has."""
+    if payload[key] is None:
+        return None
+    return _text(payload, key, where, required=False)
+
+
+def _optional_epoch(payload: Mapping[str, Any], key: str, where: str) -> float | None:
+    """``None`` or epoch seconds.
+
+    ``bool`` is excluded explicitly because it is a subclass of ``int``, so an
+    unguarded numeric check would accept ``True`` as the timestamp ``1.0`` and
+    silently place the event one second after the epoch.
+    """
+    value = payload[key]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise MalformedProjectionError(
+            f"{where}.{key}: expected epoch seconds, got {type(value).__name__}"
+        )
+    return float(value)
+
+
+def _literal(payload: Mapping[str, Any], key: str, allowed: frozenset[str], where: str) -> str:
+    """One of a closed set, so a stored row cannot widen a ``Literal``."""
+    value = payload[key]
+    if not isinstance(value, str) or value not in allowed:
+        raise MalformedProjectionError(f"{where}.{key}: {value!r} is not one of {sorted(allowed)}")
+    return value
+
+
+def _str_tuple(payload: Mapping[str, Any], key: str, where: str, limit: int) -> tuple[str, ...]:
+    """A bounded list of bounded strings, rebuilt as a tuple."""
+    value = payload[key]
+    if not isinstance(value, list):
+        raise MalformedProjectionError(f"{where}.{key}: expected list, got {type(value).__name__}")
+    if len(value) > limit:
+        raise MalformedProjectionError(
+            f"{where}.{key}: {len(value)} entries exceeds the {limit}-entry bound"
+        )
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise MalformedProjectionError(
+                f"{where}.{key}[{index}]: expected str, got {type(item).__name__}"
+            )
+        if len(item) > MAX_FIELD_LEN:
+            raise MalformedProjectionError(
+                f"{where}.{key}[{index}]: exceeds the {MAX_FIELD_LEN}-char bound"
+            )
+    return tuple(value)
+
+
+def _clip(value: str | None, limit: int = MAX_FIELD_LEN) -> str | None:
+    """Bound an optional string without turning absence into emptiness."""
+    return value if value is None else value[:limit]
+
+
+def _clip_each(values: tuple[str, ...], count: int) -> tuple[str, ...]:
+    """Bound a tuple's length and each of its entries."""
+    return tuple(value[:MAX_FIELD_LEN] for value in values[:count])
+
+
+def _clip_group(group: _GroupT, declared: tuple[str, ...]) -> _GroupT:
+    """Bound every declared scalar on one nested group, by the same key list
+    ``from_dict`` validates it with — so the two cannot name different fields.
+    """
+    return replace(group, **{name: _clip(getattr(group, name)) for name in declared})
+
+
+def _group(
+    payload: Mapping[str, Any], key: str, declared: tuple[str, ...]
+) -> dict[str, str | None]:
+    """One nested all-optional-string group (``actor``, ``device``, …)."""
+    raw = payload[key]
+    if not isinstance(raw, Mapping):
+        raise MalformedProjectionError(f"event.{key}: expected mapping, got {type(raw).__name__}")
+    _require_exact_keys(raw, declared, key)
+    return {name: _optional_text(raw, name, key) for name in declared}
+
+
+def _email_from(payload: Mapping[str, Any]) -> EmailContext:
+    """``email`` — the one group with collection fields as well as scalars."""
+    raw = payload["email"]
+    if not isinstance(raw, Mapping):
+        raise MalformedProjectionError(f"event.email: expected mapping, got {type(raw).__name__}")
+    _require_exact_keys(raw, _EMAIL_KEYS, "email")
+    return EmailContext(
+        **{name: _optional_text(raw, name, "email") for name in _EMAIL_SCALAR_KEYS},
+        recipients=_str_tuple(raw, "recipients", "email", MAX_OBSERVABLES),
+        urls=_str_tuple(raw, "urls", "email", MAX_OBSERVABLES),
+    )

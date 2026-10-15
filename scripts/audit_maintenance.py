@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Scheduled maintenance for the tamper-evident audit log (Hardening #2).
 
 Verifies the hash chain (and its HMAC head signature, if ``AUDIT_HMAC_KEY`` is

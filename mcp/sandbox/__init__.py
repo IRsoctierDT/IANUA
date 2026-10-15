@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Rootless, seccomp/AppArmor-confined sandbox for MCP tool execution.
 
 Hardening Roadmap **#5** (``docs/HARDENING_ROADMAP.md``). Runs an MCP tool's

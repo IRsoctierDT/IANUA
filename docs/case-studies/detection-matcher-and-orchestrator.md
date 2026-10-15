@@ -141,7 +141,7 @@ section the report attaches.
 ```bash
 python -m agents.orchestrator_agent
 # runs SOC → MITRE → Threat Intel → KB → Detection Matcher → Incident Report
-# writes reports/markdown/orchestrated_incident.md
+# writes data/reports/orchestrated_incident.md
 ```
 
 For `Failed password for root from 10.0.0.5 port 22 ssh2`, the orchestrator produces a report
@@ -198,7 +198,7 @@ import json
 print(json.dumps(DetectionMatcherAgent().match_for_technique('T1110'), indent=2))
 "
 
-# Full pipeline → writes reports/markdown/orchestrated_incident.md:
+# Full pipeline → writes data/reports/orchestrated_incident.md:
 python -m agents.orchestrator_agent
 
 python -m pytest tests/test_detection_matcher_agent.py tests/test_orchestrator_agent.py

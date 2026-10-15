@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Detection Matcher Agent — links triage to detection content.
 
 Given a MITRE ATT&CK technique (the one the SOC Analyst / MITRE Mapper agents

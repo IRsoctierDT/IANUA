@@ -267,7 +267,7 @@ print(json.dumps(SocAnalystAgent().analyze_log({
 }), indent=2))
 "
 
-# Full multi-agent pipeline → writes reports/markdown/orchestrated_incident.md:
+# Full multi-agent pipeline → writes data/reports/orchestrated_incident.md:
 python -m agents.orchestrator_agent
 
 # Run the test suite (unit + integration + security, 85% coverage gate):

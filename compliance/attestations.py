@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Human attestations for manual controls — reviewable, expiring, committed.
 
 Manual controls (e.g. GitHub branch protection) cannot be verified offline, so

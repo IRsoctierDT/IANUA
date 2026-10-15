@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the rootless MCP tool sandbox (Hardening Roadmap #5).
 
 Two tiers:

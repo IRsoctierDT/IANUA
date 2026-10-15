@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for scripts/build_trust_page.py — parse, build, drift gate."""
 
 import json
@@ -364,3 +367,71 @@ def test_main_bad_input_exit_code(tmp_path: Path) -> None:
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert main(["--data", str(bad)]) == 2
+
+
+# --------------------------------------------------------------------------
+# The published snapshot must describe the controls that actually exist
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_the_trust_snapshot_lists_every_control_in_the_registry() -> None:
+    """Nothing tied the committed snapshot to ``registry()`` until this.
+
+    The trust page is built offline from ``docs/trust.data.json`` — a committed
+    snapshot, deliberately, so that no check internals can leak into a
+    published artifact and so the build is reproducible. But nothing asserted
+    that the snapshot still *describes* the control set, so adding a control
+    left the published page quietly understating the posture. For a page whose
+    whole subject is trust, silently claiming fewer controls than exist is the
+    wrong direction to be wrong in; it was found by adding CFG-02 and noticing
+    the snapshot said 16.
+
+    Deliberately asserts identity and labels, **not** status: the statuses in
+    the snapshot are recorded evidence of a past evaluation, and re-deriving
+    them here would couple a unit test to a live posture run and to whatever
+    the host's filesystem looks like.
+    """
+    from compliance.controls import registry
+
+    repo_root = Path(__file__).resolve().parents[2]
+    snapshot = json.loads((repo_root / "docs" / "trust.data.json").read_text(encoding="utf-8"))
+    published = {control["id"]: control for control in snapshot["controls"]}
+    live = {control.id: control for control in registry()}
+
+    assert set(published) == set(live), (
+        f"the trust snapshot and the control registry disagree; "
+        f"only in the registry: {sorted(set(live) - set(published))}; "
+        f"only in the snapshot: {sorted(set(published) - set(live))}"
+    )
+    for identifier, control in live.items():
+        assert published[identifier]["title"] == control.title
+        assert published[identifier]["category"] == control.category.value
+
+
+@pytest.mark.unit
+def test_the_trust_snapshots_framework_totals_match_the_registry() -> None:
+    """A framework's ``total`` is how many controls carry a ref to it.
+
+    Checked separately from the control list because the two drift
+    independently: adding a control without refs would keep the ids in step
+    while leaving the rollups wrong.
+    """
+    from compliance.controls import registry
+    from compliance.frameworks import Framework
+
+    repo_root = Path(__file__).resolve().parents[2]
+    snapshot = json.loads((repo_root / "docs" / "trust.data.json").read_text(encoding="utf-8"))
+    controls = registry()
+    by_name = {framework.value: framework for framework in Framework}
+    for entry in snapshot["frameworks"]:
+        framework = by_name[entry["name"]]
+        expected = sum(
+            1
+            for control in controls
+            if any(ref.framework is framework for ref in control.framework_refs)
+        )
+        assert entry["total"] == expected, (
+            f"{entry['name']}: snapshot says {entry['total']} controls, registry has {expected}"
+        )
+        assert entry["passing"] <= entry["total"]

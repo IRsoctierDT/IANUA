@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Regenerate the factual sections of README.md from their sources of truth.
 
 README sections wrapped in ``<!-- BEGIN GENERATED: name -->`` /

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for staged-rollout report-only mode on enforce()."""
 
 from pathlib import Path

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Misdetection-path hardening contracts for the SOC Analyst Agent.
 
 These pin the behaviors that keep detection degradation *visible* instead of

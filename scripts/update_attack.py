@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Build and verify the committed ATT&CK corpus from a human-staged bundle.
 
 There is deliberately **no fetch mode**: obtaining the bundle is a §5.1

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The ruleset drift gate: canonicalized, so formatting churn cannot flake it."""
 
 from __future__ import annotations

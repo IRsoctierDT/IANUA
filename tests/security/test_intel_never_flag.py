@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Never-flag enforcement: at ingest AND at query, with the disjointness pin."""
 
 from __future__ import annotations

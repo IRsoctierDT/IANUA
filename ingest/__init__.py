@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Multi-source telemetry ingest — the XDR front door.
 
 Translates endpoint, network, cloud, identity, and email telemetry into one
@@ -26,7 +29,9 @@ from ingest.normalize import SIGNATURES, SOURCE_TYPES, detect_source, normalize,
 from ingest.schema import (
     MAX_FIELD_LEN,
     MAX_NESTING_DEPTH,
+    MAX_NOTES,
     MAX_OBSERVABLES,
+    MAX_PROJECTED_ITEMS,
     MAX_RAW_BYTES,
     MAX_RAW_EXCERPT,
     Actor,
@@ -42,7 +47,9 @@ from ingest.schema import (
 __all__ = [
     "MAX_FIELD_LEN",
     "MAX_NESTING_DEPTH",
+    "MAX_NOTES",
     "MAX_OBSERVABLES",
+    "MAX_PROJECTED_ITEMS",
     "MAX_RAW_BYTES",
     "MAX_RAW_EXCERPT",
     "SIGNATURES",

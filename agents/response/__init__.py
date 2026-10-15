@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Plan-only containment layer — produces guidance, never actions.
 
 IANUA does not execute containment. This package emits a draft

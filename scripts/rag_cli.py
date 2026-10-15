@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """rag_cli — one-command RAG pipeline: ingest -> embed -> query.
 
 Ties the rag/ modules together behind a small argparse CLI. Secure-by-default:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic aging for intel content. No clock reads — ``as_of`` is injected.
 
 Atomic confidence decays exponentially from ``retrieved`` with a per-type

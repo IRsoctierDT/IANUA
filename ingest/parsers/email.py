@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Email telemetry: Microsoft Defender for Office 365 and Google Workspace.
 
 Email is the most sensitive corpus the platform touches, so this module is
@@ -19,7 +22,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ingest._coerce import epoch, first, observables, strings
-from ingest.parsers import Signature
+from ingest.parsers import FieldPath, Signature
 from ingest.schema import (
     MAX_OBSERVABLES,
     Actor,
@@ -106,6 +109,32 @@ def _parse_defender(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for Defender for Office 365. This is where the
+#: no-body rule stops being a convention and becomes structural: an excerpt
+#: of a Defender record is rebuilt from exactly these paths, so a ``Body``
+#: the export happens to carry has nowhere to go. Compare
+#: :data:`FORBIDDEN_CONTENT_FIELDS` — the deny-list below documents the rule,
+#: this allow-list enforces it.
+_DEFENDER_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("AuthenticationDetails",),
+    ("DeliveryAction",),
+    ("EmailAction",),
+    ("InternetMessageId",),
+    ("NetworkMessageId",),
+    ("RecipientEmailAddress",),
+    ("SenderFromAddress",),
+    ("SenderFromDomain",),
+    ("SenderIPv4",),
+    ("SenderIPv6",),
+    ("SenderMailFromAddress",),
+    ("Subject",),
+    ("ThreatTypes",),
+    ("Timestamp",),
+    ("UrlList",),
+)
+
+
 # --------------------------------------------------------------------------
 # Google Workspace — Email Log Search / Gmail log export
 # --------------------------------------------------------------------------
@@ -178,6 +207,30 @@ def _parse_workspace(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for Google Workspace mail logs. No ``snippet``,
+#: no ``payload.parts`` — the same rule as Defender, for the same reason.
+_WORKSPACE_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("action",),
+    ("delivery_status",),
+    ("event_info",),
+    ("event_timestamp",),
+    ("from_address",),
+    ("is_spam",),
+    ("message_id",),
+    ("recipient_address",),
+    ("recipient_addresses",),
+    ("rfc2822_message_id",),
+    ("sender_address",),
+    ("sender_ip",),
+    ("source_ip",),
+    ("spam_classification",),
+    ("status",),
+    ("subject",),
+    ("urls",),
+)
+
+
 #: Field names that would carry message content. Nothing in this module reads
 #: them; the tuple exists so ``tests/security/test_ingest_hardening.py`` can
 #: assert their absence from the module source, making the rule enforceable
@@ -193,6 +246,8 @@ FORBIDDEN_CONTENT_FIELDS: tuple[str, ...] = (
 
 
 SIGNATURES: tuple[Signature, ...] = (
-    Signature("defender-o365", "email", _recognizes_defender, _parse_defender),
-    Signature("google-workspace", "email", _recognizes_workspace, _parse_workspace),
+    Signature("defender-o365", "email", _recognizes_defender, _parse_defender, _DEFENDER_FIELDS),
+    Signature(
+        "google-workspace", "email", _recognizes_workspace, _parse_workspace, _WORKSPACE_FIELDS
+    ),
 )

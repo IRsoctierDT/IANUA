@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """IANUA's local threat-intelligence library — first-party, behavioral, expiring.
 
 The durable half of "threat intelligence" is behavioral (ATT&CK-anchored TTP

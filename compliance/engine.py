@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Compliance engine — evaluate the control registry into a typed report.
 
 Deterministic and offline: results depend only on the repository contents and

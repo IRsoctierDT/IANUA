@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for asymmetric (Ed25519) audit-log signing (Hardening #2).
 
 The win over HMAC: a verifier needs only the **public** key, so it can confirm

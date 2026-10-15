@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests for the tamper-evident audit logger (AGENTS.md §3)."""
 
 from collections.abc import Iterator

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Approval-gate policy engine — codifies the AGENTS.md §5 / §5.1 boundaries.
 
 Turns the charter's prose security boundaries into enforced, testable code. Given a
@@ -51,6 +54,7 @@ from typing import Literal
 
 ActionClass = Literal[
     "read_only",
+    "collection",
     "containment",
     "destructive",
     "external_network",
@@ -68,6 +72,19 @@ Decision = Literal["allow", "require_approval", "deny"]
 # requires a human (fail closed).
 _DEFAULT_POLICY: dict[ActionClass, Decision] = {
     "read_only": "allow",
+    # Reading this node's own logs. A class of its own rather than folded into
+    # read_only, because it is the one action that reaches *outside* the
+    # project's filesystem (DESIGN.md §5 boundary 14) and an operator must be
+    # able to stop collection without stopping detection — the pipeline is
+    # gated read_only and the two should not share a switch.
+    #
+    # `allow` by default, which makes this a kill switch rather than a
+    # restriction, and that is stated rather than implied. What actually
+    # constrains collection is which sources were declared: `collect.sources`
+    # refuses a relative path, a symlinked log, a non-file and anything on the
+    # credential deny-list. The gate decides *whether* this node collects; the
+    # source validation decides *what* it may read.
+    "collection": "allow",
     "containment": "allow",
     "destructive": "require_approval",
     "external_network": "require_approval",
@@ -291,7 +308,17 @@ class PolicyEngine:
             )
 
         decision = self.policy.get(action_class, "require_approval")
-        if decision == "allow" and action_class == "containment":
+        if decision == "allow" and action_class == "collection":
+            # Not "read-only/benign": this is the platform's only §5 boundary
+            # crossing, and a hash-chained record calling it benign would
+            # misdescribe the one action an auditor most needs to find.
+            reason = (
+                "Local log collection — reads declared files outside the project, "
+                "read-only, auto-allowed so an unattended schedule can run and "
+                "audited per pass (AGENTS.md §5 as amended, DESIGN.md §5 "
+                "boundary 14)."
+            )
+        elif decision == "allow" and action_class == "containment":
             reason = (
                 "Defensive containment action — auto-allowed for time-critical "
                 "response and audited (DESIGN.md decision log, 2026-08-21)."

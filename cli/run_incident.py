@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 import argparse
 from pathlib import Path
 
@@ -34,7 +37,7 @@ def main():
             print("-", item["indicator"], item["indicator_type"], item["risk_level"])
 
     print("\nReport generated:")
-    print("reports/markdown/orchestrated_incident.md")
+    print("data/reports/orchestrated_incident.md")
 
 
 if __name__ == "__main__":

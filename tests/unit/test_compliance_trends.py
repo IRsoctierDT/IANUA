@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for compliance/trends.py — score history aggregation."""
 
 from pathlib import Path

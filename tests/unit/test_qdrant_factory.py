@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the env-driven Qdrant client factory (``rag.qdrant``).
 
 The real ``qdrant-client`` package is an optional extra and is not required

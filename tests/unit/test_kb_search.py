@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the dashboard's resilient knowledge-base search.
 
 The semantic backend (Qdrant + sentence-transformers) is optional

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Deterministic source labeling: scanner taxonomy, lab darknet, canary hits.
 
 Implements the ingestion half of the deception/labeling research candidate,

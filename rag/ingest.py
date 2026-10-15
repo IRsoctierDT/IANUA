@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """RAG ingestion skeleton: trusted local sources -> chunks -> embeddings.
 
 Trust boundary (DESIGN.md §5): ingested documents are UNTRUSTED content. We

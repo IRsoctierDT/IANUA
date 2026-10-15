@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Risk-Based Alerting (RBA) engine — deterministic entity risk scoring.
 
 Aggregates individual scored events into per-entity ("risk object") scores over

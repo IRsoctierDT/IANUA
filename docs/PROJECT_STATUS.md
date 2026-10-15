@@ -2,12 +2,15 @@
 
 ## Current Version
 
-v2.1.0 — **Detection Intelligence & XDR Foundation** — the IANUA identity era (renamed
-repo-wide, canonical everywhere), sequence-correlating SOC pipeline surfaced
-end-to-end (agents → reports → dashboard), verified passage citations,
-IDF-weighted retrieval, deepened audit forensics, and a one-click Codespaces
-test environment. All eight core agent blueprints remain built; work continues
-as enhancement of existing components, not new surface. See
+v2.2.0 — **Release Automation & Control Integrity** — one-command release
+preparation with human-gated publication (`scripts/prepare_release.py` and
+`release-on-merge.yml`), session-only review of redacted broker scan reports
+with baseline/current comparison in the dashboard, and a round of repairs to
+controls that were not in force: the attestation-expiry gate now compares
+against the current date and warns 30 days ahead of a lapse, and Dependabot
+auto-merge is gated on the pushing actor rather than only the pull request's
+author. The agent roster is built out; work continues as enhancement of
+existing components, not new surface. See
 [`docs/Changelog.md`](./Changelog.md) for the full history.
 
 ## Operational Components

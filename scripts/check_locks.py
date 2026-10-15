@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Assert the exported pip lockfiles stay consistent with ``uv.lock``.
 
 ``uv.lock`` is the dependency source of truth (AGENTS.md supply-chain controls).

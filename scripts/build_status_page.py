@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Render the IANUA status page for GitHub Pages.
 
 The status page is a single, self-contained observability surface for the
@@ -356,7 +359,12 @@ def render_html(report: StatusReport) -> str:
         f"{_summary_row(report)}\n"
         f"{body}\n"
         '<p class="foot">Generated deterministically from '
-        "<code>docs/status.data.json</code> · no wall-clock, reproducible build.</p>\n"
+        "<code>docs/status.data.json</code> · no wall-clock, reproducible build."
+        "<br>IANUA · &copy; 2026 Ivan Rozenblad · "
+        '<a href="https://github.com/IRsoctierDT/IANUA/blob/main/LICENSE">Apache-2.0</a>'
+        " · "
+        '<a href="https://github.com/IRsoctierDT/IANUA">source</a>'
+        "</p>\n"
         "</main>\n</body>\n</html>\n"
     )
 

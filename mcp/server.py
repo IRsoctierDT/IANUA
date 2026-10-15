@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Minimal, secure-by-default MCP server stub.
 
 Design goals (see DESIGN.md §3-§6, AGENTS.md §5-§6):
@@ -23,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agents.policies import ActionClass, AuditLogger, PolicyEngine
+from agents.policies import ActionClass, AuditLogger, PolicyEngine, Principal
 from agents.tools.guarded import enforce
 from agents.tools.validation import ValidationError, resolve_within
 
@@ -64,7 +67,7 @@ class ToolRegistry:
     root: Path
     policy: PolicyEngine = field(default_factory=PolicyEngine)
     audit: AuditLogger | None = None
-    actor: str = "mcp"
+    actor: Principal | str = "mcp"
     broker: TrustBroker | None = None
     _tools: dict[str, Tool] = field(default_factory=dict)
 

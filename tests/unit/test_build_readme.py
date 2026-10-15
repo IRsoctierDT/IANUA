@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scripts/build_readme.py — the README drift gate (AGENTS.md §7)."""
 
 from __future__ import annotations

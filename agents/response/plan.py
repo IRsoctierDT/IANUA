@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Response plans: evidence-linked containment guidance a **human** executes.
 
 DESIGN.md §5 boundary 8 is closed by construction. This package produces a

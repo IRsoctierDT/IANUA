@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Upload-boundary and plain-text presentation contracts without Streamlit imports."""
 
 from __future__ import annotations

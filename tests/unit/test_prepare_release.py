@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for scripts/prepare_release.py — atomic, fail-closed release preparation."""
 
 from __future__ import annotations
@@ -27,6 +30,23 @@ _SURFACES = (
 # Generator outputs: copied so a real or stubbed generator can touch them.
 _GENERATED = ("docs/status.html", "README.md")
 
+#: Replaces the copied changelog's ``## Unreleased`` body in the sandbox.
+#:
+#: Copying the live file sandboxed these tests' WRITES but not their CONTENT,
+#: so they inherited whatever release state the repository happened to be in.
+#: Preparing a release EMPTIES ``## Unreleased`` — that is what promotion does —
+#: and ``plan()`` fails closed on an empty section. So every test that calls
+#: ``plan()`` or ``main()`` broke the moment a release was prepared, which is
+#: precisely when this suite is the thing standing between a bad release and
+#: main. Seeding the section makes each assertion arithmetic on a fixture
+#: instead of on production data.
+_SANDBOX_UNRELEASED = """
+### Added
+- Synthetic unreleased entry, seeded by the sandbox fixture so these tests do
+  not depend on the live changelog's release state.
+
+"""
+
 
 @pytest.fixture
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -35,9 +55,25 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(prepare_release.ROOT / rel, target)
+    _seed_unreleased(tmp_path / "docs/Changelog.md")
     monkeypatch.setattr(prepare_release, "ROOT", tmp_path)
     monkeypatch.setattr(check_version_sync, "ROOT", tmp_path)
     return tmp_path
+
+
+def _seed_unreleased(changelog: Path) -> None:
+    """Give the sandbox a known, promotable ``## Unreleased`` body.
+
+    Reuses ``prepare_release._UNRELEASED`` rather than repeating the heading,
+    so the fixture cannot disagree with the script about what it looks like.
+    Every other heading in the copied file is left alone, because
+    ``check_version_sync`` requires the current version's release heading.
+    """
+    text = changelog.read_text(encoding="utf-8")
+    heading = prepare_release._UNRELEASED
+    start = text.index(heading) + len(heading)
+    end = text.index("\n## ", start) + 1  # keep the next release heading intact
+    changelog.write_text(text[:start] + _SANDBOX_UNRELEASED + text[end:], encoding="utf-8")
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
@@ -242,3 +278,60 @@ def test_cli_success_reports_updated_files(
     assert prepare_release.main(args) == 0
     assert f"prepare-release: OK: v{version}" in capsys.readouterr().out
     assert check_version_sync.check() == version
+
+
+@pytest.mark.unit
+def test_sandbox_is_independent_of_the_live_release_state(sandbox: Path) -> None:
+    """The fixture must supply promotable content, whatever the repo's state.
+
+    This is the regression guard for the defect that blocked the v2.2.0
+    release: every ``plan()``-driven test in this file failed as soon as a
+    release was prepared, because the sandbox copied the live changelog and
+    promotion leaves ``## Unreleased`` empty. Asserting on the fixture rather
+    than on the repository is the whole point, so it is asserted directly.
+    """
+    text = (sandbox / "docs/Changelog.md").read_text(encoding="utf-8")
+    start = text.index(prepare_release._UNRELEASED) + len(prepare_release._UNRELEASED)
+    body = text[start : text.index("\n## ", start)]
+    assert body.strip(), "sandbox changelog has an empty Unreleased section"
+    # And it is genuinely promotable — the operation that used to fail.
+    promoted = prepare_release.promote_changelog(text, "99.0.0", "Guard", "2026-11-02")
+    assert "## v99.0.0 — Guard — 2026-11-02\n" in promoted
+
+
+@pytest.mark.unit
+def test_success_names_the_prose_the_bump_invalidated(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A silent stale paragraph is the defect; the run has to say so.
+
+    The transforms substitute the version and title in PROJECT_STATUS's
+    current-version line and leave the editorial sentences after it. v2.2.0
+    shipped with a "Release Automation & Control Integrity" heading above a
+    paragraph describing the v2.0 rename era, caught only because a human read
+    the diff. The script cannot know whether the prose is stale, but it always
+    knows the bump made it suspect — so it names the file, the version the
+    prose is stale against, and the version to rewrite it for.
+    """
+    version = _next_minor()
+    monkeypatch.setattr(prepare_release, "_regenerate", _stub_regenerate(sandbox, version))
+    previous = prepare_release.current_version()
+    assert prepare_release.main([version, "--title", "Valid Title"]) == 0
+    captured = capsys.readouterr()
+    assert "prepare-release: OK" in captured.out
+    # Advisory channel: it must never be mistaken for a failure.
+    assert "ACTION NEEDED" in captured.err
+    assert "docs/PROJECT_STATUS.md" in captured.err
+    assert f"v{previous}" in captured.err, (
+        "the notice must name the version the prose is stale against"
+    )
+    assert f"v{version}" in captured.err, "the notice must name the version to rewrite it for"
+
+
+@pytest.mark.unit
+def test_dry_run_stays_silent_about_prose(
+    sandbox: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing was written, so nothing is stale yet."""
+    assert prepare_release.main([_next_minor(), "--title", "Valid Title", "--dry-run"]) == 0
+    assert "ACTION NEEDED" not in capsys.readouterr().err

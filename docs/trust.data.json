@@ -1,5 +1,5 @@
 {
-  "as_of": "2026-08-21",
+  "as_of": "2026-10-14",
   "controls": [
     {
       "category": "Policy & Governance",
@@ -80,15 +80,21 @@
       "title": "Dashboard input limits configured"
     },
     {
+      "category": "Secure Configuration",
+      "id": "CFG-02",
+      "status": "pass",
+      "title": "Dashboard binds loopback only"
+    },
+    {
       "category": "CI/CD & Change Management",
       "id": "MAN-01",
-      "status": "attested",
+      "status": "manual",
       "title": "Branch protection on main"
     },
     {
       "category": "CI/CD & Change Management",
       "id": "MAN-02",
-      "status": "attested",
+      "status": "manual",
       "title": "Human approval gate on deployments"
     },
     {
@@ -101,18 +107,18 @@
   "frameworks": [
     {
       "name": "NIST CSF 2.0",
-      "passing": 16,
-      "total": 16
+      "passing": 15,
+      "total": 17
     },
     {
       "name": "SOC 2 (Trust Services Criteria)",
-      "passing": 16,
-      "total": 16
+      "passing": 15,
+      "total": 17
     },
     {
       "name": "ISO/IEC 27001:2022",
-      "passing": 16,
-      "total": 16
+      "passing": 15,
+      "total": 17
     }
   ],
   "score": 100

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """The mapping ruleset loads whole or not at all (DESIGN.md §5 boundary 7).
 
 A poisoned store poisons every future mapping, so no malformed store may ever

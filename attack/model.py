@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Typed, immutable views over the distilled ATT&CK corpus.
 
 Pure data holders (frozen, slotted dataclasses) — no I/O, no clock, no

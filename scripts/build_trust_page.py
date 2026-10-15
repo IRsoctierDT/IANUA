@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Render the IANUA trust page for GitHub Pages (Vanta-style trust center).
 
 Publishes a public-safe view of the platform's compliance posture: control
@@ -384,7 +387,12 @@ def render_html(report: TrustReport) -> str:
         f"{_framework_block(report)}\n"
         f"{_control_rows(report)}\n"
         '<p class="foot">Generated deterministically from '
-        "<code>docs/trust.data.json</code> · no wall-clock, reproducible build.</p>\n"
+        "<code>docs/trust.data.json</code> · no wall-clock, reproducible build."
+        "<br>IANUA · &copy; 2026 Ivan Rozenblad · "
+        '<a href="https://github.com/IRsoctierDT/IANUA/blob/main/LICENSE">Apache-2.0</a>'
+        " · "
+        '<a href="https://github.com/IRsoctierDT/IANUA">source</a>'
+        "</p>\n"
         "</main>\n</body>\n</html>\n"
     )
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Portfolio Documentation Agent.
 
 Turns a description of lab/project work into a GitHub-ready Markdown document — a

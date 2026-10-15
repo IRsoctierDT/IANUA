@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """SOC Analyst Agent.
 
 Accepts plain-text or structured JSON log input. Returns a structured result

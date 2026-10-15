@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Endpoint telemetry: Sysmon (Windows) and auditd (Linux).
 
 These two carry the process-lineage and file/registry detail the behavioral
@@ -17,7 +20,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ingest._coerce import dig, epoch, first, observables, text
-from ingest.parsers import Signature
+from ingest.parsers import FieldPath, Signature
 from ingest.schema import Actor, Device, Endpoint, NormalizedEvent
 
 # --------------------------------------------------------------------------
@@ -153,6 +156,52 @@ def _parse_sysmon(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: Fields Sysmon exports either nested under ``EventData`` or flattened onto
+#: the record root, which is why ``_event_data`` reads from whichever it
+#: finds. Both spellings are declared, from one list, so the two cannot
+#: drift apart.
+_SYSMON_DATA_FIELDS: tuple[str, ...] = (
+    "CommandLine",
+    "Computer",
+    "DestinationHostname",
+    "DestinationIp",
+    "DestinationIpv6",
+    "DestinationPort",
+    "Hashes",
+    "Image",
+    "ParentImage",
+    "ProcessId",
+    "QueryName",
+    "SourceImage",
+    "SourceIp",
+    "SourcePort",
+    "SourceProcessId",
+    "SubjectUserName",
+    "User",
+    "UtcTime",
+)
+
+#: The evidence allow-list for Sysmon: every path this module reads, and so
+#: the only values an excerpt of a Sysmon record may carry.
+_SYSMON_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("Channel",),
+    ("EventID",),
+    ("Provider",),
+    ("System", "Channel"),
+    ("System", "Computer"),
+    ("System", "EventID"),
+    ("System", "Provider", "Name"),
+    ("System", "TimeCreated", "SystemTime"),
+    ("channel",),
+    ("event_id",),
+    ("hostname",),
+    ("provider_name",),
+    *((field,) for field in _SYSMON_DATA_FIELDS),
+    *(("EventData", field) for field in _SYSMON_DATA_FIELDS),
+)
+
+
 # --------------------------------------------------------------------------
 # auditd
 # --------------------------------------------------------------------------
@@ -203,7 +252,20 @@ def _recognizes_auditd(payload: Mapping[str, Any]) -> bool:
 
 
 def _execve_command(payload: Mapping[str, Any]) -> str | None:
-    """Reassemble an EXECVE argv, in index order rather than dict order."""
+    """Reassemble an EXECVE argv, in index order rather than dict order.
+
+    **Only for EXECVE.** On a ``SYSCALL`` record the same ``a0``/``a1``… keys
+    are the syscall's *argument registers* — hex words like ``0x7ffd…`` — not
+    an argv. Reassembling those produced a plausible-looking ``command_line``
+    out of register values on the most frequent auditd record type, which is
+    fabricated evidence: an analyst reading an incident would see a command
+    that was never run. Found by review once ``ingest/keyvalue.py`` made text
+    auditd records reachable for the first time; the guard is here rather than
+    at the call site so no future caller can reintroduce it.
+    """
+    record_type = text(payload.get("type"))
+    if record_type is None or record_type.upper() != "EXECVE":
+        return None
     args: list[tuple[int, str]] = []
     for key, value in payload.items():
         match = _EXECVE_ARG.match(key)
@@ -268,7 +330,38 @@ def _parse_auditd(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for auditd. The ``a0``/``a1``… argv words an
+#: EXECVE record carries are deliberately **not** here: they are read by
+#: ``_execve_command`` through a pattern rather than by name, and what they
+#: mean is already modelled — the reassembled line is carried in
+#: ``Actor.command_line`` and in ``message``. An excerpt built from a
+#: pattern could not state its own bounds, and this one can.
+_AUDITD_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("acct",),
+    ("addr",),
+    ("auid",),
+    ("cmd",),
+    ("comm",),
+    ("exe",),
+    ("hostname",),
+    ("key",),
+    ("msg",),
+    ("node",),
+    ("pid",),
+    ("ppid_exe",),
+    ("proctitle",),
+    ("res",),
+    ("ses",),
+    ("success",),
+    ("syscall",),
+    ("timestamp",),
+    ("type",),
+    ("uid",),
+)
+
+
 SIGNATURES: tuple[Signature, ...] = (
-    Signature("sysmon", "endpoint", _recognizes_sysmon, _parse_sysmon),
-    Signature("auditd", "endpoint", _recognizes_auditd, _parse_auditd),
+    Signature("sysmon", "endpoint", _recognizes_sysmon, _parse_sysmon, _SYSMON_FIELDS),
+    Signature("auditd", "endpoint", _recognizes_auditd, _parse_auditd, _AUDITD_FIELDS),
 )

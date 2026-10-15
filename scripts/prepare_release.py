@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Prepare an IANUA release: bump every version surface in one atomic step.
 
 Cutting a release used to be a hand-edit of a dozen files (v2.1.0 took sixteen
@@ -63,6 +66,21 @@ _VERSION = re.compile(r"^(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})$")
 # SECURITY.md wraps the title in "(current — …)".
 _TITLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 &:,.'+/-]{2,79}$")
 _UNRELEASED = "## Unreleased\n"
+
+#: Surfaces carrying hand-written prose that a version bump INVALIDATES but
+#: cannot rewrite. The transforms substitute the version and the title; the
+#: sentences around them are editorial and stay as the previous release left
+#: them. v2.2.0 shipped with a "Release Automation & Control Integrity"
+#: heading above a paragraph about the v2.0 rename era and Codespaces, caught
+#: only because a human read the diff. Silence is the defect, so the run says
+#: so — it cannot know whether the prose is stale, but it always knows the
+#: bump made it suspect.
+PROSE_REVIEW: tuple[tuple[str, str], ...] = (
+    (
+        "docs/PROJECT_STATUS.md",
+        "the paragraph under '## Current Version' still describes v{old}",
+    ),
+)
 _SUPPORTED = "Supported — security fixes applied"
 _LEGACY = "Critical security fixes only, upgrade recommended"
 
@@ -290,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="list files; write nothing")
     args = parser.parse_args(argv)
     try:
+        previous = current_version()  # before apply() moves it
         changes = plan(args.version, args.title, args.date)
         if args.dry_run:
             for path in sorted(changes):
@@ -301,6 +320,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"prepare-release: FAIL: {exc}", file=sys.stderr)
         return 2
     print(f"prepare-release: OK: v{args.version} — {len(changes)} file(s) updated; review the diff")
+    for rel, why in PROSE_REVIEW:
+        print(
+            f"prepare-release: ACTION NEEDED: {rel} — {why.format(old=previous)}. "
+            f"The version and title were substituted; the prose was not. "
+            f"Rewrite it for v{args.version} before opening the release PR.",
+            file=sys.stderr,
+        )
     return 0
 
 

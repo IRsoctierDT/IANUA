@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit contracts for the Sigma evaluator's field/modifier layer.
 
 Pins the dispatch-through-``_SUPPORTED_MODIFIERS`` design (an unlisted

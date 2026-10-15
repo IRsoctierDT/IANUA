@@ -8,8 +8,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = [
-  "agents*", "attack*", "intel*", "ingest*", "rag*", "mcp*", "dashboard*", "scripts*",
-  "compliance*",
+  "agents*", "attack*", "intel*", "ingest*", "store*", "correlation*", "pipeline*", "collect*", "rag*",
+  "mcp*", "dashboard*", "scripts*", "compliance*",
 ]
 exclude = ["tests*"]
 
@@ -23,7 +23,7 @@ compliance = ["attestations.json"]
 
 [project]
 name = "ianua"
-version = "2.1.0"
+version = "2.2.0"
 description = "Portfolio-grade environment for AI ops, cybersecurity automation, RAG, and agentic workflows."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -108,8 +108,8 @@ exclude = ["*.md"]
 [tool.mypy]
 python_version = "3.11"
 files = [
-  "agents", "attack", "intel", "ingest", "scripts", "tests", "dashboard", "mcp", "rag",
-  "compliance",
+  "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "scripts", "tests",
+  "dashboard", "mcp", "rag", "compliance",
 ]
 warn_unused_configs = true
 warn_redundant_casts = true
@@ -158,6 +158,10 @@ addopts = [
   "--cov=attack",
   "--cov=intel",
   "--cov=ingest",
+  "--cov=store",
+  "--cov=correlation",
+  "--cov=pipeline",
+  "--cov=collect",
   "--cov=compliance",
   "--cov=rag",
   "--cov=mcp",
@@ -172,7 +176,10 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["agents", "attack", "intel", "ingest", "compliance", "rag", "mcp"]
+source = [
+  "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "compliance",
+  "rag", "mcp",
+]
 omit = ["tests/*", "*/__init__.py"]
 
 [tool.coverage.report]

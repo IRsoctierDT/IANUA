@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Contracts for the Detection Intelligence dashboard views.
 
 Two properties matter more than the formatting: the views must be honest

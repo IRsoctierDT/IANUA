@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for compliance/attestations.py and ATTESTED engine behavior."""
 
 import json

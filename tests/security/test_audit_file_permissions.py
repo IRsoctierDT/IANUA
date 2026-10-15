@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Security tests: audit artifacts are created owner-only (0o600 / 0o700).
 
 Audit logs are sensitive by default (AGENTS.md §5). Every artifact the logger

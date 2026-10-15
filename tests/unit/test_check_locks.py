@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for scripts/check_locks.py (uv.lock <-> pip-lock consistency gate)."""
 
 from pathlib import Path

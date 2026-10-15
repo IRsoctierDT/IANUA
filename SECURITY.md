@@ -10,7 +10,8 @@ or have written authorization to test. See [AGENTS.md](./AGENTS.md) §5.
 
 | Version | Status |
 |---------|--------|
-| 2.1.x (current — Detection Intelligence & XDR Foundation) | Supported — security fixes applied |
+| 2.2.x (current — Release Automation & Control Integrity) | Supported — security fixes applied |
+| 2.1.x | Critical security fixes only, upgrade recommended |
 | 2.0.x | Critical security fixes only, upgrade recommended |
 | 1.x | Critical security fixes only, upgrade recommended |
 | < 1.0 | Not supported |
@@ -40,7 +41,7 @@ Critical findings (CVSS ≥ 9.0) will be prioritized for an expedited patch.
 | Policy & audit layer | `agents/policies/` | Default-deny policy engine; tamper-evident hash-chained audit log with HMAC/Ed25519 head signing |
 | MCP server + sandbox | `mcp/` | Local model-context-protocol server; containerized tool execution |
 | RAG pipeline | `rag/` | Ingestion, embedding, retrieval, verified passage citations |
-| Dashboard | `dashboard/` | Streamlit command center (local-only backends, fail-soft) |
+| Dashboard | `dashboard/` | Streamlit command center. Binds loopback only and authenticates no one, so exposure is a deployment decision behind an authenticating proxy. "Local-only backends" below means the services it calls out to (Ollama, Qdrant) are local — it is not an access-control claim |
 | Detection content | `detections/` | Lab-scoped Sigma rules and correlations |
 | Verification CLIs | `scripts/` | `audit_verify`, `audit_maintenance`, SBOM/locks/status drift checks |
 | CI/CD workflows | `.github/workflows/` | Pipeline integrity, drift gates, human-gated Pages deploy |
