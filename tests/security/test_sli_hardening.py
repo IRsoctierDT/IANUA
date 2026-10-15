@@ -539,12 +539,52 @@ def test_the_attestation_does_not_rest_on_the_exit_code() -> None:
     assert "Exit 0 means" not in hint
     assert "per-indicator" in hint
 
-    # The two readings that actually move when the evidence does.
-    assert "detection-backlog" in hint
+    # The reading that actually moves when the evidence does. `detection-backlog`
+    # is deliberately NOT required here: measured on a caught-up node it read 0
+    # both before and after the same total prune, so naming it as the signal was
+    # useless exactly where this control is needed.
     assert "store-readable" in hint
 
     # And it must not read as "the indicator set is broken".
     assert "sli/indicators.py" in hint
+
+    # THE DECISION, which is the part that makes this a procedure rather than a
+    # note. Review caught the first version of this fix without it: a hint that
+    # only says *record* leaves the operator no rule for when to *withhold*, and
+    # nothing downstream supplies one — `attestations._FIELDS` makes `note` free
+    # text and `compliance.engine` marks any current attestation `ATTESTED`
+    # whatever it says, so an operator could follow the hint exactly and still
+    # file the passing attestation this control exists to prevent.
+    assert "DO NOT ATTEST" in hint, "the hint must say when to withhold, not only what to record"
+    assert "account for the drop" in hint
+
+
+@pytest.mark.security
+def test_nothing_downstream_enforces_the_withholding_rule() -> None:
+    """Pinned because the control's own description now claims exactly this.
+
+    It would be easy to read "do not attest" as something the engine checks. It
+    is not: the attestation schema fixes its field set, so the figures live in
+    free-text ``note``, and a current attestation grades ``ATTESTED`` on dates
+    alone. The enforcement is review of the committed ``attestations.json``.
+
+    Asserting it keeps the description honest in both directions — if a future
+    change *does* make the engine refuse an unreconciled zero-row attestation,
+    this test fails and the description has to be rewritten rather than left
+    understating a control that now exists.
+    """
+    from compliance.attestations import _FIELDS
+    from compliance.controls import registry
+
+    assert "note" in _FIELDS, "the figures have nowhere else to go"
+    engine_source = (Path(__file__).resolve().parents[2] / "compliance" / "engine.py").read_text(
+        encoding="utf-8"
+    )
+    assert "store-readable" not in engine_source, (
+        "the engine now reads an indicator; AUD-03's description says it does not"
+    )
+    description = next(c for c in registry() if c.id == "AUD-03").description
+    assert "Nothing enforces that rule" in description
 
 
 @pytest.mark.security

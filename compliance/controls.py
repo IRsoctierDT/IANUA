@@ -488,8 +488,12 @@ def registry() -> tuple[Control, ...]:
                 "is the same argument MAN-03 makes for corpus freshness. What "
                 "that exit code is *not* is a census of the evidence behind "
                 "those objectives: an emptied store meets every one of them, "
-                "measured, so the attestation names per-indicator verdicts "
-                "rather than resting on the code alone."
+                "measured, so the hint carries a withholding rule rather than "
+                "resting on the code. Nothing enforces that rule — the note is "
+                "free text and a current attestation is ATTESTED whatever it "
+                "says — so the control is review of the committed "
+                "attestations.json, and the rule is what a reviewer checks "
+                "against."
             ),
             category=Category.AUDIT,
             severity=Severity.HIGH,
@@ -500,18 +504,20 @@ def registry() -> tuple[Control, ...]:
             ),
             attestation_hint=(
                 "On the deployed node: python scripts/report_sli.py --root "
-                "<lab root> --json. Attest to the per-indicator verdicts the "
-                "JSON names, NOT to the exit code: it is a conjunction over "
-                "every objective and does not witness how much evidence the "
-                "node holds. Measured, a store pruned to zero rows left the "
-                "whole status map unchanged. Record detection-backlog's count "
-                "and store-readable's row counts in the note, since those move "
-                "when the evidence does (read 24 newest and 24 oldest -> read "
-                "0 newest and 0 oldest, status still met). That grading is "
-                "deliberate and sli/indicators.py records why, so a quiet "
-                "report is not a broken indicator set. A second backup "
-                "manifest's store.attestation.events corroborates it where "
-                "backups exist."
+                "<lab root> --json. Attest to the per-indicator verdicts, NOT "
+                "to the exit code: every objective is met on a store pruned to "
+                "zero rows, so the code cannot witness the evidence behind "
+                "them. Read store-readable's detail and record its row counts "
+                "in the note — it is the only reading that moves when the "
+                "evidence does; detection-backlog does not move on a caught-up "
+                "node. THEN DECIDE: if those counts are zero, or lower than "
+                "the last attestation, DO NOT ATTEST until a retention pass in "
+                "the audit chain and a backup manifest together account for "
+                "the drop; record which accounted for it. Zero rows with every "
+                "objective met is the state this control exists to catch. The "
+                "grading itself is correct and deliberate — sli/indicators.py "
+                "says why — so do not treat a quiet report as a broken "
+                "indicator set."
             ),
         ),
         Control(
