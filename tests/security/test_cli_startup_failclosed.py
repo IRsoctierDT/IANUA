@@ -392,6 +392,44 @@ def test_validated_root_returns_a_resolved_root(tmp_path: Path) -> None:
 
 
 @pytest.mark.security
+def test_a_root_symlink_swapped_between_the_check_and_the_return_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The path validated and the path returned are not the same path.
+
+    ``root.is_dir()`` states the supplied path and ``root.resolve()`` returns
+    the target, so an atomic deployment symlink swap — ``/srv/ianua`` repointed
+    from one release to the next between those two calls — hands back a target
+    nothing checked, including one that does not exist, which the callers'
+    ``mkdir(parents=True)`` would then create.
+
+    The swap is performed deterministically in the window rather than raced, so
+    this pins the guard rather than hoping for an interleaving. It does not
+    claim to close an adversary racing the two calls on purpose: that is two
+    syscalls apart like any other check, and §5 of the charter already records
+    why that race is unwinnable.
+    """
+    target = tmp_path / "release-1"
+    target.mkdir()
+    link = tmp_path / "current"
+    link.symlink_to(target, target_is_directory=True)
+    never_created = tmp_path / "release-2"
+
+    real_resolve = Path.resolve
+
+    def swapping_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+        if self == link:
+            link.unlink()
+            link.symlink_to(never_created, target_is_directory=True)
+        return real_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "resolve", swapping_resolve)
+
+    with pytest.raises(_Bespoke, match="resolved to"):
+        validated_root(link, error=_Bespoke)
+
+
+@pytest.mark.security
 def test_validated_root_raises_the_callers_error_type(tmp_path: Path) -> None:
     """Each entry point keeps its own exception taxonomy and exit code."""
     with pytest.raises(_Bespoke):

@@ -83,7 +83,14 @@ def main(argv: list[str] | None = None) -> int:
         # nonexistent log (no active file, no archives, no checkpoint) is a
         # verification failure, distinct from an intentionally empty existing
         # log, which verifies as intact.
-        print(json.dumps({"log": str(args.log), "intact": False, "failure": "audit log not found"}))
+        # Same distinction the maintainer draws, so the two still answer a
+        # monitor identically: a directory at this path is not a missing file.
+        failure = (
+            "audit log not found"
+            if not args.log.exists()
+            else "path exists but is not an audit log (expected a regular, non-symlink file)"
+        )
+        print(json.dumps({"log": str(args.log), "intact": False, "failure": failure}))
         return 2
 
     report = logger.verify_report()

@@ -283,34 +283,62 @@ class AuditLogger:
         self._archive_re = re.compile(rf"^{re.escape(self.path.name)}\.(\d+)$")
 
     # ---------------------------------------------------------------- segments
+    @staticmethod
+    def _is_segment(path: Path) -> bool:
+        """True iff ``path`` could be a chain segment: a real, regular file.
+
+        **A chain is made of files, and this is the only thing that said so.**
+        Every discovery below used :meth:`Path.exists`, which is true of a
+        *directory* — and :meth:`apply_retention` acts on what it discovers.
+        Measured on the version of this file before this check existed: a
+        mistyped ``--log /srv/ianua/data/pipeline`` (one path component short
+        of ``…/pipeline/audit.log``) made ``_rotate`` **rename the whole
+        subsystem directory** to ``pipeline.1``, carrying the audit chain and
+        the pipeline cursor with it, and reported ``{"rotated": true,
+        "archives": 1}`` at exit ``0``. ``--log …/data`` renamed the entire
+        lab-data root — event store included — the same way. The run after
+        that tracebacked out of ``_prune``'s ``unlink()`` with exit 1, so an
+        operator learns of it only once the damage is a commit behind them.
+
+        ``is_symlink()`` is excluded as well, which is the discipline §5 of the
+        charter already states for the log files ``collect/`` reads: a link at
+        the chain means the chain is not where it is believed to be. It does
+        **not** close :meth:`record`'s append-through-a-symlink path, which
+        never consults this predicate — a separate concern, recorded rather
+        than implied.
+        """
+        return path.is_file() and not path.is_symlink()
+
     def _archive_paths(self) -> list[Path]:
         """Archived segments, oldest → newest (ascending numeric suffix)."""
         parent = self.path.parent
-        if not parent.exists():
+        if not parent.is_dir():
             return []
         indexed: list[tuple[int, Path]] = []
         for child in parent.iterdir():
             m = self._archive_re.match(child.name)
-            if m:
+            if m and self._is_segment(child):
                 indexed.append((int(m.group(1)), child))
         return [p for _, p in sorted(indexed)]
 
     def _segments_in_order(self) -> list[Path]:
         """All chain segments oldest → newest: archives then the active log."""
         segments = self._archive_paths()
-        if self.path.exists():
+        if self._is_segment(self.path):
             segments.append(self.path)
         return segments
 
     def exists(self) -> bool:
-        """True iff any trace of the log exists on disk.
+        """True iff any trace of the log exists on disk, as a chain.
 
         Checks the active file, archived segments, and the retention
-        checkpoint. Lets a verifier distinguish a wrong/missing path (nothing
-        was ever logged here — a monitor must fail closed) from a legitimately
-        empty existing log.
+        checkpoint — each of which must be a regular, non-symlink file (see
+        :meth:`_is_segment`). Lets a verifier distinguish a wrong/missing path
+        (nothing was ever logged here — a monitor must fail closed) from a
+        legitimately empty existing log, and refuses to call a *directory* a
+        log, which is what made rotation rename one.
         """
-        return bool(self._segments_in_order()) or self._checkpoint_path.exists()
+        return bool(self._segments_in_order()) or self._is_segment(self._checkpoint_path)
 
     def _last_event(self, segment: Path) -> AuditEvent | None:
         if not segment.exists():
@@ -334,7 +362,7 @@ class AuditLogger:
 
     # ---------------------------------------------------------------- checkpoint
     def _read_checkpoint(self) -> tuple[int, str] | None:
-        if not self._checkpoint_path.exists():
+        if not self._is_segment(self._checkpoint_path):
             return None
         data = json.loads(self._checkpoint_path.read_text(encoding="utf-8"))
         return int(data["pruned_through_seq"]), str(data["pruned_through_hash"])
@@ -369,9 +397,12 @@ class AuditLogger:
             oldest.unlink()
 
     def _should_rotate(self) -> bool:
+        # ``_is_segment`` rather than ``exists()``: a directory's ``st_size``
+        # is its own block size — 4096 on ext4 — so any ``max_bytes`` below
+        # that made a mistyped path "due for rotation".
         return (
             self.max_bytes is not None
-            and self.path.exists()
+            and self._is_segment(self.path)
             and self.path.stat().st_size >= self.max_bytes
         )
 

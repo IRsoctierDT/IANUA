@@ -123,13 +123,23 @@ def main(argv: list[str] | None = None) -> int:
         # build the entire wrong path and report success for it. An empty log
         # that *exists* still verifies as intact and is maintained normally;
         # this is only the case where nothing was ever logged here.
+        # A path that *is* there but is not a chain gets its own message. A
+        # `--log` one component short of the log names the subsystem
+        # directory, and "not found" would send the operator looking for a
+        # missing file instead of at the path they typed — the very mistake
+        # that used to make rotation rename that directory.
+        failure = (
+            "audit log not found"
+            if not args.log.exists()
+            else "path exists but is not an audit log (expected a regular, non-symlink file)"
+        )
         print(
             json.dumps(
                 {
                     "log": str(args.log),
                     "verified": False,
                     "action": "aborted",
-                    "failure": "audit log not found",
+                    "failure": failure,
                 }
             ),
             file=sys.stderr,

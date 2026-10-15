@@ -212,6 +212,21 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
     # Not wrapped: the path was just stat-ed successfully, so a failure here
     # would be a race rather than a reachable argument.
     resolved = root.resolve()
+    # The path validated and the path returned are different paths whenever a
+    # symlink is involved, and callers create `data/` beneath the *returned*
+    # one. An atomic deployment symlink swap — `/srv/ianua` repointed from one
+    # release to the next between these two calls — would otherwise hand back
+    # a target nothing had checked, including one that does not exist, which
+    # `mkdir(parents=True)` would then create. Re-stating it closes that
+    # ordinary-operations case. It does **not** close an adversary racing the
+    # two calls deliberately; §5 of the charter already records why that race
+    # is unwinnable, and this is two syscalls apart like any other.
+    if resolved != root and not resolved.is_dir():
+        raise error(
+            f"{what} {root} resolved to {resolved}, which is not a directory; a symlinked "
+            "root that moved between the check and the return is the deployment case, and "
+            "data/ must not be created under a path nothing validated"
+        )
     if resolved.parent == resolved:
         raise error(
             f"{what} must not be the filesystem root, got {str(root)!r} (resolves to "

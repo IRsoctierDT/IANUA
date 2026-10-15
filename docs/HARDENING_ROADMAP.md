@@ -109,7 +109,21 @@ that *deletes* evidence. Both now resolve through the same
 `agents/policies/audit.py::verifier_from_env` the read-only verifier uses, so this job cannot
 rotate a log `scripts/audit_verify.py` would reject; a missing log exits `2` with the
 verifier's own `failure` text and is **not** skipped by `--no-verify`, and key material that
-exists but cannot be used exits `3` instead of degrading to a chain-only pass. Covered by
+exists but cannot be used exits `3` instead of degrading to a chain-only pass.
+
+**A third way, found in review, and the most destructive.** Chain discovery used
+`Path.exists()`, which is true of a *directory*, and `apply_retention` acts on what it
+discovers: a `--log` one component short of the log made `_rotate` **rename the whole
+subsystem directory** to `<name>.1` — audit chain and pipeline cursor with it — reporting
+`{"rotated": true, "archives": 1}` at exit `0`, and with `--log …/data` it took the entire
+lab-data root including the event store. The next run then tracebacked out of `_prune`'s
+`unlink()` at exit 1, so the rename was always discovered too late. A chain is made of
+files and nothing said so; every discovery now requires a regular, non-symlink file
+(`AuditLogger._is_segment`), in the library rather than in the CLI because `AuditLogger` is
+public API — a plant proved that necessary, since the CLI-level test stayed green when
+`_should_rotate` alone was reverted. Both CLIs now distinguish "nothing was ever logged
+here" from "this path is not a log", because a mistyped path is the reachable cause and
+"not found" sends the operator looking for the wrong thing. Covered by
 `tests/security/test_audit_maintenance_failclosed.py`.
 
 **Asymmetric signing — shipped.** Signing is now pluggable (`agents/policies/signing.py`,

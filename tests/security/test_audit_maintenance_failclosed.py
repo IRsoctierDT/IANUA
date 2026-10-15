@@ -150,6 +150,127 @@ def test_the_maintainer_and_the_verifier_agree_on_a_missing_log(
     assert maintainer["failure"] == verifier["failure"] == "audit log not found"
 
 
+# ------------------------------------------------- a path that is not a chain
+@pytest.mark.security
+def test_a_directory_at_the_log_path_is_refused_and_not_rotated(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The worst defect this CLI had: rotation renaming a whole directory.
+
+    A ``--log`` one component short of the log names the subsystem directory.
+    ``exists()`` used to accept it (every discovery tested ``Path.exists()``,
+    true of a directory), ``_should_rotate`` agreed (a directory's ``st_size``
+    is its own block size, so any small ``--max-bytes`` qualified), and
+    ``_rotate`` **renamed the directory** to ``<name>.1`` — audit chain,
+    cursor and all — reporting ``{"rotated": true}`` at exit 0. With
+    ``--log …/data`` it took the whole lab-data root, event store included.
+    The run after that tracebacked out of ``_prune``'s ``unlink()`` with exit
+    1, so the only notice an operator got arrived after the rename.
+
+    Asserted on the tree, not just the exit code: a guard that refused *after*
+    ``apply_retention`` would still pass an exit-code-only test.
+    """
+    subsystem = tmp_path / "data" / "pipeline"
+    subsystem.mkdir(parents=True)
+    _emit(AuditLogger(subsystem / "audit.log"), 3)
+    (subsystem / "cursor.json").write_text("{}", encoding="utf-8")
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+
+    code = maintain_main(
+        ["--log", str(subsystem), "--no-verify", "--max-bytes", "1", "--retain-segments", "7"]
+    )
+
+    assert code == 2
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["failure"] == (
+        "path exists but is not an audit log (expected a regular, non-symlink file)"
+    )
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("*")} == before, (
+        "a refused maintenance pass renamed something"
+    )
+
+
+@pytest.mark.security
+def test_the_lab_data_root_at_the_log_path_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One component shorter still, and the blast radius is every subsystem."""
+    root = tmp_path / "data"
+    (root / "events").mkdir(parents=True)
+    (root / "events" / "events.sqlite3").write_bytes(b"x" * 64)
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+
+    assert maintain_main(["--log", str(root), "--no-verify", "--max-bytes", "1"]) == 2
+    assert "not an audit log" in json.loads(capsys.readouterr().err)["failure"]
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("*")} == before
+
+
+@pytest.mark.security
+def test_a_symlink_at_the_log_path_is_not_a_chain(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """§5 states that discipline for the logs ``collect/`` reads; a chain is no different.
+
+    A link at the chain means the chain is not where it is believed to be —
+    and rotation would move the link rather than the log.
+    """
+    real = tmp_path / "elsewhere.log"
+    _emit(AuditLogger(real), 2)
+    link = tmp_path / "audit.log"
+    link.symlink_to(real)
+
+    assert maintain_main(["--log", str(link), "--max-bytes", "1"]) == 2
+    assert "not an audit log" in json.loads(capsys.readouterr().err)["failure"]
+    assert link.is_symlink(), "the refused pass must not have moved the link"
+
+
+@pytest.mark.security
+def test_apply_retention_on_a_directory_does_nothing_at_the_library_level(
+    tmp_path: Path,
+) -> None:
+    """The same invariant one layer down, where the CLI's guard does not reach.
+
+    Found by a plant: reverting ``_should_rotate`` to ``self.path.exists()``
+    left the CLI test above green, because the CLI refuses before
+    ``apply_retention`` is ever called. ``AuditLogger`` is public API
+    (re-exported from ``agents.policies``), so the hardening has to hold for a
+    caller that does not go through ``scripts.audit_maintenance`` — which is
+    the whole reason the fix lives in the library rather than in the CLI.
+
+    A directory's ``st_size`` is its own block size, 4096 on ext4, so any
+    ``max_bytes`` below that made a mistyped path "due for rotation".
+    """
+    subsystem = tmp_path / "data" / "pipeline"
+    subsystem.mkdir(parents=True)
+    (subsystem / "cursor.json").write_text("{}", encoding="utf-8")
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+
+    summary = AuditLogger(subsystem, max_bytes=1, retain_segments=7).apply_retention()
+
+    assert summary["rotated"] is False, "a directory was treated as a log due for rotation"
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("*")} == before
+
+
+@pytest.mark.security
+def test_a_directory_named_like_an_archive_is_not_counted_as_a_segment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Archive discovery matches on the *name*; the shape has to be checked too.
+
+    Without this, ``audit.log.1`` as a directory joins the chain, and pruning
+    reaches it with ``unlink()`` — which raises rather than deletes, turning a
+    scheduled job into a traceback at exit 1 against a contract that says 2.
+    """
+    log = tmp_path / "audit.log"
+    _emit(AuditLogger(log), 2)
+    (tmp_path / "audit.log.1").mkdir()
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+
+    assert maintain_main(["--log", str(log), "--retain-segments", "0"]) == 0
+    assert json.loads(capsys.readouterr().out)["archives"] == 0, "a directory joined the chain"
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("*")} == before
+
+
 # -------------------------------------------------------- the signing scheme
 @pytest.mark.security
 def test_an_ed25519_head_signature_is_checked_before_rotating(
