@@ -144,18 +144,31 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
     means every component on the way to it exists, so nothing has been invented
     and the operator has named a real directory the long way round.
 
+    *The filesystem root is refused*, and it is the only absolute path given a
+    rule of its own, because it is the only one a misconfigured scheduler
+    produces **by accident**. Measured: with the variable unset,
+    ``--root "$IANUA_ROOT"`` is ``""`` and refused by the first rule, but
+    ``--root "$IANUA_ROOT/"`` — the same line with an ordinary trailing slash —
+    is exactly ``"/"``, which is absolute, is a directory, and was accepted.
+    That puts the event store at ``/data`` with every signal reading healthy:
+    one character from the hole this function was written to close, and in the
+    same catastrophic class. ``//``, ``/.``, ``/..``, ``/../../..`` and
+    ``/proc/self/root`` all resolve there too, so the test is on the resolved
+    path — a path that is its own parent.
+
     **The limit of the absolute rule, stated rather than implied.** "Absolute"
-    removes the *accidental* dependence on the working directory — an unset
-    variable, a stale relative path, a typo — not every possible one.
-    ``/proc/self/cwd`` is absolute, is a directory, and resolves to the
-    process's working directory; measured, it is accepted and the tree lands
-    there. So are ``/proc/self/root``, ``/dev/fd/`` entries, ``/`` itself and
-    ``/..``. None is refused here, deliberately: each is an absolute path to a
-    directory that exists, no scheduler misconfiguration produces one by
-    accident, and banning ``/proc`` would refuse paths that are legitimate on
-    Linux. What they bound is the *claim*, not the control — an operator who
-    writes one of them has named that directory on purpose, which is the line
-    this function draws.
+    removes the *accidental* dependence on the working directory, not every
+    possible one. ``/proc/self/cwd`` is absolute, is a directory, and resolves
+    to the process's working directory; measured, it is accepted and the tree
+    lands there, as it is for ``/proc/thread-self/cwd`` and ``/dev/fd/N``
+    entries. Those are **not** refused, deliberately: no scheduler
+    misconfiguration produces them — an unset variable yields ``""`` or ``"/"``,
+    both now refused — and banning ``/proc`` would refuse paths that are
+    legitimate on Linux. An operator who writes one has named that directory on
+    purpose, which is the line this function draws. It also cannot catch
+    ``--root "$IANUA_ROOT/data"`` with the variable unset, which yields
+    ``/data``: that is an absolute path to a plausible lab-data root, and
+    nothing here can distinguish it from an operator who meant it.
 
     One implementation, because four copies of a guard is how three of them
     stay fixed and one does not — which is the shape this very defect took.
@@ -169,8 +182,9 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
         ``root`` resolved, so every later join is unambiguous.
 
     Raises:
-        error: If ``root`` is relative (including ``""`` and ``"."``), or does
-            not already exist as a directory when stated as supplied.
+        error: If ``root`` is relative (including ``""`` and ``"."``), does not
+            already exist as a directory when stated as supplied, cannot be
+            stated at all, or resolves to the filesystem root.
     """
     if not root.is_absolute():
         raise error(
@@ -179,10 +193,31 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
             "unset shell variable becomes a shadow data tree that reports success"
         )
     # Stated as supplied. Resolving first is what let `/srv/absent/..` through.
-    if not root.is_dir():
+    try:
+        is_directory = root.is_dir()
+    except OSError as exc:
+        # `Path.is_dir()` swallows ENOENT, ENOTDIR, EBADF and ELOOP and returns
+        # False, but *not* ENAMETOOLONG, which propagated as a bare `OSError`
+        # and broke the `error` contract above. Measured: a 256-byte component
+        # raised `[Errno 36] File name too long` straight through. The four
+        # CLIs happen to catch `OSError` as well, so the exit code was right by
+        # accident, which is not the same as the contract holding.
+        raise error(f"{what} {root} cannot be stated: {exc}") from exc
+    if not is_directory:
         raise error(
             f"{what} {root} is not an existing directory; data/ is created beneath the "
             "root but never the root itself, so this is a typo or an unmounted volume "
             "rather than a fresh deployment"
         )
-    return root.resolve()
+    # Not wrapped: the path was just stat-ed successfully, so a failure here
+    # would be a race rather than a reachable argument.
+    resolved = root.resolve()
+    if resolved.parent == resolved:
+        raise error(
+            f"{what} must not be the filesystem root, got {str(root)!r} (resolves to "
+            f"{resolved}); data/ is created beneath the root, so this would put the "
+            "event store at /data. It is the one absolute path a misconfigured "
+            'scheduler writes by accident: --root "$IANUA_ROOT/" with the variable '
+            'unset is exactly "/"'
+        )
+    return resolved

@@ -237,6 +237,19 @@ long way round. That non-refusal has its own test, so over-tightening it into a
 blanket `..` ban shows up as a failing test rather than as a refused
 deployment.
 
+**The filesystem root is refused**, and it is the only absolute path with a
+rule of its own, because it is the only one a misconfiguration produces by
+accident. With the variable unset, `--root "$IANUA_ROOT"` is `""` and refused
+as relative — but `--root "$IANUA_ROOT/"`, the same line with an ordinary
+trailing slash, is exactly `/`, which is absolute and *is* a directory. That
+puts the event store at `/data` with every signal reading healthy: one
+character from the original hole, in the same catastrophic class. `//`, `/.`,
+`/..` and `/proc/self/root` all resolve there too, so the test is on the
+resolved path. What it still cannot catch is `--root "$IANUA_ROOT/data"`, which
+yields `/data` — an absolute path to a plausible root, indistinguishable from
+an operator who meant it. **Name the root in the unit or crontab literally, not
+through a variable**, and the whole class goes away.
+
 Pinned for all four CLIs by `tests/security/test_cli_startup_failclosed.py`,
 which also fails if a fifth scheduled CLI is added without a row in it.
 

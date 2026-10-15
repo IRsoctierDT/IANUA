@@ -308,6 +308,78 @@ def test_validated_root_refuses_a_file(tmp_path: Path) -> None:
         validated_root(occupied, error=_Bespoke)
 
 
+#: Absolute spellings that all resolve to the filesystem root. The first is
+#: what an unset shell variable produces when the scheduler line carries an
+#: ordinary trailing slash — measured: ``--root "$IANUA_ROOT"`` is ``""`` and
+#: refused as relative, but ``--root "$IANUA_ROOT/"`` is exactly ``"/"``, which
+#: is absolute and *is* a directory. One character from the hole the guard was
+#: written to close, and the same catastrophic class: the event store lands at
+#: ``/data`` with every signal reading healthy.
+FILESYSTEM_ROOTS = ("/", "//", "/.", "/..", "/../../..")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", FILESYSTEM_ROOTS)
+def test_validated_root_refuses_the_filesystem_root(spelling: str) -> None:
+    """The one absolute path a misconfigured scheduler writes by accident.
+
+    Asserted against the helper rather than through a CLI, deliberately: a
+    CLI-level test for this case would create ``/data`` on the host the moment
+    it regressed, and a test must not leave behind the artifact whose absence
+    it asserts.
+    """
+    with pytest.raises(_Bespoke, match="must not be the filesystem root"):
+        validated_root(Path(spelling), error=_Bespoke)
+
+
+@pytest.mark.security
+@pytest.mark.skipif(not Path("/proc/self/root").exists(), reason="Linux /proc only")
+def test_validated_root_refuses_a_synthetic_path_to_the_filesystem_root() -> None:
+    """``/proc/self/root`` resolves to ``/``, so the test is on the resolved path."""
+    with pytest.raises(_Bespoke, match="must not be the filesystem root"):
+        validated_root(Path("/proc/self/root"), error=_Bespoke)
+
+
+@pytest.mark.security
+def test_validated_root_accepts_a_top_level_directory(tmp_path: Path) -> None:
+    """``/srv`` is a legitimate root; only ``/`` itself is refused.
+
+    Guards the refusal above against being widened into "anything shallow",
+    which would refuse the root the runbooks actually document. The directory
+    is *derived* from ``tmp_path`` rather than written as a literal, so this
+    stays honest on any platform and does not hard-code a world-writable path.
+    """
+    resolved = tmp_path.resolve()
+    top_level = resolved.parents[-2]  # [-1] is the filesystem root itself
+    assert top_level.parent == Path(resolved.anchor), "fixture must be one level down"
+
+    assert validated_root(top_level, error=_Bespoke) == top_level
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "unstatable",
+    [
+        pytest.param(("a" * 256,), id="component-over-NAME_MAX"),
+        pytest.param(("b" * 100,) * 45, id="path-over-PATH_MAX"),
+    ],
+)
+def test_validated_root_raises_the_callers_error_for_an_unstatable_path(
+    unstatable: tuple[str, ...], tmp_path: Path
+) -> None:
+    """``Path.is_dir()`` does not swallow every ``OSError``.
+
+    It returns False for ENOENT, ENOTDIR, EBADF and ELOOP, but lets
+    ENAMETOOLONG through: a 256-byte component raised ``[Errno 36] File name
+    too long`` straight past the documented ``error`` contract. The four CLIs
+    catch ``OSError`` too, so the exit code was right by accident — which is
+    not the same as the contract holding, and a library caller with its own
+    taxonomy got a bare ``OSError``.
+    """
+    with pytest.raises(_Bespoke, match="cannot be stated"):
+        validated_root(tmp_path.joinpath(*unstatable), error=_Bespoke)
+
+
 @pytest.mark.security
 def test_validated_root_returns_a_resolved_root(tmp_path: Path) -> None:
     """An accepted root comes back resolved, so later joins are unambiguous."""
