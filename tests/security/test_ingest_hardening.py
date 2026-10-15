@@ -546,6 +546,16 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     a signature matches — and the compensating signal is the withheld-key
     note, which names what was dropped so an operator can write the
     signature.
+
+    That sentence was the *whole* stated cost in the first version of this
+    change and it was too narrow, which a reviewer caught: handing the
+    serialized projection to ``observables()`` applied a per-field bound to
+    the concatenation, so an indicator in a **modelled** field was lost too
+    whenever the projection ran past ``MAX_FIELD_LEN`` and that field sorted
+    late. Fixed by scanning each projected value, and pinned by
+    ``test_a_modelled_field_is_scanned_however_late_it_sorts`` below — the
+    narrow claim is true again because the code was corrected, not because the
+    claim was.
     """
     record = dict(_load("defender_email_phish"))
     record["Body"] = f"click http://evil.example/x now {_MARKER}"
@@ -573,6 +583,45 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     assert claimed.vendor == "defender-o365"
     assert "http://evil.example/x" not in claimed.observables
     assert _MARKER not in json.dumps(claimed.to_dict(), default=str)
+
+
+@pytest.mark.security
+def test_a_modelled_field_is_scanned_however_late_it_sorts() -> None:
+    """``observables()`` bounds each value, so it must be given values.
+
+    Handing it the serialized projection applied ``MAX_FIELD_LEN`` to the
+    *concatenation*, so a modelled field sorting after a long one lost its
+    indicator even though the excerpt kept it. Measured before the fix, with
+    both fields modelled and ``@timestamp`` sorting first:
+
+        {"ProviderV2": "x", "@timestamp": "T"*2048,
+         "Subject": "visit http://modelled.example/path"}
+
+        raw_excerpt : keeps the URL, at index 2085
+        observables : (none)
+
+    The asymmetry is the tell — removing the long field brought the indicator
+    back, so sort order decided it. Every parser already relies on the
+    per-value bound when it calls ``observables(sender_ip, sender, *urls)``;
+    only this call site passed one string.
+
+    Asserted with the long field present *and* absent, because the version
+    that passes with it absent is exactly the version that shipped broken.
+    """
+    url = "http://modelled.example/path"
+    late = {"ProviderV2": "renamed-upstream", "@timestamp": "T" * 2048, "Subject": f"visit {url}"}
+
+    event = normalize(late)
+
+    assert event.vendor == "unrecognized"
+    assert url in event.raw_excerpt, "fixture must retain the URL in the excerpt"
+    assert event.raw_excerpt.index(url) > MAX_FIELD_LEN, (
+        "fixture must push the URL past the per-field bound"
+    )
+    assert url in event.observables, "a modelled field was not scanned because it sorted late"
+
+    without = normalize({"ProviderV2": "renamed-upstream", "Subject": f"visit {url}"})
+    assert url in without.observables, "the short case must pass too, and did before the fix"
 
 
 @pytest.mark.security
