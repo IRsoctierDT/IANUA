@@ -1052,17 +1052,44 @@ def test_every_observable_is_findable_in_the_retained_evidence(
     would have fired on the first person to add one, and pointed them at the
     parsers instead of at the dump.
 
-    **What these thirty legs do not cover, stated because the first version of
-    this docstring implied otherwise.** Every defect in this function's history
-    is a *truncation* defect, visible only once ``raw_excerpt`` reaches
-    ``MAX_RAW_EXCERPT`` or ``message`` reaches ``MAX_FIELD_LEN``. Measured over
-    the committed corpus: the longest ``raw_excerpt`` is 679 of 4096 (16%) and
-    the longest ``message`` is 207 of 2048 (10%). **No fixture truncates**, so
-    these legs cannot express either direction of rounds one, two, five or six
-    — replanting round one or round two leaves all thirty green. The real
-    regression coverage is the position table and the cut sweep below; what
-    these legs add is breadth of *shape*, not of bound. Review measured this
-    against the version that cited it as proof.
+    **What these thirty legs do and do not cover.** An earlier version of this
+    paragraph said they "cannot express either direction of rounds one, two,
+    five or six" because no fixture truncates, and called their contribution
+    breadth of shape rather than of bound. That was wrong twice, and wrong in
+    a way worth recording: I wrote an adversarial agent's conclusion into this
+    docstring without planting the control the test actually claims. A
+    skeptical pass then refuted it, and the refutation measures out.
+
+    They are the **sole** catcher of the control this test does claim — an
+    observable accounted for by nothing retained. Planting exactly that on the
+    claimed path (``_with_excerpt`` appending
+    ``http://in-no-retained-field.example/x``):
+
+        this test              15 of 15 claimed legs RED
+        every other test       2033 passed — nothing else in the repo catches it
+        round four's haystack  all 30 passed against the same plant
+
+    which is why excluding ``observables`` is the whole test rather than a
+    detail of it.
+
+    What they do **not** catch is rounds one, two, five and six — and the
+    reason is not the corpus. The assertion is one-directional: it detects an
+    observable with no retained source, never an observable that went
+    *missing*. A truncating fixture would not change that, measured — a record
+    at 4096/4096 with the round-one URL at excerpt index 3500 still passes
+    under round one's plant. Those directions are pinned instead by
+    ``test_an_unclaimed_records_observables_are_all_inside_its_excerpt[round-two]``
+    and ``test_a_modelled_field_is_scanned_however_late_it_sorts``, both of
+    which go red.
+
+    Two numbers corrected while re-measuring. The longest ``raw_excerpt`` over
+    the corpus is 679 of 4096 (16.6%) on both legs, but ``message`` is 207 of
+    2048 (10.1%) only on the *claimed* leg — on the unclaimed leg ``message``
+    *is* the rendered projection, so it reaches 679 of 2048 (33.2%). And
+    "precisely the input ``_retained_values`` needed coverage on" overstates
+    the unclaimed leg: on this corpus its assertion cannot fail, because every
+    leaf is kept and a kept leaf's fragment is present in ``rendered`` by
+    construction — and ``rendered`` *is* ``raw_excerpt``.
 
     The unclaimed leg empties the signature registry rather than renaming a
     key, for the same reason. Renaming ``Provider`` unclaimed exactly *one* of
@@ -1071,8 +1098,7 @@ def test_every_observable_is_findable_in_the_retained_evidence(
     advertised "both paths" coverage did not exist. ``MODELLED_FIELDS`` is
     computed at import and so is unaffected by the patch, which is what makes
     this work: every fixture keeps its real nested and list shapes and is
-    projected through the full 199-path union, which is precisely the input
-    ``_retained_values`` needed coverage on. Also found by review.
+    projected through the full 199-path union. Also found by review.
     """
     if not claimed:
         # ``detect_source`` reads this at call time; ``MODELLED_FIELDS`` was
