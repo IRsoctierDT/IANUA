@@ -70,7 +70,7 @@ and run against lab telemetry before any charter amendment is argued.
 | 4 | **Scheduled execution** — continuous detection over the store rather than on demand | None (lab data; no new egress, no new dependency) | **DONE** |
 | 5 | **Collection (local)** — this node's own log files into the store | **Yes, amended**: filesystem reach beyond the project, read-only and declared-only (`AGENTS.md` §5, `DESIGN.md` §5 boundary 14). `ingest/`'s no-network invariant is untouched — collection is a separate package — and **default-deny egress is NOT amended** | **DONE** |
 | 5b | **Collection (remote)** — forwarders or a listener for other hosts | **Yes**: an inbound listening socket with forwarder authentication, which no boundary currently describes. Not egress, so it does not reopen the default-deny argument | Planned |
-| 6 | **Real telemetry + retention policy** | **Yes**: §5 treats logs and client info as sensitive by default and `data/` as lab-only; real logs carry usernames, addresses, hostnames. Needs a stated PII posture, not a silent reclassification | Planned |
+| 6 | **Real telemetry + retention policy** | **Partly done.** The retention half has landed (`scripts/run_retention.py`, reporting by default, deleting only on an exact-match grant; see "Running retention" below). The **PII posture half is still open** and is the charter crossing: §5 already classifies logs and `data/` as sensitive, so what needs amending is narrower than this row once claimed — §4's `data/` line ("never client/PII") and §6.2's "No secrets, PII, or sensitive data added anywhere". The decision is *what `ingest/` writes*, because redaction after the fact is structurally impossible: `event_id` is `sha256(projection)` and both tables carry append-only triggers, so only whole-row deletion works | **Retention done; posture open** |
 | 7 | **Authenticated multi-user access** | **Yes**: `dashboard/`'s "local-only backends" invariant and loopback-only binding | Planned |
 | 8 | **Response execution** (plan → act) | **Yes**: `agents/response/` ships no executor and security tests enforce that. The 2026-08-21 containment decision is the template for doing this properly — a dedicated action class decided and audited per invocation, not an allow-list standing grant | Planned |
 | 9 | **Operational envelope** — HA, backup/DR, self-monitoring, SLOs | None in §5; deployment remains human-gated per §5.1 | Planned |
@@ -359,6 +359,74 @@ which is a schema change. (Strictly after, not `max(now, mark)`: the pipeline's 
 cursor is strictly after `(ingested_at, event_id)`, so an event written at *exactly* the
 mark with a lower event id would sit behind a cursor that had already passed it and never
 be read — four stored, three ever seen, measured before the fix.)
+
+### Running retention (the event store's window)
+
+`EventStore.prune` existed from stage 1 and had **no caller**, so there was a
+retention mechanism and no retention policy. `scripts/run_retention.py` is the caller.
+
+**It reports by default and deletes only on a grant**, because the two modes are
+different actions and are gated as such:
+
+```bash
+# Report what the window would remove. Changes nothing. Gated read_only.
+python scripts/run_retention.py --root /srv/ianua --caller soc-retention
+
+# Delete. Gated `destructive`, which the shipped policy sets to require_approval,
+# so this exits 3 until an operator grants it (see below).
+python scripts/run_retention.py --root /srv/ianua --caller soc-retention --apply
+
+# A different window, and machine-readable output for a log shipper.
+python scripts/run_retention.py --root /srv/ianua --keep-days 30 --json
+```
+
+**The grant is a deliberate edit to a committed file.** `05_Governance_Rules.md` puts
+"Deleting data" under "Human Approval Required Before", and `guarded.enforce()` cannot
+express a per-invocation prompt — the 2026-08-21 decision established that and declined to
+add one. What it can express is a standing grant for one named label, so permitting deletion
+means adding `retain_events:apply` to the `allow` list of your policy bundle. That is
+reviewable, it is scoped to this one action rather than to every destructive action, and the
+allow list is **exact-match**: a grant of `retain_events` does not permit
+`retain_events:apply`.
+
+**Deletion cannot be undone by re-collecting.** The collector's offsets live in
+`data/collect/offsets.json` and nothing rewinds them. Measured: purge the store, re-run the
+same collector invocation against a source that still holds every line, and it reports
+"nothing new" and stores zero events. So the window is not a cache policy — pruned content
+is gone, and the only recovery is whatever backup the operator keeps outside this platform.
+
+**What keeping costs, so the window is a decision and not a default.** Measured with the
+repository's own `normalize` and `EventStore` over 2000 synthetic auth records, including the
+projection, the four denormalised pivot columns, the observables table and the five indexes:
+
+| | |
+|---|---|
+| Per stored event, on disk | **~1.7 KB** |
+| At `DEFAULT_BATCH = 1000` on the documented `*/5` timer (288,000 events/day) | **~507 MB/day** |
+| | **~15 GB/month**, ~185 GB/year |
+
+The shipped default is 90 days, which is the number `store/README.md` already used in its
+illustrative snippet so the two agree — it is **not** a recommendation. At the figures above,
+90 days of sustained default throughput is roughly 45 GB. Pick a window against your disk and
+your evidentiary needs, not against that default.
+
+**A caution about the audit logs**, which this stage makes worse before anyone fixes it.
+There are now four audit chains under `data/`, written by four different entry points:
+
+| Chain | Written by |
+|---|---|
+| `data/collect/audit.log` | `scripts/run_collector.py` |
+| `data/pipeline/audit.log` | `scripts/run_pipeline.py` |
+| `data/events/audit.log` | `scripts/run_retention.py` (this stage) |
+| `data/attack/update_attack_audit.jsonl` | `scripts/update_attack.py` |
+
+`scripts/audit_maintenance.py` — the only shipped retention tool for audit logs — documents
+`data/audit.log` in its own usage block, and `docs/POLICY_AND_AUDIT.md` documents
+`data/audit/audit.log`. **Neither path is written by anything.** `--log` is required with no
+default, so an operator following either document retains a file that does not exist while
+all four real chains grow unbounded. That is a documentation defect, not a code one, and it
+is recorded here rather than fixed in this change because it belongs to the audit tooling
+rather than to the event store's window.
 
 ### Why this order
 

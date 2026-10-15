@@ -534,6 +534,27 @@ class EventStore:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
 
+    def count_before(self, *, before: float) -> int:
+        """How many events :meth:`prune` would delete at this threshold.
+
+        Exists so retention can be reported before it is applied. ``prune``
+        returns a count *after* deleting, which is no use to an operator
+        deciding whether to delete at all — and deletion here is irreversible
+        in a way the rest of the platform is not: the collector's offsets live
+        in a separate file and are never rewound, so content removed from the
+        store cannot be re-collected from a source that still holds it.
+
+        A ``COUNT`` rather than a ``query``: counting must not depend on every
+        projection in range parsing cleanly, because the operator most needs
+        this number when something is wrong with the data.
+        """
+        if not math.isfinite(before):
+            raise ValueError(f"retention threshold must be finite, got {before!r}")
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM events WHERE ingested_at < ?", (float(before),)
+        ).fetchone()
+        return int(row["n"])
+
     def query(self, spec: Query = ALL) -> tuple[StoredEvent, ...]:
         """Return matching events, newest first by default.
 
