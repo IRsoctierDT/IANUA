@@ -721,33 +721,103 @@ def _unmodelled(payload: Mapping[str, Any], *, notes: tuple[str, ...]) -> Normal
     # was not reported at all, though its value was withheld; and two raw keys
     # collapsing to one name double-counted. Sanitizing is for display, and
     # now happens after the comparison.
-    withheld = [key for key in payload if key not in projected]
+    withheld, examined = _withheld_fields(payload, projected)
     if withheld:
-        notes = (*notes, _withheld_note(len(payload), withheld))
+        notes = (*notes, _withheld_note(examined, withheld))
     return _unrecognized(
         evidence=_excerpt_for(MODELLED_FIELDS, payload),
         notes=notes,
     )
 
 
+def _withheld_fields(
+    payload: Any, projected: Any, prefix: str = "", depth: int = 0
+) -> tuple[list[str], int]:
+    """Withheld field paths at any depth, and how many paths were examined.
+
+    **This used to compare top-level keys only, and the compensation its
+    docstring claimed holds in one of three regimes.** That docstring said a
+    modelled key whose sub-keys were withheld "does not appear here — the
+    excerpt shows that directly, since an object at a declared path renders as
+    its key names". Measured, on merged code:
+
+    1. **Holds** when a declared path lands on a container and no *deeper*
+       declared path is present: ``{"status": {"secretNote", "other"}}``
+       renders as ``{"status": ["other", "secretNote"]}`` and both names are
+       in the excerpt.
+    2. **Defeated by** :func:`~ingest._coerce._graft`, whose own docstring
+       says "The deeper path wins": with ``status`` *and* ``status.value``
+       both declared, ``{"status": {"value": "Succeeded", "secretNote": "s"}}``
+       renders as ``{"status": {"value": "Succeeded"}}`` and ``secretNote``
+       is named **nowhere in the event**.
+    3. **Never applies** when the container is only a path *prefix*, never
+       declared on its own — which is **14 of the 18** nested top-level names
+       across all ten signatures (``System``, ``EventData``, ``userIdentity``,
+       ``deviceDetail``, ``http``, ``dns``, …). A genuine Windows Security
+       4625, claimed by no signature because there is no Windows Security
+       parser, retained ``{"System": {"Provider": {"Name": …}}}`` and said
+       nothing at all about ``System.Correlation``.
+
+    Regime 3 is the one that matters, because nested is what real Windows and
+    cloud telemetry look like, and the §5 stage-6 amendment leans on this note
+    as *the* compensation for what narrowing drops. So the walk descends.
+
+    Two deliberate limits, both stated rather than discovered later:
+
+    * **It does not descend past a shape-rendered container** (regime 1). The
+      excerpt already names those keys, which is enough to write
+      ``status.<key>``; going deeper would report paths whose parent is
+      already visible.
+    * **It does not descend into lists.** A declared path continuing through a
+      sequence applies to each element (``project``'s third rule), so a list's
+      *path* is reported once and its elements are not enumerated.
+
+    Comparison is on the record's **raw** keys throughout; rendering for
+    display happens in :func:`_withheld_note`, which is the ordering a
+    previous defect established.
+    """
+    if depth > MAX_NESTING_DEPTH or not isinstance(payload, Mapping):
+        return [], 0
+    withheld: list[str] = []
+    examined = 0
+    for key in payload:
+        label = f"{prefix}{key}"
+        examined += 1
+        # ``key not in projected`` works for both shapes a projection takes
+        # here: a mapping, and the sorted list of key *names* that
+        # ``_coerce._leaf`` renders for a container. A name present in that
+        # list is in the excerpt and so is not withheld.
+        if not isinstance(projected, (Mapping, list)) or key not in projected:
+            child = payload[key]
+            if isinstance(child, Mapping) and child:
+                # Name the leaves rather than the container: a declared path
+                # IS a leaf path, so these are the strings an operator writes.
+                deeper, counted = _withheld_fields(child, None, f"{label}.", depth + 1)
+                withheld.extend(deeper)
+                examined += counted
+            else:
+                withheld.append(label)
+            continue
+        if isinstance(projected, Mapping):
+            deeper, counted = _withheld_fields(payload[key], projected[key], f"{label}.", depth + 1)
+            withheld.extend(deeper)
+            examined += counted
+    return withheld, examined
+
+
 def _withheld_note(total: int, withheld: list[str]) -> str:
     """State how much of a record was not retained, within the note bound.
 
-    Counts the record's own top-level keys, which is what an operator needs
-    to write a signature. A key that *is* modelled but whose un-named
-    sub-keys were withheld does not appear here — the excerpt shows that
-    directly, since an object at a declared path renders as its key names.
-
-    The count comes from the raw keys and the names from ``text()``, so a key
-    whose name cannot be rendered at all is still counted among the elided
-    rather than disappearing from the total.
+    The count comes from the raw paths and the names from ``text()``, so a
+    path whose name cannot be rendered at all is still counted among the
+    elided rather than disappearing from the total.
     """
     names = [name for name in (text(key) for key in sorted(withheld)) if name is not None]
     named = names[:_MAX_NAMED_KEYS]
     elided = len(withheld) - len(named)
     note = (
-        f"{len(withheld)} of {total} top-level record keys are modelled by no parser; "
-        f"their values are withheld from the excerpt (keys: {', '.join(named)}"
+        f"{len(withheld)} of {total} record fields are modelled by no parser; "
+        f"their values are withheld from the excerpt (fields: {', '.join(named)}"
         + (f", and {elided} more" if elided else "")
         + ")"
     )

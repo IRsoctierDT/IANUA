@@ -623,14 +623,132 @@ def test_the_withheld_note_counts_raw_keys_and_sanitizes_only_for_display() -> N
         {"NetworkMessageId2": "x", "Subject": "s", "Body\n\x07": "leak", "Subject\x00": "dup"}
     )
     note = next(entry for entry in event.notes if "withheld" in entry)
-    # Four raw keys, one of which (`Subject`) is modelled and retained.
-    assert note.startswith("3 of 4 top-level record keys"), note
+    # Four raw keys, one of which (`Subject`) is modelled and retained. The
+    # wording is "record fields" rather than "top-level record keys" because
+    # the walk now descends; for a flat record like this one the paths are
+    # bare names and the counts are unchanged.
+    assert note.startswith("3 of 4 record fields"), note
     assert event.raw_excerpt == '{"Subject": "s"}'
     # Every withheld key is named, and no control character reaches the note.
     for name in ("Body", "NetworkMessageId2", "Subject"):
         assert name in note
     assert "\x00" not in note
     assert "\x07" not in note
+
+
+#: ``(id, record, must_be_named, must_not_be_named)`` for the three regimes
+#: the withheld-field note has to get right. Regime 3 is the one that matters:
+#: nested is what real Windows and cloud telemetry look like, and 14 of the 18
+#: nested top-level names across all ten signatures are *prefix only* — never
+#: declared on their own — so the "the excerpt renders the key names" argument
+#: never applied to them.
+_WITHHELD_REGIMES: tuple[tuple[str, dict[str, object], tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "container-declared-no-subpath",
+        {"ProviderV2": "x", "status": {"secretNote": "s", "other": "o"}},
+        ("ProviderV2",),
+        # Regime 1: the excerpt renders `status`'s key names, so naming them in
+        # the note too would be noise. This is the one regime the old
+        # docstring's argument actually covered.
+        ("status.secretNote", "status.other"),
+    ),
+    (
+        "container-and-subpath-declared",
+        {"ProviderV2": "x", "status": {"value": "Succeeded", "secretNote": "s"}},
+        # Regime 2: `_graft` keeps the deeper path and drops the shape, so
+        # `secretNote` was named NOWHERE in the event before this.
+        ("ProviderV2", "status.secretNote"),
+        (),
+    ),
+    (
+        "prefix-only-container",
+        {
+            "System": {
+                "Provider": {"Name": "Microsoft-Windows-Security-Auditing"},
+                "Correlation": {"ActivityID": "a"},
+            },
+            "EventData": {
+                "TargetUserName": "victim",
+                "IpAddress": "198.51.100.7",
+                "LogonType": "3",
+            },
+        },
+        # Regime 3: a genuine Windows Security 4625, claimed by no signature
+        # because there is no Windows Security parser.
+        (
+            "System.Correlation.ActivityID",
+            "EventData.TargetUserName",
+            "EventData.IpAddress",
+            "EventData.LogonType",
+        ),
+        (),
+    ),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("record", "named", "unnamed"),
+    [(record, named, unnamed) for _, record, named, unnamed in _WITHHELD_REGIMES],
+    ids=[name for name, _, _, _ in _WITHHELD_REGIMES],
+)
+def test_the_withheld_note_names_nested_fields_too(
+    record: dict[str, object], named: tuple[str, ...], unnamed: tuple[str, ...]
+) -> None:
+    """The note is the stated compensation for narrowing, so it must reach nesting.
+
+    AGENTS.md §5's stage-6 amendment says of the indicators narrowing drops:
+    "What compensates is the withheld-key note, which names what was dropped so
+    an operator can write the signature." That was true for a flat record and
+    false for a nested one, which is most real telemetry — measured on all
+    three regimes, with `System.Correlation` and `status.secretNote` named
+    nowhere in the stored event at all.
+
+    The note now reports **leaf** paths rather than containers, because a
+    declared path *is* a leaf path: `EventData.TargetUserName` is the string
+    an operator writes into a signature, and `EventData` is not.
+    """
+    event = normalize(record)
+    note = next((entry for entry in event.notes if "withheld" in entry), "")
+    assert note, f"no withheld note at all for {record!r}"
+
+    for field in named:
+        assert field in note, f"{field} was withheld and the note does not name it: {note}"
+    for field in unnamed:
+        assert field not in note, (
+            f"{field} is rendered in the excerpt already; naming it in the note is noise"
+        )
+    # And the note stays a diagnostic rather than a copy of the record: no
+    # withheld *value* appears in it.
+    for leaked in ("victim", "198.51.100.7", "Succeeded"):
+        assert leaked not in note, f"the note quoted the value {leaked!r}"
+
+
+@pytest.mark.security
+def test_most_nested_containers_are_prefix_only_so_the_old_argument_never_applied() -> None:
+    """Pins the figure the fix rests on, because it is what made regime 3 common.
+
+    The replaced docstring argued that a modelled container's withheld
+    sub-keys need no note because "an object at a declared path renders as its
+    key names". That only happens when the container is itself declared. A
+    container that appears *only* as the prefix of a deeper path is never
+    rendered as names, and that is the majority case.
+    """
+    depths: dict[str, set[int]] = {}
+    for signature in SIGNATURES:
+        for path in signature.fields:
+            depths.setdefault(path[0], set()).add(len(path))
+
+    nested = {name: lengths for name, lengths in depths.items() if max(lengths) > 1}
+    prefix_only = {name: lengths for name, lengths in nested.items() if 1 not in lengths}
+
+    assert len(nested) >= 15, f"only {len(nested)} nested top-level names; the corpus shrank"
+    assert len(prefix_only) >= 12, (
+        f"only {len(prefix_only)} of {len(nested)} nested containers are prefix-only; "
+        "if most are now declared on their own, the old argument may hold again"
+    )
+    for expected in ("System", "EventData", "userIdentity", "deviceDetail"):
+        assert expected in prefix_only, f"{expected} is no longer prefix-only"
 
 
 @pytest.mark.security
@@ -1555,7 +1673,7 @@ def test_the_indicator_position_table_covers_both_sides_of_that_equality() -> No
 #: verbatim. Measured — a record with two indicator-shaped keys nobody models:
 #:
 #:     raw_excerpt : {"Subject": "ordinary subject"}
-#:     notes       : "...their values are withheld from the excerpt (keys:
+#:     notes       : "...their values are withheld from the excerpt (fields:
 #:                    evil-keyname.example.com,
 #:                    http://planted-keyname.example/x)"
 #:     both keys   : in raw_excerpt False · in notes True
