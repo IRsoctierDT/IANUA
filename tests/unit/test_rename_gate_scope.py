@@ -40,10 +40,34 @@ LEGACY = REPLACEMENTS[5][0]
 
 @pytest.mark.unit
 def test_the_worktree_subtree_is_excluded() -> None:
-    """A copy of the rename script inside an agent worktree is not scanned."""
-    inside = ROOT / ".claude" / "worktrees" / "wf_probe" / "scripts" / "rename_to_ianua.py"
+    """A copy of the rename script inside an agent worktree is not scanned.
 
-    assert not eligible(inside)
+    **Written against a real file, because the first version was inert.** It
+    asserted ``not eligible(path)`` for a path that did not exist, and
+    ``eligible`` refuses a nonexistent path through its own ``is_file()``
+    guard — so the assertion held no matter what the exclusion did. Measured:
+    with the prefix check deleted from ``eligible`` entirely, **all four**
+    tests in this file still passed. The constant-shape test below does not
+    cover it either, because it asserts the constant exists, not that anything
+    consults it. Found by review.
+
+    The probe carries a real legacy identifier so the file would genuinely be
+    rewritten if it were eligible, which is the condition being excluded.
+    """
+    probe = ROOT / ".claude" / "worktrees" / "_rename_gate_probe" / "scripts" / "rename_to_ianua.py"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(f"REPLACEMENTS = (({LEGACY!r}, 'IANUA'),)\n", encoding="utf-8")
+    try:
+        assert probe.is_file(), "the probe must exist or this test is vacuous"
+        assert not eligible(probe), (
+            "a worktree copy of the rename script is eligible — the prefix "
+            "exclusion is declared but not consulted"
+        )
+    finally:
+        probe.unlink()
+        for parent in (probe.parent, probe.parent.parent):
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
 
 
 @pytest.mark.unit

@@ -838,22 +838,42 @@ def test_no_extractor_can_match_across_an_indicator_terminator() -> None:
     )
     patterns = {name: getattr(_coerce, name) for name in names}
 
+    # Expanded, not compressed. `_IPV6` has no `::` support, so the probe
+    # `2001:db8::1` this test shipped with produced ZERO matches and the IPv6
+    # extractor executed no assertion at all. Found by review; the
+    # every-extractor guard below is the general form of that mistake.
+    #
+    # One honest limit, measured: this catches a crossing only where the probe
+    # layout lets one form. Widening `_URL` to accept whitespace is caught
+    # (`_URL matched across '\t'`); widening `_IPV6` to accept whitespace
+    # inside a hex group is NOT, because a crossing group would have to span
+    # `7\t2001:` — six characters against `{1,4}`. So the per-extractor
+    # assertion is only as strong as the adjacency the corpus happens to
+    # create, while the guard below is unconditional.
     probes = (
         "http://a.example/p",
         "198.51.100.7",
-        "2001:db8::1",
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
         "a" * 64,
         "evil.example.com",
     )
+    assertions = dict.fromkeys(patterns, 0)
     for terminator in sorted(_coerce.INDICATOR_TERMINATORS):
         probe = terminator.join(probes)
         for name, pattern in patterns.items():
             for match in pattern.findall(probe):
                 found = match if isinstance(match, str) else "".join(match)
+                assertions[name] += 1
                 assert terminator not in found, (
                     f"{name} matched across {terminator!r}: {found!r} — the "
                     f"tail trim in _retained_values is unsound"
                 )
+
+    unexercised = sorted(name for name, count in assertions.items() if not count)
+    assert not unexercised, (
+        f"{unexercised} matched nothing in the probe corpus, so this test "
+        f"asserted nothing about them. Add a probe each extractor recognises."
+    )
 
 
 @pytest.mark.security
