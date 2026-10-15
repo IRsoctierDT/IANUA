@@ -27,6 +27,7 @@ import ast
 import base64
 import dataclasses
 import json
+import sys
 import typing
 from pathlib import Path
 from typing import Any
@@ -611,7 +612,9 @@ _HOSTILE_PROJECTIONS: tuple[dict[str, object], ...] = (
 @pytest.mark.security
 @pytest.mark.parametrize("name", _fixture_names())
 @pytest.mark.parametrize("claimed", [True, False], ids=["claimed", "unclaimed"])
-def test_every_observable_is_findable_in_the_stored_event(name: str, claimed: bool) -> None:
+def test_every_observable_is_findable_in_the_retained_evidence(
+    name: str, claimed: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """No indicator may exist in the store that its own event cannot account for.
 
     This is the retention invariant stated as a property rather than reasoned
@@ -624,21 +627,46 @@ def test_every_observable_is_findable_in_the_stored_event(name: str, claimed: bo
     drop from the excerpt by declaration while the reassembled argv is
     retained in ``Actor.command_line``, so the URL inside it is accounted for
     even though the excerpt does not show it. That is why the general
-    invariant is "somewhere in the event" and the stricter one below is
-    scoped to the unclaimed path.
-    """
-    record = _load(name)
-    if not claimed:
-        record = {
-            ("ProviderV2" if key == "Provider" else key): value for key, value in record.items()
-        }
-        record = {**record, "RenamedUpstream": "breaks recognition"}
-    event = normalize(record)
+    invariant is "somewhere in the retained evidence" and the stricter one
+    below is scoped to the unclaimed path.
 
-    dumped = json.dumps(event.to_dict(), default=str)
+    **``observables`` is excluded from the haystack, and that is the whole
+    test.** The first version of this searched the full ``to_dict()``, which
+    serializes ``observables`` itself — so every observable matched itself and
+    the assertion could not fail. Measured on the version that shipped in
+    #216: an event carrying ``http://in-no-retained-field.example/x`` as its
+    only observable, present in no ``message``, no ``raw_excerpt`` and no
+    typed field, satisfied it. A test asserting a security invariant that
+    cannot fail is worse than no test, because it is cited as proof. Found by
+    review; the plant above is now the regression case.
+
+    The unclaimed leg empties the signature registry rather than renaming a
+    key, for the same reason. Renaming ``Provider`` unclaimed exactly *one* of
+    the fifteen committed fixtures — the other fourteen stayed claimed, so the
+    leg labelled ``unclaimed`` ran the claimed path a second time and the
+    advertised "both paths" coverage did not exist. ``MODELLED_FIELDS`` is
+    computed at import and so is unaffected by the patch, which is what makes
+    this work: every fixture keeps its real nested and list shapes and is
+    projected through the full 199-path union, which is precisely the input
+    ``_retained_values`` needed coverage on. Also found by review.
+    """
+    if not claimed:
+        # ``detect_source`` reads this at call time; ``MODELLED_FIELDS`` was
+        # frozen at import. Asserted below rather than assumed, so a future
+        # change to either cannot quietly return this leg to the claimed path.
+        monkeypatch.setattr(sys.modules["ingest.normalize"], "SIGNATURES", ())
+    event = normalize(_load(name))
+
+    assert (event.vendor == "unrecognized") is not claimed, (
+        f"{name}: the {'claimed' if claimed else 'unclaimed'} leg took the other path"
+    )
+    retained = json.dumps(
+        {key: value for key, value in event.to_dict().items() if key != "observables"},
+        default=str,
+    )
     for observable in event.observables:
-        assert observable in dumped, (
-            f"{name}: observable {observable!r} appears nowhere in the stored event"
+        assert observable in retained, (
+            f"{name}: observable {observable!r} appears in no retained field"
         )
 
 
