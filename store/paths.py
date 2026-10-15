@@ -144,6 +144,19 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
     means every component on the way to it exists, so nothing has been invented
     and the operator has named a real directory the long way round.
 
+    **The limit of the absolute rule, stated rather than implied.** "Absolute"
+    removes the *accidental* dependence on the working directory — an unset
+    variable, a stale relative path, a typo — not every possible one.
+    ``/proc/self/cwd`` is absolute, is a directory, and resolves to the
+    process's working directory; measured, it is accepted and the tree lands
+    there. So are ``/proc/self/root``, ``/dev/fd/`` entries, ``/`` itself and
+    ``/..``. None is refused here, deliberately: each is an absolute path to a
+    directory that exists, no scheduler misconfiguration produces one by
+    accident, and banning ``/proc`` would refuse paths that are legitimate on
+    Linux. What they bound is the *claim*, not the control — an operator who
+    writes one of them has named that directory on purpose, which is the line
+    this function draws.
+
     One implementation, because four copies of a guard is how three of them
     stay fixed and one does not — which is the shape this very defect took.
 
