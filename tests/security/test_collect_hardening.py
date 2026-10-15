@@ -39,6 +39,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+
 from collect import (
     MAX_BYTES_PER_RUN,
     MAX_LINE_BYTES,

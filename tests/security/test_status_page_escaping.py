@@ -10,6 +10,7 @@ must fail closed rather than silently producing a broken page.
 """
 
 import pytest
+
 from scripts.build_status_page import (
     StatusDataError,
     parse_report,

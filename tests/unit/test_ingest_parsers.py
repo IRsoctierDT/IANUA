@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from ingest.errors import UnsupportedInputError
 
 from ingest import SIGNATURES, NormalizedEvent, detect_source, normalize, normalize_many
+from ingest.errors import UnsupportedInputError
 
 _FIXTURES = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" / "ingest_fixtures.json").read_text(

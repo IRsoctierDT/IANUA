@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Ivan Rozenblad
 # SPDX-License-Identifier: Apache-2.0
 
-from rag.qdrant import make_client
 from sentence_transformers import SentenceTransformer
+
+from rag.qdrant import make_client
 
 COLLECTION = "cybersecurity_kb"
 

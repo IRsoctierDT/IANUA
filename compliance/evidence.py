@@ -33,7 +33,6 @@ from agents.policies.audit import (
     signing_key_from_env,
     verifier_from_env,
 )
-
 from compliance.engine import ComplianceReport
 
 _EVIDENCE_DIR = Path("data") / "compliance"

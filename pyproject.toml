@@ -69,7 +69,13 @@ crypto = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["agents", "scripts", "rag", "mcp", "tests"]
+# `src` is the set of directories first-party imports are resolved *from*, not a
+# list of first-party module names. This is a flat layout, so that set is the
+# repo root. The previous value (`["agents", "scripts", "rag", "mcp", "tests"]`)
+# resolved module names against the *insides* of those packages, so `ingest`
+# counted as first-party only because `rag/ingest.py` happens to exist, while
+# sibling packages such as `correlation` and `store` fell through to third-party.
+src = ["."]
 extend-exclude = ["data", ".venv", "build", "dist"]
 
 [tool.ruff.lint]
@@ -96,6 +102,18 @@ ignore = [
 # inline noqa would be flagged as unused (RUF100) on ruff >= 0.16 — a config
 # ignore is version-stable in both directions.
 "dashboard/ollama_service.py" = ["S310"]
+
+[tool.ruff.lint.isort]
+# Pin the first-party set explicitly instead of inferring it from whichever
+# top-level directories happen to exist: a third-party dependency that shares a
+# name with a directory here would otherwise be silently reclassified. Kept in
+# the same order as `tool.mypy.files` so the two lists diff side by side; a new
+# first-party package is added to both. Packages not listed here still resolve
+# through `tool.ruff.src` above.
+known-first-party = [
+  "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "scripts", "tests",
+  "dashboard", "mcp", "rag", "compliance",
+]
 
 [tool.ruff.format]
 quote-style = "double"

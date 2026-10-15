@@ -4,6 +4,7 @@
 from dataclasses import FrozenInstanceError
 
 import pytest
+
 from agents.roles import (
     BUILDER,
     PLANNER,

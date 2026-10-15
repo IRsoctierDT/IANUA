@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from agents.tools.validation import ValidationError
-
 from rag.ingest import Chunk
 
 

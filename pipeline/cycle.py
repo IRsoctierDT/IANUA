@@ -39,9 +39,8 @@ import hashlib
 from dataclasses import dataclass, field
 
 from correlation import DEFAULT_THRESHOLDS, Incident, Thresholds, assemble
-from store import MAX_QUERY_LIMIT, EventStore, Query
-
 from pipeline.cursor import Cursor
+from store import MAX_QUERY_LIMIT, EventStore, Query
 
 #: Events considered in one cycle. Bounded so a backlog is worked through over
 #: several scheduled runs rather than in one unbounded read: the store's own

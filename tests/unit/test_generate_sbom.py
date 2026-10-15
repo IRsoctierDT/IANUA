@@ -4,6 +4,7 @@
 """Unit tests for scripts/generate_sbom.py helpers."""
 
 import pytest
+
 from scripts.generate_sbom import _serial_number
 
 

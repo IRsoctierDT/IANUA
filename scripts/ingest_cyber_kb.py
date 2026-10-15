@@ -4,8 +4,9 @@
 from pathlib import Path
 
 from qdrant_client.models import PointStruct
-from rag.qdrant import make_client
 from sentence_transformers import SentenceTransformer
+
+from rag.qdrant import make_client
 
 COLLECTION = "cybersecurity_kb"
 KB_DIR = Path("knowledge-base/cybersecurity")

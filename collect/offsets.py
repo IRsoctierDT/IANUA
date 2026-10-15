@@ -44,9 +44,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from store.paths import confine
-
 from collect.errors import CollectPathError, OffsetError
+from store.paths import confine
 
 #: Under the gitignored lab-data root, beside the store and the pipeline cursor.
 OFFSETS_SUBDIR = Path("data") / "collect"

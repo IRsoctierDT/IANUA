@@ -29,7 +29,6 @@ from typing import Any
 from agents.policies import ActionClass, AuditLogger, PolicyEngine, Principal
 from agents.tools.guarded import enforce
 from agents.tools.validation import ValidationError, resolve_within
-
 from mcp.broker import BrokerBinding, TrustBroker, authorize_or_raise
 from mcp.sandbox import SandboxRunner
 

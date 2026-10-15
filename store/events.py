@@ -57,7 +57,6 @@ from types import TracebackType
 from typing import Any, Self
 
 from ingest.schema import NormalizedEvent
-
 from store.errors import (
     IngestionOrderError,
     SchemaVersionError,

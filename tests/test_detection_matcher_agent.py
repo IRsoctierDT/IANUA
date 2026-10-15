@@ -4,6 +4,7 @@
 from pathlib import Path
 
 import pytest
+
 from agents.detection_matcher_agent import DetectionMatcherAgent
 
 

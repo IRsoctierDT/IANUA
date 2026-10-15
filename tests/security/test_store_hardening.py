@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from ingest import normalize
 from ingest.errors import MalformedProjectionError
 from ingest.schema import (
     MAX_FIELD_LEN,
@@ -51,8 +53,6 @@ from store import (
     canonical_json,
     event_id,
 )
-
-from ingest import normalize
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORE_ROOT = _REPO_ROOT / "store"

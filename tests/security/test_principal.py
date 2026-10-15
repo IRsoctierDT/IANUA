@@ -26,6 +26,7 @@ import ast
 from pathlib import Path
 
 import pytest
+
 from agents.policies import AUDIT_FIELD_DELIMITER, Principal, PrincipalError, coerce
 from agents.policies.principal import _PART, MAX_PART, MAX_RENDERED, SEPARATOR
 

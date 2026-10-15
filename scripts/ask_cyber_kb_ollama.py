@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import requests
-from rag.qdrant import make_client
 from sentence_transformers import SentenceTransformer
+
+from rag.qdrant import make_client
 
 MODEL = "qwen3:4b"
 COLLECTION = "cybersecurity_kb"

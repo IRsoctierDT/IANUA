@@ -9,9 +9,9 @@ import ast
 from copy import deepcopy
 from pathlib import Path
 
-import dashboard.scan_reports as reports
 import pytest
 
+import dashboard.scan_reports as reports
 from tests.unit.test_scan_reports import encoded, payload
 
 

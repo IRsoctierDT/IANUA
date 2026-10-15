@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+from ingest import normalize
 from ingest.keyvalue import (
     MAX_KEY_LEN,
     MAX_PAIRS,
@@ -29,8 +31,6 @@ from ingest.keyvalue import (
     MIN_PAIRS,
     decode,
 )
-
-from ingest import normalize
 
 # --------------------------------------------------------------------------
 # It must not manufacture telemetry out of prose

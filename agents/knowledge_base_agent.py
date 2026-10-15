@@ -33,12 +33,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from agents.tools.validation import ValidationError
 from rag.citations import Citation, build_citations, verify_citation
 from rag.embeddings import OllamaEmbedder
 from rag.ingest import Chunk, Embedder, ingest, read_documents
 from rag.retrieve import _cosine
-
-from agents.tools.validation import ValidationError
 
 RetrievalMode = Literal["lexical", "semantic"]
 

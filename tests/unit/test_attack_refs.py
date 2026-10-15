@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import pytest
+
 from attack import load_corpus, resolve_current, validate_reference
 from attack.errors import AttackError
 from attack.model import Corpus, Tactic, Tombstone

@@ -17,6 +17,7 @@ they are the ones a naive ``techniques[0]`` projection breaks on.
 from __future__ import annotations
 
 import pytest
+
 from agents.mitre_mapper_agent import MitreMapperAgent
 
 _LEGACY_KEYS = {

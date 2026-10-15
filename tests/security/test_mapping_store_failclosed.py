@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from agents.mapping import MappingStoreError, parse_store
 from attack import Corpus, load_corpus
 

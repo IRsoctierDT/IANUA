@@ -13,8 +13,9 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-import agents
 import pytest
+
+import agents
 from agents import __version__, versioned_agent_name
 from agents.business_proposal_agent import BusinessProposalAgent
 from agents.executive_assistant_agent import ExecutiveAssistantAgent

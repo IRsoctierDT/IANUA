@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from dashboard import scan_report_view as view
 from dashboard.scan_reports import MAX_REPORT_BYTES, FindingChange, parse_report
 

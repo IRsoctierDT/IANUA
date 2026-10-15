@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 
 import pytest
+
 from agents.incident_report_agent import IncidentReportAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.response import MAX_TARGET_LEN, ResponsePlanner, sanitize_target

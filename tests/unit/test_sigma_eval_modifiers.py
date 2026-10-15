@@ -12,6 +12,7 @@ including its fail-closed authoring-error cases.
 from __future__ import annotations
 
 import pytest
+
 from agents.tools.sigma_eval import _SUPPORTED_MODIFIERS, evaluate
 
 

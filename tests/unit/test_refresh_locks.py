@@ -8,6 +8,7 @@ CI gate, which regenerates from the committed locks and diffs."""
 from pathlib import Path
 
 import pytest
+
 from scripts.refresh_locks import _matches_target, lock_header, target_pins
 
 

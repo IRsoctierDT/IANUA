@@ -10,6 +10,7 @@ AGENTS.md §6.2. Boundary-crossing changes must keep this suite green.
 from pathlib import Path
 
 import pytest
+
 from agents.tools.validation import ValidationError, resolve_within
 
 

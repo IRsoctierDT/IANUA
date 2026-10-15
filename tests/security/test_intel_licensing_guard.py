@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from intel.store import ALLOWED_LICENSES
 
 _REPO = Path(__file__).resolve().parents[2]

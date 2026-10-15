@@ -4,8 +4,9 @@
 import argparse
 
 from qdrant_client.models import FieldCondition, Filter, MatchValue
-from rag.qdrant import make_client
 from sentence_transformers import SentenceTransformer
+
+from rag.qdrant import make_client
 
 COLLECTION = "cybersecurity_kb_chunks"
 

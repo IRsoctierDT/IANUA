@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from rag.qdrant import make_client
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from mcp.broker import BrokerBinding, BrokerBlockedError, authorize_or_raise
 from mcp.server import Tool, ToolRegistry
 

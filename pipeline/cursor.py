@@ -37,9 +37,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from store.paths import confine
-
 from pipeline.errors import CursorError, CursorPathError
+from store.paths import confine
 
 #: Fixed location under the repository's gitignored lab-data root, mirroring
 #: ``store.EVENTS_SUBDIR``. Not a caller knob: pipeline state is lab data.

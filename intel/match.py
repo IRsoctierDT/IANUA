@@ -20,7 +20,6 @@ from datetime import date
 from typing import Literal, cast
 
 from attack import Corpus
-
 from intel.decay import FLOOR, decayed_score, score_to_confidence
 from intel.model import (
     CORROBORATION_TYPES,

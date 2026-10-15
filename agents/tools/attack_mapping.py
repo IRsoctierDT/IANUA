@@ -30,9 +30,8 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Any
 
-from attack import load_corpus
-
 from agents.policies import ActionClass
+from attack import load_corpus
 
 #: The pinned corpus every anchor below resolves against (fail-closed).
 _CORPUS = load_corpus()

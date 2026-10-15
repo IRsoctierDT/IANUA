@@ -24,12 +24,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from ingest import MAX_FIELD_LEN, SIGNATURES, detect_source, normalize
 from ingest._coerce import project
 from ingest.normalize import MODELLED_FIELDS
 from ingest.parsers import cloud, email, endpoint, identity, network
 from ingest.schema import MAX_NESTING_DEPTH, MAX_PROJECTED_ITEMS
-
-from ingest import MAX_FIELD_LEN, SIGNATURES, detect_source, normalize
 
 _FIXTURES = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" / "ingest_fixtures.json").read_text(

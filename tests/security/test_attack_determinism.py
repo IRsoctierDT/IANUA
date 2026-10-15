@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+
 from attack import freshness, load_corpus
 
 

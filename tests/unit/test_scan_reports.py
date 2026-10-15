@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+
 from dashboard.scan_reports import (
     ReportImportError,
     compare_reports,

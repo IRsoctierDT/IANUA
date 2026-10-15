@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from agents.response import RESTRICT_ONLY_VERBS, ResponsePlanner, load_catalogue
 
 _RESPONSE_DIR = Path(__file__).resolve().parents[2] / "agents" / "response"

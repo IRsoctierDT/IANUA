@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any
 
 import pytest
+
 from dashboard import intelligence_view as view
 
 _TODAY = date(2026, 8, 21)

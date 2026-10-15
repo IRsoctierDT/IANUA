@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from store import EventStore
 
 from ingest import normalize
+from store import EventStore
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-deploy" addr=203.0.113.9 res=failed'
 

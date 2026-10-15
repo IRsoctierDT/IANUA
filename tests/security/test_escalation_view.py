@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from dashboard.escalations import AuditChainError, load_chain_view
 
 _GENESIS = "sha256:" + "0" * 64

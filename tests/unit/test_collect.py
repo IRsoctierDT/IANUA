@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from collect import (
     OFFSETS_VERSION,
     OffsetError,
@@ -34,9 +35,8 @@ from collect import (
     read_new,
     save_offsets,
 )
-from store import EventStore, Query
-
 from ingest import normalize
+from store import EventStore, Query
 
 _AUDITD = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
 _CLOUD = json.dumps(

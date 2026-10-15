@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from agents.detection_matcher_agent import DetectionMatcherAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
 

@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from correlation import Thresholds, assemble, references, resolve
+from ingest import normalize
 from ingest.schema import MAX_FIELD_LEN
 from store.events import StoredEvent
-
-from ingest import normalize
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORRELATION_ROOT = _REPO_ROOT / "correlation"

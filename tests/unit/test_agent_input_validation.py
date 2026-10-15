@@ -11,6 +11,7 @@ untyped boundary.
 from __future__ import annotations
 
 import pytest
+
 from agents.incident_report_agent import IncidentReportAgent
 from agents.mitre_mapper_agent import MitreMapperAgent
 

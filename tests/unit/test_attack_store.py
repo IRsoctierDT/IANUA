@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from attack.errors import AttackError, AttackIntegrityError, AttackUnavailableError
 from attack.pin import DEFAULT_PIN_PATH, load_pin, parse_pin, signing_payload
 from attack.store import DATA_DIR, load_corpus, read_shard

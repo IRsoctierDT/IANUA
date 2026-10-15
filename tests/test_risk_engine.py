@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import pytest
+
 from agents.risk_engine import (
     RiskContribution,
     RiskEngine,

@@ -32,9 +32,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from ingest.errors import MalformedProjectionError
-from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
-from store import DEFAULT_FILENAME, EventStore
 
 from ingest import (
     MAX_FIELD_LEN,
@@ -47,6 +44,9 @@ from ingest import (
     NormalizedEvent,
     normalize,
 )
+from ingest.errors import MalformedProjectionError
+from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
+from store import DEFAULT_FILENAME, EventStore
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INGEST_ROOT = _REPO_ROOT / "ingest"

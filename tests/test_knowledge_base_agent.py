@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+
 from agents.knowledge_base_agent import KnowledgeBaseAgent, KnowledgeReference
 from agents.tools.validation import ValidationError
 

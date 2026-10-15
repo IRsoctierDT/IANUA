@@ -21,6 +21,7 @@ import inspect
 from pathlib import Path
 
 import pytest
+
 from agents.incident_report_agent import _LAB_ROOT, _REPO_ROOT, _refuse_tracked_destination
 from agents.tools.validation import ValidationError
 
