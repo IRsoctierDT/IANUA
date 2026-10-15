@@ -47,11 +47,22 @@ from ingest import (
     SIGNATURES,
     NormalizedEvent,
     _coerce,
+    keyvalue,
     normalize,
     normalize_many,
 )
-from ingest._coerce import _DOMAIN, _HASH, _IPV4, _IPV6, _URL, observables, project
+from ingest._coerce import (
+    _DOMAIN,
+    _HASH,
+    _IPV4,
+    _IPV6,
+    _URL,
+    _is_dotted_quad,
+    observables,
+    project,
+)
 from ingest.errors import IngestError, MalformedProjectionError, UnsupportedInputError
+from ingest.normalize import detect_source
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore
 
@@ -135,6 +146,32 @@ def test_a_wide_recipient_list_is_bounded() -> None:
 
 @pytest.mark.security
 def test_control_characters_and_nuls_never_survive_a_parse() -> None:
+    """Asserted on the retained fields, because the serialized form cannot fail.
+
+    **The loop this test used to run was unconditionally true.** It searched
+    ``json.dumps(event.to_dict())`` for a raw ``\x00``/``\x07``/``\x1b``/
+    ``\r``, and ``json.dumps`` escapes every C0 character it is handed — in
+    keys as well as values, nested, in lists, and with ``ensure_ascii=False``
+    too. ``to_dict()`` emits only ``str``/``int``/``float``/``bool``/``None``/
+    ``list``/``dict``, so there is no input for which that haystack could
+    contain its needle.
+
+    Measured two ways. Removing ``_CONTROL_CHARS.sub`` from ``_coerce.text``
+    entirely — precisely the control the loop's failure message named — left
+    all four iterations green, with ``message``, ``device.hostname`` and
+    ``actor.command_line`` all carrying raw ``\x00 \x07 \x1b``; only the
+    single ``"\x00" not in event.message`` line below the loop failed. And
+    narrowing the scrub to ``[\x00]`` alone, so BEL and the ANSI escape
+    survive, left the **whole test** green while the retained fields carried
+    ``\x07`` and a live ``\x1b[31m`` — a test named for ANSI escapes not
+    noticing ANSI escapes reaching a terminal.
+
+    So the characters are checked against the retained *fields*, which hold
+    them literally or not at all. Note that neither the raw nor the escaped
+    form appears in the serialized output, because the scrub removes the
+    characters rather than encoding them — which is why searching for the
+    escaped form instead would not have fixed it either.
+    """
     hostile = "web-01\x00\x07\x1b[31mred\x1b[0m\r\ninjected: yes"
     record = {
         "type": "EXECVE",
@@ -144,11 +181,113 @@ def test_control_characters_and_nuls_never_survive_a_parse() -> None:
         "a0": hostile,
     }
     event = normalize(record)
-    rendered = json.dumps(event.to_dict())
+
+    # Every string the event retained, flattened — so a field added to
+    # NormalizedEvent later is covered without editing this list.
+    def _strings(value: object) -> Iterator[str]:
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, Mapping):
+            for key, child in value.items():
+                yield str(key)
+                yield from _strings(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                yield from _strings(child)
+
+    retained = list(_strings(event.to_dict()))
+    assert retained, "the event retained no strings; this would assert nothing"
     for char in ("\x00", "\x07", "\x1b", "\r"):
-        assert char not in rendered, f"control character {char!r} survived"
-    # The excerpt is evidence, so it is bounded — and equally scrubbed.
-    assert "\x00" not in event.message
+        offenders = [text for text in retained if char in text]
+        assert not offenders, f"control character {char!r} survived in {offenders[:2]}"
+
+    # And the hostile value did reach the event, so the scrub is what removed
+    # the characters rather than the value never arriving.
+    assert any("web-01" in text for text in retained), (
+        "the hostile value never reached the event, so nothing was scrubbed"
+    )
+    assert any("injected: yes" in text for text in retained), (
+        "the text after the CRLF never arrived; the characters may be absent "
+        "because the value was dropped rather than cleaned"
+    )
+
+
+@pytest.mark.security
+def test_two_signatures_claiming_one_record_attributes_it_to_neither() -> None:
+    """``detect_source`` refuses on ambiguity, and nothing asserted it.
+
+    ``detect_source`` is ``if len(claimed) == 1: return claimed[0]`` and its
+    docstring says why: "Two vendors' formats overlapping is a corpus bug to
+    be fixed at the signature, not something to be papered over by picking
+    whichever was registered first."
+
+    **Measured: relaxing it to ``if claimed:`` left the entire repository
+    green.** Every one of the fifteen committed fixtures has exactly one
+    claimant, so on that corpus the two spellings are provably equivalent —
+    the neighbouring tests are insensitive for a structural reason rather than
+    by bad luck. ``test_each_fixture_is_claimed_by_exactly_one_signature``
+    calls ``signature.recognizes`` directly and never reaches
+    ``detect_source`` at all, and
+    ``test_unrecognized_records_are_labelled_not_guessed`` — whose name reads
+    like this one — feeds a record with **zero** claimants, covering the empty
+    branch while the ambiguous one had nothing.
+
+    The input here is the realistic route rather than a constructed mapping:
+    an auditd EXECVE **log line** with Suricata's ``event_type``/``src_ip``/
+    ``dest_ip`` keys appended. ``keyvalue.decode`` turns that into a mapping
+    both ``auditd`` and ``suricata`` claim, and it is a plain string — the
+    shape ``collect/`` reads from a file anyone who can write to a log can
+    produce. Picking the first registered signature would attribute an
+    attacker-shaped line to a vendor and parse it with that vendor's parser.
+    """
+    line = (
+        'type=EXECVE msg=audit(1760000001.200:2): a0="bash" a1="-c" '
+        "event_type=alert src_ip=198.51.100.7 dest_ip=203.0.113.9"
+    )
+    decoded = keyvalue.decode(line)
+    assert decoded is not None, "the line no longer decodes; this test would assert nothing"
+    claimants = sorted(
+        signature.vendor for signature in SIGNATURES if signature.recognizes(decoded)
+    )
+    assert len(claimants) >= 2, (
+        f"only {claimants} claim this record, so the ambiguity branch is not reached"
+    )
+
+    assert detect_source(decoded) is None, (
+        f"{claimants} both claim this record and one was picked anyway"
+    )
+    event = normalize(line)
+    assert event.vendor == "unrecognized", f"an ambiguous record was attributed to {event.vendor}"
+    assert event.parse_status in {"partial", "text"}
+
+
+@pytest.mark.security
+def test_an_implausible_dotted_quad_is_not_stored_as_an_address() -> None:
+    """``_is_dotted_quad``'s octet check is the whole of its filtering power.
+
+    ``_IPV4`` is ``\b(?:\\d{1,3}\\.){3}\\d{1,3}\b``, which structurally
+    guarantees four all-digit parts — so ``len(parts) == 4``, the half a plant
+    leaves behind, is a **tautology** for every value the function can
+    receive. Instrumented across the full suite: 4071 calls, ``len(parts) != 4``
+    on **0** of them and the octet check rejecting on **0** of them. The
+    rejecting branch was never exercised anywhere in the repository, and
+    deleting the octet comparison left the whole suite byte-identically green.
+
+    That matters because a version string is the common case, not a contrived
+    one: ``999.1.2.3`` and ``1.2.3.256`` are not addresses, and an observable
+    is an indexed, append-only correlation join key — two unrelated events
+    mentioning the same software version would correlate as sharing an IP.
+    """
+    assert _is_dotted_quad("255.255.255.255")
+    assert not _is_dotted_quad("999.1.2.3")
+    assert not _is_dotted_quad("1.2.3.256")
+
+    # Through extraction, because the helper is private and the property is
+    # about what reaches the store.
+    kept = observables("agent 198.51.100.7 build 999.1.2.3 schema 1.2.3.256 patch 10.0.0.300")
+    assert "198.51.100.7" in kept, "a real address was dropped"
+    for implausible in ("999.1.2.3", "1.2.3.256", "10.0.0.300"):
+        assert implausible not in kept, f"{implausible} was stored as an address"
 
 
 @pytest.mark.security
