@@ -397,3 +397,177 @@ def test_retention_does_not_rewind_the_collectors_offsets(tmp_path: Path) -> Non
         "re-collection recovered pruned content; if that is now possible the CLI's "
         "irreversibility warning is wrong and must be corrected"
     )
+
+
+# --------------------------------------------------------------------------
+# The correlation margin: the cursor clamp and the cycle's lookback aimed at
+# the same rows
+# --------------------------------------------------------------------------
+#
+# The clamp bounds a pass to *processed* events. The detection cycle's lookback
+# exists to re-read *processed* events as correlation context. Those are the
+# same rows, which was measured rather than argued: a story straddling the
+# 90-day boundary, under every shipped default and with no concurrency
+# anywhere, was reported by the cycle at score 52 over three domains before the
+# documented retention pass and at score 30 over two after it. One event
+# deleted, and what an analyst sees is still an incident — just a smaller,
+# quieter, wrong one.
+
+
+def _tight(root: Path, *, count: int, spacing: float = 1.0) -> float:
+    """Seed ``count`` events ending just before now, and a caught-up cursor.
+
+    Returns the cursor's ``ingested_at``. Spacing is seconds, so the whole run
+    sits well inside the default 900s margin — which is the regime these tests
+    are about and the one ``_seed`` deliberately does not produce.
+    """
+    now = time.time()
+    with EventStore.open(root) as store:
+        for index in range(count):
+            store.append(
+                normalize(_RECORD.replace("svc-deploy", f"tight{index}")),
+                ingested_at=store.next_stamp(now - (count - index) * spacing),
+            )
+        newest = store.query(Query(limit=store.count(), newest_first=False))[-1]
+    save_cursor(cursor_path(root), Cursor(ingested_at=newest.ingested_at, event_id=newest.event_id))
+    return newest.ingested_at
+
+
+@pytest.mark.unit
+def test_the_default_margin_leaves_the_correlation_window_intact(tmp_path: Path) -> None:
+    """``--keep-days 0`` on a caught-up node must still spare the lookback.
+
+    Nothing about these events is unprocessed — the cursor is on the newest of
+    them. Before the margin they were all deletable, which is precisely the
+    hazard: the cycle re-reads this window on its next firing.
+    """
+    root = _root(tmp_path)
+    _tight(root, count=10)
+    bundle = _granted_bundle(tmp_path, "retain_events:apply")
+    assert (
+        _cli_main()(["--root", str(root), "--keep-days", "0", "--apply", "--policy", str(bundle)])
+        == 0
+    )
+    assert _held(root) == 10, (
+        f"the pass deleted inside the correlation window: {_held(root)} of 10 left"
+    )
+
+
+@pytest.mark.unit
+def test_a_zero_margin_restores_pruning_to_the_cursor(tmp_path: Path) -> None:
+    """The counter-test. Without it the one above could pass for any reason.
+
+    ``--lookback-margin 0`` is the documented way back to the old behaviour,
+    and it must demonstrably delete the rows the default spares — otherwise the
+    test above is not measuring the margin.
+    """
+    root = _root(tmp_path)
+    _tight(root, count=10)
+    bundle = _granted_bundle(tmp_path, "retain_events:apply")
+    assert (
+        _cli_main()(
+            [
+                "--root",
+                str(root),
+                "--keep-days",
+                "0",
+                "--lookback-margin",
+                "0",
+                "--apply",
+                "--policy",
+                str(bundle),
+            ]
+        )
+        == 0
+    )
+    assert _held(root) == 1, (
+        f"a zero margin should prune to the cursor's own stamp, leaving 1; {_held(root)} left"
+    )
+
+
+@pytest.mark.unit
+def test_the_margin_does_not_spare_genuinely_old_events(tmp_path: Path) -> None:
+    """The margin is 900 seconds, not an amnesty.
+
+    A pass that stopped reclaiming anything would be a worse defect than the
+    one being fixed: ``scripts/run_retention.py`` exists because the store
+    grows at roughly 1.8 KB an event.
+    """
+    root = _root(tmp_path)
+    _seed(root, old=12, recent=4)
+    bundle = _granted_bundle(tmp_path, "retain_events:apply")
+    assert _cli_main()(["--root", str(root), "--apply", "--policy", str(bundle)]) == 0
+    assert _held(root) == 4, (
+        f"the 200-day-old events were not reclaimed: {_held(root)} held, expected the 4 recent"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["-1", "-0.5", "nan", "inf"])
+def test_a_margin_that_cannot_mean_anything_is_refused(tmp_path: Path, value: str) -> None:
+    """Exit 2, the misconfiguration code, as ``--keep-days`` already does.
+
+    A negative margin would push the bound *forward* of the cursor and delete
+    unprocessed evidence, so this is fail-closed and not tidiness.
+    """
+    root = _root(tmp_path)
+    _tight(root, count=4)
+    assert _cli_main()(["--root", str(root), "--lookback-margin", value]) == 2
+
+
+@pytest.mark.unit
+def test_include_unprocessed_bypasses_the_margin(tmp_path: Path) -> None:
+    """The deliberate purge stays deliberate.
+
+    ``--include-unprocessed`` is where an operator says they mean it, and it
+    already overrides the cursor bound the margin is an extension of. Honouring
+    the margin there would make the documented "retain nothing" unreachable.
+    """
+    root = _root(tmp_path)
+    _tight(root, count=10)
+    bundle = _granted_bundle(tmp_path, "retain_events:apply", "retain_events:apply-unprocessed")
+    assert (
+        _cli_main()(
+            [
+                "--root",
+                str(root),
+                "--keep-days",
+                "0",
+                "--include-unprocessed",
+                "--apply",
+                "--policy",
+                str(bundle),
+            ]
+        )
+        == 0
+    )
+    assert _held(root) == 0, f"the override did not reach everything: {_held(root)} held"
+
+
+@pytest.mark.unit
+def test_the_two_withheld_figures_are_disjoint_and_both_reported(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """One number covering both causes would be unactionable.
+
+    Events withheld as unprocessed mean the cycle has stalled and an operator
+    should go and look; events withheld for correlation mean the cycle is
+    working and the margin is doing its job. Measured before they were
+    separated: a pass reported "3 withheld as not yet processed" when 2 of the
+    3 had demonstrably been processed.
+    """
+    root = _root(tmp_path)
+    _seed(root, old=12, recent=4, processed=6)
+    assert _cli_main()(["--root", str(root), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["lookback_margin"] == 900.0
+    unprocessed = payload["events_withheld_unprocessed"]
+    correlation = payload["events_withheld_for_correlation"]
+    assert unprocessed >= 0 and correlation >= 0
+    assert payload["effective_threshold"] == (
+        payload["cursor_ingested_at"] - payload["lookback_margin"]
+    )
+    # The window matched more than the pass will take, and every withheld row
+    # is attributed to exactly one cause.
+    assert payload["events_matching"] + unprocessed + correlation <= payload["events_total"]

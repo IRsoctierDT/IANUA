@@ -68,6 +68,21 @@ each assemble nothing, with no later cycle able to recover the story. Incidents
 the lookback re-assembles are reported once, when they are new or when they
 grow; see ``pipeline.CycleResult.fresh``.
 
+The two windows share one row ceiling, so ``--batch`` is capped at half of it
+whenever a lookback is asked for. That cap is a fix, not a limitation: the
+context budget used to be whatever the ceiling had left after the progress
+read, and ``--batch 10000`` on a 10k backlog therefore left it *zero* —
+measured reporting ``0 incident(s)`` and exit 0 on a store where the same
+events at ``--batch 1000`` assembled a three-domain score-52 incident.
+``--lookback 0`` reserves nothing and keeps the full batch. The one narrowing
+the reserve cannot remove is reported as ``context_limited``.
+
+**A retention pass will not prune inside this window.** ``run_retention.py``
+holds back ``--lookback-margin`` seconds of processed history behind the
+cursor for exactly this reason. An operator raising ``--lookback`` here must
+raise that margin to match — nothing can detect the mismatch, because this
+flag is not recorded anywhere that pass can read it.
+
 **One cycle at a time.** An exclusive lock is held for the whole cycle. Two
 cycles appending to the hash-chained audit log at once fork the chain and break
 ``verify()`` permanently, which would put a false positive into a tamper
@@ -243,7 +258,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--batch",
         type=int,
         default=DEFAULT_BATCH,
-        help=f"Events to read in this cycle (default: {DEFAULT_BATCH}).",
+        help=(
+            f"Events to read in this cycle (default: {DEFAULT_BATCH}). Capped at "
+            "half the correlation ceiling when --lookback is non-zero, because "
+            "the trailing context shares that ceiling and used to be starved by "
+            "a raised batch — a batch at the ceiling lost a straddling incident "
+            "outright while still exiting 0. Raising this past the cap buys "
+            "nothing; lower it to buy more context per cycle."
+        ),
     )
     parser.add_argument(
         "--lookback",
@@ -343,6 +365,7 @@ def _report(
         "events_read": result.events_read,
         "idle": result.idle,
         "events_correlated": result.events_correlated,
+        "context_limited": result.context_limited,
         "repeats": result.repeats,
         "include_seen": include_seen,
         # Only the fresh ones: an incident the lookback re-assembled was
@@ -387,6 +410,12 @@ def _print_text(
         + (f", {result.repeats} re-seen" if result.repeats and not include_seen else "")
         + f"; cursor {'advancing' if advancing else 'held'}."
     )
+    if result.context_limited:
+        print(
+            "  note: the correlation window's trailing context filled its row "
+            "budget, so older context inside --lookback was not read. Lower "
+            "--batch to buy more context per cycle."
+        )
     for incident in _reportable(result, include_seen=include_seen):
         print(
             f"  {reference(incident)}  score={incident.score:>3}  "

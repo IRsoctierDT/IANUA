@@ -746,6 +746,181 @@ def test_the_cli_accepts_a_lookback_and_refuses_a_negative_one(tmp_path: Path) -
     assert main(["--root", str(tmp_path), "--lookback", "-5"]) == 2
 
 
+# --------------------------------------------------------------------------
+# The overlap's row budget: raising --batch used to spend all of it
+# --------------------------------------------------------------------------
+#
+# The budget for the trailing context was whatever `ceiling` had left after the
+# progress read, so a batch at or above the ceiling left nothing and the
+# overlap vanished — with no signal, which is the same class of failure as a
+# cursor that partitions the stream. Measured through the CLI on a
+# 10_003-event store: `--batch 1000` reported a three-domain score-52
+# incident, `--batch 10000` reported zero incidents and exited 0, and
+# `--batch 9999` reported a two-domain score-30 one, which is the worst of the
+# three because it still looks like an answer.
+
+
+def _straddling(root: Path, *, fill: int) -> None:
+    """Context consumed by cycle 1, the new step and its padding for cycle 2.
+
+    Each event gets its own ``ingested_at``. An earlier version of this helper
+    tied the three story events to two stamps, and the batch then cut the tie
+    group at a hash-ordered boundary — so which events landed in the progress
+    window varied per run and the fixture could not produce the condition it
+    was written for.
+    """
+    seeds: tuple[tuple[Mapping[str, Any], float], ...] = (
+        (_CLOUD, 1000.0),
+        (_IDENTITY, 1100.0),
+        (_ENDPOINT, 1200.0),
+    )
+    for record, at in seeds:
+        _seed(root, (record,), at=at)
+    for index in range(fill):
+        _seed(
+            root,
+            ({"type": "SYSCALL", "node": f"pad-{index:04d}", "auid": f"pad-{index:04d}"},),
+            at=1201.0 + index,
+        )
+
+
+@pytest.mark.unit
+def test_a_batch_at_the_ceiling_still_leaves_the_overlap_a_budget(tmp_path: Path) -> None:
+    """The regression, at the arithmetic that produced it.
+
+    ``max_events`` stands in for the CLI's fixed 10_000 so the fixture is ten
+    events rather than ten thousand; the quantity under test is the budget
+    split, which is identical either way.
+    """
+    _straddling(tmp_path, fill=12)
+    thresholds = Thresholds(max_events=10)
+    with EventStore.open(tmp_path) as store:
+        first = run_cycle(store, cursor=None, batch=2, thresholds=thresholds)
+        second = run_cycle(store, cursor=first.cursor, batch=10, thresholds=thresholds)
+
+    assert second.events_correlated > second.events_read, (
+        "the progress window consumed the whole ceiling and the overlap got "
+        f"nothing: read {second.events_read}, correlated {second.events_correlated}"
+    )
+    best = max(second.fresh, key=lambda incident: incident.score, default=None)
+    assert best is not None, "the story straddling the batch boundary was lost"
+    assert sorted(best.domains) == ["cloud", "endpoint", "identity"], (
+        f"only {sorted(best.domains)} were correlated together"
+    )
+
+
+@pytest.mark.unit
+def test_the_same_store_loses_the_story_with_no_overlap_asked_for(tmp_path: Path) -> None:
+    """The counter-test: without it the one above could pass for any reason.
+
+    ``lookback=0`` is the documented partitioning mode. It must lose this
+    story, or the test above is not measuring the overlap.
+    """
+    _straddling(tmp_path, fill=12)
+    thresholds = Thresholds(max_events=10)
+    with EventStore.open(tmp_path) as store:
+        first = run_cycle(store, cursor=None, batch=2, thresholds=thresholds)
+        second = run_cycle(store, cursor=first.cursor, batch=10, lookback=0, thresholds=thresholds)
+    assert second.fresh == (), "lookback=0 must partition the stream"
+
+
+@pytest.mark.unit
+def test_no_reserve_is_taken_when_no_overlap_was_asked_for(tmp_path: Path) -> None:
+    """A backfill at ``lookback=0`` must keep the full batch it asked for.
+
+    The reserve halves the progress window, which is the fix's whole cost. It
+    must not be charged to the one mode that cannot benefit from it.
+    """
+    _straddling(tmp_path, fill=12)
+    thresholds = Thresholds(max_events=10)
+    with EventStore.open(tmp_path) as store:
+        full = run_cycle(store, cursor=None, batch=10, lookback=0, thresholds=thresholds)
+        halved = run_cycle(store, cursor=None, batch=10, thresholds=thresholds)
+    assert full.events_read == 10, f"a lookback-free cycle was clamped to {full.events_read}"
+    assert halved.events_read == 5, (
+        f"the reserve was not applied: read {halved.events_read} of a ceiling of 10"
+    )
+
+
+@pytest.mark.unit
+def test_a_ceiling_of_one_still_makes_progress(tmp_path: Path) -> None:
+    """The edge the reserve could have turned into a permanently idle cycle.
+
+    At ``max_events=1`` the reserve is ``1 // 2 == 0``, but the floor matters
+    anyway: a ceiling of 2 reserves 1 and would leave the progress window 1,
+    while anything that rounded the other way would read zero events forever
+    and report idle — the failure mode ``batch < 1`` is refused for.
+    """
+    _straddling(tmp_path, fill=3)
+    for ceiling in (1, 2):
+        with EventStore.open(tmp_path) as store:
+            page = run_cycle(
+                store, cursor=None, batch=10, thresholds=Thresholds(max_events=ceiling)
+            )
+        assert page.events_read >= 1, f"a ceiling of {ceiling} read nothing and would never advance"
+
+
+@pytest.mark.unit
+def test_a_budget_limited_context_window_says_so(tmp_path: Path) -> None:
+    """The narrowing the reserve does not remove is reported rather than silent.
+
+    A lookback window holding more events than the reserve is still read only
+    in part. That is unavoidable under a hard ceiling; being quiet about it is
+    not.
+    """
+    for index in range(12):
+        _seed(tmp_path, ({"type": "SYSCALL", "node": f"ctx-{index:04d}"},), at=1000.0 + index)
+    _seed(tmp_path, (_ENDPOINT,), at=2000.0)
+    thresholds = Thresholds(max_events=6)
+    # Consume the twelve context events first, at lookback=0 so each cycle may
+    # take the whole ceiling. The cursor has to get past them: with it still
+    # among them the lookback window holds fewer events than the budget and
+    # the fixture cannot produce the condition — which is how the first
+    # version of this test failed.
+    cursor = None
+    with EventStore.open(tmp_path) as store:
+        for _ in range(4):
+            page = run_cycle(store, cursor=cursor, batch=6, lookback=0, thresholds=thresholds)
+            if page.idle or page.cursor is None:
+                break
+            cursor = page.cursor
+            if cursor.ingested_at >= 2000.0:
+                break
+        assert cursor is not None and cursor.ingested_at == 2000.0, (
+            f"the fixture did not reach the endpoint event: cursor at {cursor}"
+        )
+        # One more event after the endpoint, so there is a progress window to
+        # read while twelve events sit behind it inside the lookback.
+        _seed(tmp_path, (_LATER,), at=2001.0)
+        second = run_cycle(store, cursor=cursor, batch=1, lookback=5_000.0, thresholds=thresholds)
+    assert second.events_read == 1, f"expected one new event, read {second.events_read}"
+    assert second.context_limited, (
+        "the context read filled its budget and the result did not say so: "
+        f"read {second.events_read}, correlated {second.events_correlated}"
+    )
+    assert second.events_correlated == 6, (
+        f"the window should fill the ceiling exactly: {second.events_correlated}"
+    )
+
+
+@pytest.mark.unit
+def test_a_context_window_inside_its_budget_is_not_flagged(tmp_path: Path) -> None:
+    """The counter-test, so the flag is not simply always true."""
+    _straddling(tmp_path, fill=2)
+    thresholds = Thresholds(max_events=10)
+    with EventStore.open(tmp_path) as store:
+        first = run_cycle(store, cursor=None, batch=2, thresholds=thresholds)
+        second = run_cycle(store, cursor=first.cursor, batch=2, thresholds=thresholds)
+    assert not second.context_limited, "a context read well inside its budget was flagged"
+
+
+@pytest.mark.unit
+def test_the_cli_reports_whether_the_context_was_budget_limited(tmp_path: Path) -> None:
+    """The field a log shipper reads, not only the dataclass attribute."""
+    _seed(tmp_path, (_CLOUD, _IDENTITY, _ENDPOINT), at=1000.0)
+    assert _cli_main()(["--root", str(tmp_path), "--json"]) == 0
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("suffix", ["typo", "not/created/yet"])
 def test_a_root_that_does_not_exist_is_refused(tmp_path: Path, suffix: str) -> None:

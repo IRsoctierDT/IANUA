@@ -110,13 +110,30 @@ Two consequences worth knowing before you read the output:
   remediation actually surfaces what you widened the window to find. Expect
   duplicates of things you have already seen — that is the trade for not
   persisting a reported-reference set.
+- **After raising `--lookback`, raise `--lookback-margin` on the retention pass
+  to match.** The retention pass holds back that many seconds of processed
+  history behind the cursor precisely because this window reads back into it;
+  the two defaults are the same number for that reason. Nothing detects a
+  mismatch — the pipeline's flag is not recorded anywhere the retention pass
+  can read it — and the failure is quiet: measured, a story straddling the
+  retention boundary was reported at score 52 over three domains before a pass
+  and score 30 over two after it. A smaller incident is not an error message.
+- **`--batch` is capped at half the correlation ceiling while a lookback is in
+  effect.** Both windows share one ceiling (`assemble` truncates at
+  `max_events`), and the context half is now reserved before the progress
+  window can spend it. Raising `--batch` past the cap buys nothing; it used to
+  buy *less than nothing*, since a batch at the ceiling left the overlap a
+  budget of zero and lost a straddling incident while still exiting 0. If a
+  cycle reports `context_limited`, the lookback window holds more events than
+  the reserve — lower `--batch` to buy more context per cycle.
 
 ```bash
 # on demand, with attribution
 python scripts/run_pipeline.py --root /srv/ianua --caller soc-timer
 
-# widen the correlation reach to an hour
+# widen the correlation reach to an hour — and tell retention about it
 python scripts/run_pipeline.py --root /srv/ianua --lookback 3600
+python scripts/run_retention.py --root /srv/ianua --lookback-margin 3600
 
 # see what a cycle would do without advancing the cursor
 python scripts/run_pipeline.py --root /srv/ianua --dry-run
