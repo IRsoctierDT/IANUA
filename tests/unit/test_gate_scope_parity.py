@@ -12,6 +12,7 @@ adding it everywhere is a merge-blocking failure, not a convention.
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -276,6 +277,101 @@ def test_the_charters_secret_scan_is_read_only_and_fails_closed() -> None:
     hook = (_REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
     assert "id: detect-secrets" in hook, (
         "pre-commit no longer runs detect-secrets, so the charter and the repo disagree again"
+    )
+
+
+def _secret_gate_lines() -> list[str]:
+    """The runnable (non-comment) lines of §7.1's bash block."""
+    charter = (_REPO / "AGENTS.md").read_text(encoding="utf-8")
+    section = re.search(r"### 7\.1 Extended gate.*?```bash\n(.*?)```", charter, re.DOTALL)
+    assert section is not None, "AGENTS.md §7.1 must carry a bash block"
+    return [
+        line
+        for line in section.group(1).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+@pytest.mark.unit
+def test_the_charters_secret_scan_can_actually_run() -> None:
+    """Fails closed is worthless if the command dies in argparse.
+
+    The test above pinned that §7.1 runs the *hook* rather than ``scan``. It
+    did not pin that the invocation works, and it did not: the block passed an
+    unquoted ``$(git ls-files)``, which word-splits the 58 tracked paths
+    containing spaces under ``sample-logs/github log debugging/``. One of them
+    is ``5_Run python -m build.txt``, so argparse received a bare ``-m`` and
+    the command exited **2 with nothing scanned** — measured, verbatim:
+    ``error: unrecognized arguments: -m build.txt ...``.
+
+    A gate that cannot run cannot "fail the build on any detected credential",
+    so this is the same defect class the docstring above records, reached by a
+    different route. Pinned on the shape rather than by executing
+    detect-secrets, because the suite should not depend on a dev tool being
+    installed to tell whether the charter is self-consistent.
+    """
+    runnable = _secret_gate_lines()
+    gate = [line for line in runnable if "detect-secrets-hook" in line]
+    assert gate, "§7.1 no longer runs the detect-secrets hook at all"
+
+    splitting = [line for line in gate if re.search(r"(?<!\")\$\(git ls-files\)", line)]
+    assert not splitting, (
+        f"§7.1 passes an unquoted command substitution: {splitting}. Tracked paths "
+        "contain spaces, so this word-splits and argparse rejects the whole command "
+        "at exit 2 having scanned nothing. Use `git ls-files -z | xargs -0 ...`."
+    )
+    assert any("-z" in line and "xargs -0" in line for line in gate), (
+        "§7.1's secret gate must hand paths over NUL-delimited; any whitespace-"
+        "delimited form breaks on the repo's own tracked filenames"
+    )
+
+
+@pytest.mark.unit
+def test_ci_runs_the_charters_secret_gate_too() -> None:
+    """§8's "mirrored exactly in CI" was false for exactly one gate.
+
+    §7.1's secret gate is detect-secrets; CI ran only gitleaks, and the two
+    are **not** interchangeable however the charter once worded it ("or:").
+    Measured on one tree: gitleaks green while detect-secrets was red on two
+    findings unbaselined since ``2496c2e`` (#217) — three merges with a red
+    §7.1 gate behind a green pipeline, because nothing in CI ran it.
+
+    So CI must run both, with the same baseline and the same NUL-delimited
+    shape. Asserted against the workflow text rather than by invoking the
+    tool, for the reason the sibling test gives.
+    """
+    ci = (_REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "detect-secrets-hook --baseline .secrets.baseline" in ci, (
+        "CI does not run §7.1's detect-secrets gate; gitleaks is a different scanner "
+        "and was green on a tree this gate failed"
+    )
+    assert "gitleaks" in ci, "CI must keep gitleaks as well — the two catch different things"
+
+    charter_gate = next(line for line in _secret_gate_lines() if "detect-secrets-hook" in line)
+    assert charter_gate.strip() in ci, (
+        f"CI's secret-scan command differs from §7.1's ({charter_gate.strip()!r}); "
+        "§8 claims the two are mirrored exactly"
+    )
+
+
+@pytest.mark.unit
+def test_the_secrets_baseline_names_only_files_that_exist() -> None:
+    """A baseline entry for a deleted file silently accepts nothing.
+
+    ``detect-secrets`` matches an accepted finding by its hashed digest, so a
+    stale path is tolerated rather than reported — which means baseline rot is
+    invisible from the gate's own exit code. It had already happened here in
+    the other direction: four accepted entries carried line numbers that had
+    drifted since the baseline was generated (2026-08-22), so the file read as
+    a description of a tree that no longer existed.
+    """
+    baseline = json.loads((_REPO / ".secrets.baseline").read_text(encoding="utf-8"))
+    results = baseline.get("results", {})
+    assert results, "the baseline accepts nothing; a review would have had to remove every entry"
+    missing = sorted(path for path in results if not (_REPO / path).is_file())
+    assert not missing, (
+        f"the secrets baseline accepts findings in files that no longer exist: {missing}. "
+        "Re-run `detect-secrets scan --baseline .secrets.baseline` and read the diff."
     )
 
 

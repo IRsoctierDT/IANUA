@@ -119,6 +119,26 @@ jobs:
           name: sbom-cyclonedx
           path: security/sbom/*.cdx.json
           if-no-files-found: error
+      - name: detect-secrets (AGENTS.md §7.1's gate, against the reviewed baseline)
+        # §8 claims §7 is mirrored exactly in CI. This was the one gate that
+        # was not: §7.1 runs detect-secrets, CI ran only gitleaks, and the two
+        # are NOT equivalent. Measured on 2496c2e (#217): gitleaks green while
+        # detect-secrets was red on two unbaselined findings — three merges
+        # with a red §7.1 gate and a green pipeline, because nothing here ran
+        # it. Both now run; they catch different things.
+        #
+        # NUL-delimited via xargs -0, not `$(git ls-files)`: 58 tracked paths
+        # under sample-logs/ contain spaces, one of them `5_Run python -m
+        # build.txt`, so word-splitting hands argparse a bare `-m` and the
+        # command dies at exit 2 having scanned nothing. A gate that cannot
+        # run cannot fail a build.
+        #
+        # `detect-secrets-hook`, not `scan`: scan --baseline rewrites the
+        # tracked baseline in place and exits 0 either way, so it can neither
+        # fail the build nor leave the tree clean. The hook exits 1 on a
+        # finding outside the baseline and never writes to it.
+        run: |
+          git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
       - name: Gitleaks (secret scan)
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
