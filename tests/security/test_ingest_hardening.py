@@ -398,6 +398,95 @@ def test_a_key_value_line_is_projected_like_any_other_record() -> None:
     assert _MARKER not in json.dumps(event.to_dict(), default=str)
 
 
+#: Shapes that reach `_unrecognized` with their text intact, because they
+#: never decoded into a mapping and so have nothing to project. Each is a
+#: *stated residual* of the allow-list, not an oversight — see AGENTS.md §5's
+#: stage-6 amendment, which the first version of this control overstated.
+_UNDECODABLE = ("trailing-comma", "json-array", "over-the-size-ceiling")
+
+
+def _undecodable(shape: str, body: str) -> str:
+    record = {
+        "Timestamp": "2026-10-15T09:00:00Z",
+        "NetworkMessageId": "nmi-1",
+        "SenderFromAddress": "payroll@vendor.example",
+        "Subject": "Updated bank details",
+        "DeliveryAction": "Delivered",
+        "Body": body,
+    }
+    whole = json.dumps(record)
+    if shape == "trailing-comma":
+        return whole[:-1] + ",}"
+    if shape == "json-array":
+        return f"[{whole}]"
+    return whole + " " + "x" * (MAX_RAW_BYTES + 1)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("shape", _UNDECODABLE)
+def test_a_record_that_never_decodes_to_a_mapping_keeps_its_text(shape: str) -> None:
+    """Pins the residual, so the claim and the code cannot drift apart again.
+
+    This asserts a **limitation**, deliberately. The allow-list covers records
+    that decode to a mapping; these three do not, so there is no mapping to
+    project and the text is carried whole — which means an un-modelled body in
+    one of them *does* reach `message` and `raw_excerpt`.
+
+    The charter's first version of this amendment claimed the allow-list left
+    "no route into a stored event" without that qualifier, and described the
+    residual as "ordinary syslog prose". Both were wrong: a JSON record with a
+    trailing comma, a JSON array, and a record over `MAX_RAW_BYTES` all take
+    this path, and a line truncated mid-write by log rotation is a realistic
+    instance rather than a contrived one. Dropping the text instead would
+    manufacture the blind spot rule 2 exists to close, so the behaviour stands
+    — and this test exists so that nobody re-reads the amendment and believes
+    the stronger claim.
+    """
+    body = "wire to IBAN GB29NWBK60161331926819"
+    event = normalize(_undecodable(shape, body))
+    assert event.vendor == "unrecognized"
+    rendered = json.dumps(event.to_dict(), default=str)
+    assert body in rendered, (
+        "the residual documented in AGENTS.md §5 no longer holds — if this is a "
+        "deliberate improvement, update the amendment and DESIGN.md boundary 9 with it"
+    )
+
+
+@pytest.mark.security
+def test_a_well_formed_record_of_the_same_shape_does_not_keep_its_body() -> None:
+    """The control itself, beside the residual, so the difference is visible."""
+    body = "wire to IBAN GB29NWBK60161331926819"
+    whole = _undecodable("trailing-comma", body)[:-2] + "}"  # repair the comma
+    event = normalize(whole)
+    assert event.vendor == "defender-o365"
+    assert body not in json.dumps(event.to_dict(), default=str)
+
+
+@pytest.mark.security
+def test_the_withheld_note_counts_raw_keys_and_sanitizes_only_for_display() -> None:
+    """The note is a diagnostic an operator acts on, so it must not lie.
+
+    Sanitizing before the comparison made it wrong three ways at once: a key
+    spelled ``Body\n\x07`` was reported as ``Body``, which the record does not
+    contain; a key spelled ``Subject\x00`` sanitized to a name that *is* in the
+    projection and so was not reported at all, though its value was withheld;
+    and two raw keys collapsing to one name double-counted. Measured, then
+    fixed by comparing raw keys and sanitizing afterwards.
+    """
+    event = normalize(
+        {"NetworkMessageId2": "x", "Subject": "s", "Body\n\x07": "leak", "Subject\x00": "dup"}
+    )
+    note = next(entry for entry in event.notes if "withheld" in entry)
+    # Four raw keys, one of which (`Subject`) is modelled and retained.
+    assert note.startswith("3 of 4 top-level record keys"), note
+    assert event.raw_excerpt == '{"Subject": "s"}'
+    # Every withheld key is named, and no control character reaches the note.
+    for name in ("Body", "NetworkMessageId2", "Subject"):
+        assert name in note
+    assert "\x00" not in note
+    assert "\x07" not in note
+
+
 @pytest.mark.security
 def test_no_signature_declares_a_content_bearing_field() -> None:
     """The deny-list applies to the declarations too, and an AST walk misses them.

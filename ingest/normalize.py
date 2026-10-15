@@ -328,11 +328,15 @@ def _unmodelled(
     tells them what was in the mail.
     """
     projected = project(payload, MODELLED_FIELDS)
-    withheld = sorted(
-        name
-        for name in (text(key) for key in payload)
-        if name is not None and name not in projected
-    )
+    # Compared on the record's **own** key names, not on their sanitized forms.
+    # ``text()`` strips control characters, so sanitizing first made the note
+    # wrong three ways at once, measured: a key spelled ``Body\n\x07`` was
+    # reported as ``Body``, which the record does not contain; a key spelled
+    # ``Subject\x00`` sanitized to a name that *is* in the projection and so
+    # was not reported at all, though its value was withheld; and two raw keys
+    # collapsing to one name double-counted. Sanitizing is for display, and
+    # now happens after the comparison.
+    withheld = [key for key in payload if key not in projected]
     if withheld:
         notes = (*notes, _withheld_note(len(payload), withheld))
     return _unrecognized(
@@ -349,8 +353,13 @@ def _withheld_note(total: int, withheld: list[str]) -> str:
     to write a signature. A key that *is* modelled but whose un-named
     sub-keys were withheld does not appear here — the excerpt shows that
     directly, since an object at a declared path renders as its key names.
+
+    The count comes from the raw keys and the names from ``text()``, so a key
+    whose name cannot be rendered at all is still counted among the elided
+    rather than disappearing from the total.
     """
-    named = withheld[:_MAX_NAMED_KEYS]
+    names = [name for name in (text(key) for key in sorted(withheld)) if name is not None]
+    named = names[:_MAX_NAMED_KEYS]
     elided = len(withheld) - len(named)
     note = (
         f"{len(withheld)} of {total} top-level record keys are modelled by no parser; "

@@ -139,10 +139,13 @@ be telemetry at all. Malformed *content* degrades instead.
 Enumerated with mitigations in `DESIGN.md` §8; the trust argument is boundary 9 in §5.
 The three that shaped the design: mis-attribution to the wrong parser, resource
 exhaustion from hostile records, and message bodies entering the corpus. The residual on
-the third is named rather than waved at: free-form text that never decoded into a record
-is still carried verbatim, so a body pasted into a syslog line reaches an excerpt. There
-is no structure there to project, and dropping the text would manufacture the blind spot
-rule 2 exists to close.
+the third is named rather than waved at: anything that never decoded into a *mapping* is
+still carried verbatim, so a body reaches an excerpt. That is not only prose — a JSON
+record with a trailing comma, a JSON array rather than an object, and a record over
+`MAX_RAW_BYTES` all take this path, and a line truncated mid-write by rotation is a
+realistic instance. There is no mapping to project in those cases, and dropping the text
+would manufacture the blind spot rule 2 exists to close, so the behaviour stands as a
+stated residual rather than an exception for prose.
 
 ## Future Enhancements
 
