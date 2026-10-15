@@ -726,6 +726,13 @@ _CUT_PAYLOADS: tuple[tuple[str, str], ...] = (
     ("ipv6", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
     ("domain", "deep.sub.indicator.example.com"),
     ("hexrun", "f" * 50),
+    # Non-ASCII, added after review found the tail scan fabricating from an
+    # escape. `_serialize` renders `é` as `\u00e9` and backslash is an
+    # indicator terminator, so the tail matched `http://indicator.example/pay/caf`
+    # as a whole URL — 10 of 148 offsets. Every other payload here is pure
+    # ASCII, which is why five of them missed it: the same mistake as choosing
+    # url and sha256 first, one layer down.
+    ("non-ascii-url", "http://indicator.example/pay/caf\u00e9"),
 )
 
 _CUT_IDS = [name for name, _ in _CUT_PAYLOADS]
@@ -794,12 +801,19 @@ def test_that_sweep_actually_walks_the_cut_through_the_indicator(payload: str) -
     no-severed-prefix assertion trivially — the level-above failure that let
     round five through twice.
     """
+    # Compared against the payload as the excerpt actually stores it, not as
+    # it was written. `_serialize` renders with `ensure_ascii=True`, so the
+    # non-ASCII payload is `...caf\u00e9` in `raw_excerpt` and a literal
+    # membership test finds it at zero offsets. This guard caught exactly that
+    # when the payload was added — which is what it is for, so the comparison
+    # is corrected rather than the payload dropped.
+    stored = json.dumps(payload)[1:-1]
     complete = severed = 0
     for offset in _CUT_SWEEP:
         excerpt = normalize(_cut_at(offset, payload)).raw_excerpt
-        if payload in excerpt:
+        if stored in excerpt:
             complete += 1
-        elif payload[:8] in excerpt:
+        elif stored[:8] in excerpt:
             severed += 1
 
     assert complete >= 5, f"no offset retains {payload!r} whole ({complete})"

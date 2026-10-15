@@ -41,7 +41,15 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ingest import keyvalue
-from ingest._coerce import CUT_TOKEN, FieldPath, depth_within, observables, project, text
+from ingest._coerce import (
+    CUT_TOKEN,
+    ESCAPED_TOKEN,
+    FieldPath,
+    depth_within,
+    observables,
+    project,
+    text,
+)
 from ingest.errors import UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
 from ingest.schema import (
@@ -509,6 +517,10 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
             # indicator is worse than a lost one: it is a *false* join key in
             # an append-only index. See the docstring for the measurement.
             tail = CUT_TOKEN.sub("", rendered[offset:])
+            # And drop any token carrying a backslash: the tail is escaped
+            # JSON, so a token containing one has content the tail cannot
+            # recover, and matching up to the escape fabricates an indicator.
+            tail = ESCAPED_TOKEN.sub("", tail)
             if tail:
                 kept.append(tail)
             break

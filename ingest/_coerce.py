@@ -61,6 +61,30 @@ INDICATOR_TERMINATORS = frozenset(" \t\n\r\f\v\"'<>\\")
 #: observable set; see ``normalize._retained_values``.
 CUT_TOKEN = re.compile(r"[^\s\"'<>\\]+\Z")
 
+#: A token in an excerpt tail that carries a backslash, and therefore a token
+#: whose true content is not known from the tail alone.
+#:
+#: The tail is *serialized* text: ``_serialize`` renders with ``json.dumps``'s
+#: default ``ensure_ascii=True``, so ``é`` becomes ``\u00e9``. Backslash is an
+#: :data:`INDICATOR_TERMINATORS` member — correctly, since no extractor's class
+#: contains it — which means ``_URL`` stops there, and the part *before* it
+#: matches as though it were a whole URL. Measured on the version that shipped
+#: the tail scan: a ``Subject`` containing
+#: ``http://indicator.example/pay/café`` produced the observable
+#: ``http://indicator.example/pay/caf`` at 10 of 148 cut offsets — a plausible
+#: URL that never existed anywhere, in an indexed append-only column.
+#:
+#: So a backslash-bearing token is dropped whole rather than matched up to the
+#: escape. That loses an indicator inside escaped content, which is the same
+#: trade the trim itself makes: in a tail, when the true text cannot be
+#: recovered, lose it rather than invent it. It applies to the tail **only** —
+#: ordinary leaf values are scanned unescaped and are unaffected.
+#:
+#: The underlying asymmetry (the excerpt is escaped, the extractors read
+#: literal text) is wider than the tail and is tracked separately; this closes
+#: the route the tail scan opened.
+ESCAPED_TOKEN = re.compile(r"[^\s\"'<>]*\\[^\s\"'<>]*")
+
 
 def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
     """Coerce a scalar to a bounded, printable string, or ``None``.
