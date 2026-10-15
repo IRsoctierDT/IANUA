@@ -26,6 +26,7 @@ from ingest.schema import (
     MAX_NESTING_DEPTH,
     MAX_OBSERVABLES,
     MAX_PROJECTED_ITEMS,
+    MAX_RAW_BYTES,
 )
 
 #: C0/C1 control characters, minus tab/newline/carriage-return, which are
@@ -44,32 +45,6 @@ _IPV6 = re.compile(r"\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b")
 _HASH = re.compile(r"\b(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})\b")
 _URL = re.compile(r"\bhttps?://[^\s\"'<>\\]{3,256}", re.IGNORECASE)
 _DOMAIN = re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.){1,6}[A-Za-z]{2,24}\b")
-
-#: The trailing run of a value that the ``MAX_FIELD_LEN`` bound may have cut in
-#: half, defined as the characters no extractor above can match: whitespace
-#: plus ``_URL``'s five exclusions. ``_URL``'s class is the widest of the five
-#: — ``_IPV4`` is digits and dot, ``_IPV6`` hex and colon, ``_HASH`` hex,
-#: ``_DOMAIN`` alnum, dot and hyphen — so a string ending on one of these
-#: cannot be ending *inside* a match.
-#:
-#: **Its placement is the whole point, and three rounds of review were spent
-#: learning that.** The same pattern was applied twice in
-#: ``normalize._retained_values``, to an excerpt tail as that tail was built,
-#: and both times a later cut defeated it: once by a JSON escape, once by
-#: ``text()``'s own bound running *after* the guard. The guard belongs where
-#: the cut is made — here, immediately around the slice — so that it protects
-#: every caller rather than one call site. Measured on the version that
-#: guarded only the call site:
-#:
-#:     normalize("P"*2007 + " " + "f"*50 + " tail")
-#:       50-char hex run retained in raw_excerpt : True
-#:       observables                             : ('f'*40,)   <- a sha1
-#:
-#: A 50-character hex run matches no hash pattern — ``_HASH`` wants exactly 32,
-#: 40 or 64 — so the bound manufactured a plausible IOC that was never in the
-#: record. On the carried path, which handles plain text, malformed JSON and
-#: oversized records, i.e. the input a parser never got to model.
-_CUT_TOKEN = re.compile(r"[^\s\"'<>\\]+\Z")
 
 
 def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
@@ -315,30 +290,46 @@ def depth_within(value: Any, limit: int = MAX_NESTING_DEPTH) -> bool:
     return True
 
 
-def _bounded_for_scan(value: Any) -> str | None:
-    """Coerce for extraction without letting the bound cut an indicator in half.
+def _scan_source(value: Any) -> tuple[str, int] | None:
+    """The value's full cleaned text, plus how much of it the bound retains.
 
-    ``text()`` ends in ``cleaned[:limit]``, and an extractor run over the
-    result will happily match a token that slice severed: a 64-character
-    sha256 cut at 40 is a well-formed sha1, and a URL cut anywhere is a
-    shorter URL. A severed indicator is worse than a lost one — it is a
-    *false* join key in an indexed, append-only column that
-    ``correlation/entities.py`` joins entities on, and ``UPDATE`` is refused,
-    so the row can only be pruned whole.
+    Returns the text **unbounded** and the cut position, because the extractors
+    must run on the complete string: a bound applied *before* matching lets a
+    regex backtrack into a shorter valid match, and that match is then
+    indistinguishable from a complete one.
 
-    So a value that the bound actually truncates has its final token dropped.
-    The cost is the mirror of the gain and is stated rather than implied: an
-    indicator genuinely ending at character 2048 of a value is no longer
-    extracted, because nothing in the bounded text distinguishes it from one
-    the slice severed. Values at or under the bound are untouched, which is
-    every value in the committed fixture corpus.
+    Five rounds were spent learning that. A bound that cuts a token makes the
+    prefix match as whole — a 64-character sha256 cut at 40 is a well-formed
+    sha1, a 50-character hex run that matches nothing becomes one — and a
+    *false* join key is worse than a lost one, because it lands in an indexed,
+    append-only column that ``correlation/entities.py`` joins entities on and
+    ``UPDATE`` is refused. The attempts, each defeated by the next:
+
+    1. trim the trailing token off an excerpt tail as the tail is built —
+       defeated by ``text()``'s own later slice;
+    2. trim it here, around the slice — right place, wrong shape: the only
+       character class wide enough to bound every extractor is ``_URL``'s, and
+       it is too wide to *delimit* a token. ``observables("198.51.100.7," +
+       "A"*3000)`` returned ``()``, deleting a complete IP that ended at
+       character 12, because a comma is legal inside a URL;
+    3. keep the text and drop matches whose span ends exactly at the cut —
+       defeated by backtracking: ``_DOMAIN`` and ``_IPV6`` can match a
+       *shorter* valid indicator ending before the cut, so
+       ``deep.sub.indicator.example.com`` cut mid-label still yielded
+       ``deep.sub.indicator.example``.
+
+    Matching the whole string and keeping the matches that fit needs no
+    character class and no span arithmetic about backtracking: a match wholly
+    inside the bound is exactly what the bounded evidence contains, and one
+    that crosses it is exactly what the bound severed.
+
+    The value is already bounded overall by ``MAX_RAW_BYTES`` on the record,
+    so "unbounded" here means at most a few hundred kilobytes, not arbitrary.
     """
-    probe = text(value, limit=MAX_FIELD_LEN + 1)
-    if probe is None:
+    cleaned = text(value, limit=MAX_RAW_BYTES)
+    if cleaned is None:
         return None
-    if len(probe) <= MAX_FIELD_LEN:
-        return probe
-    return _CUT_TOKEN.sub("", probe[:MAX_FIELD_LEN]) or None
+    return cleaned, MAX_FIELD_LEN
 
 
 def observables(*values: Any, limit: int = MAX_OBSERVABLES) -> tuple[str, ...]:
@@ -361,17 +352,33 @@ def observables(*values: Any, limit: int = MAX_OBSERVABLES) -> tuple[str, ...]:
             seen.add(key)
             found.append(item)
 
-    corpus = [coerced for coerced in (_bounded_for_scan(value) for value in values) if coerced]
-    joined = " ".join(corpus)
-    urls = _URL.findall(joined)
+    scanned = [pair for pair in (_scan_source(value) for value in values) if pair]
+
+    def _every(pattern: re.Pattern[str]) -> list[str]:
+        """Every match that fits wholly inside the retained part of its value.
+
+        Per value rather than over a joined string. That is equivalent for
+        matching — the join used a space and no extractor's class contains
+        whitespace, so no match could ever span it — and it is what lets each
+        value's own cut be applied to its own matches.
+        """
+        out: list[str] = []
+        for full, cut in scanned:
+            for match in pattern.finditer(full):
+                if match.end() > cut:
+                    continue
+                out.append(match.group())
+        return out
+
+    urls = _every(_URL)
     _add(urls)
-    _add(_HASH.findall(joined))
-    _add(match for match in _IPV4.findall(joined) if _is_dotted_quad(match))
-    _add(_IPV6.findall(joined))
+    _add(_every(_HASH))
+    _add(match for match in _every(_IPV4) if _is_dotted_quad(match))
+    _add(_every(_IPV6))
     # Domains are extracted last and never from inside an already-captured
     # URL, so a single indicator is not double-counted as two.
     url_text = " ".join(urls)
-    _add(match for match in _DOMAIN.findall(joined) if match not in url_text)
+    _add(match for match in _every(_DOMAIN) if match not in url_text)
     return tuple(found)
 
 

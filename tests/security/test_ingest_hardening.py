@@ -45,7 +45,7 @@ from ingest import (
     NormalizedEvent,
     normalize,
 )
-from ingest._coerce import _bounded_for_scan, observables, project, text
+from ingest._coerce import observables, project
 from ingest.errors import MalformedProjectionError
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore
@@ -929,72 +929,77 @@ def test_the_field_bound_trim_loses_nothing_at_or_under_the_bound() -> None:
             f"bound {MAX_FIELD_LEN})"
         )
 
-    # Truncated, but the cut lands on a space, so nothing is severed and the
-    # trim changes nothing.
-    spaced = ("a  " * 900) + " " + url
-    assert len(spaced) > MAX_FIELD_LEN, "fixture must exceed the bound"
-    assert _bounded_for_scan(spaced) == text(spaced), (
-        "the trim altered a value whose cut landed on a terminator"
+    # Asserted through `observables()` rather than against the coercion
+    # helper's return shape, which has now changed three times while this
+    # behaviour has not. A test coupled to the shape broke on each rename and
+    # said nothing about the bound.
+    #
+    # A value whose indicator sits past the bound yields nothing — that is
+    # round two, and it must stay true.
+    assert not observables("P" * MAX_FIELD_LEN + " " + url), (
+        "an indicator wholly past the bound was extracted"
+    )
+    # And a value long enough to be cut still yields the indicators that fit.
+    assert url in observables(url + " " + "P" * (MAX_FIELD_LEN * 2)), (
+        "an indicator wholly inside the bound was dropped from a long value"
     )
 
-    # Non-string scalars go through unchanged.
-    for scalar in (3.14159, 12345, True):
-        assert _bounded_for_scan(scalar) == text(scalar), (
-            f"{scalar!r} was altered by a bound it does not reach"
-        )
+
+#: ``(id, value, must_extract)`` for the two directions the bound has to get
+#: right at once. Every row's indicator ends *well* before the cut; what
+#: differs is whether a second, severable token follows it.
+_BOUND_CASES: tuple[tuple[str, str, bool], ...] = (
+    # Complete indicators followed by punctuation `_URL` permits but the
+    # narrower extractors terminate on. Round eleven: a trim defined by
+    # `_URL`'s class treated these as ONE token and deleted the indicator with
+    # the padding, losing telemetry that ends at character 12.
+    ("ip-then-comma", "198.51.100.7," + "A" * 3000, True),
+    ("ip-then-semicolon", "198.51.100.7;" + "A" * 3000, True),
+    ("ip-then-paren", "198.51.100.7)" + "A" * 3000, True),
+    ("sha256-then-comma", "a" * 64 + "," + "A" * 3000, True),
+    ("domain-then-paren", "evil.example.com)" + "A" * 3000, True),
+    # And the fabrications, which must stay closed: a 50-character hex run
+    # matches no hash until the bound cuts it to 40, and a 64-character sha256
+    # pushed past the bound becomes a sha1.
+    ("fifty-hex-run", "P" * 2007 + " " + "f" * 50 + " tail", False),
+    ("sha256-cut-at-40", "P" * 2008 + "a" * 63 + "b", False),
+)
 
 
 @pytest.mark.security
-def test_no_extractor_can_match_across_an_indicator_terminator() -> None:
-    """``_bounded_for_scan``'s trim is only sound if this holds.
+@pytest.mark.parametrize(
+    ("value", "must_extract"),
+    [(value, keep) for _, value, keep in _BOUND_CASES],
+    ids=[name for name, _, _ in _BOUND_CASES],
+)
+def test_the_field_bound_drops_only_what_it_severed(value: str, must_extract: bool) -> None:
+    """Both directions of the bound at once, because fixing one broke the other.
 
-    It cuts a truncated value back past its last ``_CUT_TOKEN`` character and
-    relies on that leaving a string which cannot be ending *inside* a match.
-    That holds because every extractor's character class is a subset of
-    ``_URL``'s — a claim about five regexes, which is exactly the kind of
-    claim this layer has had wrong repeatedly, so it is asserted rather than
-    argued.
+    Round ten put the guard at the cut, which was the right place. Round eleven
+    showed the guard's *shape* was still wrong: it trimmed a trailing "token",
+    and the only character class wide enough to bound every extractor —
+    ``_URL``'s — is too wide to delimit one. A comma is legal inside a URL and
+    terminates ``_IPV4``, so ``198.51.100.7,`` plus padding was one token and a
+    complete IP ending at character 12 was deleted. Measured then:
 
-    This test existed before, was deleted with the excerpt-tail guard it then
-    justified, and is back because the same derivation is load-bearing again
-    in a place every caller reaches.
+        ip then comma      -> ()
+        sha256 then comma  -> ()
+        domain then paren  -> ()
+        ip then space      -> extracted   (whitespace was the only survivor)
+
+    So nothing is deleted now. ``observables()`` discards exactly the matches
+    whose span *ends at* the cut, which needs no character class: a match
+    ending earlier was terminated by a real character, and one ending at the
+    boundary is the only one the slice can have severed. Five rounds of
+    guessing a class, replaced by a position comparison that cannot be wrong
+    about which extractor terminates where.
     """
-    from ingest import _coerce
+    extracted = observables(value)
 
-    patterns = {
-        name: getattr(_coerce, name) for name in ("_URL", "_IPV4", "_IPV6", "_HASH", "_DOMAIN")
-    }
-    # Expanded, not compressed: `_IPV6` has no `::` support, so the probe
-    # `2001:db8::1` an earlier version used produced zero matches and that
-    # extractor asserted nothing. The guard below is the general form.
-    probes = (
-        "http://a.example/p",
-        "198.51.100.7",
-        "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-        "a" * 64,
-        "evil.example.com",
-    )
-    terminators = sorted(set(" \t\n\r\f\v\"'<>\\"))
-    assertions = dict.fromkeys(patterns, 0)
-    for terminator in terminators:
-        probe = terminator.join(probes)
-        for name, pattern in patterns.items():
-            for match in pattern.findall(probe):
-                found = match if isinstance(match, str) else "".join(match)
-                assertions[name] += 1
-                assert terminator not in found, (
-                    f"{name} matched across {terminator!r}: {found!r} — the "
-                    f"trim in _bounded_for_scan is unsound"
-                )
-
-    unexercised = sorted(name for name, count in assertions.items() if not count)
-    assert not unexercised, (
-        f"{unexercised} matched nothing in the probe corpus, so this test "
-        f"asserted nothing about them. Add a probe each extractor recognises."
-    )
-    assert _coerce._CUT_TOKEN.sub("", "keep me http://cut.example/pa") == "keep me ", (
-        "_CUT_TOKEN no longer drops exactly the trailing token"
-    )
+    if must_extract:
+        assert extracted, "a complete indicator ending well before the bound was dropped"
+    else:
+        assert not extracted, f"the bound fabricated {extracted!r}"
 
 
 @pytest.mark.security
