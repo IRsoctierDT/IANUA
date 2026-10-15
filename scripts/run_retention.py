@@ -73,6 +73,17 @@ away — it has to be *authorized*. ``--include-unprocessed`` is where, and it i
 gated on its own label (:data:`APPLY_UNPROCESSED_LABEL`) so that granting
 ``retain_events:apply`` does not grant it.
 
+**And a pass refuses when its window reaches past every event in the store.**
+That state means nothing has been ingested for a whole retention window, whose
+two causes are a forward clock step and collection having been dead that long.
+Measured on a caught-up node at the shipped ``--keep-days 90``: a clock jumped
+200 days forward removed **29 of 30** events, exit 0, reported as a clean
+success. The cursor clamp above bounds that to *processed* events, so no
+un-analysed evidence is lost — but the whole analysed evidence base went, on a
+clock glitch, at the default setting. ``--keep-days 0`` is exempt because by
+the flag's own documentation it means "retain nothing", which is what separates
+a deliberate purge from a clock fault without inventing a tolerance.
+
 One residual, measured and accepted: ``prune`` is ``DELETE ... WHERE
 ingested_at < ?`` with no ``event_id`` tie-break, while the cursor is a
 ``(ingested_at, event_id)`` pair. One ``append_many`` commit stamps every row
@@ -487,6 +498,35 @@ def _run(
             # pass can say how much it withheld rather than just reporting a
             # smaller number.
             window_matching = store.count_before(before=threshold)
+            mark = store.high_water_mark()
+            if mark is not None and threshold > mark and args.keep_days > 0:
+                # The window has swallowed the entire store: every event in it
+                # is older than the threshold. That happens only when nothing
+                # has been ingested for a whole retention window, and the two
+                # causes are a forward clock step and collection having been
+                # dead that long. Measured on a caught-up node at the shipped
+                # default: a clock jumped 200 days forward removed 29 of 30
+                # events, exit 0, reported as a clean success. The cursor clamp
+                # bounds that to *processed* events — no un-analysed evidence
+                # is lost — but the whole analysed evidence base went.
+                #
+                # `keep_days > 0` is what separates this from a deliberate
+                # purge, and it needs no invented magnitude: `--keep-days 0`
+                # means "retain nothing" by the flag's own documentation, so an
+                # operator who wants everything gone says so and is already
+                # gated by `retain_events:apply`. Asserting any particular
+                # tolerance in seconds would be inventing a requirement this
+                # repository does not state (AGENTS.md §9).
+                print(
+                    f"refused: the {args.keep_days} day window reaches past every "
+                    f"event in the store — the newest was ingested at {mark}, which "
+                    f"is before the threshold {threshold}. Either the clock has "
+                    f"stepped forward or collection has been stopped for longer "
+                    f"than the window; a pass now would delete the whole store. "
+                    f"To purge deliberately, pass --keep-days 0.",
+                    file=sys.stderr,
+                )
+                return 2
             bound, cursor_state = _processed_bound(args.root, store)
             if args.include_unprocessed:
                 effective: float | None = threshold

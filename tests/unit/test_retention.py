@@ -304,11 +304,19 @@ def test_pruning_everything_leaves_the_high_water_mark_intact(tmp_path: Path) ->
     _seed(root, old=4, recent=0)
     with EventStore.open(root) as store:
         before = store.high_water_mark()
+    # Two deliberate flags, each for a different guard, and this test is where
+    # the difference shows.
+    #
     # `--include-unprocessed` because "everything" means everything: the clamp
     # holds the commit the cursor sits in — `prune` is `ingested_at < ?` with no
     # `event_id` tie-break — so a caught-up node always retains that one group.
-    # The flag lifts the clamp; it is not the default path and the tests below
-    # assert what the default does.
+    #
+    # `--keep-days 0` because this fixture seeds only 200-day-old events, which
+    # is the shape of a node whose collection has been dead for longer than the
+    # window — and a pass whose window reaches past *every* event in the store
+    # now refuses, the other cause of that state being a forward clock step that
+    # would silently destroy the whole evidence base. `--keep-days 0` is the
+    # documented way to say "retain nothing", and is the exemption.
     bundle = _granted_bundle(tmp_path, "retain_events:apply", "retain_events:apply-unprocessed")
 
     assert (
@@ -318,6 +326,8 @@ def test_pruning_everything_leaves_the_high_water_mark_intact(tmp_path: Path) ->
                 str(root),
                 "--caller",
                 "test",
+                "--keep-days",
+                "0",
                 "--apply",
                 "--include-unprocessed",
                 "--policy",

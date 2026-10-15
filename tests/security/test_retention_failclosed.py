@@ -581,3 +581,126 @@ def test_a_cursor_inside_a_commit_does_not_cost_that_commit_its_unprocessed_rows
     assert len(survivors) == len(group), (
         f"expected only the cursor's own commit to survive, got {len(survivors)}"
     )
+
+
+# ------------------------------- the window reaching past the whole store
+
+
+def _aged(tmp_path: Path, *, events: int = 10, age_days: float) -> Path:
+    """A caught-up root whose newest event is ``age_days`` old.
+
+    No clock patching: seeding the events far enough back produces the same
+    condition a forward clock step does, which is the point — the two causes
+    are indistinguishable from inside the process, so one guard covers both.
+    """
+    root = tmp_path / "root"
+    root.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    with EventStore.open(root) as store:
+        for index in range(events):
+            store.append(
+                normalize(_RECORD.replace("svc-deploy", f"user{index:05d}")),
+                ingested_at=store.next_stamp(now - age_days * 86_400.0 - (events - index)),
+            )
+        rows = store.query(Query(limit=MAX_QUERY_LIMIT))
+    save_cursor(
+        cursor_path(root), Cursor(ingested_at=rows[0].ingested_at, event_id=rows[0].event_id)
+    )
+    return root
+
+
+@pytest.mark.security
+def test_a_window_reaching_past_every_stored_event_refuses(tmp_path: Path) -> None:
+    """A forward clock step, or collection dead for a window, must not purge silently.
+
+    Measured on a caught-up node at the shipped ``--keep-days 90``, with the
+    clock patched forward: ``+200 days`` and ``+3650 days`` each removed **29 of
+    30** events, exit 0, reported as a clean success. The cursor clamp bounds
+    that to *processed* events, so no un-analysed evidence is lost — but the
+    whole analysed evidence base went, on a clock glitch, at the default.
+
+    Seeded by age rather than by patching the clock, because the two causes are
+    indistinguishable from inside the process: ``threshold > high_water_mark``
+    means every event in the store is older than the window, which happens only
+    when nothing has been ingested for a whole window. One guard, both causes.
+
+    The healthy leg is asserted in the same test: a node whose newest event is
+    *inside* the window must still prune normally, or "refuses" would be
+    satisfied by a guard that refuses everything.
+    """
+    stale = _aged(tmp_path / "stale", age_days=200.0)
+    bundle = _bundle(tmp_path, _APPLY_LABEL)
+    before = _held(stale)
+    assert (
+        _cli_main()(
+            [
+                "--root",
+                str(stale),
+                "--keep-days",
+                "90",
+                "--apply",
+                "--policy",
+                str(bundle),
+                "--caller",
+                "probe",
+            ]
+        )
+        == 2
+    )
+    assert _held(stale) == before, "the refused pass still deleted"
+
+    fresh = _aged(tmp_path / "fresh", age_days=0.5)
+    assert (
+        _cli_main()(
+            [
+                "--root",
+                str(fresh),
+                "--keep-days",
+                "90",
+                "--apply",
+                "--policy",
+                str(bundle),
+                "--caller",
+                "probe",
+            ]
+        )
+        == 0
+    ), "a node inside its window was refused, so the guard is too wide"
+
+
+@pytest.mark.security
+def test_keep_days_zero_is_exempt_because_it_already_means_retain_nothing(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """The exemption is what keeps the guard from inventing a tolerance.
+
+    With ``--keep-days 0`` the operator has *chosen* a window that matches
+    every event, and the flag's own help says "retain events ingested within
+    this many days". With a stepped clock they chose 90 and got the same effect
+    without choosing it. That difference is the whole discriminator, and it
+    needs no threshold in seconds — which matters, because AGENTS.md §9 forbids
+    asserting a requirement the repository does not state, and any tolerance
+    here would be one.
+    """
+    root = _aged(tmp_path, age_days=200.0)
+    bundle = _bundle(tmp_path, _APPLY_LABEL, _OVERRIDE_LABEL)
+    before = _held(root)
+    assert (
+        _cli_main()(
+            [
+                "--root",
+                str(root),
+                "--keep-days",
+                "0",
+                "--apply",
+                "--include-unprocessed",
+                "--policy",
+                str(bundle),
+                "--caller",
+                "probe",
+            ]
+        )
+        == 0
+    ), "the deliberate purge was refused"
+    assert _held(root) == 0, capsys.readouterr().out
+    assert before > 0, "the fixture was empty, so the purge proved nothing"
