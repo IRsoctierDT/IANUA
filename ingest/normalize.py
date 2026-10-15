@@ -158,7 +158,7 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
                 evidence=raw, notes=("input looked like JSON but did not decode; carried as text",)
             )
         if isinstance(decoded, Mapping):
-            return _normalize_mapping(decoded, scanned=raw)
+            return _normalize_mapping(decoded)
         return _unrecognized(
             evidence=raw, notes=("decoded JSON was not an object; carried as text",)
         )
@@ -169,7 +169,7 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     # and the line is then carried as an excerpt exactly as before.
     pairs = keyvalue.decode(stripped)
     if pairs is not None:
-        return _normalize_mapping(pairs, scanned=raw)
+        return _normalize_mapping(pairs)
     return _unrecognized(evidence=raw)
 
 
@@ -182,25 +182,47 @@ def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[N
     return [normalize(record) for record in records]
 
 
-def _normalize_mapping(
-    payload: Mapping[str, Any], *, scanned: str | None = None
-) -> NormalizedEvent:
+def _normalize_mapping(payload: Mapping[str, Any]) -> NormalizedEvent:
     """Normalize a decoded record.
 
-    ``scanned`` is the text this mapping decoded from, when there was one. It
-    is used for **indicator extraction only**, on the branches where no
-    parser claimed the record, so an IP or a hash in an unmodelled source is
-    still joinable by ``correlation/``. It is never retained: every branch
-    below derives its evidence from a declared-path projection, and
-    ``tests/security`` asserts that nothing reachable only through
-    ``scanned`` lands in ``raw_excerpt`` or ``message``. Keeping the two
-    apart is the whole point of the parameter — the alternative, passing one
-    string that is both, is how a mail body used to reach the store.
+    **This used to take a ``scanned`` parameter, and removing it is the fix.**
+    It carried the text the mapping decoded from, for *indicator extraction
+    only*, so that an IP or a hash in an unmodelled source stayed joinable by
+    ``correlation/``. Its docstring claimed the separation held because
+    ``tests/security`` asserts nothing reachable only through ``scanned``
+    lands in ``raw_excerpt`` or ``message``. That was true, and silent about
+    the third output: ``observables``, which is exactly where it landed.
+
+    Measured on merged code — an unclaimed record whose un-modelled ``Body``
+    read "Dear Mr.Jones, please urgently.Reply ... invoice 44.Smith at
+    acct-7781.Watson" produced ``raw_excerpt`` of ``{}``, ``message`` of
+    ``{}``, a note naming all three withheld keys, and five observables:
+    ``Mr.Jones``, ``urgently.Reply``, ``44.Smith``, ``acct-7781.Watson``,
+    ``Ms.Delacroix``. The ``observables`` table is indexed and feeds
+    correlation joins, ``UPDATE`` is trigger-refused and ``event_id`` is a
+    sha256 over the projection, so those names could only be removed by
+    deleting whole rows.
+
+    The parameter arrived for one reason (#206: do not lose indicators to a
+    truncated ``message``) and became a hole for another, because what
+    ``evidence`` *was* changed under it: stage 6 made it a declared-path
+    projection while ``scanned`` stayed the raw record. Extracting from the
+    retained evidence keeps the first property — the excerpt is bounded at
+    ``MAX_RAW_EXCERPT`` and ``message`` at ``MAX_FIELD_LEN``, so indicators
+    past character 2048 of the *evidence* still survive — and closes the
+    second, because there is no longer a wider string to read.
+
+    The owner chose this over a plausible-TLD check on the extractor, with
+    the cost accepted and stated: an indicator that appears **only** in an
+    un-modelled field of an unclaimed record is no longer extracted. §5's
+    reason for scanning unclaimed records was that recognition breaking
+    upstream is the likeliest route by which a real indicator arrives
+    unparsed — that route now yields the modelled values and the withheld-key
+    note, and not the indicator.
     """
     if not depth_within(payload, MAX_NESTING_DEPTH):
         return _unmodelled(
             payload,
-            scanned=scanned,
             notes=(
                 f"record nests deeper than {MAX_NESTING_DEPTH} levels; "
                 "carried as an excerpt without parsing",
@@ -210,7 +232,6 @@ def _normalize_mapping(
     if signature is None:
         return _unmodelled(
             payload,
-            scanned=scanned,
             notes=("no parser signature claimed this record; source left unattributed",),
         )
     try:
@@ -221,7 +242,6 @@ def _normalize_mapping(
         # needs is therefore this signature's own projection, not the union.
         return _unrecognized(
             evidence=_excerpt_for(signature.fields, payload),
-            scanned=scanned if scanned is not None else _render(payload),
             notes=(
                 f"{signature.vendor} parser could not read this record "
                 f"({type(exc).__name__}); carried as text",
@@ -284,18 +304,6 @@ def _excerpt_for(fields: tuple[FieldPath, ...], payload: Mapping[str, Any]) -> s
     return _serialize(project(payload, fields))
 
 
-def _render(payload: Mapping[str, Any]) -> str:
-    """Serialize a whole record for indicator extraction. Never retained.
-
-    The result is handed to :func:`~ingest._coerce.observables`, which pulls
-    URLs, hashes, IPs and domains out of it and discards the rest. It is
-    bounded at :data:`MAX_RAW_EXCERPT` to match what the text paths pass, so
-    which indicators survive truncation does not depend on whether a record
-    arrived as a mapping or as a line of JSON.
-    """
-    return _serialize(payload)
-
-
 def _serialize(value: Mapping[str, Any]) -> str:
     """Render a mapping to bounded text, degrading rather than raising.
 
@@ -313,9 +321,7 @@ def _serialize(value: Mapping[str, Any]) -> str:
         return str(value)[:MAX_RAW_EXCERPT]
 
 
-def _unmodelled(
-    payload: Mapping[str, Any], *, scanned: str | None, notes: tuple[str, ...]
-) -> NormalizedEvent:
+def _unmodelled(payload: Mapping[str, Any], *, notes: tuple[str, ...]) -> NormalizedEvent:
     """Carry a record no parser claimed: modelled values, withheld remainder.
 
     Projected through :data:`MODELLED_FIELDS` rather than carried verbatim.
@@ -341,7 +347,6 @@ def _unmodelled(
         notes = (*notes, _withheld_note(len(payload), withheld))
     return _unrecognized(
         evidence=_excerpt_for(MODELLED_FIELDS, payload),
-        scanned=scanned if scanned is not None else _render(payload),
         notes=notes,
     )
 
@@ -373,15 +378,13 @@ def _withheld_note(total: int, withheld: list[str]) -> str:
     return note[:MAX_FIELD_LEN]
 
 
-def _unrecognized(
-    *, evidence: str, scanned: str | None = None, notes: tuple[str, ...] = ()
-) -> NormalizedEvent:
+def _unrecognized(*, evidence: str, notes: tuple[str, ...] = ()) -> NormalizedEvent:
     """The honest fallback: carried, labelled, and never mis-attributed.
 
-    ``evidence`` is what is retained — it becomes both ``message`` and
-    ``raw_excerpt``. ``scanned`` is read for indicators and then dropped;
-    when it is ``None`` the evidence is scanned instead, which is the case
-    for every input that was never structured in the first place.
+    ``evidence`` is what is retained — it becomes ``message``, ``raw_excerpt``
+    **and** the text indicators are read from. One string, deliberately: a
+    second one existed for indicator extraction and became the route by which
+    a withheld field reached the store (see :func:`_normalize_mapping`).
 
     ``message`` is bounded at :data:`MAX_FIELD_LEN`, like every other field,
     **not** at :data:`MAX_RAW_EXCERPT`. It used to be the latter, and that one
@@ -397,17 +400,22 @@ def _unrecognized(
     declared at ``MAX_RAW_EXCERPT`` on both sides (``schema.from_dict`` validates
     it there), so the fuller text is still retained as evidence.
 
-    Observables are extracted from the *scanned* text rather than from the
-    truncated message, which keeps this honest both ways: indicators are not
-    lost when the evidence is narrowed, and narrowing the evidence is not
-    quietly undone by the indicator set. It does not widen extraction either:
-    :func:`observables` coerces each input through ``text()`` at the default
-    ``MAX_FIELD_LEN``, so an indicator appearing only past character 2048 of a
-    single line is not extracted — a pre-existing bound, measured on the
-    unfixed code and recorded here rather than changed under cover of a fix.
+    Observables are extracted from the retained evidence rather than from the
+    truncated ``message``, which is what #206 asked for and still holds: the
+    evidence is bounded at ``MAX_RAW_EXCERPT`` while ``message`` is cut at
+    ``MAX_FIELD_LEN``, so an indicator between those two bounds is kept even
+    though the summary no longer shows it. What no longer happens is reading a
+    *wider* string than the evidence — that is the hole described in
+    :func:`_normalize_mapping`, and narrowing the evidence is no longer
+    quietly undone by the indicator set.
+
+    Extraction is not widened either: :func:`observables` coerces each input
+    through ``text()`` at the default ``MAX_FIELD_LEN``, so an indicator
+    appearing only past character 2048 of a single line is not extracted — a
+    pre-existing bound, measured on the unfixed code and recorded rather than
+    changed under cover of a fix.
     """
     retained = text(evidence, limit=MAX_RAW_EXCERPT) or ""
-    searched = text(scanned if scanned is not None else evidence, limit=MAX_RAW_EXCERPT) or ""
     # Not routed through ``_finalize``: every field here is already written
     # within its own bound, and this ``message`` is the carried evidence
     # rather than an assembled summary, so its truncation is the documented
@@ -423,7 +431,7 @@ def _unrecognized(
         message=retained[:MAX_FIELD_LEN],
         activity=None,
         parse_status="partial" if notes else "text",
-        observables=observables(searched),
+        observables=observables(retained),
         raw_excerpt=retained[:MAX_RAW_EXCERPT],
         notes=notes,
     )

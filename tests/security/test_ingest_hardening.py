@@ -522,21 +522,30 @@ def test_the_withheld_key_note_stays_readable_after_it_is_written() -> None:
 
 
 @pytest.mark.security
-def test_narrowing_an_unclaimed_records_evidence_does_not_blind_correlation() -> None:
-    """On the unclaimed path the indicator survives and the sentence does not.
+def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
+    """The posture this test pins **replaces** the one it used to pin.
 
-    An IP, a URL or a hash is a modelled, typed, bounded field with its own
-    deny-list in ``correlation/entities.py``; the free text around it is
-    none of those things. So an unclaimed record is still *scanned* in full
-    for indicators while only its modelled paths are *retained* — which is
-    the trade this posture makes, stated as an assertion rather than a claim
-    in a docstring.
+    It previously asserted the opposite: that an unclaimed record was scanned
+    *in full*, so a URL reachable only through an un-modelled ``Body`` was
+    still extracted. That was a deliberate trade — "the indicator survives
+    and the sentence does not" — and it did not hold. Fragments of the
+    sentence survived too: measured on merged code, an un-modelled ``Body``
+    reading "Dear Mr.Jones, please urgently.Reply ... invoice 44.Smith at
+    acct-7781.Watson" produced ``raw_excerpt`` of ``{}`` and five
+    observables — ``Mr.Jones``, ``urgently.Reply``, ``44.Smith``,
+    ``acct-7781.Watson``, ``Ms.Delacroix`` — because ``_DOMAIN`` matches any
+    ``word.Word`` with no plausibility check. Those are personal names, in an
+    indexed append-only table that only whole-row deletion can clear, and
+    they are false correlation join keys besides.
 
-    On the claimed path the indicator set has always come from the values the
-    parser itself selected, so a URL reachable only through an un-modelled
-    field was never extracted there — before this change or after it. That
-    asymmetry is deliberate: a parser that models a field is the thing that
-    makes its contents explainable.
+    The owner chose to extract from modelled content only, over adding a
+    public-suffix dependency or a hand-kept TLD allow-list. **The cost is
+    asserted here rather than left implicit**: an indicator that appears only
+    in an un-modelled field is now lost, on both paths. That is a real
+    detection cost on the one route §5 cared about — a vendor renaming the key
+    a signature matches — and the compensating signal is the withheld-key
+    note, which names what was dropped so an operator can write the
+    signature.
     """
     record = dict(_load("defender_email_phish"))
     record["Body"] = f"click http://evil.example/x now {_MARKER}"
@@ -544,15 +553,55 @@ def test_narrowing_an_unclaimed_records_evidence_does_not_blind_correlation() ->
         ("NetworkMessageIdV2" if key == "NetworkMessageId" else key): value
         for key, value in record.items()
     }
+
     unclaimed = normalize(json.dumps(renamed))
     assert unclaimed.vendor == "unrecognized"
-    assert "http://evil.example/x" in unclaimed.observables
+    # The cost, named: this used to be `in`.
+    assert "http://evil.example/x" not in unclaimed.observables
     assert _MARKER not in json.dumps(unclaimed.to_dict(), default=str)
+    # Correlation is not blinded for what *was* modelled: the record's own
+    # declared paths still yield their indicators, so an unclaimed record is
+    # still joinable on everything the union of signatures covers.
+    assert unclaimed.observables, (
+        "an unclaimed record lost every indicator, not just the withheld one"
+    )
+    assert any("partner" in value for value in unclaimed.observables), unclaimed.observables
+    # And the operator is still told what was dropped.
+    assert any("modelled by no parser" in note for note in unclaimed.notes)
 
     claimed = normalize(record)
     assert claimed.vendor == "defender-o365"
     assert "http://evil.example/x" not in claimed.observables
     assert _MARKER not in json.dumps(claimed.to_dict(), default=str)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "indicator",
+    [
+        pytest.param("tracker.evil-domain.example", id="domain"),
+        pytest.param("http://evil-domain.example/pay", id="url"),
+        pytest.param("203.0.113.231", id="ipv4"),
+        pytest.param("a" * 64, id="sha256"),
+        pytest.param("Mr.Jones", id="prose-that-looks-like-a-domain"),
+    ],
+)
+def test_no_extractor_reaches_an_unmodelled_field(indicator: str) -> None:
+    """The marker the neighbouring tests plant cannot trigger this.
+
+    ``_MARKER`` is ``UNMODELLED-VALUE-7f3a91`` — no dot, no scheme, not 64 hex
+    characters — so no extractor in ``observables()`` can match it, and
+    ``test_an_unmodelled_field_reaches_no_part_of_a_stored_event`` asserted
+    over the whole of ``to_dict()`` and still could not see the leak. The
+    assertion was right and the fixture could not reach it, which is why this
+    one plants something each extractor *would* match, one kind at a time.
+    """
+    event = normalize({"ProviderV2": "renamed-upstream", "Body": f"see {indicator} now"})
+
+    assert event.vendor == "unrecognized"
+    dumped = json.dumps(event.to_dict(), default=str)
+    assert indicator not in dumped, f"an un-modelled {indicator!r} reached the stored event"
+    assert indicator not in event.observables
 
 
 # --------------------------------------------------------------------------
