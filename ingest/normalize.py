@@ -36,8 +36,8 @@ Three rules govern it, in this order:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
-from dataclasses import replace
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ingest import keyvalue
@@ -142,7 +142,7 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
 
     if len(raw) > MAX_RAW_BYTES:
         return _unrecognized(
-            evidence=raw[:MAX_RAW_EXCERPT],
+            evidence=_carried(raw[:MAX_RAW_EXCERPT]),
             notes=(
                 f"record exceeds the {MAX_RAW_BYTES}-byte ceiling "
                 f"({len(raw)} bytes); carried as an excerpt without parsing",
@@ -155,12 +155,14 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
             decoded = json.loads(stripped)
         except (json.JSONDecodeError, RecursionError):
             return _unrecognized(
-                evidence=raw, notes=("input looked like JSON but did not decode; carried as text",)
+                evidence=_carried(raw),
+                notes=("input looked like JSON but did not decode; carried as text",),
             )
         if isinstance(decoded, Mapping):
             return _normalize_mapping(decoded)
         return _unrecognized(
-            evidence=raw, notes=("decoded JSON was not an object; carried as text",)
+            evidence=_carried(raw),
+            notes=("decoded JSON was not an object; carried as text",),
         )
     # Not JSON. It may still be structured: auditd and logfmt-style lines are
     # `key=value` runs, and the auditd recognizer in parsers/endpoint.py was
@@ -170,7 +172,7 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     pairs = keyvalue.decode(stripped)
     if pairs is not None:
         return _normalize_mapping(pairs)
-    return _unrecognized(evidence=raw)
+    return _unrecognized(evidence=_carried(raw))
 
 
 def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[NormalizedEvent]:
@@ -249,7 +251,7 @@ def _normalize_mapping(payload: Mapping[str, Any]) -> NormalizedEvent:
         )
     # The excerpt is attached here rather than inside every parser, so no
     # parser can forget it and none can widen it.
-    return _finalize(_with_excerpt(event, _excerpt_for(signature.fields, payload)))
+    return _finalize(_with_excerpt(event, _excerpt_for(signature.fields, payload).text))
 
 
 #: Said once, when a bound bit. Phrased so an analyst reading a cut summary
@@ -292,7 +294,52 @@ def _finalize(event: NormalizedEvent) -> NormalizedEvent:
     return replace(bounded, parse_status=status, notes=notes)
 
 
-def _excerpt_for(fields: tuple[FieldPath, ...], payload: Mapping[str, Any]) -> str:
+@dataclass(frozen=True, slots=True)
+class _Excerpt:
+    """The evidence text and the values it was rendered from, inseparably.
+
+    One object rather than two parameters, because the two must not diverge —
+    a second, *wider* source is exactly the defect this layer was just fixed
+    for. Here ``values`` is strictly the decomposition of ``text``: the same
+    projection, before serialization.
+
+    They are both needed because they are bounded differently.
+    :func:`~ingest._coerce.observables` coerces **each value** through
+    ``text()`` at ``MAX_FIELD_LEN``, which is what every parser relies on when
+    it calls ``observables(sender_ip, sender, *urls)``. Handing it the
+    serialized form instead applies a *per-field* bound to the *whole*
+    projection. Measured: an unclaimed record with a 2048-character
+    ``@timestamp`` and a ``Subject`` of ``visit http://modelled.example/path``
+    — both modelled, and ``@timestamp`` sorting first — kept that URL in
+    ``raw_excerpt`` at index 2085 and produced **no observables at all**,
+    because the single concatenated string was cut at 2048. Removing the long
+    field brought the indicator back, which is the tell that sort order
+    decided it. Found by review; the cost this change documents was wider than
+    the cost it claimed.
+    """
+
+    text: str
+    values: tuple[Any, ...]
+
+
+def _leaf_values(value: Any) -> Iterator[Any]:
+    """Every scalar inside a projection, so each is bounded on its own.
+
+    Bounded by construction: :func:`~ingest._coerce.project` has already
+    applied ``MAX_PROJECTED_ITEMS``, ``MAX_NESTING_DEPTH`` and the per-value
+    ``MAX_FIELD_LEN``, so this cannot walk further than the projection goes.
+    """
+    if isinstance(value, Mapping):
+        for child in value.values():
+            yield from _leaf_values(child)
+    elif isinstance(value, list | tuple):
+        for child in value:
+            yield from _leaf_values(child)
+    else:
+        yield value
+
+
+def _excerpt_for(fields: tuple[FieldPath, ...], payload: Mapping[str, Any]) -> _Excerpt:
     """Render the declared paths of a record as its bounded evidence excerpt.
 
     The excerpt is *rebuilt*, never copied: :func:`~ingest._coerce.project`
@@ -301,7 +348,19 @@ def _excerpt_for(fields: tuple[FieldPath, ...], payload: Mapping[str, Any]) -> s
     raising here; the excerpt is evidence for a human, not a round-trip
     format.
     """
-    return _serialize(project(payload, fields))
+    projected = project(payload, fields)
+    return _Excerpt(_serialize(projected), tuple(_leaf_values(projected)))
+
+
+def _carried(raw: str) -> _Excerpt:
+    """Evidence that is the record itself, for input that never decoded.
+
+    ``values`` is the one string, which is what the text paths have always
+    scanned: §5 records that anything which never decoded to a mapping is
+    carried verbatim, so there is no projection to decompose and nothing to
+    withhold from the scan.
+    """
+    return _Excerpt(raw, (raw,))
 
 
 def _serialize(value: Mapping[str, Any]) -> str:
@@ -378,13 +437,16 @@ def _withheld_note(total: int, withheld: list[str]) -> str:
     return note[:MAX_FIELD_LEN]
 
 
-def _unrecognized(*, evidence: str, notes: tuple[str, ...] = ()) -> NormalizedEvent:
+def _unrecognized(*, evidence: _Excerpt, notes: tuple[str, ...] = ()) -> NormalizedEvent:
     """The honest fallback: carried, labelled, and never mis-attributed.
 
-    ``evidence`` is what is retained — it becomes ``message``, ``raw_excerpt``
-    **and** the text indicators are read from. One string, deliberately: a
-    second one existed for indicator extraction and became the route by which
-    a withheld field reached the store (see :func:`_normalize_mapping`).
+    ``evidence`` is what is retained: its ``text`` becomes ``message`` and
+    ``raw_excerpt``, and its ``values`` — the same projection, undivided — are
+    what indicators are read from. One parameter, deliberately: a second,
+    *wider* source existed for indicator extraction and became the route by
+    which a withheld field reached the store (see :func:`_normalize_mapping`),
+    so the decomposition travels with the text rather than beside it. See
+    :class:`_Excerpt` for why both forms are needed.
 
     ``message`` is bounded at :data:`MAX_FIELD_LEN`, like every other field,
     **not** at :data:`MAX_RAW_EXCERPT`. It used to be the latter, and that one
@@ -406,16 +468,15 @@ def _unrecognized(*, evidence: str, notes: tuple[str, ...] = ()) -> NormalizedEv
     ``MAX_FIELD_LEN``, so an indicator between those two bounds is kept even
     though the summary no longer shows it. What no longer happens is reading a
     *wider* string than the evidence — that is the hole described in
-    :func:`_normalize_mapping`, and narrowing the evidence is no longer
-    quietly undone by the indicator set.
+    :func:`_normalize_mapping`.
 
-    Extraction is not widened either: :func:`observables` coerces each input
-    through ``text()`` at the default ``MAX_FIELD_LEN``, so an indicator
-    appearing only past character 2048 of a single line is not extracted — a
-    pre-existing bound, measured on the unfixed code and recorded rather than
-    changed under cover of a fix.
+    Each value is scanned on its own, so ``MAX_FIELD_LEN`` applies per field
+    and not to the concatenation. The bound itself is unchanged and
+    pre-existing: an indicator appearing only past character 2048 **of a
+    single field** is still not extracted, which on a text path means past
+    character 2048 of the line, since the line is the one value.
     """
-    retained = text(evidence, limit=MAX_RAW_EXCERPT) or ""
+    retained = text(evidence.text, limit=MAX_RAW_EXCERPT) or ""
     # Not routed through ``_finalize``: every field here is already written
     # within its own bound, and this ``message`` is the carried evidence
     # rather than an assembled summary, so its truncation is the documented
@@ -431,7 +492,7 @@ def _unrecognized(*, evidence: str, notes: tuple[str, ...] = ()) -> NormalizedEv
         message=retained[:MAX_FIELD_LEN],
         activity=None,
         parse_status="partial" if notes else "text",
-        observables=observables(retained),
+        observables=observables(*evidence.values),
         raw_excerpt=retained[:MAX_RAW_EXCERPT],
         notes=notes,
     )
