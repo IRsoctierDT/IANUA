@@ -1,9 +1,11 @@
 # CODEOWNERS — required reviewers for sensitive areas (AGENTS.md §8).
-# Replace @owner with your GitHub handle/team. Security-relevant paths require review.
-
-# NOTE (2026-08-21): @owner is a placeholder that resolves to NOBODY, so
-# these rules currently enforce nothing. Replace with a real GitHub handle
-# (e.g. @IRsoctierDT) to give AGENTS.md §8's mandatory-review rule teeth.
+#
+# Every rule below names the repository owner, so each resolves to a real
+# GitHub account. Note the limit of what this file can do on its own: it
+# *requests* a reviewer. It only *requires* one once branch protection has
+# "Require review from Code Owners" enabled, which is a repository setting
+# rather than a file in this tree — tracked as a maintainer item in
+# docs/PATH_RECONCILIATION_AUDIT.md, Stage 0.
 *                       @IRsoctierDT
 /agents/                @IRsoctierDT
 /attack/                @IRsoctierDT
