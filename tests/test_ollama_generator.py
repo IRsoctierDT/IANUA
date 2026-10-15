@@ -6,6 +6,7 @@
 from collections.abc import Callable
 
 import pytest
+
 from agents.tools.llm import DEFAULT_MODEL, OllamaGenerator
 from agents.tools.validation import ValidationError
 

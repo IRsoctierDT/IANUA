@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+
 from attack import load_corpus
 from intel import (
     HALF_LIFE_DAYS,

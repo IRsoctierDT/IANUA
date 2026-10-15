@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from agents.incident_report_agent import IncidentReportAgent, _md_cell, _md_code, _sanitize
 
 

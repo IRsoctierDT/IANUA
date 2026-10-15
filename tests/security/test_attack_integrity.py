@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from attack.errors import AttackIntegrityError, AttackUnavailableError
 from attack.pin import Pin, load_pin, parse_pin
 from attack.store import DATA_DIR, load_corpus, read_shard

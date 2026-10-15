@@ -35,7 +35,6 @@ from types import TracebackType
 from typing import Self
 
 from agents.tools.validation import ValidationError
-
 from rag.ingest import Chunk
 from rag.retrieve import _cosine
 

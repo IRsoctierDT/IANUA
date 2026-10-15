@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from agents.mitre_mapper_agent import MitreMapperAgent
 
 _RULES = Path(__file__).resolve().parents[2] / "agents" / "mapping" / "rules" / "core.json"

@@ -4,6 +4,7 @@
 """Unit + security tests for OllamaEmbedder (no real network in CI)."""
 
 import pytest
+
 from agents.tools.validation import ValidationError
 from rag.embeddings import OllamaEmbedder
 

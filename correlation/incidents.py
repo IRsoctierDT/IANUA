@@ -45,11 +45,10 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
-from ingest.schema import NormalizedEvent
-from store.events import StoredEvent
-
 from correlation.entities import Entity, references, resolve
 from correlation.errors import ThresholdError
+from ingest.schema import NormalizedEvent
+from store.events import StoredEvent
 
 #: Each telemetry domain beyond the first. The heaviest weight, because
 #: cross-source corroboration is the whole premise of correlating at all: an

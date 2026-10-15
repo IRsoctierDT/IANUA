@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import pytest
+
 from scripts.build_trust_page import (
     ATTESTATION_WARNING_DAYS,
     TrustDataError,

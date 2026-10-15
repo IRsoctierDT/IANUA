@@ -28,6 +28,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+
+from ingest import normalize
 from ingest.schema import MAX_RAW_EXCERPT, NormalizedEvent
 from store import (
     MAX_PROJECTION_BYTES,
@@ -40,8 +42,6 @@ from store import (
     canonical_json,
     event_id,
 )
-
-from ingest import normalize
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORE_ROOT = _REPO_ROOT / "store"

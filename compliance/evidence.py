@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agents.policies.audit import AuditLogger, VerificationReport, signing_key_from_env
-
 from compliance.engine import ComplianceReport
 
 _EVIDENCE_DIR = Path("data") / "compliance"

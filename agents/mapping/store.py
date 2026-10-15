@@ -16,8 +16,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from attack import AttackError, Corpus, load_corpus, validate_reference
-
 from agents.mapping.schema import (
     MAX_CLAUSES_PER_RULE,
     MAX_RULES,
@@ -34,6 +32,7 @@ from agents.mapping.schema import (
     RuleStore,
     RuleTechnique,
 )
+from attack import AttackError, Corpus, load_corpus, validate_reference
 
 RULES_DIR = Path(__file__).resolve().parent / "rules"
 

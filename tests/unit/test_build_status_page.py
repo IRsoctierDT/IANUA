@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from scripts.build_status_page import (
     Component,
     Section,

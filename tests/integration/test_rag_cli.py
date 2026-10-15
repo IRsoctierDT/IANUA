@@ -6,6 +6,7 @@
 from pathlib import Path
 
 import pytest
+
 from scripts.rag_cli import main
 
 # Repo root is two levels up from tests/integration/.

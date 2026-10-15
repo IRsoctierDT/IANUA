@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import get_args
 
 import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
+
 from agents.policies import PolicyEngine, classify_action
 from agents.policies.approval import ActionClass, Decision
 from agents.tools.validation import ValidationError, resolve_within
-from hypothesis import example, given, settings
-from hypothesis import strategies as st
 
 # Deterministic, CI-friendly profile.
 _FUZZ = settings(max_examples=250, derandomize=True, deadline=None)

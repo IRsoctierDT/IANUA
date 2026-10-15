@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
 from agents.knowledge_base_agent import KnowledgeBaseAgent
 from rag.citations import (
     Citation,

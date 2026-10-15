@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from agents.policies.audit import AuditLogger
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits required")

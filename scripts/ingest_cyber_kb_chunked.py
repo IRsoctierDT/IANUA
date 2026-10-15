@@ -5,8 +5,9 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client.models import Distance, PointStruct, VectorParams
-from rag.qdrant import make_client
 from sentence_transformers import SentenceTransformer
+
+from rag.qdrant import make_client
 
 COLLECTION = "cybersecurity_kb_chunks"
 KB_DIR = Path("knowledge-base")

@@ -6,6 +6,7 @@
 from pathlib import Path
 
 import pytest
+
 from scripts.check_locks import drift, main, uv_lock_versions
 
 _UV_LOCK = """

@@ -9,6 +9,7 @@ import json
 import typing
 
 import pytest
+
 from agents.orchestrator_agent import OrchestratorAgent
 from agents.soc_analyst_agent import SocAnalystAgent
 from agents.tools.ocsf import OCSF_SCHEMA_VERSION, classify, normalize

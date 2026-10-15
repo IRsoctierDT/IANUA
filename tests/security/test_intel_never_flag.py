@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+
 from intel import load_store, lookup_indicator
 
 _INTEL = Path(__file__).resolve().parents[2] / "intel"

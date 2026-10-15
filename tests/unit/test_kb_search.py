@@ -12,6 +12,7 @@ raises out of the search path.
 from __future__ import annotations
 
 import pytest
+
 from dashboard import kb_search
 from dashboard.kb_search import KBResult, _category_of, search_kb_resilient
 

@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from agents.tools.validation import ValidationError
-
 from mcp.server import ToolRegistry, build_default_registry
 
 PROTOCOL_VERSION = "2024-11-05"

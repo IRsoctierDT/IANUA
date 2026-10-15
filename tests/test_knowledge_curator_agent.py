@@ -4,6 +4,7 @@
 from pathlib import Path
 
 import pytest
+
 from agents.knowledge_curator_agent import KnowledgeCuratorAgent
 
 

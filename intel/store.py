@@ -32,7 +32,6 @@ from datetime import date
 from pathlib import Path
 
 from attack import AttackError, Corpus, load_corpus, validate_reference
-
 from intel.model import AtomicIndicator, BehavioralRecord, IntelStore, Source
 
 INTEL_DIR = Path(__file__).resolve().parent

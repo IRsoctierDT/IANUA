@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+
 from agents.legal_compliance_agent import DISCLAIMER, LegalComplianceAgent
 
 

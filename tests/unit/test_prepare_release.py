@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
 from scripts import check_version_sync, prepare_release
 
 _SURFACES = (

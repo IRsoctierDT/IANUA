@@ -9,6 +9,7 @@ into the published page, and unknown status tokens fail closed.
 """
 
 import pytest
+
 from scripts.build_trust_page import TrustDataError, parse_report, render_html
 
 _XSS = "<script>alert('xss')</script>"

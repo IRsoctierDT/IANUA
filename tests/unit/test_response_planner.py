@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from agents.mitre_mapper_agent import MitreMapperAgent
 from agents.response import (
     ResponseCatalogueError,

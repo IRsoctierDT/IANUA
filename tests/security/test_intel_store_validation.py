@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
 from intel import IntelStoreError, load_store
 
 _INTEL = Path(__file__).resolve().parents[2] / "intel"

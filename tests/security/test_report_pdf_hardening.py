@@ -13,6 +13,7 @@ when the optional ``markdown`` package is absent.
 from __future__ import annotations
 
 import pytest
+
 from scripts.convert_report_to_pdf import (
     deny_url_fetcher,
     render_html,

@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from agents.tools.validation import ValidationError
 from rag.ingest import Chunk
 from rag.retrieve import InMemoryVectorStore, VectorStore

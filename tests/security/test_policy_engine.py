@@ -4,6 +4,7 @@
 """Security tests for the approval-gate policy engine (AGENTS.md §5/§5.1)."""
 
 import pytest
+
 from agents.policies import PolicyDecision, PolicyEngine, classify_action
 
 

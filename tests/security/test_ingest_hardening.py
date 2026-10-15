@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 
 from ingest import (
     MAX_FIELD_LEN,
@@ -37,6 +36,7 @@ from ingest import (
     MAX_RAW_EXCERPT,
     normalize,
 )
+from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INGEST_ROOT = _REPO_ROOT / "ingest"

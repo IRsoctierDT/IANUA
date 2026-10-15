@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+
 from agents.executive_assistant_agent import ExecutiveAssistantAgent
 
 

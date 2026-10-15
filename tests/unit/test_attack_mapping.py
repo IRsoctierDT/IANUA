@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 import re
 
-import attack
 import pytest
+
+import attack
 from agents.tools import attack_mapping
 from agents.tools.containment import ContainmentToolkit
 

@@ -4,6 +4,7 @@
 from pathlib import Path
 
 import pytest
+
 from agents.incident_report_agent import IncidentReportAgent
 
 

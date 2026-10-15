@@ -17,6 +17,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+
 from scripts import release_notes
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

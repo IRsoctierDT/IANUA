@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
+
 from correlation import (
     MAX_EVENT_SCORE,
     SCORE_PER_EXTRA_DOMAIN,
@@ -27,9 +28,8 @@ from correlation import (
     references,
     resolve,
 )
-from store.events import StoredEvent
-
 from ingest import normalize
+from store.events import StoredEvent
 
 _CLOUD = {
     "eventVersion": "1.08",

@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from ingest import normalize
 from ingest.schema import NormalizedEvent
 from store import (
     ALL,
@@ -31,8 +33,6 @@ from store import (
     canonical_json,
     event_id,
 )
-
-from ingest import normalize
 
 _SYSLOG = "Failed password for root from 10.0.0.5 port 22 ssh2"
 _CLOUDTRAIL = {
