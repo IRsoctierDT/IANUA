@@ -13,8 +13,10 @@ liability:
   memory or blow the stack, and none of them silently vanish either;
 * inert — nothing from a record reaches a path, a shell, an eval, or the
   network, and the module set proves it by construction;
-* non-leaking — email bodies have no field to travel in, and the parser
-  modules never read one;
+* non-leaking — email bodies have no field to travel in, the parser modules
+  never read one, and ``raw_excerpt`` is rebuilt from the paths a signature
+  declared rather than copied from the record, so a field nobody modelled
+  cannot ride along either;
 * honest — degraded parses are labelled, so a partial understanding is never
   rendered as a confident analysis.
 """
@@ -22,19 +24,27 @@ liability:
 from __future__ import annotations
 
 import ast
+import base64
+import dataclasses
 import json
+import typing
 from pathlib import Path
 from typing import Any
 
 import pytest
+from ingest.errors import MalformedProjectionError
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
+from store import DEFAULT_FILENAME, EventStore
 
 from ingest import (
     MAX_FIELD_LEN,
     MAX_NESTING_DEPTH,
+    MAX_NOTES,
     MAX_OBSERVABLES,
     MAX_RAW_BYTES,
     MAX_RAW_EXCERPT,
+    SIGNATURES,
+    NormalizedEvent,
     normalize,
 )
 
@@ -135,6 +145,27 @@ def test_control_characters_and_nuls_never_survive_a_parse() -> None:
 
 
 @pytest.mark.security
+def test_an_unrecognized_lines_excerpt_is_scrubbed_like_every_other_field() -> None:
+    """``raw_excerpt`` was the one field written without passing ``text()``.
+
+    On the claimed path the test above passed because ``json.dumps`` *escapes*
+    a NUL rather than because anything removed it. On the text path nothing
+    escaped it: an unrecognized syslog line carrying ``\x00`` or an ANSI
+    escape stored those bytes verbatim in the excerpt, which is the field a
+    dashboard and a report render. Both paths now coerce through ``text()``.
+    """
+    hostile = "sshd: auth failure for \x00\x07\x1b[31mroot\x1b[0m from 203.0.113.9"
+    event = normalize(hostile)
+    assert event.vendor == "unrecognized"
+    assert event.parse_status == "text"
+    for char in ("\x00", "\x07", "\x1b"):
+        assert char not in event.raw_excerpt, f"control character {char!r} survived"
+    # Scrubbed, not emptied: the line is still readable evidence.
+    assert "203.0.113.9" in event.raw_excerpt
+    assert "203.0.113.9" in event.observables
+
+
+@pytest.mark.security
 def test_a_hostile_field_cannot_forge_another_field_in_the_match_view() -> None:
     """Match-view keys come from the schema, never from record content."""
     record = {
@@ -176,14 +207,19 @@ def test_a_hostile_field_cannot_forge_another_field_in_the_match_view() -> None:
 
 @pytest.mark.security
 def test_serialization_is_an_allow_list_projection() -> None:
-    """Only declared fields serialize — nothing from a record rides along."""
+    """Only declared fields serialize — nothing from a record rides along.
+
+    ``raw_excerpt`` used to be excluded from this claim, because it was a
+    copy of the record and the key *did* appear in it. It is now rebuilt
+    from the paths a signature declared, so the claim holds over the whole
+    projection and the exclusion is gone.
+    """
     record = dict(_load("cloudtrail_assume_role"))
     record["attackerControlledExtra"] = "should-not-appear"
     event = normalize(record)
     rendered = event.to_dict()
-    assert "attackerControlledExtra" not in json.dumps(
-        {key: value for key, value in rendered.items() if key != "raw_excerpt"}
-    )
+    assert "attackerControlledExtra" not in json.dumps(rendered)
+    assert "should-not-appear" not in json.dumps(rendered)
     assert set(rendered) == {
         "source_type",
         "vendor",
@@ -267,6 +303,309 @@ def test_the_body_field_ban_list_is_still_declared() -> None:
     """The ban list is the test's input; an emptied list must fail loudly."""
     assert len(FORBIDDEN_CONTENT_FIELDS) >= 5
     assert "Body" in FORBIDDEN_CONTENT_FIELDS
+
+
+# --------------------------------------------------------------------------
+# The evidence allow-list
+#
+# The deny-list above says which fields a parser may not *read*. These say
+# what a stored event may *contain*, which is the stronger claim and the one
+# that holds when a parser stops recognizing its own vendor's records. There
+# is no later redaction to fall back on: the store refuses UPDATE and
+# ``event_id`` is a digest over the projection, so whatever ingest writes is
+# kept for as long as the row is.
+# --------------------------------------------------------------------------
+
+#: A token no fixture, parser, or schema field can legitimately produce.
+_MARKER = "UNMODELLED-VALUE-7f3a91"
+
+
+def _stuff(value: Any, key: str) -> Any:
+    """Add an un-modelled key to ``value`` and to every mapping inside it."""
+    if isinstance(value, dict):
+        stuffed = {name: _stuff(child, key) for name, child in value.items()}
+        stuffed[key] = _MARKER
+        return stuffed
+    if isinstance(value, list):
+        return [_stuff(child, key) for child in value]
+    return value
+
+
+def _fixture_names() -> list[str]:
+    fixtures = json.loads(
+        (Path(__file__).resolve().parents[1] / "fixtures" / "ingest_fixtures.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return sorted(fixtures)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("name", _fixture_names())
+@pytest.mark.parametrize("key", ["attackerChosen", "Body", "notes", "message"])
+def test_an_unmodelled_field_reaches_no_part_of_a_stored_event(name: str, key: str) -> None:
+    """At every nesting level, under four key names, in all ten formats.
+
+    ``Body`` is the field the charter cares about; ``attackerChosen`` is the
+    general case; ``notes`` and ``message`` are named after real event fields,
+    because a projection that merged a record's keys with the schema's own
+    would be a worse bug than the leak it replaced.
+    """
+    record = _stuff(_load(name), key)
+    event = normalize(record)
+    assert _MARKER not in json.dumps(event.to_dict(), default=str), (
+        f"{name}: an un-modelled {key!r} reached the stored projection"
+    )
+
+
+@pytest.mark.security
+def test_an_unmodelled_field_survives_neither_recognition_nor_its_loss() -> None:
+    """The regression path: a vendor renames the key a signature recognizes.
+
+    This is how a body would actually reach a store — not through a parser
+    that reads one, but through a record that no longer looks like the format
+    it is. The excerpt then comes from the union of every parser's declared
+    paths, so the metadata survives and the body does not.
+    """
+    record = dict(_load("defender_email_phish"))
+    record["Body"] = f"wire the funds {_MARKER}"
+    recognized = normalize(record)
+    assert recognized.vendor == "defender-o365"
+    assert _MARKER not in json.dumps(recognized.to_dict(), default=str)
+
+    renamed = {
+        ("NetworkMessageIdV2" if k == "NetworkMessageId" else k): v for k, v in record.items()
+    }
+    unclaimed = normalize(json.dumps(renamed))
+    assert unclaimed.vendor == "unrecognized"
+    assert _MARKER not in json.dumps(unclaimed.to_dict(), default=str)
+    # Degrade visibly: the excerpt still carries what some parser modelled...
+    assert str(record["Subject"]) in unclaimed.raw_excerpt
+    # ...and the note names the key that was withheld, so an operator can fix
+    # the signature rather than wonder why the record went quiet.
+    assert any("Body" in note for note in unclaimed.notes)
+
+
+@pytest.mark.security
+def test_a_key_value_line_is_projected_like_any_other_record() -> None:
+    """``ingest/keyvalue.py`` decodes auditd text into a mapping; same rule applies."""
+    line = (
+        'type=USER_AUTH msg=audit(1760000000.1:1) acct="svc-deploy" '
+        f"addr=203.0.113.9 res=failed proctitle=sshd secret={_MARKER}"
+    )
+    event = normalize(line)
+    assert event.vendor == "auditd"
+    assert _MARKER not in json.dumps(event.to_dict(), default=str)
+
+
+@pytest.mark.security
+def test_no_signature_declares_a_content_bearing_field() -> None:
+    """The deny-list applies to the declarations too, and an AST walk misses them.
+
+    ``test_no_parser_reads_a_message_body`` looks for body-shaped names inside
+    ``.get``/``dig`` calls. A ``fields`` tuple is neither, so without this a
+    declared ``("Body",)`` would sail past it and put the body straight back.
+    """
+    banned = {field.lower() for field in FORBIDDEN_CONTENT_FIELDS}
+    for signature in SIGNATURES:
+        for path in signature.fields:
+            for key in path:
+                assert key.lower() not in banned, (
+                    f"{signature.vendor} declares {key!r} as retainable evidence"
+                )
+
+
+@pytest.mark.security
+def test_the_withheld_key_note_stays_readable_after_it_is_written() -> None:
+    """An attacker picks the key names, so the note they produce is untrusted.
+
+    ``from_dict`` validates every note at ``MAX_FIELD_LEN``. A note built from
+    two hundred long key names would make the event writable and then
+    permanently unreadable — the defect class recorded in ``_unrecognized``,
+    reached this time through a field the attacker controls. Asserted by
+    round-tripping, not by reading the bound off the same constant.
+    """
+    record = {f"{'k' * 200}{index}": index for index in range(200)}
+    event = normalize(record)
+    assert event.vendor == "unrecognized"
+    assert all(len(note) <= MAX_FIELD_LEN for note in event.notes)
+    assert NormalizedEvent.from_dict(event.to_dict()) == event
+
+
+@pytest.mark.security
+def test_narrowing_an_unclaimed_records_evidence_does_not_blind_correlation() -> None:
+    """On the unclaimed path the indicator survives and the sentence does not.
+
+    An IP, a URL or a hash is a modelled, typed, bounded field with its own
+    deny-list in ``correlation/entities.py``; the free text around it is
+    none of those things. So an unclaimed record is still *scanned* in full
+    for indicators while only its modelled paths are *retained* — which is
+    the trade this posture makes, stated as an assertion rather than a claim
+    in a docstring.
+
+    On the claimed path the indicator set has always come from the values the
+    parser itself selected, so a URL reachable only through an un-modelled
+    field was never extracted there — before this change or after it. That
+    asymmetry is deliberate: a parser that models a field is the thing that
+    makes its contents explainable.
+    """
+    record = dict(_load("defender_email_phish"))
+    record["Body"] = f"click http://evil.example/x now {_MARKER}"
+    renamed = {
+        ("NetworkMessageIdV2" if key == "NetworkMessageId" else key): value
+        for key, value in record.items()
+    }
+    unclaimed = normalize(json.dumps(renamed))
+    assert unclaimed.vendor == "unrecognized"
+    assert "http://evil.example/x" in unclaimed.observables
+    assert _MARKER not in json.dumps(unclaimed.to_dict(), default=str)
+
+    claimed = normalize(record)
+    assert claimed.vendor == "defender-o365"
+    assert "http://evil.example/x" not in claimed.observables
+    assert _MARKER not in json.dumps(claimed.to_dict(), default=str)
+
+
+# --------------------------------------------------------------------------
+# Write-side bounds
+#
+# Every field a parser writes is bounded by ``text()``. ``message`` is not a
+# field — it is assembled from several of them — and nothing re-bounded the
+# result, while ``from_dict`` validates it like any other. That made an event
+# writable and then permanently unreadable, which is worse than a rejected
+# one: ``run_cycle`` does not catch ``MalformedProjectionError``, so one such
+# record stops every later detection cycle on that store.
+# --------------------------------------------------------------------------
+
+
+def _inflate(value: Any) -> Any:
+    """Push every string in a record past the per-field bound."""
+    if isinstance(value, str):
+        return value + "A" * MAX_FIELD_LEN
+    if isinstance(value, dict):
+        return {key: _inflate(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_inflate(child) for child in value]
+    return value
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("name", _fixture_names())
+def test_a_record_of_maximal_fields_still_reads_back(name: str) -> None:
+    """Writable-then-unreadable is the failure mode; round-tripping is the test.
+
+    Nine of these fifteen failed before the write-side bound existed, across
+    eight of the ten vendors — so this is a property of the layer, not of one
+    parser. Asserted by round-tripping rather than by comparing lengths
+    against the same constant the code uses, which would pass if both moved.
+    """
+    event = normalize(_inflate(_load(name)))
+    assert NormalizedEvent.from_dict(event.to_dict()) == event
+
+
+@pytest.mark.security
+def test_an_encoded_command_line_does_not_make_a_store_unreadable(tmp_path: Path) -> None:
+    """The record that found it, end to end, with nothing hostile about its shape.
+
+    An encoded-PowerShell process creation is the most common malicious
+    artifact in endpoint telemetry and the thing the Sysmon parser exists to
+    capture. Its command line alone carried ``message`` past the bound.
+    """
+    encoded = base64.b64encode(("Get-Process; " * 160).encode("utf-16-le")).decode()
+    record = {
+        "Provider": "Microsoft-Windows-Sysmon",
+        "EventID": "1",
+        "UtcTime": "2026-10-15 09:00:00.000",
+        "Computer": "FIN-WS-04",
+        "Image": "powershell.exe",
+        "ParentImage": "cmd.exe",
+        "CommandLine": f"powershell.exe -nop -w hidden -enc {encoded}",
+    }
+    event = normalize(record)
+    assert event.vendor == "sysmon"
+    with EventStore.open(tmp_path) as store:
+        store.append(event, ingested_at=1_760_000_000.0)
+        assert len(store.query()) == 1
+
+
+@pytest.mark.security
+def test_a_truncated_summary_says_so_and_demotes_the_parse() -> None:
+    """A cut summary can drop the only copy of a value, so it is never silent.
+
+    A CloudTrail ``mfaAuthenticated`` and a Defender ``ThreatTypes`` appear in
+    ``message`` and on no field of the event, so truncating the summary
+    silently would lose them without a reader being able to tell.
+    """
+    record = dict(_load("cloudtrail_assume_role"))
+    # ``eventName`` opens the assembled summary, so a long one pushes the
+    # whole of it past the bound. A long ``userAgent`` would not: it lands on
+    # ``Device.hostname``, which ``text()`` already bounds on its own.
+    record["eventName"] = "A" * MAX_FIELD_LEN
+    event = normalize(record)
+    assert len(event.message) == MAX_FIELD_LEN
+    assert event.parse_status == "partial"
+    assert any("truncated on write" in note for note in event.notes)
+    # An untruncated record keeps its clean status and its empty note list.
+    assert normalize(_load("cloudtrail_assume_role")).parse_status == "structured"
+
+
+def _maximal(annotation: Any) -> Any:
+    """Build a value past every bound for one annotated field, by its type."""
+    over_long = "A" * (MAX_RAW_EXCERPT * 2)
+    if dataclasses.is_dataclass(annotation):
+        return _maximal_group(annotation)
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+    if origin is typing.Literal:
+        return args[0]
+    if origin is tuple:
+        return tuple(f"{over_long}{index}" for index in range(MAX_NOTES + MAX_OBSERVABLES + 2))
+    if origin is not None and type(None) in args:  # X | None
+        inner = next(arg for arg in args if arg is not type(None))
+        return 1.0 if inner is float else _maximal(inner)
+    if annotation is str:
+        return over_long
+    if annotation is float:
+        return 1.0
+    raise AssertionError(f"this test does not know how to overfill {annotation!r}")
+
+
+def _maximal_group(group: Any) -> Any:
+    hints = typing.get_type_hints(group)
+    return group(**{field.name: _maximal(hints[field.name]) for field in dataclasses.fields(group)})
+
+
+@pytest.mark.security
+def test_bounded_covers_every_field_from_dict_validates() -> None:
+    """Anti-drift: the event is built by reflection, not by a hand-written list.
+
+    ``bounded()`` and ``from_dict`` are a write/read pair, and the way such a
+    pair fails is one of them learning about a new field. Adding a field to
+    ``NormalizedEvent`` and forgetting to bound it fails here without anyone
+    editing this test.
+    """
+    overfull = _maximal_group(NormalizedEvent)
+    with pytest.raises(MalformedProjectionError):
+        NormalizedEvent.from_dict(overfull.to_dict())
+    bounded = overfull.bounded()
+    assert NormalizedEvent.from_dict(bounded.to_dict()) == bounded
+
+
+@pytest.mark.security
+def test_an_unmodelled_field_is_absent_from_the_database_itself(tmp_path: Path) -> None:
+    """End to end: not in the projection, and so not in the bytes on disk."""
+    record = dict(_load("defender_email_phish"))
+    record["Body"] = f"IBAN and auth code {_MARKER}"
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(record), ingested_at=1_760_000_000.0)
+    # Every file the store wrote, not just the database: SQLite runs in WAL
+    # mode here, so a row can still be sitting in a sidecar.
+    database = tmp_path / "data" / "events" / DEFAULT_FILENAME
+    written = b"".join(
+        path.read_bytes() for path in sorted(database.parent.iterdir()) if path.is_file()
+    )
+    assert _MARKER.encode() not in written
+    assert b"defender-o365" in written  # the event itself is there
 
 
 @pytest.mark.security

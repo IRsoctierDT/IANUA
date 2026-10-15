@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ingest._coerce import dig, epoch, first, observables, text
-from ingest.parsers import Signature
+from ingest.parsers import FieldPath, Signature
 from ingest.schema import Actor, Device, Endpoint, NormalizedEvent
 
 # --------------------------------------------------------------------------
@@ -82,6 +82,34 @@ def _parse_zeek(payload: Mapping[str, Any]) -> NormalizedEvent:
         observables=observables(src_ip, dst_ip, query, payload.get("uri")),
         notes=tuple(notes),
     )
+
+
+#: The evidence allow-list for Zeek. Zeek's connection-tuple keys are
+#: *literally* dotted, so each is a one-component path — which is exactly
+#: why a path is a tuple of keys and not a dotted string. Both spellings are
+#: declared because exports disagree on whether ``id`` is flattened.
+_ZEEK_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("_node",),
+    ("_path",),
+    ("_write_ts_path",),
+    ("host",),
+    ("id", "orig_h"),
+    ("id", "orig_p"),
+    ("id", "resp_h"),
+    ("id", "resp_p"),
+    ("id.orig_h",),
+    ("id.orig_p",),
+    ("id.resp_h",),
+    ("id.resp_p",),
+    ("proto",),
+    ("query",),
+    ("server_name",),
+    ("service",),
+    ("ts",),
+    ("uid",),
+    ("uri",),
+)
 
 
 # --------------------------------------------------------------------------
@@ -151,7 +179,29 @@ def _parse_suricata(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for Suricata EVE. Note ``dest_ip``, Suricata's
+#: own spelling, rather than the ``dst_ip`` the rest of the platform uses.
+_SURICATA_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("alert", "severity"),
+    ("alert", "signature"),
+    ("alert", "signature_id"),
+    ("dest_ip",),
+    ("dest_port",),
+    ("dns", "rrname"),
+    ("event_type",),
+    ("flow_id",),
+    ("host",),
+    ("http", "hostname"),
+    ("http", "url"),
+    ("src_ip",),
+    ("src_port",),
+    ("ssh", "client", "software_version"),
+    ("timestamp",),
+)
+
+
 SIGNATURES: tuple[Signature, ...] = (
-    Signature("zeek", "network", _recognizes_zeek, _parse_zeek),
-    Signature("suricata", "network", _recognizes_suricata, _parse_suricata),
+    Signature("zeek", "network", _recognizes_zeek, _parse_zeek, _ZEEK_FIELDS),
+    Signature("suricata", "network", _recognizes_suricata, _parse_suricata, _SURICATA_FIELDS),
 )

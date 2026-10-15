@@ -24,24 +24,35 @@ Three rules govern it, in this order:
 3. **No ambient authority.** No clock, no filesystem, no network, no
    subprocess. Given the same bytes this module returns the same event,
    which is what makes the fixtures and digests downstream meaningful.
+4. **Retain only what a parser modelled.** ``raw_excerpt`` is rebuilt from
+   the paths a signature declared, never copied from the record. The store
+   is append-only and ``event_id`` is a digest over the projection, so
+   nothing written here can be redacted later — which makes what this module
+   chooses to write the whole of the platform's data-retention posture. A
+   field no parser models is evidence nobody asked for and liability
+   everybody inherits.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from ingest import keyvalue
-from ingest._coerce import depth_within, observables, text
+from ingest._coerce import FieldPath, depth_within, observables, project, text
 from ingest.errors import UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
 from ingest.schema import (
     MAX_FIELD_LEN,
     MAX_NESTING_DEPTH,
+    MAX_NOTES,
+    MAX_PROJECTED_ITEMS,
     MAX_RAW_BYTES,
     MAX_RAW_EXCERPT,
     NormalizedEvent,
+    ParseStatus,
     SourceType,
 )
 
@@ -55,6 +66,25 @@ SIGNATURES: tuple[Signature, ...] = (
     + identity.SIGNATURES
     + email.SIGNATURES
 )
+
+#: Every path any signature declared it reads — the union of the ten
+#: per-format allow-lists. A record no signature claims is projected through
+#: this instead of being carried verbatim: a Defender export whose
+#: ``NetworkMessageId`` was renamed upstream still yields its subject, its
+#: sender and the platform's verdict, while a field no parser anywhere
+#: models still yields nothing. Recognition breaking is the likeliest way a
+#: body would otherwise reach the store, so this is the path that decides
+#: whether the no-body rule holds in practice or only on the happy path.
+MODELLED_FIELDS: tuple[FieldPath, ...] = tuple(
+    sorted({path for signature in SIGNATURES for path in signature.fields})
+)
+
+#: How many withheld key names an unmodelled record's note may list. The
+#: note is bounded at ``MAX_FIELD_LEN`` on write because ``from_dict``
+#: validates it there on read; a note that exceeded it would make the event
+#: writable and then permanently unreadable, which is the defect recorded in
+#: ``_unrecognized`` below.
+_MAX_NAMED_KEYS = MAX_PROJECTED_ITEMS
 
 #: The five domains, plus the honest fallback.
 SOURCE_TYPES: tuple[SourceType, ...] = (
@@ -104,7 +134,7 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
     if isinstance(raw, Mapping):
-        return _normalize_mapping(raw, excerpt=_excerpt_of(raw))
+        return _normalize_mapping(raw)
     if not isinstance(raw, str):
         raise UnsupportedInputError(
             f"telemetry must be a mapping, str, or bytes; got {type(raw).__name__}"
@@ -112,7 +142,7 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
 
     if len(raw) > MAX_RAW_BYTES:
         return _unrecognized(
-            raw[:MAX_RAW_EXCERPT],
+            evidence=raw[:MAX_RAW_EXCERPT],
             notes=(
                 f"record exceeds the {MAX_RAW_BYTES}-byte ceiling "
                 f"({len(raw)} bytes); carried as an excerpt without parsing",
@@ -125,11 +155,13 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
             decoded = json.loads(stripped)
         except (json.JSONDecodeError, RecursionError):
             return _unrecognized(
-                raw, notes=("input looked like JSON but did not decode; carried as text",)
+                evidence=raw, notes=("input looked like JSON but did not decode; carried as text",)
             )
         if isinstance(decoded, Mapping):
-            return _normalize_mapping(decoded, excerpt=raw[:MAX_RAW_EXCERPT])
-        return _unrecognized(raw, notes=("decoded JSON was not an object; carried as text",))
+            return _normalize_mapping(decoded, scanned=raw)
+        return _unrecognized(
+            evidence=raw, notes=("decoded JSON was not an object; carried as text",)
+        )
     # Not JSON. It may still be structured: auditd and logfmt-style lines are
     # `key=value` runs, and the auditd recognizer in parsers/endpoint.py was
     # written expecting exactly the mapping that decodes to — nothing was
@@ -137,8 +169,8 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     # and the line is then carried as an excerpt exactly as before.
     pairs = keyvalue.decode(stripped)
     if pairs is not None:
-        return _normalize_mapping(pairs, excerpt=raw[:MAX_RAW_EXCERPT])
-    return _unrecognized(raw)
+        return _normalize_mapping(pairs, scanned=raw)
+    return _unrecognized(evidence=raw)
 
 
 def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[NormalizedEvent]:
@@ -150,10 +182,25 @@ def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[N
     return [normalize(record) for record in records]
 
 
-def _normalize_mapping(payload: Mapping[str, Any], *, excerpt: str) -> NormalizedEvent:
+def _normalize_mapping(
+    payload: Mapping[str, Any], *, scanned: str | None = None
+) -> NormalizedEvent:
+    """Normalize a decoded record.
+
+    ``scanned`` is the text this mapping decoded from, when there was one. It
+    is used for **indicator extraction only**, on the branches where no
+    parser claimed the record, so an IP or a hash in an unmodelled source is
+    still joinable by ``correlation/``. It is never retained: every branch
+    below derives its evidence from a declared-path projection, and
+    ``tests/security`` asserts that nothing reachable only through
+    ``scanned`` lands in ``raw_excerpt`` or ``message``. Keeping the two
+    apart is the whole point of the parameter — the alternative, passing one
+    string that is both, is how a mail body used to reach the store.
+    """
     if not depth_within(payload, MAX_NESTING_DEPTH):
-        return _unrecognized(
-            excerpt,
+        return _unmodelled(
+            payload,
+            scanned=scanned,
             notes=(
                 f"record nests deeper than {MAX_NESTING_DEPTH} levels; "
                 "carried as an excerpt without parsing",
@@ -161,15 +208,20 @@ def _normalize_mapping(payload: Mapping[str, Any], *, excerpt: str) -> Normalize
         )
     signature = detect_source(payload)
     if signature is None:
-        return _unrecognized(
-            excerpt,
+        return _unmodelled(
+            payload,
+            scanned=scanned,
             notes=("no parser signature claimed this record; source left unattributed",),
         )
     try:
         event = signature.parse(payload)
     except (TypeError, ValueError, AttributeError, KeyError) as exc:
+        # The signature claimed the record, so its declared fields *are*
+        # modelled even though reading them failed. The excerpt a debugger
+        # needs is therefore this signature's own projection, not the union.
         return _unrecognized(
-            excerpt,
+            evidence=_excerpt_for(signature.fields, payload),
+            scanned=scanned if scanned is not None else _render(payload),
             notes=(
                 f"{signature.vendor} parser could not read this record "
                 f"({type(exc).__name__}); carried as text",
@@ -177,31 +229,150 @@ def _normalize_mapping(payload: Mapping[str, Any], *, excerpt: str) -> Normalize
         )
     # The excerpt is attached here rather than inside every parser, so no
     # parser can forget it and none can widen it.
-    return _with_excerpt(event, excerpt)
+    return _finalize(_with_excerpt(event, _excerpt_for(signature.fields, payload)))
+
+
+#: Said once, when a bound bit. Phrased so an analyst reading a cut summary
+#: knows it is cut rather than wondering what the source left out.
+_TRUNCATION_NOTE = (
+    "one or more fields exceeded their bound and were truncated on write; "
+    "the summary may be shorter than the source"
+)
 
 
 def _with_excerpt(event: NormalizedEvent, excerpt: str) -> NormalizedEvent:
     """Attach the bounded raw excerpt to a parsed event."""
-    from dataclasses import replace
-
     return replace(event, raw_excerpt=excerpt[:MAX_RAW_EXCERPT])
 
 
-def _excerpt_of(payload: Mapping[str, Any]) -> str:
-    """Render a decoded mapping back to a bounded excerpt for evidence.
+def _finalize(event: NormalizedEvent) -> NormalizedEvent:
+    """Apply every read-time bound on the write side, and say so when one bit.
 
-    ``default=str`` keeps a payload containing a non-JSON-serializable value
-    from raising here; the excerpt is evidence for a human, not a round-trip
+    Every *parsed* event passes through here, so a parser cannot forget the
+    bound and a new parser inherits it — the same argument that puts excerpt
+    assembly in this module rather than in ten parsers.
+
+    The bound itself lives in ``NormalizedEvent.bounded()``, beside the
+    validation it mirrors. What belongs *here* is the honesty: a truncated
+    summary is a degraded parse, so it is noted and ``parse_status`` is
+    demoted. ``message`` is assembled from several separately bounded fields
+    and some of the values in it (a CloudTrail ``mfaAuthenticated``, a
+    Defender ``ThreatTypes``) live nowhere else on the event, so silently
+    cutting it would lose their only copy without saying so.
+    """
+    bounded = event.bounded()
+    if bounded == event:
+        return event
+    # The note about truncation outranks a 64th parser note, so it is kept
+    # rather than sliced off the end.
+    notes = (*bounded.notes[: MAX_NOTES - 1], _TRUNCATION_NOTE)
+    status: ParseStatus = (
+        "partial" if bounded.parse_status == "structured" else bounded.parse_status
+    )
+    return replace(bounded, parse_status=status, notes=notes)
+
+
+def _excerpt_for(fields: tuple[FieldPath, ...], payload: Mapping[str, Any]) -> str:
+    """Render the declared paths of a record as its bounded evidence excerpt.
+
+    The excerpt is *rebuilt*, never copied: :func:`~ingest._coerce.project`
+    keeps only the paths ``fields`` names, so an un-modelled field has no
+    route in. ``default=str`` keeps a non-JSON-serializable value from
+    raising here; the excerpt is evidence for a human, not a round-trip
     format.
     """
+    return _serialize(project(payload, fields))
+
+
+def _render(payload: Mapping[str, Any]) -> str:
+    """Serialize a whole record for indicator extraction. Never retained.
+
+    The result is handed to :func:`~ingest._coerce.observables`, which pulls
+    URLs, hashes, IPs and domains out of it and discards the rest. It is
+    bounded at :data:`MAX_RAW_EXCERPT` to match what the text paths pass, so
+    which indicators survive truncation does not depend on whether a record
+    arrived as a mapping or as a line of JSON.
+    """
+    return _serialize(payload)
+
+
+def _serialize(value: Mapping[str, Any]) -> str:
+    """Render a mapping to bounded text, degrading rather than raising.
+
+    One serializer for both the excerpt and the indicator scan, so the
+    fallback is written and exercised once. ``default=str`` handles a value
+    JSON cannot represent; the ``except`` is for a record that is circular or
+    too deep for the encoder, which no decoded JSON can be but a caller
+    passing a mapping directly certainly can. Nothing a record contains may
+    raise out of ``normalize`` — that is rule 2, and an excerpt is not worth
+    losing an event over.
+    """
     try:
-        return json.dumps(payload, sort_keys=True, default=str)[:MAX_RAW_EXCERPT]
+        return json.dumps(value, sort_keys=True, default=str)[:MAX_RAW_EXCERPT]
     except (TypeError, ValueError, RecursionError):
-        return str(payload)[:MAX_RAW_EXCERPT]
+        return str(value)[:MAX_RAW_EXCERPT]
 
 
-def _unrecognized(raw: str, *, notes: tuple[str, ...] = ()) -> NormalizedEvent:
+def _unmodelled(
+    payload: Mapping[str, Any], *, scanned: str | None, notes: tuple[str, ...]
+) -> NormalizedEvent:
+    """Carry a record no parser claimed: modelled values, withheld remainder.
+
+    Projected through :data:`MODELLED_FIELDS` rather than carried verbatim.
+    An unclaimed record is the one case where *everything* about it is
+    un-attributed, and it is also the likeliest route by which a field the
+    platform refuses to model — a mail body above all — would reach an
+    append-only store that cannot be redacted. So the values it keeps are
+    the ones some parser somewhere justified, and the rest is named but not
+    quoted: a key name tells an operator what signature to write, a value
+    tells them what was in the mail.
+    """
+    projected = project(payload, MODELLED_FIELDS)
+    withheld = sorted(
+        name
+        for name in (text(key) for key in payload)
+        if name is not None and name not in projected
+    )
+    if withheld:
+        notes = (*notes, _withheld_note(len(payload), withheld))
+    return _unrecognized(
+        evidence=_excerpt_for(MODELLED_FIELDS, payload),
+        scanned=scanned if scanned is not None else _render(payload),
+        notes=notes,
+    )
+
+
+def _withheld_note(total: int, withheld: list[str]) -> str:
+    """State how much of a record was not retained, within the note bound.
+
+    Counts the record's own top-level keys, which is what an operator needs
+    to write a signature. A key that *is* modelled but whose un-named
+    sub-keys were withheld does not appear here — the excerpt shows that
+    directly, since an object at a declared path renders as its key names.
+    """
+    named = withheld[:_MAX_NAMED_KEYS]
+    elided = len(withheld) - len(named)
+    note = (
+        f"{len(withheld)} of {total} top-level record keys are modelled by no parser; "
+        f"their values are withheld from the excerpt (keys: {', '.join(named)}"
+        + (f", and {elided} more" if elided else "")
+        + ")"
+    )
+    # Bounded on write because ``from_dict`` validates each note at
+    # ``MAX_FIELD_LEN`` on read. An attacker picks the key names, so this is
+    # not a theoretical ceiling.
+    return note[:MAX_FIELD_LEN]
+
+
+def _unrecognized(
+    *, evidence: str, scanned: str | None = None, notes: tuple[str, ...] = ()
+) -> NormalizedEvent:
     """The honest fallback: carried, labelled, and never mis-attributed.
+
+    ``evidence`` is what is retained — it becomes both ``message`` and
+    ``raw_excerpt``. ``scanned`` is read for indicators and then dropped;
+    when it is ``None`` the evidence is scanned instead, which is the case
+    for every input that was never structured in the first place.
 
     ``message`` is bounded at :data:`MAX_FIELD_LEN`, like every other field,
     **not** at :data:`MAX_RAW_EXCERPT`. It used to be the latter, and that one
@@ -217,24 +388,33 @@ def _unrecognized(raw: str, *, notes: tuple[str, ...] = ()) -> NormalizedEvent:
     declared at ``MAX_RAW_EXCERPT`` on both sides (``schema.from_dict`` validates
     it there), so the fuller text is still retained as evidence.
 
-    Observables are extracted from the *excerpt* rather than from the truncated
-    message, which keeps this change behaviour-neutral for detection. It does
-    not widen it: :func:`observables` coerces each input through ``text()`` at
-    the default ``MAX_FIELD_LEN``, so an indicator appearing only past character
-    2048 of a single line is not extracted either way. That is a pre-existing
-    bound, measured on the unfixed code and recorded here rather than changed
-    under cover of this fix.
+    Observables are extracted from the *scanned* text rather than from the
+    truncated message, which keeps this honest both ways: indicators are not
+    lost when the evidence is narrowed, and narrowing the evidence is not
+    quietly undone by the indicator set. It does not widen extraction either:
+    :func:`observables` coerces each input through ``text()`` at the default
+    ``MAX_FIELD_LEN``, so an indicator appearing only past character 2048 of a
+    single line is not extracted — a pre-existing bound, measured on the
+    unfixed code and recorded here rather than changed under cover of a fix.
     """
-    cleaned = text(raw, limit=MAX_RAW_EXCERPT) or ""
+    retained = text(evidence, limit=MAX_RAW_EXCERPT) or ""
+    searched = text(scanned if scanned is not None else evidence, limit=MAX_RAW_EXCERPT) or ""
+    # Not routed through ``_finalize``: every field here is already written
+    # within its own bound, and this ``message`` is the carried evidence
+    # rather than an assembled summary, so its truncation is the documented
+    # normal case and not a degradation to note. The property is asserted
+    # either way — ``test_an_unrecognized_line_of_any_length_survives_a_
+    # round_trip`` covers this path and
+    # ``test_a_record_of_maximal_fields_still_reads_back`` covers both.
     return NormalizedEvent(
         source_type="unknown",
         vendor="unrecognized",
         vendor_event_id=None,
         timestamp=None,
-        message=cleaned[:MAX_FIELD_LEN],
+        message=retained[:MAX_FIELD_LEN],
         activity=None,
         parse_status="partial" if notes else "text",
-        observables=observables(cleaned),
-        raw_excerpt=raw[:MAX_RAW_EXCERPT],
+        observables=observables(searched),
+        raw_excerpt=retained[:MAX_RAW_EXCERPT],
         notes=notes,
     )
