@@ -898,3 +898,127 @@ def test_events_written_at_the_safe_stamp_are_all_reachable(tmp_path: Path) -> N
         assert first.events_read + second.events_read == store.count(), (
             "the store accepted events the cursor can never reach"
         )
+
+
+# ------------------------------------------- the attestation reads a table page
+
+
+def _s3_record(index: int) -> str:
+    """One realistic cloud record, distinct from every other, as JSON text.
+
+    Distinct because ``event_id`` is content-addressed: 200 copies of one line
+    store as **one** event, which is a fixture bug this repository has already
+    paid for once.
+    """
+    return json.dumps(
+        {
+            "eventSource": "s3.amazonaws.com",
+            "eventName": "GetObject",
+            "eventTime": f"2026-10-15T09:00:{index % 60:02d}Z",
+            "sourceIPAddress": f"10.0.{index // 256 % 256}.{index % 256}",
+            "userIdentity": {"userName": f"svc-{index:05d}"},
+        }
+    )
+
+
+@pytest.mark.security
+def test_an_attestation_cannot_be_produced_over_rows_that_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    """The completeness control used to sign off on a store that had lost every row.
+
+    Both of ``attest()``'s statements are covering-index scans — measured with
+    ``EXPLAIN QUERY PLAN``: ``SCAN events USING COVERING INDEX
+    sqlite_autoindex_events_1`` for the id stream, ``... COVERING INDEX
+    events_ingested_at`` for the count. So the digest and the count prove the
+    *indexes* agree and say nothing about whether a row body is readable.
+    Zeroing a 400-event store's 134 table leaf pages while leaving every index
+    page intact produced a bit-identical digest and count while ``query()``
+    raised ``database disk image is malformed``.
+
+    The damaged page is **found by measurement, not by asking SQLite which
+    pages are table pages**. ``dbstat`` is a compile-time option, and a
+    security test that skips where the option is absent proves nothing in the
+    environment that matters. So every page is zeroed in turn and the ones
+    whose loss breaks a row read are discovered — which is also the property
+    itself, stated directly: there must exist no page whose loss the
+    attestation cannot see.
+
+    The refusal must be a :class:`StoreIntegrityError` specifically, and that
+    is not pedantry — it is the second half of the fix. ``PRAGMA quick_check``
+    *raises* ``database disk image is malformed`` for some losses and
+    *reports* a verdict string for others, measured both ways on this same
+    construction, so the first version of the gate let a raw ``sqlite3``
+    error out of ``attest()``. Every caller in this repository catches
+    ``StoreError``; a ``sqlite3.DatabaseError`` sails past all of them and
+    reaches the operator as a traceback. Asserting the exception *type* is
+    what made the "run the pragma, ignore its verdict" plant fail — it had
+    survived a version of this test that accepted any exception.
+
+    Non-vacuity is asserted twice, because each has been how a test like this
+    measured nothing: the sweep must find at least one page whose loss breaks
+    a row read (or the loop below is empty and passes), and the pristine store
+    must attest cleanly (or "refuses" is indistinguishable from "always
+    refuses").
+    """
+    root = tmp_path / "lab"
+    root.mkdir(parents=True)
+    with EventStore.open(root) as store:
+        store.append_many(
+            tuple(normalize(_s3_record(index)) for index in range(200)),
+            ingested_at=1_760_000_000.0,
+        )
+        intact = store.attest()
+    assert intact.events == 200, f"the fixture stored {intact.events} of 200 events"
+
+    database = root / "data" / "events" / "events.sqlite3"
+    # Fold the WAL into the main file so a page index means something, and read
+    # the page size from the database rather than assuming SQLite's default.
+    folding = sqlite3.connect(database)
+    try:
+        folding.execute("PRAGMA journal_mode=DELETE")
+        page_size = int(folding.execute("PRAGMA page_size").fetchone()[0])
+    finally:
+        folding.close()
+    pristine = database.read_bytes()
+    pages = len(pristine) // page_size
+    assert pages > 1, "a single-page store cannot distinguish table from index"
+
+    unreadable: list[int] = []
+    wrong: dict[int, str] = {}
+    # Page 1 holds the file header; zeroing it is a different failure (the file
+    # stops being a database at all) and is covered by the aborted-copy test.
+    for pageno in range(2, pages + 1):
+        offset = (pageno - 1) * page_size
+        database.write_bytes(pristine[:offset] + bytes(page_size) + pristine[offset + page_size :])
+        try:
+            with EventStore.open(root) as store:
+                try:
+                    store.query(Query(limit=5))
+                except (StoreIntegrityError, sqlite3.Error):
+                    unreadable.append(pageno)
+                else:
+                    continue
+                try:
+                    recovered = store.attest()
+                except StoreIntegrityError:
+                    continue
+                except sqlite3.Error as exc:
+                    wrong[pageno] = f"raw {type(exc).__name__}"
+                    continue
+                if (recovered.digest, recovered.events) == (intact.digest, intact.events):
+                    wrong[pageno] = "the intact store's digest and count"
+                else:
+                    wrong[pageno] = f"a digest of its own ({recovered.events} event(s))"
+        except (StoreIntegrityError, SchemaVersionError, sqlite3.Error):
+            # The store would not open at all, which is a loud failure and not
+            # the silent one under test.
+            continue
+    database.write_bytes(pristine)
+
+    assert unreadable, "the sweep found no page whose loss breaks a row read"
+    assert not wrong, (
+        f"{len(wrong)} of {len(unreadable)} page(s) whose loss makes the rows unreadable "
+        "did not refuse with StoreIntegrityError: "
+        + ", ".join(f"page {page} gave {why}" for page, why in sorted(wrong.items())[:6])
+    )

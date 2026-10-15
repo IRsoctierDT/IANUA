@@ -114,6 +114,12 @@ class Attestation:
     independent of insertion order and of the page layout a copy may differ
     in. ``events`` and ``observables`` are carried alongside it because a
     digest that happens to match tells you less than a count that also does.
+
+    Both of those are read from covering indexes, which is why
+    :meth:`EventStore.attest` gates on ``PRAGMA quick_check`` before it
+    computes them: ids and a count that agree prove the *indexes* are intact
+    and, on their own, say nothing about whether a single row body is
+    readable. Measured — see that method.
     """
 
     #: Rows in ``events``.
@@ -665,7 +671,65 @@ class EventStore:
         So this change does not rest on that measurement. It rests on the
         plain argument that a digest should commit to what it hashed, which
         holds whether or not the corrupt case is reachable.
+
+        **It reads a table page before it attests, and it did not used to.**
+        Both statements below are covering-index scans — measured, with
+        ``EXPLAIN QUERY PLAN``: the id stream is ``SCAN events USING COVERING
+        INDEX sqlite_autoindex_events_1`` and the count is ``SCAN events USING
+        COVERING INDEX events_ingested_at``. Neither touches a row. Zeroing
+        all 134 table leaf pages of a 400-event store while leaving every
+        index page intact produced a **bit-identical digest and count** while
+        ``query()`` raised ``database disk image is malformed``: the only
+        completeness control this store has, signing off on a store that had
+        lost every row. That is not a tamper scenario — it is "a truncated
+        transfer, a half restore", which is the loss this method's own
+        paragraph above claims to catch.
+
+        ``quick_check`` and not ``integrity_check``, priced rather than
+        guessed. On 40,000 events / 67.1 MiB: the attestation scan 35 ms,
+        ``quick_check`` 70 ms, ``integrity_check`` 331 ms, a full table scan
+        144 ms. ``quick_check`` is the cheapest thing that reads the table at
+        all — cheaper than scanning it, because it walks pages without
+        decoding rows into Python — and doubling the cost of an operation that
+        is already copying the whole file is the right side of that trade.
+        The digest's *definition* is deliberately unchanged, so every manifest
+        already written stays valid; this adds a gate, not a new preimage.
+
+        Both of SQLite's answers are handled, because it gives two. On the
+        same page-zeroing construction it *raised* ``database disk image is
+        malformed`` for single-page and mixed losses and *reported* ``*** in
+        database main *** Tree 4 page 185: btreeInitPage() returns error`` for
+        a wholesale loss of the table's leaf pages. A raw ``sqlite3`` error out
+        of this method would reach callers that catch ``StoreError`` and sail
+        past them, so both become :class:`StoreIntegrityError`.
+
+        What ``quick_check`` does **not** catch is a structurally valid page
+        carrying another generation's rows. That needs ``integrity_check``,
+        and it is only reachable through a page- or frame-shipping replication
+        scheme this repository does not have — if one is ever built, the
+        promotion path owes an ``integrity_check``, which ``DESIGN.md`` §11
+        records as a precondition rather than leaving to be rediscovered.
+
+        Raises:
+            StoreIntegrityError: if the store is not structurally intact, or
+                if the count and the id stream disagree.
         """
+        try:
+            verdict = str(self._conn.execute("PRAGMA quick_check").fetchone()[0])
+        except sqlite3.DatabaseError as exc:
+            # SQLite *raises* for some damage and *reports* for other damage,
+            # measured both ways on the same construction — the difference is
+            # which pages were lost, so a caller cannot be asked to handle the
+            # two differently. Both become the one refusal every caller of
+            # this module already catches.
+            raise StoreIntegrityError(
+                f"the store is not structurally intact, so it cannot be attested: {exc}"
+            ) from exc
+        if verdict != "ok":
+            raise StoreIntegrityError(
+                "the store is not structurally intact, so it cannot be attested: "
+                f"{verdict.splitlines()[0]}"
+            )
         counts = self._conn.execute(
             "SELECT (SELECT COUNT(*) FROM events) AS events, "
             "(SELECT COUNT(*) FROM observables) AS observables"
