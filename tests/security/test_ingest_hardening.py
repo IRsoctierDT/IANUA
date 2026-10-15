@@ -45,7 +45,7 @@ from ingest import (
     NormalizedEvent,
     normalize,
 )
-from ingest._coerce import project
+from ingest._coerce import _bounded_for_scan, observables, project, text
 from ingest.errors import MalformedProjectionError
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore
@@ -895,6 +895,53 @@ def test_that_bound_sweep_actually_walks_the_cut_through_the_payload(
     assert whole + inside >= 20, (
         f"{payload!r} is barely reached by this offset range (whole={whole}, inside={inside})"
     )
+
+
+@pytest.mark.security
+def test_the_field_bound_trim_loses_nothing_at_or_under_the_bound() -> None:
+    """The corpus has no value near ``MAX_FIELD_LEN``, so these pin that edge.
+
+    ``_bounded_for_scan`` detects truncation by coercing at ``MAX_FIELD_LEN +
+    1`` and comparing lengths. That is new code on the hot path of all ten
+    parsers, and the committed corpus cannot exercise it: its longest value is
+    far under the bound. So the risk is a value trimmed that was never
+    truncated — a silent loss on real telemetry — and these are the cases that
+    would show it.
+
+    The last row is the one worth keeping. ``_WHITESPACE_RUN`` is
+    ``[\t\n\r]+`` and so does **not** collapse spaces; a value of
+    space-separated tokens therefore truncates, but when the cut lands on a
+    space no token is severed and the trim is correctly a no-op. I had assumed
+    spaces collapsed, which made that case look like a truncated value
+    escaping the trim.
+    """
+    url = "http://edge.example/p"
+
+    for label, pad, expected in (
+        ("ends one before the bound", MAX_FIELD_LEN - len(url) - 2, True),
+        ("ends exactly at the bound", MAX_FIELD_LEN - len(url) - 1, True),
+        ("ends one past the bound", MAX_FIELD_LEN - len(url), False),
+    ):
+        value = "P" * pad + " " + url
+        assert (url in observables(value)) is expected, (
+            f"{label}: url_extracted={url in observables(value)}, "
+            f"expected {expected} (value length {len(value)}, "
+            f"bound {MAX_FIELD_LEN})"
+        )
+
+    # Truncated, but the cut lands on a space, so nothing is severed and the
+    # trim changes nothing.
+    spaced = ("a  " * 900) + " " + url
+    assert len(spaced) > MAX_FIELD_LEN, "fixture must exceed the bound"
+    assert _bounded_for_scan(spaced) == text(spaced), (
+        "the trim altered a value whose cut landed on a terminator"
+    )
+
+    # Non-string scalars go through unchanged.
+    for scalar in (3.14159, 12345, True):
+        assert _bounded_for_scan(scalar) == text(scalar), (
+            f"{scalar!r} was altered by a bound it does not reach"
+        )
 
 
 @pytest.mark.security
