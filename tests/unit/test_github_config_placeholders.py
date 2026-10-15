@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
 """GitHub metadata must not ship unsubstituted template placeholders.
 
 `.github/ISSUE_TEMPLATE/config.yml` carried
