@@ -367,15 +367,46 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
     So the leaves are matched against the rendered text, scanning forward.
     ``sort_keys=True`` makes the render order deterministic and equal to
     :func:`_leaf_values`' walk order, so one forward pass is enough and a
-    value cannot be mistaken for an earlier identical one. A leaf that cannot
-    be found — which the ``_serialize`` fallback for an unencodable record can
-    produce — stops the walk, so the result is only ever *narrower* than the
-    text, never wider. That asymmetry is why ``rendered`` needs no further
-    bound check here: ``_serialize`` has already sliced it to
-    ``MAX_RAW_EXCERPT``, so a successful ``find`` is within the bound by
-    construction, and a fragment the slice cut in half is not found at all. A
-    second explicit check was written, measured to be unreachable, and
-    removed rather than left as decorative defence.
+    value cannot be mistaken for an earlier identical one. ``_serialize`` has
+    already sliced ``rendered`` to ``MAX_RAW_EXCERPT``, so a successful
+    ``find`` is within the bound by construction, and a fragment the slice cut
+    in half is not found at all. An explicit second bound check was written,
+    measured to be unreachable, and removed rather than left as decorative
+    defence.
+
+    **Stopping the walk is not the same as discarding the rest of the text,
+    and conflating the two was the fifth round.** The third version simply
+    ``break``-ed on the leaf the slice had cut, which threw away the part of
+    that leaf ``rendered`` still held. Measured on the merged code, with
+    ``@timestamp`` at 2048 characters, ``Channel`` at 1500, and a ``Subject``
+    whose value *begins* with a URL:
+
+        raw_excerpt : 4096 chars, URL present and readable at index 3594
+        observables : ()
+
+    All three fields are modelled and the indicator is in the evidence an
+    operator can read — which is round one's defect reached by a new route,
+    and the reason it survived two property tests is that both are
+    *implications* over ``event.observables``: an empty tuple satisfies them
+    with zero iterations. Found by review.
+
+    The tail is therefore handed over as one more value. It needs no argument
+    about its relationship to the excerpt because it **is a slice of the
+    excerpt** — ``rendered[offset:]``, not something re-derived from the
+    projection and then reasoned about. Every earlier version of this function
+    derived its scan source from the projection and argued the correspondence;
+    each argument was true of the case in front of it and false of another.
+    The containment here is syntactic, so round two cannot return through it:
+    an indicator past the cut is not in ``rendered`` at all, and so not in any
+    slice of it (measured — the round-two record's tail is 2031 characters and
+    does not contain its URL).
+
+    Two residuals, stated rather than implied. The tail is one value, so
+    ``MAX_FIELD_LEN`` bounds it once: when the walk stops early enough that
+    the tail exceeds 2048 characters, an indicator in its later part is still
+    not extracted. And key *names* in ``rendered`` are retained but scanned
+    only when they fall inside this tail, so "every indicator in the excerpt
+    is extracted" is true of values and not of keys.
 
     One honest caveat about the sort: a plant that walks in insertion order
     instead leaves every test green, because :func:`~ingest._coerce.project`
@@ -394,6 +425,15 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
             break
         found = rendered.find(fragment, offset)
         if found < 0:
+            # Either the slice cut this leaf in half, or ``_serialize`` fell
+            # back and this leaf is not in the text at all. Both stop the walk:
+            # past this point no leaf is reliably placed. But whatever
+            # ``rendered`` still holds from ``offset`` on **is** retained
+            # evidence, so it is handed over as one value rather than
+            # discarded — that omission was the fifth round on this function.
+            tail = rendered[offset:]
+            if tail:
+                kept.append(tail)
             break
         kept.append(value)
         offset = found + len(fragment)

@@ -586,27 +586,125 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     assert _MARKER not in json.dumps(claimed.to_dict(), default=str)
 
 
-#: Records that produced the two review findings on this function, kept as
-#: fixtures so the property below is exercised against the shapes that broke
-#: it rather than only against well-behaved telemetry. ``@timestamp``,
-#: ``Channel``, ``CommandLine`` and ``Subject`` are all declared paths; the
-#: renamed provider key is what makes the record unclaimed.
-_HOSTILE_PROJECTIONS: tuple[dict[str, object], ...] = (
-    # Round one: a modelled field sorting after a long one. The URL is inside
-    # the excerpt bound, so it must be scanned.
-    {"ProviderV2": "x", "@timestamp": "T" * 2048, "Subject": "visit http://a.example/p"},
-    # Round two: the projection exceeds MAX_RAW_EXCERPT, so the URL is cut
-    # from the excerpt and must therefore NOT be scanned.
-    {
-        "ProviderV2": "x",
-        "@timestamp": "T" * 2048,
-        "Channel": "C" * 2048,
-        "CommandLine": "L" * 2048,
-        "Subject": "visit http://b.example/p",
-    },
-    # An un-modelled field alongside modelled ones: neither retained nor scanned.
-    {"ProviderV2": "x", "Subject": "s", "Body": "Mr.Jones at evil.example.com"},
+#: The one indicator every record in the position table below carries.
+_INDICATOR_URL = "http://indicator.example/p"
+
+#: One record per *position* an indicator can occupy relative to the two
+#: bounds that govern this layer — ``MAX_FIELD_LEN`` per value and
+#: ``MAX_RAW_EXCERPT`` on the excerpt as a whole.
+#:
+#: Position is the variable, and that is the whole point of the table. Five
+#: review rounds landed on this function's scan source, and every one of them
+#: was an indicator at one of these positions being handled as though it were
+#: at another. A fixture corpus of well-behaved telemetry exercises only the
+#: first row.
+#:
+#: ``@timestamp``, ``Channel``, ``CommandLine`` and ``Subject`` are all
+#: declared paths; ``Body`` is declared by no parser; the renamed provider key
+#: is what makes each record unclaimed.
+_INDICATOR_POSITIONS: tuple[tuple[str, dict[str, object]], ...] = (
+    # The easy case, first so that a change breaking everything is not read as
+    # a change breaking only the hard cases.
+    ("first-leaf", {"ProviderV2": "x", "@timestamp": _INDICATOR_URL, "Subject": "s"}),
+    # Round one (#214): a modelled field sorting after a long one. Retained at
+    # index 2085, and the per-value bound had been applied to the
+    # concatenation, so it was not scanned.
+    (
+        "late-sorting",
+        {"ProviderV2": "x", "@timestamp": "T" * 2048, "Subject": f"visit {_INDICATOR_URL}"},
+    ),
+    # Round five (review of 42aece5): the 4096 slice falls *inside* Subject,
+    # whose value begins with the URL. Retained and readable at index 3594,
+    # and the walk discarded the cut leaf wholesale rather than the part of it
+    # the excerpt still held.
+    (
+        "in-the-cut-leaf",
+        {
+            "ProviderV2": "x",
+            "@timestamp": "T" * 2048,
+            "Channel": "C" * 1500,
+            "Subject": _INDICATOR_URL + " " + "P" * 3000,
+        },
+    ),
+    # Round two (#215): the projection exceeds MAX_RAW_EXCERPT and Subject
+    # lands wholly past the cut, so the URL is in no retained field and must
+    # not be scanned.
+    (
+        "past-the-cut",
+        {
+            "ProviderV2": "x",
+            "@timestamp": "T" * 2048,
+            "Channel": "C" * 2048,
+            "CommandLine": "L" * 2048,
+            "Subject": f"visit {_INDICATOR_URL}",
+        },
+    ),
+    # Stage 6: a field no parser models. Neither retained nor scanned.
+    ("un-modelled", {"ProviderV2": "x", "Subject": "s", "Body": f"see {_INDICATOR_URL}"}),
 )
+
+_POSITION_IDS = [position for position, _ in _INDICATOR_POSITIONS]
+_POSITION_RECORDS = [record for _, record in _INDICATOR_POSITIONS]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("record", _POSITION_RECORDS, ids=_POSITION_IDS)
+def test_an_indicator_is_extracted_exactly_when_the_excerpt_retains_it(
+    record: dict[str, object],
+) -> None:
+    """Extracted if and only if retained — a biconditional, not an implication.
+
+    This is the assertion the previous four rounds needed and none of them
+    made. Each earlier test said *if* an observable exists *then* something
+    retained accounts for it, which an empty ``observables`` tuple satisfies
+    in zero iterations. Round five was exactly that: an indicator present and
+    readable at index 3594 of a 4096-character excerpt, extracted into
+    nothing, with both property tests green. Review found it; the tests could
+    not have.
+
+    Stated as an equality in both directions, the whole history collapses into
+    one line:
+
+        in excerpt, extracted      first-leaf, late-sorting (round one),
+                                   in-the-cut-leaf (round five)
+        not in excerpt, not        past-the-cut (round two), un-modelled
+        extracted                  (stage 6)
+
+    Either direction failing is a defect, and they are opposite defects: a
+    false positive puts an indicator derived from unretained content into an
+    append-only index, and a false negative silently loses evidence an
+    operator can see with their own eyes. Three of the five fixes closed one
+    direction and opened the other, which is why neither half may be asserted
+    without the other.
+    """
+    event = normalize(record)
+
+    assert event.vendor == "unrecognized", "fixture must take the unclaimed path"
+    retained = _INDICATOR_URL in event.raw_excerpt
+    extracted = _INDICATOR_URL in event.observables
+    assert extracted == retained, (
+        f"indicator is {'retained' if retained else 'absent'} in the excerpt but "
+        f"{'was' if extracted else 'was not'} extracted"
+    )
+
+
+@pytest.mark.security
+def test_the_indicator_position_table_covers_both_sides_of_that_equality() -> None:
+    """A table that drifted to one side would make the equality unfalsifiable.
+
+    The failure mode one level up from a vacuous assertion: the assertion is
+    sound, and every row happens to exercise the same side of it. Measured on
+    the table as committed — three rows retain the indicator, two do not.
+    """
+    retaining = {
+        position
+        for position, record in _INDICATOR_POSITIONS
+        if _INDICATOR_URL in normalize(record).raw_excerpt
+    }
+    dropping = set(_POSITION_IDS) - retaining
+
+    assert len(retaining) >= 2, f"no retained-indicator rows left: {sorted(retaining)}"
+    assert len(dropping) >= 2, f"no dropped-indicator rows left: {sorted(dropping)}"
 
 
 @pytest.mark.security
@@ -671,9 +769,42 @@ def test_every_observable_is_findable_in_the_retained_evidence(
 
 
 @pytest.mark.security
-@pytest.mark.parametrize(
-    "record", _HOSTILE_PROJECTIONS, ids=["round-one", "round-two", "unmodelled"]
-)
+@pytest.mark.parametrize("claimed", [True, False], ids=["claimed", "unclaimed"])
+def test_the_fixture_corpus_produces_observables_for_that_property_to_check(
+    claimed: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Assert the antecedent of the implication above, which it cannot assert itself.
+
+    ``test_every_observable_is_findable_in_the_retained_evidence`` iterates
+    ``event.observables``. If the corpus stopped producing any — a signature
+    change, a bound tightened, an extractor regressed — it would pass on every
+    one of its thirty cases with zero assertions executed and read as proof
+    that extraction is sound. That is precisely how round five survived: the
+    cut-leaf record yields no observable at all, so the implication held
+    vacuously while an indicator sat readable in the excerpt.
+
+    A per-fixture floor would be wrong rather than merely weak: measured,
+    ``auditd_daemon_end`` legitimately yields none on both legs, and
+    ``auditd_execve`` yields none on the unclaimed leg because its indicators
+    live in ``a0``/``a1``/``a2``, which no parser declares. So the floor is
+    corpus-wide. Measured on this corpus: 30 observables across 14 of 15
+    fixtures claimed, 43 across 13 of 15 unclaimed. The floors below sit well
+    under both, so an ordinary fixture edit does not trip them while a
+    collapse to nothing does.
+    """
+    if not claimed:
+        monkeypatch.setattr(sys.modules["ingest.normalize"], "SIGNATURES", ())
+
+    counts = {name: len(normalize(_load(name)).observables) for name in _fixture_names()}
+    total = sum(counts.values())
+    with_any = sum(1 for count in counts.values() if count)
+
+    assert total >= 25, f"corpus yields only {total} observables: {counts}"
+    assert with_any >= 12, f"only {with_any} of {len(counts)} fixtures yield any: {counts}"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("record", _POSITION_RECORDS, ids=_POSITION_IDS)
 def test_an_unclaimed_records_observables_are_all_inside_its_excerpt(
     record: dict[str, object],
 ) -> None:
