@@ -227,10 +227,19 @@ def test_a_missing_timestamp_is_never_back_filled() -> None:
 
 @pytest.mark.unit
 def test_json_string_and_mapping_inputs_agree() -> None:
+    """Including the excerpt, which the two paths used to disagree about.
+
+    A mapping was re-serialized and a JSON line was copied verbatim, so the
+    same record produced two different excerpts depending on how it arrived —
+    and the ``raw_excerpt`` key had to be neutralized for this test to pass.
+    Both paths now rebuild the excerpt from the signature's declared fields,
+    so the events are equal outright.
+    """
     record = _FIXTURES["okta_session_start"]["record"]
     from_mapping = normalize(record)
     from_json = normalize(json.dumps(record))
-    assert from_mapping.to_dict() | {"raw_excerpt": ""} == from_json.to_dict() | {"raw_excerpt": ""}
+    assert from_mapping.to_dict() == from_json.to_dict()
+    assert from_mapping.raw_excerpt
 
 
 @pytest.mark.unit

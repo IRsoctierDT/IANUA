@@ -51,3 +51,22 @@ class StoreIntegrityError(StoreError):
     row, because a query that quietly returns fewer events than history holds
     is indistinguishable to the caller from a quiet period.
     """
+
+
+class IngestionOrderError(StoreError):
+    """A write would place an event before one already ingested.
+
+    The pipeline pages by a ``(ingested_at, event_id)`` keyset, so an event
+    stamped *earlier* than the highest already stored would sit behind a cursor
+    that has already passed — and would never be read, by any cycle, ever. That
+    is silent data loss in the one layer whose purpose is not having blind
+    spots, which is why it is refused at write time rather than documented as a
+    contract on callers.
+
+    Note what this does **not** contradict. The store is idempotent in
+    *content*: re-appending an identical event is a no-op. It is strict in
+    *ingestion order*: a replay claiming it was ingested at the original time is
+    making a false claim the second time round, because it is being ingested
+    now. A replay that stamps the current time succeeds and stores nothing new,
+    which is the honest form of the same operation.
+    """

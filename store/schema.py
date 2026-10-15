@@ -45,6 +45,16 @@ SCHEMA_VERSION = 1
 #: ``meta`` key holding :data:`SCHEMA_VERSION` for the open database.
 VERSION_KEY = "schema_version"
 
+#: ``meta`` key holding the highest ``ingested_at`` ever written.
+#:
+#: Stored rather than derived from ``MAX(ingested_at)`` because retention
+#: deletes rows: a derived watermark would reset the moment a window aged out,
+#: and a collector could then stamp an event behind a cursor that had already
+#: passed it. A **row** in the existing ``meta`` table, not a column — the DDL
+#: is unchanged, so this needs no :data:`SCHEMA_VERSION` bump and
+#: ``SchemaVersionError`` is never provoked.
+HIGH_WATER_KEY = "ingested_high_water"
+
 #: Ceiling on one serialized projection. ``ingest/`` already bounds every
 #: field, so a projection past this is not oversized telemetry — it is a
 #: caller that built a ``NormalizedEvent`` by hand without the bounds. Refused
@@ -55,6 +65,10 @@ MAX_PROJECTION_BYTES = 64 * 1024
 #: for more. An unbounded read of a security-event store is how a dashboard
 #: query turns into an out-of-memory restart during an incident.
 MAX_QUERY_LIMIT = 10_000
+#: Domain separator in the completeness digest's preimage, so a digest taken
+#: over this store's ids can never be confused with a hash of the same bytes
+#: computed for any other purpose.
+DIGEST_PREFIX = "ianua.store.attest.v1:"
 
 
 def canonical_json(payload: dict[str, Any]) -> str:

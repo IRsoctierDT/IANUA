@@ -75,6 +75,22 @@ always present and is the only one of the two this platform controls. Keying
 retention on source-reported time would let a host with a skewed clock keep
 its events forever, or have them pruned the moment they arrived.
 
+## Attesting what is held
+
+`attest()` returns the row counts, a sha256 over every `event_id` in sorted order, the
+high-water mark and the schema version. It exists because content addressing answers a
+different question than it looks like it answers: it proves each row is what was written,
+and proves nothing about whether all of them are there. Deleting 100 of 400 rows leaves
+`PRAGMA integrity_check`, `count()`, `query()` and `high_water_mark()` all silent, so a
+truncated copy is indistinguishable from a store that legitimately holds fewer events —
+which is the one thing a restore has to be able to tell. `scripts/run_backup.py` records an
+attestation in every backup manifest and `--verify` re-checks it; the runbook is
+`docs/RESTORE.md`.
+
+It is not a tamper control. Anyone who can rewrite rows can recompute a digest over them —
+`UPDATE` is trigger-refused and the audit chain is the tamper evidence. What this catches is
+*loss*.
+
 ## What is not here
 
 No collection — nothing in this package fetches or listens for telemetry; a

@@ -371,7 +371,7 @@ with tab_soc:
 
         st.success("Incident workflow completed.")
 
-        markdown_report = Path("reports/markdown/orchestrated_incident.md")
+        markdown_report = Path("data/reports/orchestrated_incident.md")
         if markdown_report.exists():
             st.subheader("Markdown Report")
             st.code(markdown_report.read_text(encoding="utf-8"))
@@ -578,7 +578,7 @@ with tab_batch:
                 mime="application/json",
             )
 
-            sequence_report = Path("reports/markdown/orchestrated_sequence_incident.md")
+            sequence_report = Path("data/reports/orchestrated_sequence_incident.md")
             if sequence_report.exists():
                 with st.expander("Sequence Incident Report (Markdown)"):
                     st.markdown(sequence_report.read_text(encoding="utf-8"))

@@ -11,6 +11,7 @@ from compliance.controls import (
     ControlStatus,
     check_approval_gates,
     check_ci_gates,
+    check_dashboard_binds_loopback,
     check_dependency_lock,
     check_governance_docs,
     check_lab_data_isolated,
@@ -142,3 +143,63 @@ def test_live_repository_passes_every_automated_control() -> None:
         if c.check is not None and (result := c.check(root)).status is not ControlStatus.PASS
     ]
     assert failing == []
+
+
+# --------------------------------------------------------------------------
+# CFG-02 — the dashboard binds loopback only
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("address", ["127.0.0.1", "::1", "localhost"])
+def test_dashboard_loopback_passes_on_loopback_addresses(tmp_path: Path, address: str) -> None:
+    _write(tmp_path, ".streamlit/config.toml", f'[server]\naddress = "{address}"\n')
+    assert check_dashboard_binds_loopback(tmp_path).status is ControlStatus.PASS
+
+
+@pytest.mark.unit
+# Suppression justified, as in correlation/entities.py: these literals are
+# addresses being asserted as REFUSED, not addresses being bound. The rule
+# cannot tell the difference.
+@pytest.mark.parametrize(
+    "address",
+    ["0.0.0.0", "10.0.0.5", "192.168.1.20", "::"],  # noqa: S104  # nosec B104
+)
+def test_dashboard_loopback_fails_on_a_reachable_address(tmp_path: Path, address: str) -> None:
+    """The dashboard authenticates nobody and renders stored event content.
+
+    A reachable bind publishes hostnames, accounts, addresses and raw log
+    messages to whoever can reach the port, so this is the failure the control
+    exists for.
+    """
+    _write(tmp_path, ".streamlit/config.toml", f'[server]\naddress = "{address}"\n')
+    result = check_dashboard_binds_loopback(tmp_path)
+    assert result.status is ControlStatus.FAIL
+    assert address in result.detail
+
+
+@pytest.mark.unit
+def test_dashboard_loopback_fails_when_the_address_is_unset(tmp_path: Path) -> None:
+    """Unset is the state this control was added for.
+
+    The address was absent until it was pinned, which meant it came from
+    whatever the installed Streamlit defaulted to — not a property this
+    repository controlled — while the production plan described loopback-only
+    binding as an invariant stage 7 would have to cross. Unset is a FAIL, not a
+    pass-by-omission.
+    """
+    _write(tmp_path, ".streamlit/config.toml", "[server]\nmaxUploadSize = 10\n")
+    assert check_dashboard_binds_loopback(tmp_path).status is ControlStatus.FAIL
+
+
+@pytest.mark.unit
+def test_dashboard_loopback_fails_closed_without_a_config(tmp_path: Path) -> None:
+    assert check_dashboard_binds_loopback(tmp_path).status is ControlStatus.FAIL
+
+
+@pytest.mark.unit
+def test_the_repository_itself_binds_loopback() -> None:
+    """Against the committed config, not a fixture — the property that ships."""
+    root = Path(__file__).resolve().parents[2]
+    result = check_dashboard_binds_loopback(root)
+    assert result.status is ControlStatus.PASS, result.detail

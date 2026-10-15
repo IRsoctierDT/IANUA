@@ -7,5 +7,19 @@
 # batch). The Batch tab additionally caps the number of processed lines.
 
 [server]
+# Loopback only. This was previously unset, so the bind address was whatever
+# the installed Streamlit happened to default to — and `uv.lock` pins
+# `streamlit >= 1.65.0` with no upper bound, so that default was not the
+# repository's to know. `docs/PRODUCTION_SOC_PLAN.md` nonetheless described
+# "loopback-only binding" as an invariant stage 7 would have to cross; nothing
+# asserted it. It is asserted here now, and by compliance control CFG-02.
+#
+# The dashboard performs NO authentication of its own (there is none anywhere
+# in `dashboard/`), and it renders stored event content — hostnames, accounts,
+# addresses and raw log messages. Binding it anywhere reachable therefore
+# publishes that to whoever can reach the port. Exposure is a deployment
+# decision that belongs behind an authenticating reverse proxy, which is what
+# the plan's stage 7 describes; it is not something a default should decide.
+address = "127.0.0.1"
 fileWatcherType = "none"
 maxUploadSize = 10   # MB — lab log batches are far smaller

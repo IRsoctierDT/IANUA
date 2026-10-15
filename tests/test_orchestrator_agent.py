@@ -84,13 +84,21 @@ def test_process_log_no_indicators_when_no_ip(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_process_log_writes_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default destination is under ``data/``, which is gitignored.
+
+    It used to be ``reports/markdown/orchestrated_incident.md`` — a tracked
+    file — and since both shipped CLIs call this with no ``report_path``, a
+    real log line put real telemetry into the working tree. The destination
+    moved; this test moved with it, and ``tests/security/
+    test_report_destination.py`` holds the reason.
+    """
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "reports" / "markdown").mkdir(parents=True)
 
     agent = OrchestratorAgent()
     agent.process_log("Failed password for root from 10.0.0.5 port 22 ssh2")
 
-    assert (tmp_path / "reports" / "markdown" / "orchestrated_incident.md").exists()
+    assert (tmp_path / "data" / "reports" / "orchestrated_incident.md").exists()
+    assert not (tmp_path / "reports").exists(), "a report was written outside data/"
 
 
 # ------------------------------------------------------------------ v1.9: sequence + citations

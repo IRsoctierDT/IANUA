@@ -281,3 +281,70 @@ def test_output_is_identical_under_input_permutation() -> None:
     assert [tuple(e.key for e in i.entities) for i in forward] == [
         tuple(e.key for e in i.entities) for i in shuffled
     ]
+
+
+# --------------------------------------------------------------------------
+# Placeholder values must never link
+# --------------------------------------------------------------------------
+
+
+def _nested_auth(ip: str, account: str, index: int) -> str:
+    """A verbatim auditd failed-password record, payload nested as auditd writes it."""
+    return (
+        f"type=USER_AUTH msg=audit(17600000{index:02d}.100:{index}): pid={1000 + index} "
+        f"uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:authentication "
+        f'acct="{account}" exe="/usr/sbin/sshd" hostname=? '
+        f"addr={ip} terminal=ssh res=failed'"
+    )
+
+
+@pytest.mark.security
+def test_auditds_question_mark_placeholder_never_links() -> None:
+    """``hostname=?`` is on every pre-authentication sshd record.
+
+    auditd writes ``?`` for a field it has no value for, so collecting
+    ``audit.log`` produces a stream of events all sharing that "host". Joining
+    on it merges unrelated hosts' authentication activity into one entity —
+    the same failure ``NEVER_JOIN`` already refuses for ``-`` and ``unknown``.
+
+    Reachable only once the nested ``msg=`` payload was decoded, which is why
+    it arrives with that fix: before it, ``hostname`` was never extracted at
+    all. Measured before the exclusion: two unrelated attacks, on different
+    accounts from different addresses, assembled into **one** 12-event
+    incident scored 40; after it, two correct 6-event incidents.
+    """
+    from correlation.entities import NEVER_JOIN
+
+    assert "?" in NEVER_JOIN, "auditd's placeholder host would link every pre-auth record"
+
+    stored = _stored(
+        tuple(_nested_auth("203.0.113.9", "svc-deploy", index) for index in range(6))
+        + tuple(_nested_auth("198.51.100.4", "backup-svc", index) for index in range(6, 12))
+    )
+    incidents = assemble(stored)
+
+    assert len(incidents) == 2, (
+        f"two unrelated attacks assembled into {len(incidents)} incident(s); they were "
+        "merged on a placeholder host"
+    )
+    for incident in incidents:
+        keys = {entity.key for entity in incident.entities}
+        assert "?" not in keys
+        assert len(incident.event_ids) == 6
+
+
+@pytest.mark.security
+def test_the_placeholder_set_still_lets_a_real_host_link() -> None:
+    """A deny set that refuses real hostnames would break correlation instead."""
+    stored = _stored(
+        tuple(
+            _nested_auth("203.0.113.9", "svc-deploy", index).replace(
+                "hostname=?", "hostname=web-01"
+            )
+            for index in range(4)
+        )
+    )
+    incidents = assemble(stored)
+    assert len(incidents) == 1
+    keys = {entity.key for entity in incidents[0].entities}
+    assert "web-01" in keys, "a real hostname stopped linking"

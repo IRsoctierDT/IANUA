@@ -21,7 +21,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from ingest.schema import MAX_FIELD_LEN, MAX_NESTING_DEPTH, MAX_OBSERVABLES
+from ingest.schema import (
+    MAX_FIELD_LEN,
+    MAX_NESTING_DEPTH,
+    MAX_OBSERVABLES,
+    MAX_PROJECTED_ITEMS,
+)
 
 #: C0/C1 control characters, minus tab/newline/carriage-return, which are
 #: folded to spaces instead. These are the characters that corrupt terminal
@@ -80,6 +85,122 @@ def dig(payload: Mapping[str, Any], *path: str) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+#: Sentinel for "this record did not carry that path at all", which is not
+#: the same claim as "it carried nothing there". ``dig`` collapses the two
+#: into ``None``; a projection must not, because absent keys are omitted and
+#: a present-but-empty one is reported.
+_ABSENT = object()
+
+#: Field path. One component per mapping level, so a key that is *literally*
+#: dotted — Zeek's ``id.orig_h`` — is a one-component path and unambiguous.
+FieldPath = tuple[str, ...]
+
+
+def project(payload: Mapping[str, Any], paths: Iterable[FieldPath]) -> dict[str, Any]:
+    """Rebuild a record from only the paths a parser declared it reads.
+
+    This is the evidence allow-list. ``raw_excerpt`` is serialized from the
+    result, so a field no parser modelled — a mail ``Body``, a vendor's new
+    column, a key an attacker chose — has no route into the event store at
+    all. Redaction after the fact is not available to us: the store is
+    append-only and ``event_id`` is a digest over the projection, so what
+    ``ingest`` writes is what is kept (DESIGN.md §5 boundary 9).
+
+    Three rules make an over-broad declaration safe rather than merely
+    discouraged:
+
+    * **Absent stays absent.** A path the record did not carry is omitted,
+      never rendered as ``null`` — the same reason ``text()`` returns
+      ``None`` instead of ``""``.
+    * **An object yields its shape, never its values.** A declared path that
+      lands on a mapping contributes a sorted list of its key names. So
+      declaring a container by mistake can reveal *which* keys a record
+      carried, and never what was in them.
+    * **Everything is bounded.** Values coerce through :func:`text`;
+      containers contribute at most :data:`MAX_PROJECTED_ITEMS` entries; the
+      walk stops at :data:`MAX_NESTING_DEPTH` rather than trusting the
+      caller to have checked.
+
+    Args:
+        payload: A decoded record. Untrusted in both keys and values.
+        paths: The declared paths, each a tuple of mapping keys. A path
+            continuing through a list applies to each element, which is how
+            Entra's ``authenticationDetails`` list of method objects is read.
+
+    Returns:
+        A new mapping holding only the declared paths that the record
+        carried, nested as they were.
+    """
+    out: dict[str, Any] = {}
+    for path in paths:
+        if not path:
+            continue
+        value = _walk(payload, path, 0)
+        if value is _ABSENT:
+            continue
+        _graft(out, path, value)
+    return out
+
+
+def _walk(node: Any, path: FieldPath, depth: int) -> Any:
+    """Follow one declared path, returning :data:`_ABSENT` if it is not there."""
+    if depth > MAX_NESTING_DEPTH:
+        return _ABSENT
+    for index, key in enumerate(path):
+        if isinstance(node, Mapping):
+            if key not in node:
+                return _ABSENT
+            node = node[key]
+        elif isinstance(node, (list, tuple)):
+            # The path continues *through* a sequence: apply the rest of it
+            # to each element and keep the ones that have it.
+            kept = [
+                found
+                for found in (
+                    _walk(item, path[index:], depth + 1) for item in node[:MAX_PROJECTED_ITEMS]
+                )
+                if found is not _ABSENT
+            ]
+            return kept or _ABSENT
+        else:
+            return _ABSENT
+    return _leaf(node, depth)
+
+
+def _leaf(value: Any, depth: int) -> Any:
+    """Render a value found at a declared path, withholding anything unnamed."""
+    if depth > MAX_NESTING_DEPTH:
+        return None
+    if isinstance(value, Mapping):
+        # Shape, not content. See ``project``'s second rule.
+        named = [text(key) for key in list(value)[:MAX_PROJECTED_ITEMS]]
+        return sorted(key for key in named if key is not None)
+    if isinstance(value, (list, tuple, set)):
+        ordered = sorted(value, key=repr) if isinstance(value, set) else list(value)
+        return [_leaf(item, depth + 1) for item in ordered[:MAX_PROJECTED_ITEMS]]
+    return text(value)
+
+
+def _graft(out: dict[str, Any], path: FieldPath, value: Any) -> None:
+    """Place ``value`` at ``path`` in ``out``, creating the levels it needs.
+
+    A shallower declared path can already hold a scalar where a deeper one
+    needs a mapping (Azure declares both ``status`` and ``status.value``,
+    because the export spells it either way). The deeper path wins, since a
+    named leaf is better evidence than the shape of its parent.
+    """
+    cursor = out
+    for key in path[:-1]:
+        existing = cursor.get(key)
+        if not isinstance(existing, dict):
+            existing = {}
+            cursor[key] = existing
+        cursor = existing
+    leaf = path[-1]
+    if leaf not in cursor or not isinstance(cursor[leaf], dict):
+        cursor[leaf] = value
 
 
 def first(*values: Any) -> str | None:

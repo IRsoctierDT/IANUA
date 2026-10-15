@@ -46,7 +46,9 @@ Security considerations (AGENTS.md §3, §5):
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -56,12 +58,16 @@ from typing import Any, Self
 
 from ingest.schema import NormalizedEvent
 from store.errors import (
+    IngestionOrderError,
     SchemaVersionError,
     StoreIntegrityError,
     StorePathError,
 )
+from store.paths import confine
 from store.schema import (
     DDL,
+    DIGEST_PREFIX,
+    HIGH_WATER_KEY,
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
     SCHEMA_VERSION,
@@ -93,6 +99,48 @@ class StoredEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class Attestation:
+    """What this store holds, in a form a later copy can be checked against.
+
+    Content addressing proves every row is what was written. It proves
+    *nothing* about whether all of them are there — deleting 100 of 400 rows
+    leaves ``PRAGMA integrity_check``, :meth:`EventStore.count`,
+    :meth:`EventStore.query` and :meth:`EventStore.high_water_mark` all
+    silent, which was measured before this existed. So a partial copy is
+    indistinguishable from a store that legitimately holds fewer events, and
+    that is the one thing a restore has to be able to tell.
+
+    ``digest`` covers the ``event_id`` of every row, in sorted order, so it is
+    independent of insertion order and of the page layout a copy may differ
+    in. ``events`` and ``observables`` are carried alongside it because a
+    digest that happens to match tells you less than a count that also does.
+    """
+
+    #: Rows in ``events``.
+    events: int
+    #: Rows in ``observables``. Derived from the events, and separately
+    #: truncatable, so it is attested separately.
+    observables: int
+    #: sha256 over the sorted ``event_id`` sequence. See :meth:`EventStore.attest`.
+    digest: str
+    #: The mark at the moment of attestation, or ``None`` for an empty store.
+    high_water: float | None
+    #: The schema the attestation was taken under. A copy restored onto a
+    #: different version is a migration question, not a completeness one.
+    schema_version: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Allow-list projection, for a manifest a human and a gate both read."""
+        return {
+            "events": self.events,
+            "observables": self.observables,
+            "digest": self.digest,
+            "high_water": self.high_water,
+            "schema_version": self.schema_version,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Query:
     """A bounded query over stored events.
 
@@ -120,6 +168,41 @@ class Query:
     ip: str | None = None
     #: Exact match against an extracted observable (hash, domain, URL).
     observable: str | None = None
+    #: Keyset cursor: return only events ingested strictly after this
+    #: ``(ingested_at, event_id)`` pair. This is the filter a continuous
+    #: pipeline pages with, and it is a *pair* rather than a timestamp for a
+    #: reason that is not obvious: :meth:`EventStore.append_many` stamps one
+    #: ``ingested_at`` across a whole batch, so ties are the normal case, not
+    #: an edge case. A cursor on the timestamp alone must then choose between
+    #: ``>`` (skipping the rest of the batch) and ``>=`` (reprocessing it
+    #: forever) — the first silently drops security events.
+    #:
+    #: Keyed on ``ingested_at``, never ``occurred_at``: ingestion time is
+    #: always present, whereas an event whose source carried no timestamp is
+    #: excluded from every ``since``/``until`` window. A pipeline paging by
+    #: ``occurred_at`` would therefore have a permanent blind spot for exactly
+    #: the undated events ``ingest/`` deliberately produces.
+    ingested_after: tuple[float, str] | None = None
+    #: ``ingested_at >= ingested_from``. The inclusive lower edge of an
+    #: ingestion-time window, which is what a correlator needs and what
+    #: :data:`ingested_after` deliberately is not: that one *excludes* the
+    #: cursor so a pipeline makes progress, while this one *includes* a
+    #: trailing region so a story spanning two cycles can still be seen whole.
+    #:
+    #: Keyed on ``ingested_at`` rather than ``occurred_at`` for the same reason
+    #: :data:`ingested_after` is: an event whose source carried no timestamp is
+    #: excluded from every ``since``/``until`` window, so a correlator paging by
+    #: source time would have a permanent blind spot for exactly the undated
+    #: events ``ingest/`` deliberately produces.
+    ingested_from: float | None = None
+    #: Return only events ingested strictly *before* this ``(ingested_at,
+    #: event_id)`` pair — the exclusive upper edge, mirroring
+    #: :data:`ingested_after`'s exclusive lower edge. A correlator reading
+    #: context *behind* a window needs this: bounding the read in SQL rather
+    #: than filtering rows afterwards is the difference between a budgeted read
+    #: that returns the newest context below the boundary and one whose row
+    #: limit is spent on rows above it that the filter then discards.
+    ingested_before: tuple[float, str] | None = None
     #: Newest first when true, which is what an analyst opening a view wants.
     newest_first: bool = True
     limit: int = 1_000
@@ -129,6 +212,33 @@ class Query:
 #: than a call in a default argument: Query is frozen, so one shared instance
 #: cannot be mutated by a caller.
 ALL = Query()
+
+
+#: Owner-only, matching ``pipeline/cursor.py``, ``collect/offsets.py`` and the
+#: audit log. The directory mode is what actually protects the contents; the
+#: file mode is defence in depth on top of it.
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
+
+
+def _sidecar(path: Path, suffix: str) -> Path:
+    """The ``-wal``/``-shm`` companion SQLite creates beside the database."""
+    return path.with_name(path.name + suffix)
+
+
+def _narrow(path: Path, mode: int) -> None:
+    """Set ``mode`` if ``path`` exists, ignoring a filesystem that cannot.
+
+    Absent is the normal case for a sidecar on a freshly opened store, and a
+    filesystem without POSIX modes is not a reason to refuse to store events —
+    the confinement in :func:`store.paths.confine` is the control that must not
+    fail, and it is unaffected.
+    """
+    try:
+        if path.exists():
+            path.chmod(mode)
+    except OSError:  # pragma: no cover - filesystem without mode support
+        pass
 
 
 class EventStore:
@@ -159,7 +269,19 @@ class EventStore:
         schema version.
         """
         path = cls._resolve(root, filename)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only, matching the cursor, the offsets and the audit log. The
+        # database holding every collected event was the ONE piece of state
+        # under the lab-data root created at the process umask and never
+        # narrowed: measured at 0o644 inside 0o755 directories, while a byte
+        # offset in data/pipeline/ was deliberately 0o600 inside 0o700. The
+        # asymmetry ran the wrong way round — bookkeeping protected, evidence
+        # readable by every local account — and it matters far more once the
+        # telemetry is real. Found by review.
+        path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+        # `mkdir(mode=...)` is masked by umask and does nothing to a directory
+        # that already exists, so the mode is also set explicitly. Same reason
+        # `pipeline/cursor.py` chmods rather than relying on a creation mode.
+        _narrow(path.parent, _DIR_MODE)
         conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
         try:
@@ -174,6 +296,17 @@ class EventStore:
             # pruning would otherwise orphan every observable row.
             conn.execute("PRAGMA foreign_keys=ON")
             cls._apply_schema(conn)
+            # After the PRAGMA, because WAL mode is what creates the sidecars.
+            #
+            # Stated precisely, since the stronger claim would be false: SQLite
+            # creates each of these at the umask default and may recreate the
+            # sidecars on any later write, so there is a window in which they
+            # are wider than 0o600 and this cannot close it. What makes the
+            # contents unreachable throughout is the enclosing directory being
+            # 0o700 — the file modes are defence in depth on top of it, exactly
+            # as `pipeline/cursor.py` documents for the same trade.
+            for candidate in (path, _sidecar(path, "-wal"), _sidecar(path, "-shm")):
+                _narrow(candidate, _FILE_MODE)
         except Exception:
             conn.close()
             raise
@@ -181,38 +314,15 @@ class EventStore:
 
     @staticmethod
     def _resolve(root: Path, filename: str) -> Path:
-        """Validate the filename and confine the database to the events dir."""
-        if filename in {".", ".."} or not _SAFE_FILENAME.fullmatch(filename):
-            raise StorePathError(
-                f"store filename must match {_SAFE_FILENAME.pattern!r}, got {filename!r}"
-            )
-        # Resolve the ROOT, then append the subdirectory without resolving it:
-        # resolving the events directory first would follow a symlink planted
-        # there and then happily confirm the database sits inside its own
-        # target. The containment check has to be made against where the
-        # directory is *supposed* to be.
-        events_dir = root.resolve() / EVENTS_SUBDIR
-        candidate = events_dir / filename
-        # A symlinked events directory, or a symlinked database file, relocates
-        # the evidence outside the lab root while every filename still looks
-        # valid. Refused rather than followed: moving an event store to another
-        # volume is a deployment decision (see docs/PRODUCTION_SOC_PLAN.md
-        # stage 9), not something a planted link should accomplish silently.
-        for path in (events_dir, candidate):
-            if path.exists() and path.resolve() != path:
-                raise StorePathError(
-                    f"{path} resolves to {path.resolve()}; refusing to relocate the "
-                    "event store outside the lab-data root"
-                )
-        if not candidate.is_relative_to(events_dir):  # pragma: no cover
-            # Unreachable while _SAFE_FILENAME holds: a name with no separator
-            # cannot escape its parent lexically, and the symlink checks above
-            # cover the resolve-based escapes. Kept as a structural backstop so
-            # that loosening that regex does not silently open a traversal —
-            # marked no-cover rather than given a test that cannot be written
-            # honestly.
-            raise StorePathError(f"store path {candidate} escapes {events_dir}")
-        return candidate
+        """Confine the database to the events directory under the lab-data root.
+
+        Delegates to :func:`store.paths.confine`, which ``pipeline/`` and
+        ``collect/`` also use. The check used to live here in a copy that
+        examined only the leaf directory and the file — so a symlink at
+        ``data`` relocated the whole evidence database — and the identical bug
+        existed in ``pipeline/``. One implementation, one place to fix.
+        """
+        return confine(root, EVENTS_SUBDIR, filename, error=StorePathError, what="event store")
 
     @staticmethod
     def _apply_schema(conn: sqlite3.Connection) -> None:
@@ -278,10 +388,18 @@ class EventStore:
         Idempotent: re-appending an identical event is a no-op that returns
         the same id. ``ingested_at`` is injected rather than read from a clock
         here, so callers control (and tests pin) the storage timeline.
+
+        Raises :class:`IngestionOrderError` if ``ingested_at`` is behind the
+        high-water mark — see :meth:`append_many` — and
+        ``MalformedProjectionError`` if the event could not be read back, for
+        the reasons in :meth:`_project`.
         """
         projection, identifier = self._project(event)
+        stamp = float(ingested_at)
         with self._conn:
-            self._insert(event, projection, identifier, float(ingested_at))
+            self._require_monotonic(stamp)
+            self._insert(event, projection, identifier, stamp)
+            self._advance_high_water(stamp)
         return identifier
 
     def append_many(self, events: tuple[NormalizedEvent, ...], *, ingested_at: float) -> int:
@@ -292,17 +410,170 @@ class EventStore:
         query. The return value is the new count rather than the input length,
         so a caller replaying an overlapping batch sees that it added nothing
         instead of reporting work it did not do.
+
+        **Ingestion order is enforced, not assumed.** ``ingested_at`` must be at
+        or after the highest value ever written, or this raises
+        :class:`IngestionOrderError` before touching a row. The pipeline pages
+        by a ``(ingested_at, event_id)`` keyset, so an event stamped earlier
+        than one already stored would sit behind a cursor that has already
+        passed and would never be read by any cycle — silent data loss in the
+        layer whose purpose is not having blind spots. Stage 4 documented this
+        as a contract on collectors; enforcing it here makes it unrepresentable
+        instead, which is the difference between a rule and a control.
+
+        An empty batch is a no-op and is not order-checked: it writes nothing,
+        so there is nothing to place out of order.
+
+        One unreadable event also rolls back the whole batch: the projection
+        pass runs to completion before the transaction opens, so a batch
+        containing an event no ``query`` could return is refused in full
+        rather than stored up to the bad one (:meth:`_project`).
         """
+        if not events:
+            return 0
         projected = [(event, *self._project(event)) for event in events]
+        stamp = float(ingested_at)
         before = self.count()
         with self._conn:
+            self._require_monotonic(stamp)
             for event, projection, identifier in projected:
-                self._insert(event, projection, identifier, float(ingested_at))
+                self._insert(event, projection, identifier, stamp)
+            self._advance_high_water(stamp)
         return self.count() - before
+
+    def high_water_mark(self) -> float | None:
+        """The highest ``ingested_at`` ever written, or ``None`` if never written.
+
+        Exposed so a collector can call :meth:`next_stamp` and stay monotone
+        across a clock that steps backwards, rather than discovering the
+        constraint by being refused.
+
+        **Falls back to the rows when the meta row is absent.** ``SCHEMA_VERSION``
+        is deliberately unchanged by this control, so every database written
+        before it existed opens with rows but no ``meta`` entry — and returning
+        ``None`` there left the one population that matters undefended: an
+        existing deployment's first write after the upgrade could go behind its
+        own rows, which is precisely the silent blind spot this enforces
+        against. Found by review. Derived once; the next append writes the row
+        and the cheap path takes over.
+
+        The stored row still wins when it exists, because it outlives the rows
+        it describes: retention prunes old events, and a mark derived from
+        ``MAX(ingested_at)`` after a prune would move *backwards*, re-opening
+        the window for exactly the event ordering the mark exists to refuse.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
+        ).fetchone()
+        if row is not None:
+            return float(row["value"])
+        derived = self._conn.execute("SELECT MAX(ingested_at) AS mark FROM events").fetchone()
+        if derived is None or derived["mark"] is None:
+            return None
+        return float(derived["mark"])
+
+    def next_stamp(self, now: float) -> float:
+        """An ``ingested_at`` that is safe to write, at or after ``now``.
+
+        Monotonicity alone is not enough, and the gap was found by review and
+        reproduced. The mark permits **equality**, which it must — a single
+        ``append_many`` stamps one time across a whole batch. But the pipeline's
+        keyset is *strictly* after ``(ingested_at, event_id)``, so an event
+        written at exactly the mark, with an ``event_id`` sorting below the
+        cursor's, sits behind a cursor that has already passed it and is never
+        read. Four events stored, three ever seen.
+
+        A caller clamping with ``max(now, mark)`` walks straight into it
+        whenever the clock is at or behind the mark — which is what an NTP step
+        backwards produces. So the safe stamp is strictly after the mark, and it
+        lives here because the mark and the cursor contract are both this
+        layer's.
+
+        Raises:
+            ValueError: for a non-finite ``now``. A NaN would compare false
+                against everything and silently disable the ordering control;
+                an infinity would raise the mark to a value nothing can ever
+                exceed, permanently wedging the store.
+        """
+        if not math.isfinite(now):
+            raise ValueError(f"ingestion time must be finite, got {now!r}")
+        mark = self.high_water_mark()
+        if mark is None or now > mark:
+            return now
+        return math.nextafter(mark, math.inf)
+
+    def _require_monotonic(self, ingested_at: float) -> None:
+        """Refuse a write that would land behind the high-water mark.
+
+        Checked inside the caller's transaction and before any insert, so a
+        refused batch leaves the database exactly as it was.
+        """
+        if not math.isfinite(ingested_at):
+            # NaN compares false against every bound, so it would slip past the
+            # check below and then poison the mark for every later write;
+            # infinity would raise the mark beyond anything a clock can reach.
+            raise IngestionOrderError(
+                f"ingested_at must be finite, got {ingested_at!r}; a non-finite "
+                "stamp would disable the ordering control rather than violate it"
+            )
+        mark = self.high_water_mark()
+        if mark is not None and ingested_at < mark:
+            raise IngestionOrderError(
+                f"ingested_at {ingested_at!r} is behind the high-water mark {mark!r}; "
+                "the pipeline's cursor has already passed that point, so these events "
+                "would never be read. Stamp the current time instead — a replay is "
+                "being ingested now, not then."
+            )
+
+    def _advance_high_water(self, ingested_at: float) -> None:
+        """Raise the mark. Written in the same transaction as the rows it covers."""
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (HIGH_WATER_KEY, repr(float(ingested_at))),
+        )
 
     @staticmethod
     def _project(event: NormalizedEvent) -> tuple[str, str]:
-        """Serialize to canonical JSON and content-address it, bound-checked."""
+        """Serialize to canonical JSON, content-address it, and refuse what cannot be read.
+
+        Two checks, and the second exists because the first was not enough.
+
+        **The size ceiling** bounds the whole projection. It caught an event
+        far larger than any ``ingest/`` output, which is what it was for.
+
+        **The read-back** refuses a projection this store could not return.
+        ``_rebuild`` reconstructs every row a query yields through
+        ``NormalizedEvent.from_dict``, which validates each field against *its
+        own* bound — while this method validated only the projection's total
+        size, which a 2049-character ``message`` sails under at 64 KiB. So the
+        store accepted an event and then refused to read it, and because
+        ``query`` rebuilds every row in its window and raises on the first bad
+        one, a single such row stopped **every future detection cycle on that
+        store**: the cursor could not advance past it, ``UPDATE`` is
+        trigger-refused so it could not be repaired, and ``prune`` takes only a
+        time cutoff — so the sanctioned recovery was destroying the whole
+        store. Meanwhile the collector kept exiting 0, so two of the three
+        subsystems read green while detection was dead. Reproduced end to end
+        before the fix.
+
+        This is the third appearance of one defect class in this layer: a bound
+        asserted on read and not applied on write. The first two were
+        ``_unrecognized``'s ``message`` and the parser-assembled ``message``,
+        both fixed inside ``ingest/``. This one is fixed *here*, because the
+        store is the boundary that outlives any single producer — a direct
+        caller, a replay tool, or a future collector that does not route
+        through ``ingest.normalize`` inherits the refusal rather than having to
+        remember the rule. It is deliberately the reader itself that is called,
+        not a second list of bounds, because a list is what drifts.
+
+        Raises:
+            StoreIntegrityError: the projection exceeds the size ceiling.
+            MalformedProjectionError: the projection is within the ceiling but
+                some field is not, so a later ``query`` would refuse it. The
+                same error the read path raises, so "append refuses exactly
+                what query refuses" is one assertion rather than two.
+        """
         projection = canonical_json(event.to_dict())
         size = len(projection.encode("utf-8"))
         if size > MAX_PROJECTION_BYTES:
@@ -311,6 +582,10 @@ class EventStore:
                 "ceiling; ingest/ bounds every field, so an event this large was "
                 "not built through it"
             )
+        # The write-side twin of `_rebuild`'s read. Checked before any insert,
+        # and `append_many` projects the whole batch before opening its
+        # transaction, so a refused event leaves the database untouched.
+        NormalizedEvent.from_dict(json.loads(projection))
         return projection, event_id(projection)
 
     def _insert(
@@ -351,6 +626,68 @@ class EventStore:
         row = self._conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
 
+    def attest(self) -> Attestation:
+        """Attest what this store holds, so a copy of it can be verified.
+
+        The completeness control the store did not have. Read-only, streamed
+        rather than materialized — a 15-million-row store is digested without
+        loading a row into Python beyond one id at a time, which matters
+        because this is meant to be cheap enough to run on every backup.
+
+        The digest commits to the row count as well as the ids, so a store
+        whose ids are a prefix of another's cannot collide with it. Ordered by
+        ``event_id`` rather than by ``ingested_at`` or ``rowid``, because a
+        valid copy may differ in physical layout and must still attest
+        identically; ``event_id`` is a sha256 over the canonical projection,
+        so the order is total and stable.
+
+        This is not a tamper control on its own. An attacker who can rewrite
+        rows can recompute a digest over them — ``UPDATE`` is trigger-refused
+        and the audit chain is the tamper evidence. What this catches is
+        *loss*: a truncated transfer, a copy that raced a writer, a half
+        restore, a prune nobody meant to run.
+        """
+        counts = self._conn.execute(
+            "SELECT (SELECT COUNT(*) FROM events) AS events, "
+            "(SELECT COUNT(*) FROM observables) AS observables"
+        ).fetchone()
+        events = int(counts["events"])
+        running = hashlib.sha256()
+        # The count goes into the preimage first, so a prefix of one store's
+        # ids cannot digest the same as another store's whole set.
+        running.update(f"{DIGEST_PREFIX}{events}\n".encode())
+        for row in self._conn.execute("SELECT event_id FROM events ORDER BY event_id"):
+            running.update(str(row["event_id"]).encode("ascii"))
+            running.update(b"\n")
+        return Attestation(
+            events=events,
+            observables=int(counts["observables"]),
+            digest=running.hexdigest(),
+            high_water=self.high_water_mark(),
+            schema_version=SCHEMA_VERSION,
+        )
+
+    def count_before(self, *, before: float) -> int:
+        """How many events :meth:`prune` would delete at this threshold.
+
+        Exists so retention can be reported before it is applied. ``prune``
+        returns a count *after* deleting, which is no use to an operator
+        deciding whether to delete at all — and deletion here is irreversible
+        in a way the rest of the platform is not: the collector's offsets live
+        in a separate file and are never rewound, so content removed from the
+        store cannot be re-collected from a source that still holds it.
+
+        A ``COUNT`` rather than a ``query``: counting must not depend on every
+        projection in range parsing cleanly, because the operator most needs
+        this number when something is wrong with the data.
+        """
+        if not math.isfinite(before):
+            raise ValueError(f"retention threshold must be finite, got {before!r}")
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM events WHERE ingested_at < ?", (float(before),)
+        ).fetchone()
+        return int(row["n"])
+
     def query(self, spec: Query = ALL) -> tuple[StoredEvent, ...]:
         """Return matching events, newest first by default.
 
@@ -384,6 +721,21 @@ class EventStore:
         if spec.ip is not None:
             clauses.append("(e.src_ip = ? OR e.dst_ip = ?)")
             params.extend((spec.ip, spec.ip))
+        if spec.ingested_after is not None:
+            # Strictly after the pair, in the same total order as the ORDER BY.
+            clauses.append(_INGESTED_AFTER)
+            at, identifier = spec.ingested_after
+            params.extend((float(at), float(at), identifier))
+        if spec.ingested_before is not None:
+            # Strictly before the pair, in the same total order as the ORDER BY.
+            clauses.append(_INGESTED_BEFORE)
+            at, identifier = spec.ingested_before
+            params.extend((float(at), float(at), identifier))
+        if spec.ingested_from is not None:
+            # Inclusive, so the lower edge of a lookback window is not itself
+            # the thing that falls out of it.
+            clauses.append(_INGESTED_FROM)
+            params.append(float(spec.ingested_from))
         if spec.observable is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM observables o WHERE o.event_id = e.event_id AND o.value = ?)"
@@ -428,11 +780,30 @@ class EventStore:
 #: The query's fixed pieces. Declared as constants so that every character of
 #: every statement this module runs is traceable to a literal written here.
 _SELECT = "SELECT event_id, ingested_at, projection FROM events e"
+#: Keyset pagination: strictly after ``(ingested_at, event_id)``.
+_INGESTED_AFTER = "(e.ingested_at > ? OR (e.ingested_at = ? AND e.event_id > ?))"
+#: Inclusive lower edge of an ingestion-time window.
+_INGESTED_FROM = "e.ingested_at >= ?"
+#: Keyset upper edge: strictly before ``(ingested_at, event_id)``.
+_INGESTED_BEFORE = "(e.ingested_at < ? OR (e.ingested_at = ? AND e.event_id < ?))"
 #: Ordering is on ``ingested_at``, not ``occurred_at``: it is always present
 #: (a source may carry no timestamp) and it is the one of the two this
 #: platform controls, so a source with a wrong clock cannot reorder the view.
-_ORDER_NEWEST = " ORDER BY e.ingested_at DESC LIMIT ?"
-_ORDER_OLDEST = " ORDER BY e.ingested_at ASC LIMIT ?"
+#: Ordering includes ``event_id`` as a tie-break, which makes the sequence a
+#: TOTAL order. Ordering by ``ingested_at`` alone leaves ties in whatever
+#: sequence the engine happens to return, and keyset paging over a
+#: non-deterministic order skips or repeats rows. The content address is the
+#: natural tie-break: it is unique, stable, and already indexed as the
+#: primary key.
+#:
+#: Deliberately NOT backed by a composite ``(ingested_at, event_id)`` index:
+#: adding one would change the schema, and this store refuses to open a
+#: database written under a different ``SCHEMA_VERSION``. The existing
+#: ``events_ingested_at`` index covers the selective range scan; the
+#: tie-break sorts within one timestamp. A composite index is a deliberate
+#: migration, not a thing to smuggle in behind a query change.
+_ORDER_NEWEST = " ORDER BY e.ingested_at DESC, e.event_id DESC LIMIT ?"
+_ORDER_OLDEST = " ORDER BY e.ingested_at ASC, e.event_id ASC LIMIT ?"
 
 #: Equality fragments, written out so the column name in every statement is a
 #: literal from this module rather than a value threaded in from a caller.

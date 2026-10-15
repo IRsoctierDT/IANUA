@@ -90,10 +90,29 @@ jobs:
       - name: Install development and build tooling
         run: pip install build -e ".[dev]"
       - name: Validate release source
+        # The type-check scope is DERIVED from the checked-out tree rather than
+        # hard-coded. This job runs against a detached tag, and a tag predating
+        # any package in the list would hand mypy a directory that does not
+        # exist on that commit — making release repair (re-attaching assets,
+        # re-attesting) impossible for every older tag. Skipped paths are
+        # printed, so a package missing by accident is visible rather than
+        # silently dropped; the tagged commit was already gated by ci.yml with
+        # the full scope when it merged, and tests/unit/test_gate_scope_parity.py
+        # keeps that scope honest.
         run: |
           ruff check .
           ruff format --check .
-          mypy agents attack intel ingest store correlation scripts tests dashboard mcp rag compliance
+          scope=""
+          for dir in agents attack intel ingest store correlation pipeline collect \
+                     scripts tests dashboard mcp rag compliance; do
+            if [ -d "$dir" ]; then
+              scope="$scope $dir"
+            else
+              echo "::notice::mypy scope: $dir absent at this tag, skipping"
+            fi
+          done
+          echo "mypy scope:$scope"
+          mypy $scope
           pytest
       - name: Build distributions from the tagged commit
         run: python -m build

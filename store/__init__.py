@@ -42,6 +42,7 @@ boundary 10 for the trust argument.
 from __future__ import annotations
 
 from store.errors import (
+    IngestionOrderError,
     SchemaVersionError,
     StoreError,
     StoreIntegrityError,
@@ -51,11 +52,13 @@ from store.events import (
     ALL,
     DEFAULT_FILENAME,
     EVENTS_SUBDIR,
+    Attestation,
     EventStore,
     Query,
     StoredEvent,
 )
 from store.schema import (
+    DIGEST_PREFIX,
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
     SCHEMA_VERSION,
@@ -66,11 +69,14 @@ from store.schema import (
 __all__ = [
     "ALL",
     "DEFAULT_FILENAME",
+    "DIGEST_PREFIX",
     "EVENTS_SUBDIR",
     "MAX_PROJECTION_BYTES",
     "MAX_QUERY_LIMIT",
     "SCHEMA_VERSION",
+    "Attestation",
     "EventStore",
+    "IngestionOrderError",
     "Query",
     "SchemaVersionError",
     "StoreError",
