@@ -24,6 +24,7 @@ Three properties, and each one failed somewhere before this existed:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -241,6 +242,97 @@ def test_the_restored_tree_is_owner_only(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+def test_a_symlink_pointing_inside_the_root_is_refused_as_well(tmp_path: Path) -> None:
+    """What the per-component walk catches that the containment check does not.
+
+    A symlink out of the root is caught twice — by the component walk and by
+    `resolve()` landing outside — so a plant that checked only the leaf still
+    passed the out-of-root tests. This is the case that separates them: a link
+    whose target is *inside* the root resolves legitimately, and following it
+    would copy the event store into the backup labelled as a report, with the
+    manifest describing it as one. Evidence misattribution rather than
+    exfiltration, which is why it is refused too.
+    """
+    root = tmp_path / "lab"
+    root.mkdir()
+    source = tmp_path / "auth.log"
+    _source(source, 20)
+    assert _collect(root, source) == 0
+
+    reports = root / "data" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "not-a-report.md").symlink_to(root / "data" / "events" / "events.sqlite3")
+
+    assert backup_main(["--root", str(root), "--name", "probe", "--json"]) == 0
+    backup = root / "data" / "backups" / "probe"
+    assert not (backup / "data" / "reports" / "not-a-report.md").exists()
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    assert any("not-a-report.md" in entry for entry in manifest["refused"]), manifest["refused"]
+    assert all("not-a-report" not in entry["path"] for entry in manifest["files"])
+
+
+@pytest.mark.integration
+def test_an_in_root_symlinked_directory_is_what_the_component_walk_is_for(
+    tmp_path: Path,
+) -> None:
+    """The only case the per-component walk catches alone.
+
+    Four plants were needed to find it. A symlink *out* of the root is caught
+    twice — by the walk and by `resolve()` landing outside — and an in-root
+    symlinked *file* is caught by a leaf-only check. What separates them is an
+    in-root symlinked *directory*: `data/compliance/` pointing at
+    `data/events/`. Its contents resolve legitimately inside the root, so
+    containment passes, and the leaf is a real file, so a leaf-only check
+    passes — only walking every component refuses it. Following it would copy
+    the collector's own chain into the backup as `data/compliance/audit.log`,
+    and the manifest would describe it as the compliance chain.
+    """
+    root = tmp_path / "lab"
+    root.mkdir()
+    source = tmp_path / "auth.log"
+    _source(source, 20)
+    assert _collect(root, source) == 0
+
+    # The real compliance directory is absent in this root; point it at the
+    # collector's, which holds a file of the declared name after a pass.
+    (root / "data" / "compliance").symlink_to(root / "data" / "collect", target_is_directory=True)
+    assert (root / "data" / "compliance" / "audit.log").is_file()  # via the link
+
+    assert backup_main(["--root", str(root), "--name", "probe", "--json"]) == 0
+    backup = root / "data" / "backups" / "probe"
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    assert any(
+        "data/compliance" in entry and "symlink" in entry for entry in manifest["refused"]
+    ), manifest["refused"]
+    assert all(not entry["path"].startswith("data/compliance") for entry in manifest["files"])
+
+
+@pytest.mark.integration
+def test_a_symlinked_event_store_is_refused_outright(tmp_path: Path) -> None:
+    """The one source that is fatal rather than skipped, matching `store/`.
+
+    `store/paths.py::confine` already refuses a symlinked component on the way
+    to the database, so `EventStore.open()` would not open one either — this
+    keeps the backup consistent with that rather than inventing a new rule.
+    And a backup with no store restores as an empty store nothing can
+    distinguish from a real one, so proceeding without it is not an option.
+    """
+    root = tmp_path / "lab"
+    root.mkdir()
+    source = tmp_path / "auth.log"
+    _source(source, 20)
+    assert _collect(root, source) == 0
+
+    database = root / "data" / "events" / "events.sqlite3"
+    elsewhere = tmp_path / "relocated.sqlite3"
+    database.rename(elsewhere)
+    database.symlink_to(elsewhere)
+
+    assert backup_main(["--root", str(root), "--name", "probe", "--json"]) == 1
+    assert not (root / "data" / "backups" / "probe").exists()
+
+
+@pytest.mark.integration
 def test_a_backup_refuses_to_write_an_empty_store(tmp_path: Path) -> None:
     """The failure that reads as success, refused at the source.
 
@@ -253,6 +345,124 @@ def test_a_backup_refuses_to_write_an_empty_store(tmp_path: Path) -> None:
     root.mkdir()
     assert backup_main(["--root", str(root), "--name", "drill", "--json"]) == 1
     assert not (root / "data" / "backups" / "drill").exists()
+
+
+@pytest.mark.integration
+def test_a_symlinked_source_is_refused_and_named_rather_than_followed(tmp_path: Path) -> None:
+    """`is_file()` follows symlinks, and so does `shutil.copy2`.
+
+    Reproduced on the first version of this script: a symlink in
+    `data/reports/` pointing outside the lab root was copied into the backup
+    as a regular file, carrying the target's contents, at exit 0. The backup
+    still completes — one planted file must not stop every backup — but the
+    refusal is named in both the manifest and the report, because silently
+    omitting evidence an operator believes is covered is worse than the leak.
+    """
+    root = tmp_path / "lab"
+    root.mkdir()
+    source = tmp_path / "auth.log"
+    _source(source, 20)
+    assert _collect(root, source) == 0
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("SECRET-OUTSIDE-THE-LAB-ROOT", encoding="utf-8")
+    reports = root / "data" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "leak.md").symlink_to(outside)
+
+    assert backup_main(["--root", str(root), "--name", "probe", "--json"]) == 0
+    backup = root / "data" / "backups" / "probe"
+    contents = "".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in backup.rglob("*")
+        if path.is_file() and path.suffix in {".md", ".json", ".log", ".jsonl"}
+    )
+    assert "SECRET-OUTSIDE-THE-LAB-ROOT" not in contents
+    assert not (backup / "data" / "reports" / "leak.md").exists()
+
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    assert any("leak.md" in entry and "symlink" in entry for entry in manifest["refused"]), (
+        manifest["refused"]
+    )
+
+
+@pytest.mark.integration
+def test_a_symlinked_directory_is_refused_too(tmp_path: Path) -> None:
+    """Every component, not only the leaf — a symlinked directory escapes as well.
+
+    A plant that checked only the final component still passed the
+    symlinked-*file* test above, so this covers the case that distinguishes
+    them: `data/collect/` itself replaced by a link, with the tamper-evidence
+    chain on the other side of it.
+    """
+    root = tmp_path / "lab"
+    root.mkdir()
+    source = tmp_path / "auth.log"
+    _source(source, 20)
+    assert _collect(root, source) == 0
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "audit.log").write_text("SECRET-OUTSIDE-THE-LAB-ROOT\n", encoding="utf-8")
+    shutil.rmtree(root / "data" / "collect")
+    (root / "data" / "collect").symlink_to(elsewhere, target_is_directory=True)
+
+    assert backup_main(["--root", str(root), "--name", "probe", "--json"]) == 0
+    backup = root / "data" / "backups" / "probe"
+    contents = "".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in backup.rglob("*")
+        if path.is_file()
+    )
+    assert "SECRET-OUTSIDE-THE-LAB-ROOT" not in contents
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    assert any("symlink" in entry for entry in manifest["refused"]), manifest["refused"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("hostile", ["/etc/hostname", "../../../../etc/hostname"])
+def test_the_verifier_will_not_follow_a_manifest_path_out_of_the_backup(
+    tmp_path: Path, hostile: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A manifest is untrusted data inside the artifact being verified.
+
+    `directory / entry["path"]` is not confinement: pathlib discards the left
+    side for an absolute right side, and `..` walks out. Reproduced on the
+    first version: a manifest naming `/etc/hostname` made the verifier stat
+    and sha256 that file and print the real digest in its failure report — an
+    arbitrary-read oracle for anything the account can read. The path is now
+    refused *before* any stat, and reported as a problem rather than raised so
+    an operator sees every reason the backup is untrustworthy at once.
+    """
+    root = tmp_path / "lab"
+    root.mkdir()
+    source = tmp_path / "auth.log"
+    _source(source, 20)
+    assert _collect(root, source) == 0
+    assert backup_main(["--root", str(root), "--name", "probe", "--json"]) == 0
+
+    backup = root / "data" / "backups" / "probe"
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"].append({"path": hostile, "size": 1, "sha256": "0" * 64})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Exit 1 alone proves nothing: without the guard the verifier reaches the
+    # file, finds a size/digest mismatch, and also exits 1. The property is
+    # that it refused *by path* and never read what lies outside the backup —
+    # so the problem must name the path rule, and no digest of the external
+    # file may appear. A plant removing the guard passed an exit-code-only
+    # assertion, which is why this asserts the text.
+    capsys.readouterr()  # drain the earlier --json report
+    assert backup_main(["--root", str(root), "--verify", str(backup), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    named = [entry for entry in report["problems"] if hostile in entry]
+    assert named, report["problems"]
+    assert any("absolute" in entry or "traversal" in entry for entry in named), named
+    outside = Path("/etc/hostname")
+    if outside.is_file():
+        digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+        assert digest not in json.dumps(report), "the file outside the backup was hashed"
 
 
 @pytest.mark.integration

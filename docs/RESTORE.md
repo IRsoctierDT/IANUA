@@ -94,8 +94,22 @@ on the schedule, not during the incident.
 ### Restoring
 
 ```bash
-# 1. Stop the scheduler. The timers, not the processes: every entry point is one-shot.
+# 1. Quiesce. Stop the timers AND the services, then confirm nothing is running.
+#    Stopping a timer does not stop the service it already triggered, and
+#    "every entry point is one-shot" is not the same as "none is running now" —
+#    a collector still in flight can recreate offsets.json after step 3 or write
+#    the database during step 4, rebuilding the exact newer-offsets/older-store
+#    state this runbook calls unrecoverable.
 systemctl --user stop ianua-pipeline.timer ianua-collector.timer
+systemctl --user stop ianua-pipeline.service ianua-collector.service
+systemctl --user list-units 'ianua-*' --all --no-legend   # expect none active
+
+# 1b. Belt and braces: the locks are the platform's own interlock. If any of
+#     these is held, a pass is still running — wait rather than proceed.
+for f in collect/collect.lock pipeline/cycle.lock events/retention.lock; do
+  flock --nonblock --exclusive "/srv/ianua/data/$f" true \
+    || echo "STILL RUNNING: $f is held; do not continue"
+done
 
 # 2. Verify the backup you are about to trust.
 python -m scripts.run_backup --root /srv/ianua --verify /path/to/backup   # must exit 0
@@ -123,11 +137,17 @@ one is unrecoverable, and it is this one:
 | Offsets **newer** than the store | Collector reports `events_stored: 0, lines_read: 0, offsets_advancing: true`, exits 0, while every unread line still sits in the source. Offsets are never rewound. | **No** |
 | Store newer than the offsets | Lines are re-read; content addressing drops the duplicates. | Yes |
 | Cursor behind the store | The window is re-correlated. At-least-once by design. | Yes |
-| Cursor ahead of the store | The cycle idles until new events arrive. `next_stamp` reads the current clock, so re-collected events land above it. | Yes |
+| Cursor ahead of the store | Usually idles until new events arrive — **but not safely.** `next_stamp` compares the clock against the *store's* high-water mark, not against the cursor, so if the clock has stepped backward to below the cursor, re-collected events are stamped under it and the pipeline's strictly-after keyset never reads them. Measured: a store restored at mark T, a cursor at T+3600, a clock at T+60 → stamp T+60, permanently behind. | **No, after a backward clock step** |
 
 Deleting both positions is therefore **a complete recovery, not a compromise** — measured
 at 600 of 600 events with zero duplication. Step 3 exists so that a half-finished restore
 cannot leave a stale store under current offsets.
+
+Note that the cursor row above is the reason step 3 deletes the cursor too, rather than
+leaving it as harmless. An earlier version of this table called an ahead cursor
+recoverable; it is not, once the clock can move backwards, which is exactly when a host
+has been rebuilt. Deleting it costs one re-correlated window — at-least-once is the
+pipeline's design — and removes the case entirely.
 
 ## Risks
 

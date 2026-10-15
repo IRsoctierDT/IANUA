@@ -180,6 +180,56 @@ def _single_instance(path: Path) -> Iterator[bool]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _unsafe_path(base: Path, relative: Path, *, what: str) -> str | None:
+    """Why ``base/relative`` must not be touched, or ``None`` if it is safe.
+
+    Two call sites, one rule, because both handle paths this process did not
+    choose: the source tree can hold anything an operator or an agent put
+    there, and a manifest is *data inside the artifact being verified* — a
+    backup directory is documented as safe to move as a unit, so its contents
+    are untrusted input on the way back in.
+
+    Joining is not confinement. ``Path("/a") / "/etc/hostname"`` is
+    ``/etc/hostname``, because pathlib discards the left side for an absolute
+    right side, and ``..`` walks out. Measured on the first version of this
+    script: a manifest naming ``/etc/hostname`` made ``--verify`` stat and
+    sha256 that file and print the real digest in its failure report — an
+    arbitrary-read oracle for anything the account can read. Separately,
+    ``Path.is_file()`` follows symlinks and so does ``shutil.copy2``, so a
+    symlink in ``data/reports/`` copied a file from outside the lab root into
+    the backup as a regular file, at exit 0.
+
+    Every component is checked, not only the leaf, because a symlinked
+    *directory* escapes just as well — the reasoning
+    ``store/paths.py::confine`` already applies, in the shape it does not
+    cover.
+    """
+    if relative.is_absolute():
+        return f"{what} {relative} is absolute; it must be relative to its root"
+    if any(part in {"..", ""} for part in relative.parts):
+        return f"{what} {relative} contains a traversal component"
+    walked = base
+    for part in relative.parts:
+        walked = walked / part
+        if walked.is_symlink():
+            return (
+                f"{what} {relative} passes through the symlink {walked} "
+                f"(-> {walked.readlink()}); refusing to follow it out of the root"
+            )
+    # Defence in depth, and deliberately not test-covered: given the two
+    # checks above — no absolute path, no `..`, no symlinked component — a
+    # relative path cannot resolve outside its base, so four plants could not
+    # make this line the one that fires. It is kept for the window the walk
+    # cannot close (a link created between the check and the read, which
+    # AGENTS.md §5 already records as unwinnable for `collect/`) and against a
+    # future edit loosening one of the checks above it. Claiming a test proves
+    # it would be the overstatement this file exists to avoid.
+    resolved = (base / relative).resolve()
+    if not resolved.is_relative_to(base.resolve()):
+        return f"{what} {relative} resolves to {resolved}, outside {base}"
+    return None
+
+
 def _narrow_tree(root: Path) -> None:
     """Make every directory and file under ``root`` owner-only.
 
@@ -222,29 +272,48 @@ def _copy_database(source: Path, target: Path) -> None:
         live.backup(copy)
 
 
-def _copied_paths(root: Path) -> list[Path]:
-    """Every declared file that exists, as paths relative to the root."""
-    found = [relative for relative in COPIED_FILES if (root / relative).is_file()]
+def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
+    """Declared files that exist and are safe to read, plus what was refused.
+
+    Refused rather than silently skipped, and skipped rather than fatal. A
+    symlink is not copied — ``shutil.copy2`` would follow it and pull content
+    from outside the lab root into the backup — but one planted file must not
+    stop every backup either, so the pass proceeds and both the manifest and
+    the report name what was left out. Silently omitting evidence an operator
+    believes is covered is the blind spot this project keeps finding; naming
+    it is the control.
+    """
+    candidates = list(COPIED_FILES)
     for tree in COPIED_TREES:
         base = root / tree
-        if not base.is_dir():
-            continue
-        found.extend(sorted(child.relative_to(root) for child in base.iterdir() if child.is_file()))
+        if base.is_dir() and not base.is_symlink():
+            candidates.extend(sorted(child.relative_to(root) for child in base.iterdir()))
     # Rotated archives, checkpoints and head signatures sit beside their
     # chain; they are part of the same evidence and are copied with it.
     for relative in COPIED_FILES:
         parent = (root / relative).parent
-        if not parent.is_dir():
+        if not parent.is_dir() or parent.is_symlink():
             continue
         stem = relative.name
-        found.extend(
+        candidates.extend(
             sorted(
                 child.relative_to(root)
                 for child in parent.iterdir()
-                if child.is_file() and child.name != stem and child.name.startswith(stem)
+                if child.name != stem and child.name.startswith(stem)
             )
         )
-    return sorted(set(found))
+
+    found: list[Path] = []
+    refused: list[str] = []
+    for relative in sorted(set(candidates)):
+        reason = _unsafe_path(root, relative, what="source")
+        if reason is not None:
+            refused.append(reason)
+            continue
+        # `is_file()` only after the symlink check, because it follows them.
+        if (root / relative).is_file():
+            found.append(relative)
+    return found, sorted(refused)
 
 
 def _verify_chains(root: Path) -> dict[str, object]:
@@ -282,6 +351,12 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
     and so ``EventStore.open(destination)`` and :func:`_verify_chains` work on
     a backup unchanged, which is what makes verification cheap.
     """
+    unsafe = _unsafe_path(root, EVENTS_SUBDIR / DEFAULT_FILENAME, what="event store")
+    if unsafe is not None:
+        # The one source that is fatal rather than skipped: a backup with no
+        # store restores as an empty store nothing can distinguish from a
+        # real one, so there is no safe way to proceed without it.
+        raise StoreError(unsafe)
     source_db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
     if not source_db.is_file():
         raise StoreError(
@@ -299,7 +374,8 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
     target_db.chmod(_FILE_MODE)
 
     files: list[dict[str, object]] = []
-    for relative in _copied_paths(root):
+    copied, refused = _copied_paths(root)
+    for relative in copied:
         target = destination / relative
         target.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         target.parent.chmod(_DIR_MODE)
@@ -334,6 +410,9 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
         "files": files,
         "chains": _verify_chains(destination),
         "excluded": dict(EXCLUDED),
+        # Named in the artifact, not only in the run's output, because
+        # whoever restores this is not whoever took it.
+        "refused": refused,
     }
 
 
@@ -354,8 +433,17 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     problems: list[str] = []
 
     store_entry = manifest["store"]
-    db = directory / store_entry["path"]
-    if not db.is_file():
+    unsafe = _unsafe_path(directory, Path(str(store_entry["path"])), what="manifest store path")
+    if unsafe is not None:
+        # A path that escapes is a tamper indicator, so it is reported rather
+        # than followed — and reported as a problem rather than raised, so an
+        # operator deciding whether to restore sees everything at once.
+        problems.append(unsafe)
+        store_entry = {**store_entry, "path": None}
+    db = directory / str(store_entry["path"]) if store_entry["path"] else None
+    if db is None:
+        pass
+    elif not db.is_file():
         problems.append(f"{store_entry['path']} is missing")
     else:
         actual = _digest_file(db)
@@ -375,7 +463,11 @@ def _verify_backup(directory: Path) -> dict[str, object]:
                 )
 
     for entry in manifest["files"]:
-        path = directory / entry["path"]
+        unsafe = _unsafe_path(directory, Path(str(entry["path"])), what="manifest path")
+        if unsafe is not None:
+            problems.append(unsafe)
+            continue
+        path = directory / str(entry["path"])
         if not path.is_file():
             problems.append(f"{entry['path']} is missing")
             continue
@@ -578,6 +670,7 @@ def _run(
                 "files": len(manifest["files"]),  # type: ignore[arg-type]
                 "manifest_sha256": _digest_file(manifest_path),
                 "excluded": sorted(EXCLUDED),
+                "refused": manifest["refused"],
                 "wide_paths": _wide_paths(root),
             }
     except (StoreError, sqlite3.Error, ValueError, OSError, KeyError) as exc:
@@ -649,6 +742,11 @@ def _print_text(payload: dict[str, object], *, verifying: bool) -> None:
         "  positions are not in this backup by design "
         f"({', '.join(sorted(EXCLUDED))}); see docs/RESTORE.md."
     )
+    refused = payload.get("refused")
+    if isinstance(refused, list) and refused:
+        print("  warning: sources NOT in this backup, refused as unsafe to read:")
+        for entry in refused:
+            print(f"    {entry}")
     wide = payload.get("wide_paths")
     if isinstance(wide, list) and wide:
         print("  warning: lab-data paths readable or writable beyond their owner:")
