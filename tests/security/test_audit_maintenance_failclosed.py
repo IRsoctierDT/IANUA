@@ -40,8 +40,10 @@ from pathlib import Path
 
 import pytest
 from agents.policies import AuditLogger
+from compliance.evidence import verify_chain
 from scripts.audit_maintenance import main as maintain_main
 from scripts.audit_verify import main as verify_main
+from scripts.run_backup import _verify_chains
 
 _HMAC_KEY = b"maintenance-failclosed-test-key"
 
@@ -360,3 +362,63 @@ def test_bad_retention_arguments_still_exit_three(
     err = capsys.readouterr().err
     assert "invalid configuration" in err
     assert "signing" not in err
+
+
+# ------------------------------------------- every reader, one resolution
+@pytest.mark.security
+def test_every_reader_refuses_a_stale_ed25519_head_signature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Four tools read a chain. All four must resolve the same scheme.
+
+    Asserted behaviourally, over all four at once, because the defect was
+    precisely that they disagreed: ``scripts.audit_verify`` and
+    ``scripts.audit_maintenance`` resolved ``verifier_from_env``, while
+    ``run_backup._verify_chains`` and ``compliance.evidence.verify_chain``
+    resolved ``signing_key_from_env`` — HMAC-only. On an Ed25519 deployment,
+    the scheme whose entire point is that a verifier holds only the public key,
+    those two configured no signer at all, reported the head signature as
+    ``unsigned``, and recorded a chain with a **stale** head as ``intact`` —
+    the backup manifest among them, which is the artifact a restore trusts.
+
+    Measured before the fix: ``intact=True signature=unsigned`` from the
+    HMAC-only resolution against ``intact=False signature=stale`` from the
+    verifier's, on the same bytes.
+
+    A fifth reader added without this resolution fails here, which is the only
+    thing that would catch it: nothing in the type system distinguishes a
+    logger built to read from one built to write.
+    """
+    pytest.importorskip("cryptography")
+    from agents.policies import Ed25519Signer, generate_ed25519_keypair
+
+    private, public = generate_ed25519_keypair()
+    # The layout all four readers expect: the events chain is what the backup
+    # verifies, and compliance keeps its own beside it.
+    for subdir in ("events", "compliance"):
+        chain = tmp_path / "data" / subdir / "audit.log"
+        chain.parent.mkdir(parents=True)
+        _emit(AuditLogger(chain, signer=Ed25519Signer(private)), 3)
+        # Append without the key: the chain stays continuous and the detached
+        # head signature now covers an older head.
+        _emit(AuditLogger(chain), 1)
+    monkeypatch.setenv("AUDIT_ED25519_PUBLIC_KEY", public.hex())
+
+    events_chain = tmp_path / "data" / "events" / "audit.log"
+
+    # 1. the read-only verifier
+    assert verify_main(["--log", str(events_chain)]) == 2
+    assert json.loads(capsys.readouterr().out)["intact"] is False
+
+    # 2. the maintainer, which also must not rotate
+    assert maintain_main(["--log", str(events_chain), "--max-bytes", "1"]) == 2
+    assert json.loads(capsys.readouterr().err)["verified"] is False
+
+    # 3. the backup's chain verification, which the manifest records
+    row = _verify_chains(tmp_path)[str(Path("data") / "events" / "audit.log")]
+    assert isinstance(row, dict)
+    assert row["intact"] is False, "a stale head signature was recorded as intact"
+    assert row["signature"] == "stale", row
+
+    # 4. the compliance evidence chain
+    assert verify_chain(tmp_path).intact is False

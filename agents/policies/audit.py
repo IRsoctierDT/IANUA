@@ -76,9 +76,22 @@ def verifier_from_env() -> Signer | None:
     (``ValueError`` / ``RuntimeError``) so a caller cannot mistake an unusable
     key for an unsigned log and proceed as if it had verified one.
 
-    Every tool that reads the audit log resolves its verifier here, so a log the
+    **Every tool that *reads* a chain resolves its verifier here**, so a log the
     read-only verifier would reject cannot be rotated or pruned by a maintenance
-    job that happened to resolve a weaker scheme.
+    job that resolved a weaker scheme — nor recorded as ``intact`` in a backup
+    manifest by one. The readers are :mod:`scripts.audit_verify`,
+    :mod:`scripts.audit_maintenance`, ``scripts.run_backup._verify_chains`` and
+    :func:`compliance.evidence.verify_chain`; the first draft of this sentence
+    claimed all of them and only the first two were true, which is how the
+    third kept reporting a stale Ed25519 head signature as intact.
+
+    *Writers* do **not** use this: they need a key that can sign, and
+    :class:`Ed25519Verifier` deliberately cannot. They resolve
+    :func:`signing_key_from_env` instead, which is HMAC-only — so an Ed25519
+    deployment's chains are written unsigned. That is a real gap and a wider
+    one than this function; it is recorded rather than implied here, because
+    closing it means deciding whether the platform wants an Ed25519 *signing*
+    posture at all (``ed25519_signer_from_env`` exists and no writer calls it).
     """
     hmac_key = signing_key_from_env()
     if hmac_key is not None:

@@ -27,7 +27,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents.policies.audit import AuditLogger, VerificationReport, signing_key_from_env
+from agents.policies.audit import (
+    AuditLogger,
+    VerificationReport,
+    signing_key_from_env,
+    verifier_from_env,
+)
 
 from compliance.engine import ComplianceReport
 
@@ -138,9 +143,21 @@ def load_recent(root: Path, limit: int = 200) -> tuple[EvidenceRecord, ...]:
     return tuple(records[-limit:])
 
 
+def _reader(root: Path) -> AuditLogger:
+    """A read-only view of the chain, resolving the *verifier* scheme.
+
+    Separate from :func:`_logger`, which writes: a writer needs a key that can
+    sign and :class:`Ed25519Verifier` cannot, so the two cannot share one
+    resolution. Reading through ``signing_key_from_env`` reported an Ed25519
+    chain as ``unsigned`` — the same defect ``scripts.audit_maintenance`` was
+    fixed for, surviving here because nothing checked that every reader agreed.
+    """
+    return AuditLogger(_evidence_dir(root) / _AUDIT_FILE, signer=verifier_from_env())
+
+
 def verify_chain(root: Path) -> VerificationReport:
     """Verify the compliance audit chain (fail closed if it was tampered)."""
-    return _logger(root, clock=None).verify_report()
+    return _reader(root).verify_report()
 
 
 def export_bundle(report: ComplianceReport, *, root: Path, dest: Path) -> Path:

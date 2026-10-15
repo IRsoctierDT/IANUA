@@ -83,6 +83,7 @@ from agents.policies.audit import (  # noqa: E402
     AuditLogger,
     escape_delimiter,
     signing_key_from_env,
+    verifier_from_env,
 )
 from agents.policies.bundle import (  # noqa: E402
     DEFAULT_BUNDLE_PATH,
@@ -326,10 +327,19 @@ def _verify_chains(root: Path) -> dict[str, object]:
     repository that forgets it (``scripts/audit_maintenance.py``) is recorded
     as a defect rather than copied here.
     """
+    # ``verifier_from_env`` rather than ``signing_key_from_env``: this reads a
+    # chain, so it must resolve what ``scripts.audit_verify`` resolves. It did
+    # not, and the docstring above claims it follows that contract — on an
+    # Ed25519 deployment (the scheme whose point is that a verifier holds only
+    # the public key) no signer was configured, the head signature came back
+    # ``unsigned``, and a stale or forged one was recorded here as ``intact``.
+    # The writer below keeps ``signing_key_from_env``, because a verifier
+    # cannot sign.
     chains: dict[str, object] = {}
+    verifier = verifier_from_env()
     for relative in CHAIN_FILES:
         path = root / relative
-        logger = AuditLogger(path, signing_key=signing_key_from_env())
+        logger = AuditLogger(path, signer=verifier)
         if not logger.exists():
             chains[str(relative)] = {"present": False}
             continue
