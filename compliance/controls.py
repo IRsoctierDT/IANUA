@@ -309,6 +309,45 @@ def check_dashboard_upload_cap(root: Path) -> CheckResult:
     return CheckResult(ControlStatus.FAIL, "maxUploadSize not set in .streamlit/config.toml")
 
 
+#: Addresses that keep the dashboard reachable only from the host it runs on.
+#: Deliberately a small allow-list rather than a "not 0.0.0.0" check: the
+#: interesting failure is a bind that is reachable, and enumerating the two
+#: loopback forms is the honest way to say "only this host".
+_LOOPBACK_ADDRESSES = ("127.0.0.1", "::1", "localhost")
+
+
+def check_dashboard_binds_loopback(root: Path) -> CheckResult:
+    """The dashboard binds only to loopback, so exposure is a deliberate act.
+
+    The dashboard authenticates nobody and renders stored event content, so a
+    bind address reachable from elsewhere publishes hostnames, accounts,
+    addresses and raw log messages to whoever can reach the port. This was
+    unset until it was pinned, which meant the address came from whatever the
+    installed Streamlit defaulted to — not a property this repository
+    controlled, while `docs/PRODUCTION_SOC_PLAN.md` described it as an
+    invariant. Fails closed: an unreadable or absent config is a FAIL, and so
+    is any address not on the loopback allow-list.
+    """
+    config = _read_text(root, ".streamlit/config.toml")
+    if config is None:
+        return CheckResult(ControlStatus.FAIL, ".streamlit/config.toml missing")
+    match = re.search(r"^\s*address\s*=\s*[\"']([^\"']+)[\"']", config, re.MULTILINE)
+    if match is None:
+        return CheckResult(
+            ControlStatus.FAIL,
+            "server.address not set in .streamlit/config.toml; the bind address is "
+            "then whatever the installed Streamlit defaults to",
+        )
+    address = match.group(1)
+    if address not in _LOOPBACK_ADDRESSES:
+        return CheckResult(
+            ControlStatus.FAIL,
+            f"dashboard binds {address!r}, which is not loopback; it authenticates "
+            "nobody and renders stored event content",
+        )
+    return CheckResult(ControlStatus.PASS, f"dashboard binds loopback only ({address})")
+
+
 # --- registry ---------------------------------------------------------------
 
 
@@ -505,6 +544,23 @@ def registry() -> tuple[Control, ...]:
                 (Framework.ISO_27001, "A.8.26"),
             ),
             check=check_dashboard_upload_cap,
+        ),
+        Control(
+            id="CFG-02",
+            title="Dashboard binds loopback only",
+            description=(
+                "The Streamlit dashboard binds 127.0.0.1. It authenticates no "
+                "one and renders stored event content, so exposure must be a "
+                "deliberate deployment act behind an authenticating proxy."
+            ),
+            category=Category.CONFIGURATION,
+            severity=Severity.HIGH,
+            framework_refs=_refs(
+                (Framework.NIST_CSF, "PR.AA-05"),
+                (Framework.SOC_2, "CC6.6"),
+                (Framework.ISO_27001, "A.8.20"),
+            ),
+            check=check_dashboard_binds_loopback,
         ),
         Control(
             id="MAN-01",

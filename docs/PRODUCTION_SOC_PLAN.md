@@ -71,7 +71,7 @@ and run against lab telemetry before any charter amendment is argued.
 | 5 | **Collection (local)** — this node's own log files into the store | **Yes, amended**: filesystem reach beyond the project, read-only and declared-only (`AGENTS.md` §5, `DESIGN.md` §5 boundary 14). `ingest/`'s no-network invariant is untouched — collection is a separate package — and **default-deny egress is NOT amended** | **DONE** |
 | 5b | **Collection (remote)** — forwarders or a listener for other hosts | **Yes**: an inbound listening socket with forwarder authentication, which no boundary currently describes. Not egress, so it does not reopen the default-deny argument | Planned |
 | 6 | **Real telemetry + retention policy** | **Yes**: §5 treats logs and client info as sensitive by default and `data/` as lab-only; real logs carry usernames, addresses, hostnames. Needs a stated PII posture, not a silent reclassification | Planned |
-| 7 | **Authenticated multi-user access** | **Yes**: `dashboard/`'s "local-only backends" invariant and loopback-only binding | Planned |
+| 7 | **Authenticated multi-user access** | **Yes**, but narrower than this row used to claim — see "What stage 7 actually crosses" below. The dashboard authenticates no one and now binds loopback only (pinned, control CFG-02) | Planned |
 | 8 | **Response execution** (plan → act) | **Yes**: `agents/response/` ships no executor and security tests enforce that. The 2026-08-21 containment decision is the template for doing this properly — a dedicated action class decided and audited per invocation, not an allow-list standing grant | Planned |
 | 9 | **Operational envelope** — HA, backup/DR, self-monitoring, SLOs | None in §5; deployment remains human-gated per §5.1 | Planned |
 
@@ -359,6 +359,49 @@ which is a schema change. (Strictly after, not `max(now, mark)`: the pipeline's 
 cursor is strictly after `(ingested_at, event_id)`, so an event written at *exactly* the
 mark with a lower event id would sit behind a cursor that had already passed it and never
 be read — four stored, three ever seen, measured before the fix.)
+
+### What stage 7 actually crosses
+
+This row used to say stage 7 crosses "`dashboard/`'s 'local-only backends' invariant and
+loopback-only binding". Establishing the ground truth before planning showed both halves
+were wrong, so the row is corrected above and the reasoning recorded here.
+
+**"Local-only backends" is an egress property, not an access-control one.** The phrase
+appears in `SECURITY.md` and `dashboard/kb_search.py`, and both use it to mean the services
+the dashboard *calls out to* — Ollama on loopback, Qdrant on loopback, or the in-process
+lexical fallback. Letting more people in does not touch it.
+
+**Loopback-only binding was not an invariant.** `.streamlit/config.toml` pinned
+`fileWatcherType` and `maxUploadSize` and said nothing about the address, and the documented
+launch is a bare `streamlit run dashboard/app.py`. So the bind address was whatever the
+installed Streamlit defaulted to, with `uv.lock` pinning `streamlit >= 1.65.0` and no upper
+bound — not a property this repository controlled, while this plan described it as one. It
+is pinned to `127.0.0.1` now and asserted by compliance control **CFG-02**, which fails
+closed on an unset address as well as a reachable one. Pinning it also makes the default
+irrelevant, which is better than documenting what the default is believed to be.
+
+**There is no authentication in `dashboard/` at all** — not a session, not a password, not a
+token. That is the honest starting point for this stage, and it is why the bind address
+matters so much: the dashboard renders stored event content, so anywhere it is reachable, it
+publishes hostnames, accounts, addresses and raw log messages to whoever reaches the port.
+
+**The chosen model keeps that true.** Access goes behind an authenticating reverse proxy
+(nginx or Caddy terminating OIDC or basic auth) while the dashboard stays loopback-bound.
+The consequence worth noting is that **IANUA's own reach does not change**, so this stage may
+need no `AGENTS.md` §5 amendment at all — unlike stages 5 and 6, what changes is the runbook
+and a fail-closed guard, not the platform's boundary. Two things still need deciding before
+it is built, and neither is a documentation question:
+
+- **Whether the dashboard consumes a proxy-supplied identity.** A proxy puts the
+  authenticated user in a request header, and trusting that header is exactly the
+  unauthenticated claim stage 3 refused for `IANUA_PRINCIPAL` — a header is caller-supplied
+  unless the path from the proxy is itself authenticated. Per-caller audit and authz are
+  worth having, and `agents/policies/principal.py` already provides the vocabulary, but the
+  trust argument has to be made rather than assumed.
+- **Whether the dashboard refuses to serve when bound non-loopback.** A config file is not a
+  control if a flag overrides it, and `--server.address` on the command line does. A startup
+  check that fails closed unless an explicit acknowledgement is set would make the posture
+  enforceable rather than merely configured.
 
 ### Why this order
 
