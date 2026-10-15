@@ -124,6 +124,7 @@ ianua/
 ├── store/                     # Durable append-only event store (SOC memory; stdlib sqlite3)
 ├── correlation/               # Entity resolution across domains + incident assembly
 ├── pipeline/                  # Scheduled detection cycle (at-least-once, resumable cursor)
+├── sli/                       # Service-level indicators for the platform itself (fail-closed)
 ├── collect/                   # Local log collection (declared sources; reaches outside the project)
 ├── scripts/                   # Operational & maintenance CLIs (verify, SBOM, status page)
 ├── rag/                       # Ingestion, chunking, embedding, retrieval, citations
@@ -278,6 +279,18 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   by default and deletes only under a committed `destructive` grant. Measured at roughly
   1.8 KB per event, a `*/5` schedule at the default batch size is ~15 GB/month, so a
   retention decision is an operational requirement and not a tidiness preference.
+- **And a pass never deletes past the detection cycle, which is a second grant.** The
+  threshold is clamped to the pipeline cursor, because the two used to be mutually
+  invisible: measured, 40 events with only the oldest 5 processed and `--keep-days 3
+  --apply` destroyed **24 events the cycle had never looked at**, exit 0. An absent cursor
+  (step 3 of `docs/RESTORE.md` deletes one by design) and a cursor ahead of the newest
+  stored event both clamp to *nothing*. The honest shape of the trade is that clamping
+  does **not** bound the disk — measured over a 40-day stall, clamping and refusing grow
+  the store at the same rate and only deleting unprocessed evidence holds it flat — so
+  nothing bounds the disk during a detection stall except destroying evidence nobody has
+  analysed. That cannot be engineered away; it is *authorized*, by
+  `--include-unprocessed` under its own `retain_events:apply-unprocessed` grant, which
+  `retain_events:apply` deliberately does not confer.
 
 This amendment changes **nothing** about secrets: a credential, token, key or password is
 never written to source, tests, fixtures, comments, commit messages, or logs, and
@@ -385,10 +398,14 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance
+#    The interpreter flag is NOT decoration: mypy resolves imports against its
+#    own interpreter, so a standalone install does not share one with the
+#    project. Measured without it on a fresh container: 134 errors in 132
+#    files, 132 of them a missing `pytest` stub. CI carries it too.
+mypy --python-executable "$(command -v python)" agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance sli
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp sli
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock
@@ -415,12 +432,27 @@ python -m pytest --cov=agents --cov=scripts --cov-report=term-missing --cov-fail
 # Dependency vulnerability scan (SCA)
 pip-audit
 
-# Secret scanning — fail the build on any detected credential
-detect-secrets scan --baseline .secrets.baseline
+# Secret scanning — fail the build on any detected credential.
+#
+# `detect-secrets-hook`, NOT `detect-secrets scan`. Measured: `scan --baseline`
+# rescans and *rewrites* the tracked baseline in place — bumping
+# `generated_at`, shifting line numbers, and silently absorbing any NEW finding
+# as an accepted entry — and it exits 0 either way. So the command this block
+# used to give could not fail the build on a detected credential, which is the
+# one thing the line above claims it does, and it dirtied a tracked file as a
+# side effect. `detect-secrets-hook` exits 1 on a secret not in the baseline,
+# exits 0 when clean, and leaves the baseline untouched in both cases
+# (measured, both directions). It is also what `.pre-commit-config.yaml`
+# already runs, so the charter was the only place disagreeing with the repo.
+detect-secrets-hook --baseline .secrets.baseline $(git ls-files)
 # or: gitleaks detect --no-banner
+#
+# To ACCEPT a new finding, updating the baseline is a deliberate, reviewable
+# act: `detect-secrets scan --baseline .secrets.baseline`, then read the diff
+# and commit it.
 
 # Optional: type-strictness on new modules
-mypy --strict <changed_module>
+mypy --python-executable "$(command -v python)" --strict <changed_module>
 ```
 
 > If a tool above is not yet wired into the repo, the **first** task is to add it to
@@ -437,11 +469,11 @@ in the pipeline."
 
 1. **Setup** — pinned toolchain, cached deps, reproducible install.
 2. **Static analysis** — `ruff check`, `ruff format --check`, `mypy` over the same
-   fourteen packages §7 names (`agents attack intel ingest store correlation pipeline
-   collect scripts tests dashboard mcp rag compliance`). §8 claims §7 is mirrored
+   fifteen packages §7 names (`agents attack intel ingest store correlation pipeline
+   collect scripts tests dashboard mcp rag compliance sli`). §8 claims §7 is mirrored
    exactly, so this list is part of that claim: it had drifted to six of the fourteen,
-   and `tests/unit/test_gate_scope_parity.py` pins the §7 block against CI but not this
-   prose. Keep the two in step.
+   and `tests/unit/test_gate_scope_parity.py` now pins this prose as well as the §7
+   block. Keep the two in step — the parity test is what caught `sli` missing here.
 3. **Security** — `bandit` (SAST), `pip-audit` (SCA), `gitleaks` (secrets), CodeQL.
    Any finding above the agreed severity threshold **blocks merge**.
 4. **Tests** — `pytest` on 3.11 and 3.12 with coverage gate (`--cov-fail-under=85`);

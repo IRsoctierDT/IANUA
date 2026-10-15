@@ -143,6 +143,15 @@ Deleting both positions is therefore **a complete recovery, not a compromise** â
 at 600 of 600 events with zero duplication. Step 3 exists so that a half-finished restore
 cannot leave a stale store under current offsets.
 
+Deleting the cursor in step 3 has a second consequence, and it is a safe one:
+`scripts/run_retention.py` clamps its threshold to the cursor, and treats an absent cursor
+as "nothing is known to have been processed", so **no retention pass will delete anything
+until the detection cycle has run and recorded a position**. Before that clamp existed the
+opposite was true â€” measured, the restore procedure below left no cursor and the next
+retention pass destroyed 1500 of 1500 restored events. An operator who needs retention to
+reclaim space before the cycle has caught up must pass `--include-unprocessed`, which is
+gated on its own `retain_events:apply-unprocessed` grant.
+
 Note that the cursor row above is the reason step 3 deletes the cursor too, rather than
 leaving it as harmless. An earlier version of this table called an ahead cursor
 recoverable; it is not, once the clock can move backwards, which is exactly when a host

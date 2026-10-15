@@ -48,11 +48,13 @@ from store import (
     EventStore,
     Query,
     SchemaVersionError,
+    StoreError,
     StoreIntegrityError,
     StorePathError,
     canonical_json,
     event_id,
 )
+from store.schema import HIGH_WATER_KEY
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORE_ROOT = _REPO_ROOT / "store"
@@ -708,7 +710,6 @@ def test_an_existing_store_written_before_this_control_is_not_defenceless(
     import sqlite3
 
     from store import IngestionOrderError
-    from store.schema import HIGH_WATER_KEY
 
     with EventStore.open(tmp_path) as store:
         store.append_many((normalize(_RECORD),), ingested_at=1_000.0)
@@ -898,3 +899,416 @@ def test_events_written_at_the_safe_stamp_are_all_reachable(tmp_path: Path) -> N
         assert first.events_read + second.events_read == store.count(), (
             "the store accepted events the cursor can never reach"
         )
+
+
+# ------------------------------------------- the attestation reads a table page
+
+
+def _s3_record(index: int) -> str:
+    """One realistic cloud record, distinct from every other, as JSON text.
+
+    Distinct because ``event_id`` is content-addressed: 200 copies of one line
+    store as **one** event, which is a fixture bug this repository has already
+    paid for once.
+    """
+    return json.dumps(
+        {
+            "eventSource": "s3.amazonaws.com",
+            "eventName": "GetObject",
+            "eventTime": f"2026-10-15T09:00:{index % 60:02d}Z",
+            "sourceIPAddress": f"10.0.{index // 256 % 256}.{index % 256}",
+            "userIdentity": {"userName": f"svc-{index:05d}"},
+        }
+    )
+
+
+@pytest.mark.security
+def test_an_attestation_cannot_be_produced_over_rows_that_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    """The completeness control used to sign off on a store that had lost every row.
+
+    Both of ``attest()``'s statements are covering-index scans — measured with
+    ``EXPLAIN QUERY PLAN``: ``SCAN events USING COVERING INDEX
+    sqlite_autoindex_events_1`` for the id stream, ``... COVERING INDEX
+    events_ingested_at`` for the count. So the digest and the count prove the
+    *indexes* agree and say nothing about whether a row body is readable.
+    Zeroing a 400-event store's 134 table leaf pages while leaving every index
+    page intact produced a bit-identical digest and count while ``query()``
+    raised ``database disk image is malformed``.
+
+    The damaged page is **found by measurement, not by asking SQLite which
+    pages are table pages**. ``dbstat`` is a compile-time option, and a
+    security test that skips where the option is absent proves nothing in the
+    environment that matters. So every page is zeroed in turn and the ones
+    whose loss breaks a row read are discovered — which is also the property
+    itself, stated directly: there must exist no page whose loss the
+    attestation cannot see.
+
+    The refusal must be a :class:`StoreIntegrityError` specifically, and that
+    is not pedantry — it is the second half of the fix. ``PRAGMA quick_check``
+    *raises* ``database disk image is malformed`` for some losses and
+    *reports* a verdict string for others, measured both ways on this same
+    construction, so the first version of the gate let a raw ``sqlite3``
+    error out of ``attest()``. Every caller in this repository catches
+    ``StoreError``; a ``sqlite3.DatabaseError`` sails past all of them and
+    reaches the operator as a traceback. Asserting the exception *type* is
+    what made the "run the pragma, ignore its verdict" plant fail — it had
+    survived a version of this test that accepted any exception.
+
+    Non-vacuity is asserted twice, because each has been how a test like this
+    measured nothing: the sweep must find at least one page whose loss breaks
+    a row read (or the loop below is empty and passes), and the pristine store
+    must attest cleanly (or "refuses" is indistinguishable from "always
+    refuses").
+    """
+    root = tmp_path / "lab"
+    root.mkdir(parents=True)
+    with EventStore.open(root) as store:
+        store.append_many(
+            tuple(normalize(_s3_record(index)) for index in range(200)),
+            ingested_at=1_760_000_000.0,
+        )
+        intact = store.attest()
+    assert intact.events == 200, f"the fixture stored {intact.events} of 200 events"
+
+    database = root / "data" / "events" / "events.sqlite3"
+    # Fold the WAL into the main file so a page index means something, and read
+    # the page size from the database rather than assuming SQLite's default.
+    folding = sqlite3.connect(database)
+    try:
+        folding.execute("PRAGMA journal_mode=DELETE")
+        page_size = int(folding.execute("PRAGMA page_size").fetchone()[0])
+    finally:
+        folding.close()
+    pristine = database.read_bytes()
+    pages = len(pristine) // page_size
+    assert pages > 1, "a single-page store cannot distinguish table from index"
+
+    unreadable: list[int] = []
+    wrong: dict[int, str] = {}
+    # Page 1 holds the file header; zeroing it is a different failure (the file
+    # stops being a database at all) and is covered by the aborted-copy test.
+    for pageno in range(2, pages + 1):
+        offset = (pageno - 1) * page_size
+        database.write_bytes(pristine[:offset] + bytes(page_size) + pristine[offset + page_size :])
+        try:
+            with EventStore.open(root) as store:
+                try:
+                    store.query(Query(limit=5))
+                except StoreIntegrityError:
+                    # Tightened from `(StoreIntegrityError, sqlite3.Error)`.
+                    # Accepting the raw driver error here is what let this test
+                    # stay green while `query` leaked one, and would let a
+                    # future contributor remove the mapping unnoticed.
+                    unreadable.append(pageno)
+                else:
+                    continue
+                try:
+                    recovered = store.attest()
+                except StoreIntegrityError:
+                    continue
+                except sqlite3.Error as exc:
+                    wrong[pageno] = f"raw {type(exc).__name__}"
+                    continue
+                if (recovered.digest, recovered.events) == (intact.digest, intact.events):
+                    wrong[pageno] = "the intact store's digest and count"
+                else:
+                    wrong[pageno] = f"a digest of its own ({recovered.events} event(s))"
+        except (StoreIntegrityError, SchemaVersionError):
+            # The store would not open at all, which is a loud failure and not
+            # the silent one under test. `sqlite3.Error` was removed from this
+            # tuple with the one above: `EventStore.open` used to leak a raw
+            # driver error for the `meta` pages, and it must not again.
+            continue
+    database.write_bytes(pristine)
+
+    assert unreadable, "the sweep found no page whose loss breaks a row read"
+    assert not wrong, (
+        f"{len(wrong)} of {len(unreadable)} page(s) whose loss makes the rows unreadable "
+        "did not refuse with StoreIntegrityError: "
+        + ", ".join(f"page {page} gave {why}" for page, why in sorted(wrong.items())[:6])
+    )
+
+
+#: Every public entry point that executes SQL, with a call that reaches it. The
+#: fix is scoped to the surface rather than to one method, so the test is too:
+#: measured before it, a raw ``sqlite3`` error escaped at least one of these
+#: for **95 of 95** single-page losses, and a ``query``-only fix left six of
+#: them leaking while the whole suite stayed green.
+_SQL_ENTRY_POINTS: dict[str, Any] = {
+    "query": lambda store: store.query(Query(limit=5)),
+    "query(observable=)": lambda store: store.query(Query(limit=5, observable="10.0.0.1")),
+    "count": lambda store: store.count(),
+    "count_before": lambda store: store.count_before(before=2e9),
+    "high_water_mark": lambda store: store.high_water_mark(),
+    "next_stamp": lambda store: store.next_stamp(1.0),
+    "attest": lambda store: store.attest(),
+    "verify_integrity": lambda store: store.verify_integrity(),
+    "append": lambda store: store.append(normalize(_s3_record(90_001)), ingested_at=1.8e9),
+    "prune": lambda store: store.prune(before=2e9),
+}
+
+
+@pytest.mark.security
+def test_no_public_entry_point_hands_a_caller_a_raw_sqlite_error(tmp_path: Path) -> None:
+    """A driver exception is not a ``StoreError`` and sails past every handler.
+
+    Measured at the commit before the mapping: zeroing each of a 200-event
+    store's 95 non-header pages in turn, a raw ``sqlite3.DatabaseError``
+    escaped at least one public entry point for **95 of 95** pages — ``prune``
+    on 93 of the 93 that open, ``query(observable=)`` on 75, ``query`` on 69,
+    ``append`` on 16, ``open`` on 2, ``count`` and ``count_before`` on 1.
+    ``attest`` was the only one already covered.
+
+    The sweep is over the **whole surface** for a measured reason: a fix that
+    wrapped ``query`` alone produced *2187 passed, 7 skipped* — the suite could
+    not distinguish a partial fix from a complete one, because the existing
+    page sweep only ever calls ``query`` and ``attest``. This is the assertion
+    that can.
+    """
+    root = tmp_path / "lab"
+    root.mkdir(parents=True)
+    with EventStore.open(root) as store:
+        store.append_many(
+            tuple(normalize(_s3_record(index)) for index in range(200)),
+            ingested_at=1_760_000_000.0,
+        )
+    database = root / "data" / "events" / "events.sqlite3"
+    folding = sqlite3.connect(database)
+    try:
+        folding.execute("PRAGMA journal_mode=DELETE")
+        page_size = int(folding.execute("PRAGMA page_size").fetchone()[0])
+    finally:
+        folding.close()
+    pristine = database.read_bytes()
+    pages = len(pristine) // page_size
+    assert pages > 50, f"the fixture is {pages} pages; too small to sweep meaningfully"
+
+    def sweep(baseline: bytes) -> tuple[dict[str, list[int]], int, dict[str, int]]:
+        leaked: dict[str, list[int]] = {}
+        other: dict[str, int] = {}
+        reached = 0
+        for pageno in range(2, pages + 1):
+            offset = (pageno - 1) * page_size
+            database.write_bytes(
+                baseline[:offset] + bytes(page_size) + baseline[offset + page_size :]
+            )
+            try:
+                EventStore.open(root).close()
+            except StoreError:
+                continue
+            except sqlite3.Error:
+                leaked.setdefault("open", []).append(pageno)
+                continue
+            for name, call in _SQL_ENTRY_POINTS.items():
+                try:
+                    with EventStore.open(root) as store:
+                        call(store)
+                except StoreError:
+                    reached += 1
+                except sqlite3.Error:
+                    leaked.setdefault(name, []).append(pageno)
+                except (ValueError, OSError) as exc:
+                    # Neither is the leak under test: `next_stamp` rejects a
+                    # non-finite clock with ValueError, and an OSError is the
+                    # filesystem. Counted rather than swallowed so a fixture
+                    # that starts failing for one of these cannot look like
+                    # coverage.
+                    key = f"{name}:{type(exc).__name__}"
+                    other[key] = other.get(key, 0) + 1
+        database.write_bytes(baseline)
+        return leaked, reached, other
+
+    # Regime 1: the stored high-water row present, which is every store this
+    # platform writes today.
+    leaked, reached, other = sweep(pristine)
+    assert reached, "no entry point refused on any damaged page, so nothing was exercised"
+    assert not leaked, (
+        "with the high-water row present, a raw sqlite3 error reached a caller from: "
+        + ", ".join(f"{name} on {len(hits)} page(s)" for name, hits in sorted(leaked.items()))
+        + f" (non-leak failures seen: {other})"
+    )
+
+    # Regime 2: the row ABSENT — the pre-control database state, reachable on an
+    # upgraded store. A different code path, not a different fixture:
+    # `high_water_mark` falls back to `SELECT MAX(ingested_at)`, which plans as
+    # `SEARCH events USING COVERING INDEX events_ingested_at` and so leaks on
+    # that index's page, where the stored-row path leaks on none. The first
+    # version of this test swept only regime 1 and so proved one of two.
+    stripping = sqlite3.connect(database)
+    try:
+        stripping.execute("DELETE FROM meta WHERE key = ?", (HIGH_WATER_KEY,))
+        assert stripping.total_changes == 1, "the high-water row was not there to remove"
+        stripping.commit()
+        stripping.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        stripping.close()
+    without_mark = database.read_bytes()
+    with EventStore.open(root) as store:
+        assert store.high_water_mark() is not None, (
+            "the fallback returned nothing, so regime 2 does not exercise the path "
+            "it is written for"
+        )
+
+    leaked, reached, other = sweep(without_mark)
+    database.write_bytes(pristine)
+    assert reached, "regime 2 exercised nothing"
+    assert not leaked, (
+        "with the high-water row absent, a raw sqlite3 error reached a caller from: "
+        + ", ".join(f"{name} on {len(hits)} page(s)" for name, hits in sorted(leaked.items()))
+        + f" (non-leak failures seen: {other})"
+    )
+
+
+@pytest.mark.security
+def test_the_corruption_mapping_lets_three_other_sqlite_errors_keep_their_meaning() -> None:
+    """Each exclusion is a measured false positive, not caution.
+
+    All three are ``sqlite3.DatabaseError`` subclasses, so a mapping written on
+    the class alone relabels every one of them as evidence damage — and
+    ``sli.measure_store_readable`` grades any ``StoreError`` as ``0.0``, a
+    breach. This asserts the predicate discriminates, which the class hierarchy
+    cannot do for it.
+    """
+    from store.events import _is_corruption
+
+    assert issubclass(sqlite3.IntegrityError, sqlite3.DatabaseError)
+    assert issubclass(sqlite3.OperationalError, sqlite3.DatabaseError)
+    assert issubclass(sqlite3.ProgrammingError, sqlite3.DatabaseError)
+
+    def _named(cls: type[sqlite3.Error], name: str, code: int) -> sqlite3.Error:
+        exc = cls("measured message")
+        exc.sqlite_errorname = name
+        exc.sqlite_errorcode = code
+        return exc
+
+    # The append-only trigger firing: a security control working.
+    assert not _is_corruption(_named(sqlite3.IntegrityError, "SQLITE_CONSTRAINT_TRIGGER", 1811))
+    # Lock contention, with quick_check returning "ok" at that same moment.
+    assert not _is_corruption(_named(sqlite3.OperationalError, "SQLITE_BUSY", 5))
+    # A caller bug: a closed store, a bad bind type.
+    assert not _is_corruption(_named(sqlite3.ProgrammingError, "SQLITE_MISUSE", 21))
+    # And the two that are corruption, by name rather than by class.
+    assert _is_corruption(_named(sqlite3.DatabaseError, "SQLITE_CORRUPT", 11))
+    assert _is_corruption(_named(sqlite3.DatabaseError, "SQLITE_NOTADB", 26))
+    # An unnamed DatabaseError is not assumed to be corruption.
+    assert not _is_corruption(sqlite3.DatabaseError("no errorname at all"))
+
+    # The class exclusions, pinned separately — and this case is CONSTRUCTED,
+    # not engine-produced, which is the honest thing to say about it. CPython
+    # derives the sqlite3 exception class from the error code, so every
+    # exception I could reach through the engine carried a code in its own
+    # family: IntegrityError 1811, OperationalError 5 and 1, DatabaseError 11
+    # and 26. I could not make SQLite raise an IntegrityError bearing
+    # SQLITE_CORRUPT. The exclusion is therefore a second layer against that
+    # mapping ever changing, and without this assertion it is inert: removing
+    # the isinstance line left all 175 tests in this area green, because the
+    # name gate alone caught every case the other assertions use. A guard no
+    # test can make fire is the shape this suite has spent the session
+    # removing, so it is pinned here or it should not exist.
+    assert not _is_corruption(_named(sqlite3.IntegrityError, "SQLITE_CORRUPT", 11))
+    assert not _is_corruption(_named(sqlite3.ProgrammingError, "SQLITE_NOTADB", 26))
+
+
+@pytest.mark.security
+def test_the_append_only_trigger_still_raises_sqlite_integrity_error(tmp_path: Path) -> None:
+    """End to end, not just through the predicate.
+
+    The trigger refusal travels through ``store._conn`` rather than a public
+    method, which is exactly why the mapping is at the method boundary: a
+    connection-level wrap was measured to be the *only* shape that breaks this
+    suite, and this is the property it breaks.
+    """
+    root = tmp_path / "lab"
+    root.mkdir(parents=True)
+    with EventStore.open(root) as store:
+        store.append(normalize(_s3_record(1)), ingested_at=1_760_000_000.0)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            store._conn.execute("UPDATE events SET vendor = 'rewritten'")
+
+
+@pytest.mark.security
+def test_a_reported_quick_check_verdict_refuses_and_names_more_than_the_banner(
+    tmp_path: Path,
+) -> None:
+    """SQLite gives two answers, and only one of them was being tested.
+
+    ``PRAGMA quick_check`` *raises* for some page losses and *reports* a
+    verdict string for others. Nothing in the suite reached the reported
+    branch, so planting "run the pragma, look at the verdict, ignore it" left
+    every test green — the same shape as the plant that survived the first
+    version of the attestation fix.
+
+    Measured reachability, which is why this is a sweep and not a hard-coded
+    page: at 200 / 400 / 1200 events the reported branch is **20 of 95**,
+    **41 of 186** and **98 of 525** single-page losses. Not exotic.
+
+    The second assertion pins :func:`store.events._verdict_reason`. Every
+    reported verdict's first line is the bare banner ``*** in database main
+    ***``, which tells an operator nothing; the reason is on the next line
+    (``Tree 4 page 185: btreeInitPage() returns error``). A refusal message of
+    just the banner is a refusal with no diagnosis.
+    """
+    root = tmp_path / "lab"
+    root.mkdir(parents=True)
+    with EventStore.open(root) as store:
+        store.append_many(
+            tuple(normalize(_s3_record(index)) for index in range(200)),
+            ingested_at=1_760_000_000.0,
+        )
+    database = root / "data" / "events" / "events.sqlite3"
+    folding = sqlite3.connect(database)
+    try:
+        folding.execute("PRAGMA journal_mode=DELETE")
+        page_size = int(folding.execute("PRAGMA page_size").fetchone()[0])
+    finally:
+        folding.close()
+    pristine = database.read_bytes()
+
+    banner_only: list[int] = []
+    refusals: list[str] = []
+    for pageno in range(2, len(pristine) // page_size + 1):
+        offset = (pageno - 1) * page_size
+        database.write_bytes(pristine[:offset] + bytes(page_size) + pristine[offset + page_size :])
+        probe = sqlite3.connect(database)
+        try:
+            verdict = str(probe.execute("PRAGMA quick_check").fetchone()[0])
+        except sqlite3.DatabaseError:
+            continue  # the raising branch; covered by the sweep above
+        finally:
+            probe.close()
+        if verdict == "ok":
+            continue
+        assert verdict.splitlines()[0].strip() == "*** in database main ***", (
+            f"page {pageno}: a reported verdict no longer leads with the banner, "
+            "so the second assertion below would pass for the wrong reason"
+        )
+        banner_only.append(pageno)
+        try:
+            with EventStore.open(root) as store:
+                store.verify_integrity()
+        except StoreIntegrityError as exc:
+            refusals.append(str(exc))
+        except (StoreError, sqlite3.Error):
+            continue
+        else:
+            database.write_bytes(pristine)
+            raise AssertionError(
+                f"page {pageno}: quick_check reported {verdict.splitlines()[0]!r} "
+                "and verify_integrity() accepted the store anyway"
+            )
+    database.write_bytes(pristine)
+
+    assert banner_only, (
+        "no page's loss made quick_check REPORT rather than raise, so this test "
+        "did not reach the branch it exists for"
+    )
+    assert refusals, "the reported branch was reached but produced no refusal"
+    uninformative = [
+        message for message in refusals if message.rstrip().endswith("in database main ***")
+    ]
+    assert not uninformative, (
+        f"{len(uninformative)} of {len(refusals)} refusal(s) carry only quick_check's "
+        f"banner and no reason: {uninformative[:1]}"
+    )

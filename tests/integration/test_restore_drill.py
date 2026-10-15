@@ -26,7 +26,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,6 +39,7 @@ from scripts.run_backup import main as backup_main
 from scripts.run_collector import main as collect_main
 from store import EventStore
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _LINES = 600
 _BACKUP_AT = 400
 
@@ -142,6 +147,105 @@ def test_a_backup_taken_while_a_writer_holds_the_store_is_complete(tmp_path: Pat
     assert uncheckpointed, "expected an un-checkpointed WAL while the writer was open"
     backup = root / "data" / "backups" / "hot"
     assert _count(backup) == _BACKUP_AT, "a hot backup must capture the whole database"
+    assert backup_main(["--root", str(root), "--verify", str(backup), "--json"]) == 0
+
+
+#: A writer that appends and then sleeps, so the parent can kill it mid-life
+#: and leave a hot WAL on disk. Inline rather than a fixture file because the
+#: whole point is that this process never gets to close its connection.
+_CRASHING_WRITER = """
+import sys, time
+sys.path.insert(0, {repo!r})
+from pathlib import Path
+from ingest import normalize
+from store import EventStore
+store = EventStore.open(Path(sys.argv[1]))
+for index in range({count}):
+    store.append(
+        normalize(f"Failed password for u{{index}} from 203.0.113.9 port 22 ssh2"),
+        ingested_at=1_760_000_000.0 + index,
+    )
+print("READY", flush=True)
+time.sleep(120)
+"""
+
+
+@pytest.mark.integration
+def test_a_backup_after_a_crashed_writer_checkpoints_the_source(tmp_path: Path) -> None:
+    """``read_only`` is the right class, and "writes no live file" was not true.
+
+    The module docstring of ``scripts/run_backup.py`` claimed the script
+    "writes no live file". At the filesystem level that is false in exactly
+    the case a backup is most likely to be taken in — after something went
+    wrong and left a hot WAL. SQLite checkpoints on **last-connection close**,
+    and with no live writer the backup's own connection is the last one.
+
+    The precise condition is narrower than "no live writer", and measured
+    rather than assumed — the first plant written for this test was too weak
+    and passed for that reason:
+
+        no extra connection                      wal 3184792 -> gone  CHECKPOINTED
+        extra connection, IDLE (never executed)  wal 3193032 -> gone  CHECKPOINTED
+        extra connection, has run SELECT 1       wal 3287792 -> gone  CHECKPOINTED
+        extra connection that has READ events    wal 3065312 -> kept  wal kept
+
+    So what prevents the checkpoint is another connection having actually
+    *joined the WAL*, which requires it to have read WAL-backed data. An idle
+    connection does not, and nor does one that has only run a statement
+    touching no table. In production that means a post-crash backup
+    checkpoints unless something is concurrently reading events — the
+    dashboard mid-query, say. The test above covers the one safe shape: a
+    writer held open across the backup.
+
+    **This is a characterisation test of SQLite's behaviour, not a guard on
+    our code, and saying so is the honest version.** No plausible change to
+    ``_copy_database`` flips it: adding a second connection that never reads
+    leaves it checkpointing (measured, the second and third rows above). What
+    it protects is the *claim* — if a future SQLite, or a future copy
+    implementation, stopped checkpointing here, this goes red and the module
+    docstring needs revisiting again, which is exactly how it came to be
+    wrong the first time.
+
+    No committed data is lost — a checkpoint moves already-durable WAL frames
+    into the main file — so the action class does not change. The claim did.
+    """
+    root = tmp_path / "lab"
+    root.mkdir()
+    program = _CRASHING_WRITER.format(repo=str(_REPO_ROOT), count=_BACKUP_AT)
+    writer = subprocess.Popen(  # noqa: S603 - our own interpreter, literal program
+        [sys.executable, "-c", program, str(root)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert writer.stdout is not None
+        assert writer.stdout.readline().strip() == "READY", "the writer never got going"
+        os.kill(writer.pid, signal.SIGKILL)
+    finally:
+        writer.wait(timeout=30)
+
+    database = root / "data" / "events" / "events.sqlite3"
+    wal, shm = Path(f"{database}-wal"), Path(f"{database}-shm")
+    assert wal.is_file() and wal.stat().st_size > 100_000, (
+        "the killed writer left no hot WAL, so this test would assert nothing"
+    )
+    before_main = database.stat().st_size
+    before_mtime = database.stat().st_mtime_ns
+
+    assert backup_main(["--root", str(root), "--name", "after-crash", "--json"]) == 0
+
+    # The source was written: the WAL was checkpointed into the main file and
+    # both sidecars removed. This is the behaviour the docstring now states.
+    assert not wal.exists(), "the backup left the hot WAL in place"
+    assert not shm.exists()
+    assert database.stat().st_size > before_main, "the WAL was not checkpointed into the main file"
+    assert database.stat().st_mtime_ns != before_mtime
+
+    # And nothing was lost by it — the copy and the source agree, and both
+    # hold everything the writer had committed.
+    backup = root / "data" / "backups" / "after-crash"
+    assert _count(backup) == _BACKUP_AT, "the post-crash backup is short"
+    assert _count(root) == _BACKUP_AT, "checkpointing the source lost committed events"
     assert backup_main(["--root", str(root), "--verify", str(backup), "--json"]) == 0
 
 

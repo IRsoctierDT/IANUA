@@ -42,7 +42,7 @@ from typing import Any
 
 from ingest import keyvalue
 from ingest._coerce import FieldPath, depth_within, observables, project, text
-from ingest.errors import UnsupportedInputError
+from ingest.errors import IngestError, UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
 from ingest.schema import (
     MAX_FIELD_LEN,
@@ -153,7 +153,24 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     if stripped.startswith(("{", "[")):
         try:
             decoded = json.loads(stripped)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
+            # ``ValueError``, not ``json.JSONDecodeError``, and the widening is
+            # the fix rather than tidying. ``JSONDecodeError`` *is* a
+            # ``ValueError``, so this still catches every malformed document —
+            # and it now also catches the one well-formed document CPython
+            # refuses to decode: an integer literal past
+            # ``sys.get_int_max_str_digits()`` (4300 digits by default), whose
+            # conversion is quadratic. ``json.loads`` raises a bare
+            # ``ValueError`` for it, anywhere in the document, nested or not.
+            #
+            # That raise escaped ``normalize`` entirely. Measured end to end:
+            # a file of three lines, one of them a JSON object with a
+            # 5000-digit number, gave two identical collector passes —
+            # ``0 event(s) stored``, ``offsets held``, ``[first-run]``, exit 1
+            # — because ``normalize_many`` built a list and
+            # ``run_collector.py`` writes a source's cursor only after its
+            # events are durable. The source was stalled permanently and the
+            # two healthy lines in that file were never stored.
             return _unrecognized(
                 evidence=_carried(raw),
                 notes=("input looked like JSON but did not decode; carried as text",),
@@ -180,8 +197,103 @@ def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[N
 
     One unparseable record never costs the batch: each degrades to its own
     ``unknown`` event, and the caller sees exactly which ones did.
+
+    **That sentence was false, and it is now held by two layers instead of
+    asserted by one.** It is a consequence of rule 2 — nothing a record
+    contains may raise out of ``normalize`` — and when rule 2 leaked, a list
+    comprehension here turned one bad record into the loss of every record
+    beside it. Measured: a three-line file with one JSON object holding a
+    5000-digit integer stored **none** of the three, and because
+    ``scripts/run_collector.py`` writes a source's cursor only once its events
+    are durable, the source re-read the same window on every pass forever —
+    two identical passes, ``offsets held``, ``[first-run]``, exit 1. Loud, and
+    permanent, and recoverable only by editing a log the collector is licensed
+    to read but never to write.
+
+    The first layer is the fix: ``_coerce.text`` and ``_coerce.epoch`` are
+    total over the numbers Python refuses to render, and the JSON decode guard
+    catches ``ValueError`` rather than only ``JSONDecodeError``. This loop is
+    the second, and it is deliberately the *wider* one — a batch boundary
+    whose contract is "one bad record never costs the batch" cannot keep that
+    contract by naming exception types, because the next leak will be a type
+    nobody listed. ``tests/security`` pins that the committed corpus never
+    reaches it, so it firing means something changed rather than something is
+    tolerated.
+
+    What it does not do is let the collector advance past records it failed to
+    store: the degraded event *is* stored, so the cursor advance is honest.
+    A raise from the store itself is outside this and still fails closed.
     """
-    return [normalize(record) for record in records]
+    out: list[NormalizedEvent] = []
+    for record in records:
+        try:
+            out.append(normalize(record))
+        except IngestError:
+            # Propagated, deliberately, and the first version of this loop did
+            # not. ``ingest/errors.py`` draws the line this layer turns on:
+            # malformed telemetry degrades, and only an input that cannot be
+            # telemetry at all — a wrong Python type — raises, "because those
+            # signal a caller bug rather than a bad log line". Absorbing
+            # ``UnsupportedInputError`` here would launder exactly that bug
+            # into a thousand degraded events, and ``MalformedProjectionError``
+            # says a stored row was damaged after it was written, which the
+            # same file says has no honest degradation. Measured: an object
+            # with a raising ``__repr__`` came back as an event noting
+            # ``UnsupportedInputError`` instead of refusing.
+            raise
+        except Exception as exc:
+            # The outer layer. Deliberately unnamed: see the docstring.
+            out.append(_normalization_raised(record, exc))
+    return out
+
+
+def _normalization_raised(record: Any, exc: BaseException) -> NormalizedEvent:
+    """An event recording that a record was seen and could not be normalized.
+
+    Must itself be total, or the second layer has the first layer's hole. So
+    the evidence is built without rendering the record's values: a ``str`` or
+    ``bytes`` record is carried as text, and a mapping contributes its key
+    names only — the same "shape, not content" rule ``project`` applies, and
+    the only rendering that cannot raise on a value Python will not print.
+
+    The note names the exception *type* and not its message, because a
+    message is often record content (a ``KeyError``'s is a key name) and this
+    note is written to an append-only store that refuses ``UPDATE``.
+
+    **The rendering is itself guarded, because the first version of it was
+    not.** A ``Mapping`` subclass whose ``__iter__`` raises defeated the key-
+    name branch — ``list(record)`` raises again, inside the ``except`` that
+    was handling the first raise — and ``RuntimeError`` escaped
+    ``normalize_many`` exactly as the ``ValueError`` had. Measured while
+    writing this function, which is the point: a layer that exists because
+    "the next leak will be a type nobody listed" cannot be total by listing
+    types.
+    """
+    try:
+        if isinstance(record, bytes):
+            carried = record.decode("utf-8", errors="replace")[:MAX_RAW_EXCERPT]
+        elif isinstance(record, str):
+            carried = record[:MAX_RAW_EXCERPT]
+        elif isinstance(record, Mapping):
+            named = [text(key) for key in list(record)[:MAX_PROJECTED_ITEMS]]
+            carried = json.dumps(sorted(key for key in named if key is not None))
+        else:
+            carried = type(record).__name__
+    except Exception:
+        # Not logged, and nothing here may reach a logger: ``ingest`` imports
+        # no clock, no filesystem and no transport, which is what makes it
+        # testable as a pure function (``tests/security`` pins all three). The
+        # note below is the record of what happened, and it travels with the
+        # event into the store rather than into a log the operator has to
+        # correlate by hand.
+        carried = "a record that could not be rendered"
+    return _unrecognized(
+        evidence=_carried(carried),
+        notes=(
+            f"normalizing this record raised {type(exc).__name__}; it is kept "
+            f"unparsed so that the batch and the collector cursor survive it",
+        ),
+    )
 
 
 def _normalize_mapping(payload: Mapping[str, Any]) -> NormalizedEvent:
@@ -305,9 +417,30 @@ class _Excerpt:
     ``values`` is therefore **never wider than** ``text``: it is built by
     matching each leaf against the rendered string
     (:func:`_retained_values`), so a leaf the excerpt truncated away is not
-    scanned either. Asserted directly rather than reasoned about — see
-    ``test_every_observable_is_findable_in_the_retained_excerpt`` — because
-    this function has now been wrong in both directions.
+    scanned either.
+
+    **That is asserted, but not by the test this docstring used to name**, and
+    the correction is measured rather than reasoned. Planting
+    :func:`_retained_values` as the identity function — round two's defect,
+    exactly — turns **three** cases red:
+
+        test_an_indicator_is_extracted_only_when_the_excerpt_retains_it[in-the-cut-leaf]
+        test_an_indicator_is_extracted_only_when_the_excerpt_retains_it[past-the-cut]
+        test_an_unclaimed_records_observables_are_all_inside_its_excerpt[past-the-cut]
+
+    ``test_every_observable_is_findable_in_the_retained_evidence`` is **not**
+    among them: all thirty of its legs stay green, because on the committed
+    corpus ``_retained_values`` is behaviourally the identity function anyway.
+    Measured: 30 legs, 0 that drop a leaf, 307 of 307 leaves kept, largest
+    ``raw_excerpt`` 679 characters against a 4096 bound, and **no** leg
+    reaching that bound. A test cannot distinguish a function from its
+    degenerate case on a corpus where they agree, and this docstring claimed
+    it did.
+
+    Only the unclaimed path reaches here at all —
+    :func:`_normalize_mapping` passes ``_excerpt_for(...).text`` and discards
+    ``.values`` — so none of this covers a *recognized* record, which is a
+    separate open defect rather than a wording problem.
 
     They are both needed because they are bounded differently.
     :func:`~ingest._coerce.observables` coerces **each value** through
@@ -367,23 +500,126 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
     So the leaves are matched against the rendered text, scanning forward.
     ``sort_keys=True`` makes the render order deterministic and equal to
     :func:`_leaf_values`' walk order, so one forward pass is enough and a
-    value cannot be mistaken for an earlier identical one. A leaf that cannot
-    be found — which the ``_serialize`` fallback for an unencodable record can
-    produce — stops the walk, so the result is only ever *narrower* than the
-    text, never wider. That asymmetry is why ``rendered`` needs no further
-    bound check here: ``_serialize`` has already sliced it to
-    ``MAX_RAW_EXCERPT``, so a successful ``find`` is within the bound by
-    construction, and a fragment the slice cut in half is not found at all. A
-    second explicit check was written, measured to be unreachable, and
-    removed rather than left as decorative defence.
+    value cannot be mistaken for an earlier identical one. ``_serialize`` has
+    already sliced ``rendered`` to ``MAX_RAW_EXCERPT``, so a successful
+    ``find`` is within the bound by construction. An explicit second bound
+    check was written, measured to be unreachable, and removed rather than
+    left as decorative defence.
 
-    One honest caveat about the sort: a plant that walks in insertion order
-    instead leaves every test green, because :func:`~ingest._coerce.project`
-    happens to build the projection in an order the forward scan tolerates.
-    The sort is therefore **not** currently load-bearing — it makes this
-    function's correctness independent of ``project``'s insertion order rather
-    than dependent on it, which is worth the two characters, and it is
-    recorded as uncovered rather than claimed as tested.
+    This docstring also claimed that "a fragment the slice cut in half is not
+    found at all", and **that is false** — found by review, measured. Key
+    names and string values are rendered with identical quoting, so a leaf
+    whose value happens to equal a key name matches the *key name's*
+    occurrence, which precedes the value. At a padding where the ``Subject``
+    value is removed from the excerpt entirely, leaving only the key
+    ``"Subject"``, a leaf whose value is the string ``Subject`` is still kept
+    and scanned. The retention invariant survives it — the key name is itself
+    in the excerpt, so the indicator is still inside the retained text — but
+    the *attribution* is wrong, and the sentence asserting it cannot happen
+    was simply untrue.
+
+    **The walk stops and nothing is salvaged, and that is the end of three
+    rounds of trying to salvage.** Round five observed that simply breaking on
+    the cut leaf throws away the part of it the excerpt still holds — an
+    indicator readable at index 3594 of a 4096-character excerpt, extracted
+    into nothing — and added a scan of the remaining text. The two rounds that
+    followed were both defects *in that addition*, and both **fabricated**
+    rather than lost:
+
+    ====  ============================================  =====================
+    rd    what the tail scan did                        outcome
+    ====  ============================================  =====================
+    5     added, to recover a retained indicator        recovers it
+    6     matched a token the 4096 slice had severed    a sha1/md5 from a cut
+                                                        sha256, 19/50 offsets
+                                                        for a URL
+    8     matched a token up to a JSON unicode escape      a URL that never
+                                                        existed, 10/148
+    9     ``observables()`` re-sliced the tail at        a 40-char sha1 from a
+          ``MAX_FIELD_LEN`` **after** both guards        50-char hex run that
+                                                        matches no hash
+    ====  ============================================  =====================
+
+    Round nine is why the mechanism is gone rather than patched again. Both of
+    round six's and eight's guards operated on the tail *as it was built*, and
+    round nine's cut happens downstream in ``text()``, where they cannot
+    reach. Token-safety at construction cannot survive a later slice, so
+    making the tail sound would mean token-safety at every boundary the value
+    crosses — an open-ended blacklist, and three rounds of evidence that I
+    guess its membership wrong.
+
+    So the trade was measured and taken the other way. Removing the salvage
+    loses exactly one case and removes three:
+
+    ===============================  ==========  ==========  ============
+    case                             retained    with tail   without
+    ===============================  ==========  ==========  ============
+    round 5, cut leaf, URL first     yes         exact       **none**
+    round 9, 50-hex run              yes         fabricated  none
+    round 6, cut mid-URL             no          none        none
+    round 2, past the cut            no          none        none
+    round 1, late-sorting            yes         exact       exact
+    first leaf                       yes         exact       exact
+    ===============================  ==========  ==========  ============
+
+    One gap against zero false keys. ``AGENTS.md`` §3 orders that trade —
+    most secure, fail closed — and the asymmetry is real rather than
+    aesthetic: a missing indicator is a gap an operator can see in the excerpt
+    and act on, while a fabricated one is an indexed, append-only join key
+    that ``correlation/entities.py`` will join entities on, cannot be edited
+    (``UPDATE`` is refused), and reads exactly like a real IOC.
+
+    **What this costs, stated plainly so nobody re-adds it by accident.** An
+    indicator inside the leaf the excerpt slice cut is retained and readable
+    and is *not* extracted.
+    ``test_an_indicator_is_extracted_only_when_the_excerpt_retains_it``
+    pins that as the ``in-the-cut-leaf`` row with ``must_be_extracted=False``,
+    so the loss is asserted rather than incidental.
+
+    **The sort, measured rather than reasoned about.** An earlier version of
+    this paragraph said the sort was not load-bearing "because ``project``
+    happens to build the projection in an order the forward scan tolerates".
+    That reasoning is false, and review was right to push on it. ``project``
+    inserts top-level keys in *declaration* order, and ``sysmon`` is the one
+    signature whose ``fields`` tuple is unsorted — it breaks at index 12
+    (``provider_name`` before ``CommandLine``) and index 30 (``UtcTime``
+    before ``EventData``). On a sysmon projection the two orders disagree, and
+    walking in insertion order keeps **4 of 10** leaves rather than 10: the
+    forward scan's ``offset`` runs past a value it has not reached yet, the
+    ``find`` fails, and the walk stops. That is round one's defect.
+
+    Where that can actually bite is narrower than it sounds, and worth writing
+    down because three call sites look alike:
+
+    ===========================================  ==================  =========
+    call site                                    field list          sort?
+    ===========================================  ==================  =========
+    parse failure on a claimed record            ``signature.fields``  **yes**
+    claimed record, parsed                       ``signature.fields``  no, only
+                                                                       ``.text``
+                                                                       is taken
+    unclaimed record                             ``MODELLED_FIELDS``   no, it is
+                                                                       sorted, so
+                                                                       insertion
+                                                                       order
+                                                                       already
+                                                                       agrees
+    ===========================================  ==================  =========
+
+    So the sort matters on the parse-failure branch alone. That branch is
+    reachable and tested — ``tests/unit/test_evidence_projection.py`` forces an
+    auditd parser failure — but auditd's declaration *is* sorted. For sysmon,
+    the one signature where the sort earns its keep, no record was found that
+    a signature claims and its parser then fails on: roughly a thousand
+    hostile mutations across all fifteen committed fixtures produced zero such
+    records, for all ten vendors.
+
+    The honest summary is therefore neither "not load-bearing" nor
+    "load-bearing": it is **correct insurance on a branch the one signature
+    that needs it is not currently known to reach**, and removing it leaves
+    every test green. ``test_the_leaf_walk_tolerates_an_unsorted_declaration``
+    pins it at this function's own level, since no end-to-end record reaches
+    it.
     """
     kept: list[Any] = []
     offset = 0
@@ -394,6 +630,10 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
             break
         found = rendered.find(fragment, offset)
         if found < 0:
+            # The slice cut this leaf, or ``_serialize`` fell back and the
+            # leaf is not in the text at all. Either way the walk stops,
+            # and nothing is salvaged from the text that remains — see the
+            # docstring for the three rounds that salvaging cost.
             break
         kept.append(value)
         offset = found + len(fragment)
@@ -435,11 +675,29 @@ def _serialize(value: Mapping[str, Any]) -> str:
     passing a mapping directly certainly can. Nothing a record contains may
     raise out of ``normalize`` — that is rule 2, and an excerpt is not worth
     losing an event over.
+
+    **Three tiers, because the second one raised on exactly the input it was
+    there to absorb.** ``str(value)`` on a mapping renders its values, so a
+    mapping holding an integer past ``sys.get_int_max_str_digits()`` raised
+    ``ValueError`` out of the fallback — out of the function whose docstring
+    states rule 2. ``json.dumps`` fails first on the same value (``default``
+    is consulted only for types JSON cannot represent, and ``int`` is not one,
+    so the encoder calls ``int.__repr__`` and that is what refuses), so both
+    tiers were defeated by one value. The third tier renders key *names*
+    only, which are strings and coerce through the now-total :func:`text`:
+    shape, not content, exactly as ``project``'s second rule has it, and it
+    cannot raise.
     """
     try:
         return json.dumps(value, sort_keys=True, default=str)[:MAX_RAW_EXCERPT]
     except (TypeError, ValueError, RecursionError):
+        pass
+    try:
         return str(value)[:MAX_RAW_EXCERPT]
+    except (TypeError, ValueError, RecursionError):
+        pass
+    named = [text(key) for key in list(value)[:MAX_PROJECTED_ITEMS]]
+    return json.dumps(sorted(key for key in named if key is not None))[:MAX_RAW_EXCERPT]
 
 
 def _unmodelled(payload: Mapping[str, Any], *, notes: tuple[str, ...]) -> NormalizedEvent:
@@ -463,33 +721,103 @@ def _unmodelled(payload: Mapping[str, Any], *, notes: tuple[str, ...]) -> Normal
     # was not reported at all, though its value was withheld; and two raw keys
     # collapsing to one name double-counted. Sanitizing is for display, and
     # now happens after the comparison.
-    withheld = [key for key in payload if key not in projected]
+    withheld, examined = _withheld_fields(payload, projected)
     if withheld:
-        notes = (*notes, _withheld_note(len(payload), withheld))
+        notes = (*notes, _withheld_note(examined, withheld))
     return _unrecognized(
         evidence=_excerpt_for(MODELLED_FIELDS, payload),
         notes=notes,
     )
 
 
+def _withheld_fields(
+    payload: Any, projected: Any, prefix: str = "", depth: int = 0
+) -> tuple[list[str], int]:
+    """Withheld field paths at any depth, and how many paths were examined.
+
+    **This used to compare top-level keys only, and the compensation its
+    docstring claimed holds in one of three regimes.** That docstring said a
+    modelled key whose sub-keys were withheld "does not appear here — the
+    excerpt shows that directly, since an object at a declared path renders as
+    its key names". Measured, on merged code:
+
+    1. **Holds** when a declared path lands on a container and no *deeper*
+       declared path is present: ``{"status": {"secretNote", "other"}}``
+       renders as ``{"status": ["other", "secretNote"]}`` and both names are
+       in the excerpt.
+    2. **Defeated by** :func:`~ingest._coerce._graft`, whose own docstring
+       says "The deeper path wins": with ``status`` *and* ``status.value``
+       both declared, ``{"status": {"value": "Succeeded", "secretNote": "s"}}``
+       renders as ``{"status": {"value": "Succeeded"}}`` and ``secretNote``
+       is named **nowhere in the event**.
+    3. **Never applies** when the container is only a path *prefix*, never
+       declared on its own — which is **14 of the 18** nested top-level names
+       across all ten signatures (``System``, ``EventData``, ``userIdentity``,
+       ``deviceDetail``, ``http``, ``dns``, …). A genuine Windows Security
+       4625, claimed by no signature because there is no Windows Security
+       parser, retained ``{"System": {"Provider": {"Name": …}}}`` and said
+       nothing at all about ``System.Correlation``.
+
+    Regime 3 is the one that matters, because nested is what real Windows and
+    cloud telemetry look like, and the §5 stage-6 amendment leans on this note
+    as *the* compensation for what narrowing drops. So the walk descends.
+
+    Two deliberate limits, both stated rather than discovered later:
+
+    * **It does not descend past a shape-rendered container** (regime 1). The
+      excerpt already names those keys, which is enough to write
+      ``status.<key>``; going deeper would report paths whose parent is
+      already visible.
+    * **It does not descend into lists.** A declared path continuing through a
+      sequence applies to each element (``project``'s third rule), so a list's
+      *path* is reported once and its elements are not enumerated.
+
+    Comparison is on the record's **raw** keys throughout; rendering for
+    display happens in :func:`_withheld_note`, which is the ordering a
+    previous defect established.
+    """
+    if depth > MAX_NESTING_DEPTH or not isinstance(payload, Mapping):
+        return [], 0
+    withheld: list[str] = []
+    examined = 0
+    for key in payload:
+        label = f"{prefix}{key}"
+        examined += 1
+        # ``key not in projected`` works for both shapes a projection takes
+        # here: a mapping, and the sorted list of key *names* that
+        # ``_coerce._leaf`` renders for a container. A name present in that
+        # list is in the excerpt and so is not withheld.
+        if not isinstance(projected, (Mapping, list)) or key not in projected:
+            child = payload[key]
+            if isinstance(child, Mapping) and child:
+                # Name the leaves rather than the container: a declared path
+                # IS a leaf path, so these are the strings an operator writes.
+                deeper, counted = _withheld_fields(child, None, f"{label}.", depth + 1)
+                withheld.extend(deeper)
+                examined += counted
+            else:
+                withheld.append(label)
+            continue
+        if isinstance(projected, Mapping):
+            deeper, counted = _withheld_fields(payload[key], projected[key], f"{label}.", depth + 1)
+            withheld.extend(deeper)
+            examined += counted
+    return withheld, examined
+
+
 def _withheld_note(total: int, withheld: list[str]) -> str:
     """State how much of a record was not retained, within the note bound.
 
-    Counts the record's own top-level keys, which is what an operator needs
-    to write a signature. A key that *is* modelled but whose un-named
-    sub-keys were withheld does not appear here — the excerpt shows that
-    directly, since an object at a declared path renders as its key names.
-
-    The count comes from the raw keys and the names from ``text()``, so a key
-    whose name cannot be rendered at all is still counted among the elided
-    rather than disappearing from the total.
+    The count comes from the raw paths and the names from ``text()``, so a
+    path whose name cannot be rendered at all is still counted among the
+    elided rather than disappearing from the total.
     """
     names = [name for name in (text(key) for key in sorted(withheld)) if name is not None]
     named = names[:_MAX_NAMED_KEYS]
     elided = len(withheld) - len(named)
     note = (
-        f"{len(withheld)} of {total} top-level record keys are modelled by no parser; "
-        f"their values are withheld from the excerpt (keys: {', '.join(named)}"
+        f"{len(withheld)} of {total} record fields are modelled by no parser; "
+        f"their values are withheld from the excerpt (fields: {', '.join(named)}"
         + (f", and {elided} more" if elided else "")
         + ")"
     )

@@ -45,6 +45,15 @@ _HASH = re.compile(r"\b(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})\b")
 _URL = re.compile(r"\bhttps?://[^\s\"'<>\\]{3,256}", re.IGNORECASE)
 _DOMAIN = re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.){1,6}[A-Za-z]{2,24}\b")
 
+#: How far past the retained cut the extractors are run. No match that begins
+#: at or before the cut can extend further than the widest match its own
+#: pattern permits (``_DOMAIN`` is widest at 6 labels of 63 plus a 24-character
+#: TLD, so 408), so a window of cut-plus-this yields exactly the matches a
+#: scan of the whole record would keep — without the ~22x cost review measured
+#: for scanning it. See :func:`_scan_source` for why the margin, and not the
+#: arithmetic behind it, is what ``tests/security`` pins.
+_SCAN_LOOKAHEAD = 1024
+
 
 def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
     """Coerce a scalar to a bounded, printable string, or ``None``.
@@ -62,7 +71,25 @@ def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
-        raw = str(value)
+        try:
+            raw = str(value)
+        except ValueError:
+            # CPython refuses to render an integer past
+            # ``sys.get_int_max_str_digits()`` (4300 by default) because the
+            # conversion is quadratic, so ``str()`` on a big enough int is not
+            # a total function. Refused the same way a container is: the record
+            # carried *something* here and this layer cannot render it, so the
+            # field is absent rather than the record lost.
+            #
+            # Letting it raise cost far more than a field. Measured end to end
+            # before this guard: one JSON log line holding a 5000-digit integer
+            # made ``normalize`` raise, ``normalize_many`` discard the whole
+            # batch, and ``scripts/run_collector.py`` skip its cursor write —
+            # two identical passes, ``0 event(s) stored``, ``offsets held``,
+            # ``[first-run]``, exit 1, forever, with the two healthy lines in
+            # that file never stored. Recovery needed an operator to edit a log
+            # the collector reads read-only.
+            return None
     elif isinstance(value, str):
         raw = value
     else:
@@ -243,7 +270,15 @@ def epoch(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        seconds = float(value)
+        try:
+            seconds = float(value)
+        except OverflowError:
+            # No float exists for an int past ~1.8e308. Same refusal as an
+            # unparseable string and for the same reason — a fabricated
+            # ordering would corrupt every correlation built on it — and the
+            # same totality requirement as ``text()`` above: this is reached
+            # through ten parsers on attacker-influenced values.
+            return None
         # Values past ~2286 in seconds are almost certainly milliseconds.
         if seconds > 1e11:
             seconds /= 1000.0
@@ -289,6 +324,95 @@ def depth_within(value: Any, limit: int = MAX_NESTING_DEPTH) -> bool:
     return True
 
 
+def _scan_source(value: Any) -> tuple[str, int] | None:
+    """The value's cleaned text as far as a match can reach, plus the cut.
+
+    Returns the text bounded at ``MAX_FIELD_LEN + _SCAN_LOOKAHEAD`` and the
+    cut position, because the extractors must run past the cut: a bound
+    applied *at* the cut lets a regex backtrack into a shorter valid match,
+    and that match is then indistinguishable from a complete one.
+
+    Five rounds were spent learning that. A bound that cuts a token makes the
+    prefix match as whole — a 64-character sha256 cut at 40 is a well-formed
+    sha1, a 50-character hex run that matches nothing becomes one — and a
+    *false* join key is worse than a lost one, because it lands in an indexed,
+    append-only column that ``correlation/entities.py`` joins entities on and
+    ``UPDATE`` is refused. The attempts, each defeated by the next:
+
+    1. trim the trailing token off an excerpt tail as the tail is built —
+       defeated by ``text()``'s own later slice;
+    2. trim it here, around the slice — right place, wrong shape: the only
+       character class wide enough to bound every extractor is ``_URL``'s, and
+       it is too wide to *delimit* a token. ``observables("198.51.100.7," +
+       "A"*3000)`` returned ``()``, deleting a complete IP that ended at
+       character 12, because a comma is legal inside a URL;
+    3. keep the text and drop matches whose span ends exactly at the cut —
+       defeated by backtracking: ``_DOMAIN`` and ``_IPV6`` can match a
+       *shorter* valid indicator ending before the cut, so
+       ``deep.sub.indicator.example.com`` cut mid-label still yielded
+       ``deep.sub.indicator.example``;
+    4. match the *whole* record and keep the matches that fit — correct, and
+       paid on every byte of every value. Still linear in the record, but with
+       a constant that backtracking makes large: review measured
+       ``observables("a." * 131072)`` at 0.153 s against 0.0069 s for a
+       bounded scan, a ~22x regression on a path every parser runs for every
+       value, reachable by anything that can write a dot-heavy line into a
+       collected log.
+
+    So the text is bounded, but at the cut **plus a lookahead wide enough that
+    no match reaching the cut can be severed by it**. A match that starts at
+    or before the cut cannot extend further than the widest match its own
+    pattern permits, so a window of that width yields exactly the matches a
+    full-record scan would keep. Widest match per extractor, measured from
+    inputs built to maximise each (``tests/security`` pins this):
+
+        _IPV4 15 · _IPV6 39 · _HASH 64 · _URL 264 · _DOMAIN 408
+
+    :data:`_SCAN_LOOKAHEAD` is 1024 — two and a half times the widest — and
+    that margin is the one number this shape's correctness rests on. A
+    derivation from these five patterns has been wrong in four of the last six
+    rounds here, so the derivation is *not* the guarantee. ``tests/security``
+    pins it three ways instead, each one plant-verified:
+
+    * **differentially** — the window and the whole record must extract the
+      same set over a corpus built to straddle the cut;
+    * **by teeth** — shrinking the lookahead must break that. Measured on a
+      domain whose short form ends exactly at the cut and whose long form runs
+      346 characters past it, margins 0..319 fabricate ``a.bc``, an indicator
+      the record does not contain;
+    * **by digest** — the five patterns are pinned, because the width corpus
+      is built *from their quantifiers* and cannot cover one that does not
+      exist yet. Measured: a 2048-character alternative added to ``_HASH`` is
+      caught by the digest and by nothing else in the suite.
+
+    Measured cost per ``observables()`` call, window against whole record on
+    the same inputs:
+
+        realistic event value, ~2 KB      0.32 ms     0.32 ms    1.0x
+        2 KB of padding                   0.12 ms     0.12 ms    1.0x
+        64 KB of padding                  1.13 ms     5.17 ms    4.6x
+        256 KB of padding                 8.28 ms    27.30 ms    3.3x
+        256 KB of URL-shaped text         9.57 ms    48.75 ms    5.1x
+        256 KB of dot-dense "a."          5.18 ms   101.10 ms   19.5x
+
+    A realistic event is unchanged, since events measure ~1.8 KB and sit
+    wholly inside the window. The dot-dense case review raised drops from
+    0.101 s to 0.0052 s here; review measured 0.153 s against 0.0069 s on its
+    own machine, which is the same shape.
+
+    Of what remains on a 256 KB value, 4.2-5.0 ms is ``text()``'s own linear
+    cleanup and is paid whatever the window is. An earlier note here put the
+    windowed cost at "~0.16 ms flat"; that figure was taken on benign ``A``
+    padding, which understates the dot-dense case, and it was the third time
+    in this function's history that a probe input was chosen without first
+    asking what the mechanism is sensitive to.
+    """
+    cleaned = text(value, limit=MAX_FIELD_LEN + _SCAN_LOOKAHEAD)
+    if cleaned is None:
+        return None
+    return cleaned, MAX_FIELD_LEN
+
+
 def observables(*values: Any, limit: int = MAX_OBSERVABLES) -> tuple[str, ...]:
     """Extract atomic indicators from parser-selected values.
 
@@ -309,17 +433,33 @@ def observables(*values: Any, limit: int = MAX_OBSERVABLES) -> tuple[str, ...]:
             seen.add(key)
             found.append(item)
 
-    corpus = [coerced for coerced in (text(value) for value in values) if coerced]
-    joined = " ".join(corpus)
-    urls = _URL.findall(joined)
+    scanned = [pair for pair in (_scan_source(value) for value in values) if pair]
+
+    def _every(pattern: re.Pattern[str]) -> list[str]:
+        """Every match that fits wholly inside the retained part of its value.
+
+        Per value rather than over a joined string. That is equivalent for
+        matching — the join used a space and no extractor's class contains
+        whitespace, so no match could ever span it — and it is what lets each
+        value's own cut be applied to its own matches.
+        """
+        out: list[str] = []
+        for full, cut in scanned:
+            for match in pattern.finditer(full):
+                if match.end() > cut:
+                    continue
+                out.append(match.group())
+        return out
+
+    urls = _every(_URL)
     _add(urls)
-    _add(_HASH.findall(joined))
-    _add(match for match in _IPV4.findall(joined) if _is_dotted_quad(match))
-    _add(_IPV6.findall(joined))
+    _add(_every(_HASH))
+    _add(match for match in _every(_IPV4) if _is_dotted_quad(match))
+    _add(_every(_IPV6))
     # Domains are extracted last and never from inside an already-captured
     # URL, so a single indicator is not double-counted as two.
     url_text = " ".join(urls)
-    _add(match for match in _DOMAIN.findall(joined) if match not in url_text)
+    _add(match for match in _every(_DOMAIN) if match not in url_text)
     return tuple(found)
 
 

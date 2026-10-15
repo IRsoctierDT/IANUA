@@ -191,10 +191,14 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance
+#    The interpreter flag is NOT decoration: mypy resolves imports against its
+#    own interpreter, so a standalone install does not share one with the
+#    project. Measured without it on a fresh container: 134 errors in 132
+#    files, 132 of them a missing `pytest` stub. CI carries it too.
+mypy --python-executable "$(command -v python)" agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance sli
 
 # 5. Security static analysis (SAST) — same config and scope as CI
-bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp
+bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp sli
 
 # 6. Drift gates — derived artifacts must match their sources
 python scripts/check_locks.py           # exported pip locks ↔ uv.lock

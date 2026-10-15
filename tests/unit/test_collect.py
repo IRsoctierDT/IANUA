@@ -823,3 +823,86 @@ def test_the_default_caps_are_exercised(tmp_path: Path) -> None:
     source = declare(_log(tmp_path, body="one\ntwo\n"))
     page = read_new(source, None)  # no caps passed: the defaults must work
     assert [line.decode() for line in page.lines] == ["one", "two"]
+
+
+# --------------------------------------------------------------------------
+# One unparseable line must not stall the source
+# --------------------------------------------------------------------------
+
+#: A JSON object whose number CPython refuses to render. ``str(int)`` is
+#: quadratic, so since 3.11 it raises past ``sys.get_int_max_str_digits()``
+#: (4300 by default) — and ``json.loads`` raises it while *decoding*, so the
+#: line never reached a parser at all.
+_POISON = '{"EventID": 1, "Counter": ' + "9" * 5000 + ', "UtcTime": "2026-10-15 09:00:01.000"}'
+
+
+@pytest.mark.unit
+def test_one_unparseable_line_does_not_stall_the_source(tmp_path: Path) -> None:
+    """A source must never need an operator to edit the log to recover.
+
+    Measured before the fix, on this exact three-line file, twice in a row:
+
+        exit=1  stored=0  offsets={}  "0 event(s) stored; offsets held."
+
+    byte-identical on both passes, with ``[first-run]`` reported every time.
+    ``json.loads`` raised a bare ``ValueError`` on the 5000-digit number,
+    which ``normalize``'s decode guard did not catch because it named
+    ``json.JSONDecodeError``; ``normalize_many`` was a list comprehension, so
+    the raise discarded the batch; and the cursor write below is deliberately
+    after the append, so the offset was never recorded. The source re-read the
+    same window on every pass, forever, and the two *healthy* lines in the
+    file were never stored.
+
+    Loud — exit 1 and a line on stderr, so a cron run would mail it — and
+    permanent. Recovery required editing a log file the collector is licensed
+    to read read-only and must never write (AGENTS.md §5), i.e. an operator
+    deleting evidence to unblock evidence collection.
+
+    This is the regression test for the whole chain, asserted through the CLI
+    rather than at ``normalize``, because the harm is the cursor and not the
+    event: ``tests/security/test_ingest_hardening.py`` pins the four raise
+    sites individually.
+    """
+    root = _root(tmp_path)
+    log = _log(tmp_path, name="app.log", body=f"{_AUDITD}\n{_POISON}\n{_CLOUD}\n")
+    main = _cli_main()
+
+    assert main(["--root", str(root), "--source", str(log)]) == 0
+    with EventStore.open(root) as store:
+        assert store.count() == 3, "the poison line cost its two healthy neighbours"
+    offsets = load_offsets(offsets_path(root))
+    assert offsets[str(log.resolve())].offset == log.stat().st_size, (
+        "the cursor did not advance past the poison line, so the source is stalled"
+    )
+
+    # And the second pass is the one that proves it is not a stall: a stalled
+    # source reports the same read again rather than nothing-new.
+    assert main(["--root", str(root), "--source", str(log)]) == 0
+    with EventStore.open(root) as store:
+        assert store.count() == 3, "the window was re-read and the events duplicated"
+
+
+@pytest.mark.unit
+def test_the_poison_line_is_still_kept_as_evidence(tmp_path: Path) -> None:
+    """Surviving the line must not mean discarding it.
+
+    A collector that skipped what it could not parse would be a collector with
+    a silent blind spot, which is the thing the whole ``unrecognized`` fallback
+    exists to prevent. The line is stored, labelled, and carries a note saying
+    it did not decode — so an operator can see it in the store rather than
+    having to notice an absence.
+    """
+    root = _root(tmp_path)
+    log = _log(tmp_path, name="app.log", body=f"{_POISON}\n")
+    assert _cli_main()(["--root", str(root), "--source", str(log)]) == 0
+
+    with EventStore.open(root) as store:
+        stored = store.query(Query(limit=10))
+    assert len(stored) == 1
+    event = stored[0].event
+    assert event.vendor == "unrecognized"
+    assert "did not decode" in " ".join(event.notes), event.notes
+    # The digits are evidence like any other un-decodable text (§5 stage 6:
+    # anything that never decoded to a mapping is carried verbatim), bounded.
+    assert event.raw_excerpt.startswith('{"EventID": 1, "Counter": 999')
+    assert len(event.raw_excerpt) <= 4096

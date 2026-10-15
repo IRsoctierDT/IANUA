@@ -53,6 +53,33 @@ class StoreIntegrityError(StoreError):
     """
 
 
+class StoreCorruptionError(StoreIntegrityError):
+    """The database file itself is damaged, not a row inside it.
+
+    A subclass rather than a sibling, deliberately. Every first-party caller
+    outside ``store/`` catches :class:`StoreError`, so subclassing changes no
+    handler, and ``sli/indicators.py`` promises in prose that ``store/`` raises
+    :class:`StoreIntegrityError` for a malformed database — subclassing keeps
+    that literally true by ``isinstance`` while making the type name itself the
+    diagnostic.
+
+    The distinction is a runbook branch, which is why it earns a class.
+    :class:`StoreIntegrityError`'s own docstring is about a *row* that "was
+    modified outside this platform" — investigate it. A zeroed b-tree page is
+    a truncated transfer or a half restore — restore from a backup and verify
+    it with ``scripts/run_backup.py``. Those are different actions, and the
+    parent class was already carrying three meanings across six raise sites
+    before this one.
+
+    Raised only for SQLite's two corruption verdicts, ``SQLITE_CORRUPT`` (11,
+    "database disk image is malformed") and ``SQLITE_NOTADB`` (26, "file is not
+    a database"), both measured. Everything else SQLite raises keeps its own
+    meaning: see ``store/events.py``'s mapping predicate for why
+    ``IntegrityError`` (the append-only trigger firing), ``ProgrammingError``
+    (a caller bug) and ``SQLITE_BUSY`` (lock contention) must not become this.
+    """
+
+
 class IngestionOrderError(StoreError):
     """A write would place an event before one already ingested.
 
