@@ -44,7 +44,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agents.policies.signing import HmacSigner, Signer
+from agents.policies.signing import HmacSigner, Signer, ed25519_verifier_from_env
 
 _GENESIS_HASH = "0" * 64
 #: Default environment variable holding the audit-log HMAC signing key.
@@ -59,6 +59,31 @@ def signing_key_from_env(var: str = _SIGNING_KEY_ENV) -> bytes | None:
     """
     value = os.environ.get(var, "")
     return value.encode("utf-8") if value else None
+
+
+def verifier_from_env() -> Signer | None:
+    """Pick the head-signature scheme from the environment, or ``None``.
+
+    HMAC (``AUDIT_HMAC_KEY``) wins when both are set — holding the shared secret
+    also detects a *wrong* key — and the Ed25519 path (``AUDIT_ED25519_PUBLIC_KEY``)
+    needs only the **public** key, so an auditor or CI can verify a log signed
+    elsewhere without ever holding a key that could forge it.
+
+    ``None`` means no key material is available at all: the caller falls back to
+    chain-only verification (reported as ``unsigned``) or refuses outright. It is
+    deliberately *not* a silent fallback for key material that exists but cannot
+    be used — a bad hex key, or Ed25519 without the ``.[crypto]`` extra, raises
+    (``ValueError`` / ``RuntimeError``) so a caller cannot mistake an unusable
+    key for an unsigned log and proceed as if it had verified one.
+
+    Every tool that reads the audit log resolves its verifier here, so a log the
+    read-only verifier would reject cannot be rotated or pruned by a maintenance
+    job that happened to resolve a weaker scheme.
+    """
+    hmac_key = signing_key_from_env()
+    if hmac_key is not None:
+        return HmacSigner(hmac_key)
+    return ed25519_verifier_from_env()
 
 
 def _utc_now() -> str:

@@ -43,22 +43,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from agents.policies.audit import AuditLogger, signing_key_from_env
-from agents.policies.signing import Signer, ed25519_verifier_from_env
-
-
-def _resolve_signer() -> Signer | None:
-    """Pick the verification scheme from the environment (HMAC, else Ed25519).
-
-    HMAC wins when both are set (it can also detect a wrong shared key), and the
-    Ed25519 path needs only the *public* key — safe to hand to auditors/CI.
-    """
-    hmac_key = signing_key_from_env()
-    if hmac_key is not None:
-        from agents.policies.signing import HmacSigner
-
-        return HmacSigner(hmac_key)
-    return ed25519_verifier_from_env()
+from agents.policies.audit import AuditLogger, verifier_from_env
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -79,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     args = _parse_args(argv)
     try:
-        signer = _resolve_signer()
+        signer = verifier_from_env()
     except (ValueError, RuntimeError) as exc:
         # Bad hex key, or Ed25519 requested without the crypto extra installed.
         print(f"error: invalid signing configuration: {exc}", file=sys.stderr)
