@@ -26,7 +26,9 @@ from __future__ import annotations
 import ast
 import base64
 import dataclasses
+import inspect
 import json
+import re
 import sys
 import typing
 from pathlib import Path
@@ -52,6 +54,11 @@ from store import DEFAULT_FILENAME, EventStore
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INGEST_ROOT = _REPO_ROOT / "ingest"
 LAYER = "ingest"
+
+
+def _source_of(function: Any) -> str:
+    """The source text of ``function``, for tests that pin what it references."""
+    return inspect.getsource(function)
 
 
 # --------------------------------------------------------------------------
@@ -686,6 +693,146 @@ def test_an_indicator_is_extracted_exactly_when_the_excerpt_retains_it(
         f"indicator is {'retained' if retained else 'absent'} in the excerpt but "
         f"{'was' if extracted else 'was not'} extracted"
     )
+
+
+#: Offsets that walk the 4096-character excerpt cut across a ``Subject``.
+#: Measured coverage over this range: for the URL payload 44 offsets retain it
+#: complete and 21 cut it; for the sha256 payload 9 complete and 56 cut. Both
+#: regimes have to be present or the sweep proves nothing — asserted below.
+_CUT_SWEEP = range(1930, 2048)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "payload",
+    ["http://indicator.example/path", "a" * 63 + "b"],
+    ids=["url", "sha256"],
+)
+def test_no_observable_is_an_indicator_the_excerpt_slice_cut(payload: str) -> None:
+    """A severed indicator is worse than a lost one: it is a *false* join key.
+
+    Round six, and the first defect in this function that **added something
+    false** rather than losing something true. Round five's fix handed the
+    excerpt's trailing text to ``observables()``, and a hard character slice
+    can land inside an indicator, so the severed prefix was extracted as
+    though it were whole. Measured on that version across these offsets:
+
+        19 of 50 offsets yielded a truncated URL
+        2 offsets yielded a truncated hash — a 64-character sha256 cut at 40
+        and at 32 characters, which are well-formed sha1 and md5 shapes
+
+    The hash case is why this is a security defect and not a precision nit. A
+    40-character hex string that never hashed anything is a *plausible* IOC,
+    it lands in an indexed append-only column, and
+    ``correlation/entities.py`` joins entities on it. A gap in evidence is
+    recoverable; a fabricated join key is not, because ``UPDATE`` is refused
+    and the row can only be pruned whole.
+
+    The biconditional above does not catch this and cannot: it asks whether
+    one exact string is extracted iff retained, and for a cut indicator the
+    exact string is neither — ``False == False``. Asking a different question
+    is the whole point of this test. Found by review.
+    """
+    truncated = [
+        (offset, observable)
+        for offset in _CUT_SWEEP
+        for observable in normalize(
+            {
+                "ProviderV2": "x",
+                "@timestamp": "T" * 2048,
+                "Channel": "C" * offset,
+                "Subject": payload,
+            }
+        ).observables
+        if observable != payload and payload.startswith(observable)
+    ]
+
+    assert not truncated, (
+        f"{len(truncated)} offset(s) extracted a severed prefix of {payload!r}: {truncated[:4]}"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "payload",
+    ["http://indicator.example/path", "a" * 63 + "b"],
+    ids=["url", "sha256"],
+)
+def test_that_sweep_actually_walks_the_cut_through_the_indicator(payload: str) -> None:
+    """Both regimes must occur, or the sweep above is green over nothing.
+
+    A range that never brought the slice near the payload would satisfy the
+    no-severed-prefix assertion trivially — the level-above failure that let
+    round five through twice.
+    """
+    complete = severed = 0
+    for offset in _CUT_SWEEP:
+        excerpt = normalize(
+            {
+                "ProviderV2": "x",
+                "@timestamp": "T" * 2048,
+                "Channel": "C" * offset,
+                "Subject": payload,
+            }
+        ).raw_excerpt
+        if payload in excerpt:
+            complete += 1
+        elif payload[:8] in excerpt:
+            severed += 1
+
+    assert complete >= 5, f"no offset retains {payload!r} whole ({complete})"
+    assert severed >= 5, f"no offset cuts into {payload!r} ({severed})"
+
+
+@pytest.mark.security
+def test_no_extractor_can_match_across_an_indicator_terminator() -> None:
+    """The trim is only sound if no extractor's class contains a terminator.
+
+    ``_retained_values`` cuts the excerpt tail back past its last
+    ``INDICATOR_TERMINATORS`` character and relies on that leaving a string
+    which cannot be ending *inside* a match. That holds because every
+    extractor's character class is a subset of ``_URL``'s
+    ``[^\\s"'<>\\]`` — and that is a claim about five regexes, which is
+    exactly the kind of claim this layer has had wrong five times. So it is
+    asserted here rather than argued in a docstring: widen any extractor to
+    accept a terminator and this test fails before the trim silently starts
+    severing indicators again.
+    """
+    from ingest import _coerce
+
+    # Scoped to the patterns ``observables()`` itself matches with, read out of
+    # its own source rather than guessed from the module namespace. The first
+    # draft of this test collected every upper-case compiled regex in
+    # ``_coerce`` and failed on ``_WHITESPACE_RUN`` — a normalizer used by
+    # ``text()``, not an extractor. Reading the function keeps the set correct
+    # when one is added, and keeps a non-extractor out of it.
+    function = _source_of(_coerce.observables)
+    names = sorted(
+        {match.group(1) for match in re.finditer(r"\b(_[A-Z0-9_]+)\.find(?:all|iter)\(", function)}
+    )
+    assert names == ["_DOMAIN", "_HASH", "_IPV4", "_IPV6", "_URL"], (
+        f"the extractor set ``observables()`` uses has changed: {names}. "
+        "Re-derive INDICATOR_TERMINATORS against the new set before updating "
+        "this list — the tail trim in _retained_values depends on it."
+    )
+    patterns = {name: getattr(_coerce, name) for name in names}
+
+    probes = (
+        "http://a.example/p",
+        "198.51.100.7",
+        "2001:db8::1",
+        "a" * 64,
+        "evil.example.com",
+    )
+    for terminator in sorted(_coerce.INDICATOR_TERMINATORS):
+        probe = terminator.join(probes)
+        for name, pattern in patterns.items():
+            for match in pattern.findall(probe):
+                found = match if isinstance(match, str) else "".join(match)
+                assert terminator not in found, (
+                    f"{name} matched across {terminator!r}: {found!r} — the "
+                    f"tail trim in _retained_values is unsound"
+                )
 
 
 @pytest.mark.security

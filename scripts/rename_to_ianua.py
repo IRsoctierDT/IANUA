@@ -24,14 +24,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SELF = Path(__file__).resolve()
 EXCLUDED_PARTS = {
-    # Machine-local agent state, not shipped content. It holds transient git
-    # worktrees, and a worktree contains a *copy* of this script — which is
-    # excluded by resolved-path equality below and so does not match the copy.
-    # That copy necessarily contains every legacy identifier, because it is
-    # the rename table, so walking into it fails the gate on its own source.
-    # CI never has a worktree here, so the failure is local-only: an agent
-    # running the gate per AGENTS.md §7 sees a red check it did not cause.
-    ".claude",
     ".git",
     ".mypy_cache",
     ".pytest_cache",
@@ -44,6 +36,26 @@ EXCLUDED_PARTS = {
     "node_modules",
     "sample-logs",
 }
+
+#: Directory prefixes excluded as whole subtrees, matched on the path relative
+#: to :data:`ROOT`. Distinct from :data:`EXCLUDED_PARTS`, which matches a single
+#: component anywhere in a path and so cannot express "this directory only".
+#:
+#: ``.claude/worktrees`` holds the transient git worktrees an isolated agent
+#: runs in, and a worktree contains a *copy* of this script. The real one is
+#: skipped by resolved-path equality in :func:`eligible`; a copy at another
+#: path is not, and it necessarily contains every legacy identifier because it
+#: *is* :data:`REPLACEMENTS`. So walking into it fails the gate on its own
+#: source — and CI never has a worktree there, so the failure is local-only,
+#: which is the worse shape: an agent running the gate per AGENTS.md §7 sees a
+#: red required check it did not cause.
+#:
+#: Scoped to ``.claude/worktrees`` and **not** to ``.claude``, because
+#: ``.gitignore`` ignores selected ``.claude`` entries rather than the
+#: directory wholesale, so content there can be tracked. Excluding the whole
+#: directory would let a tracked ``.claude`` file carry a legacy identifier
+#: past this gate. Found by review; ``tests/unit`` pins both halves.
+EXCLUDED_PREFIXES: tuple[tuple[str, ...], ...] = ((".claude", "worktrees"),)
 TEXT_SUFFIXES = {
     ".cjs",
     ".css",
@@ -77,6 +89,12 @@ REPLACEMENTS: tuple[tuple[str, str], ...] = (
 
 def eligible(path: Path) -> bool:
     """Return whether a repository file may be safely rewritten."""
+    try:
+        relative = path.resolve().relative_to(ROOT).parts
+    except ValueError:  # pragma: no cover - defensive; rglob stays under ROOT
+        relative = path.parts
+    if any(relative[: len(prefix)] == prefix for prefix in EXCLUDED_PREFIXES):
+        return False
     if not path.is_file() or any(part in EXCLUDED_PARTS for part in path.parts):
         return False
     if path.resolve() == SELF:

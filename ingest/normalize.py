@@ -41,7 +41,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from ingest import keyvalue
-from ingest._coerce import FieldPath, depth_within, observables, project, text
+from ingest._coerce import CUT_TOKEN, FieldPath, depth_within, observables, project, text
 from ingest.errors import UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
 from ingest.schema import (
@@ -390,10 +390,36 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
     *implications* over ``event.observables``: an empty tuple satisfies them
     with zero iterations. Found by review.
 
-    The tail is therefore handed over as one more value. It needs no argument
-    about its relationship to the excerpt because it **is a slice of the
-    excerpt** — ``rendered[offset:]``, not something re-derived from the
-    projection and then reasoned about. Every earlier version of this function
+    The tail is therefore handed over as one more value, with its final token
+    trimmed off. **The trim is round six, and it is the first defect here
+    that added something false rather than losing something true.** A hard
+    character slice can land inside an indicator, and the untrimmed tail
+    handed the severed prefix to ``observables()`` as though it were whole.
+    Measured across padding offsets that move the cut through a ``Subject``:
+
+        19 of 50 offsets yielded a truncated URL
+        2 offsets yielded a truncated *hash* — a 64-character sha256 cut at
+        40 and at 32 characters, which are well-formed sha1 and md5 shapes
+
+    The hash case is the one that matters. A lost indicator is a gap; a
+    40-character hex string that never hashed anything is a plausible IOC in
+    an indexed, append-only join-key column, and ``correlation/entities.py``
+    will join on it. The biconditional did not catch it, because that asks
+    about one exact string and the exact string was neither retained nor
+    extracted — ``False == False``. Found by review.
+
+    So the tail is cut back past its last
+    :data:`~ingest._coerce.INDICATOR_TERMINATORS` character. Every extractor's
+    character class is a subset of ``_URL``'s, so a string ending on a
+    terminator cannot be ending inside a match, and a test pins that
+    derivation rather than trusting this paragraph. The cost is the mirror of
+    the gain: an indicator genuinely ending at the excerpt boundary is now
+    dropped, because nothing in the retained text distinguishes it from one
+    the slice severed.
+
+    It still needs no argument about its relationship to the excerpt, because
+    it **is a slice of the excerpt** — ``rendered[offset:]``, trimmed, not
+    something re-derived from the projection and then reasoned about. Every earlier version of this function
     derived its scan source from the projection and argued the correspondence;
     each argument was true of the case in front of it and false of another.
     The containment here is syntactic, so round two cannot return through it:
@@ -431,7 +457,10 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
             # ``rendered`` still holds from ``offset`` on **is** retained
             # evidence, so it is handed over as one value rather than
             # discarded — that omission was the fifth round on this function.
-            tail = rendered[offset:]
+            # Trimmed, because the slice can land mid-indicator and a severed
+            # indicator is worse than a lost one: it is a *false* join key in
+            # an append-only index. See the docstring for the measurement.
+            tail = CUT_TOKEN.sub("", rendered[offset:])
             if tail:
                 kept.append(tail)
             break
