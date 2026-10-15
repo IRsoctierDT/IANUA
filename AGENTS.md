@@ -140,7 +140,7 @@ ianua/
 │   ├── unit/
 │   ├── integration/
 │   └── security/              # Authz, input-validation, injection, secret-leak tests
-└── data/                      # Local/lab data ONLY — gitignored; never client/PII
+└── data/                      # Local/lab data ONLY — gitignored; never client data
 ```
 
 **Conventions:**
@@ -217,6 +217,44 @@ grounds that `guarded.enforce()` cannot express per-invocation human approval), 
 not license an inbound listener, which adds an unauthenticated network surface this charter
 does not yet describe. See `DESIGN.md` §5 boundary 14.
 
+**What is retained — amended for real telemetry (stage 6).** Real logs describe people:
+a sign-in record *is* a username, a mail record *is* two addresses, a process record *is*
+whoever was at the keyboard. A platform that ingests them and claims to hold no personal
+identifiers would be claiming not to work. So the posture is not "no personal data under
+`data/`" — it is **retain only what a parser modelled**, and say plainly what that means:
+
+- **The excerpt is rebuilt, never copied.** Each signature in `ingest/parsers/` declares
+  the payload paths it reads, and `raw_excerpt` is re-serialized from those paths alone
+  (`ingest/_coerce.py::project`). A field no parser models — a mail `Body`, a column a
+  vendor added last week, a key an attacker chose — has no route into a stored event. A
+  declared path that lands on an object contributes its key *names* and not its values,
+  so an over-broad declaration degrades to shape rather than to content.
+- **Because redaction is not available.** The store refuses `UPDATE` and `event_id` is a
+  sha256 over the projection, so a stored event cannot be edited — only the whole row can
+  be pruned. That is deliberate (evidence integrity), and its consequence is that
+  *what `ingest/` writes is the whole of the retention posture*. There is no later
+  redaction pass to rely on, and no agent should write code that assumes one.
+- **An unclaimed record is projected, not quoted.** A record no signature claims is
+  rebuilt from the union of every parser's declared paths, with a note naming the keys
+  whose values were withheld. Recognition breaking upstream is the likeliest route by
+  which a body would otherwise reach an append-only store, so this path carries the same
+  rule as the recognized one rather than falling back to the raw text. Free-form text
+  that never decoded into a record at all — ordinary syslog prose — is still carried
+  verbatim, because there is no structure there to project; that residual is recorded in
+  `DESIGN.md` rather than left implicit.
+- **Indicators are modelled and therefore kept.** An unclaimed record is still *scanned*
+  in full for URLs, hashes and addresses, which are typed, bounded fields with their own
+  join deny-list in `correlation/entities.py`. The indicator survives the narrowing; the
+  sentence around it does not.
+- **Volume is bounded by a gated pass, not by hope.** `scripts/run_retention.py` reports
+  by default and deletes only under a committed `destructive` grant. Measured at roughly
+  1.8 KB per event, a `*/5` schedule at the default batch size is ~15 GB/month, so a
+  retention decision is an operational requirement and not a tidiness preference.
+
+This amendment changes **nothing** about secrets: a credential, token, key or password is
+never written to source, tests, fixtures, comments, commit messages, or logs, and
+credential-shaped source paths are still refused outright by `collect/`.
+
 **Lawful-lab scope:** security tooling in this repo is for **defensive purposes and
 authorized lab exercises only**. Detection content, parsers, and analysis tooling are
 welcome; weaponized exploit chains aimed at unowned targets are not. When in doubt about
@@ -284,7 +322,10 @@ A task is **done** only when **all** of the following hold:
       involved.
 - [ ] **All required checks (§7) pass locally.**
 - [ ] Public surface is documented; `DESIGN.md` updated if architecture changed.
-- [ ] No secrets, PII, or sensitive data added anywhere.
+- [ ] No secrets, credentials, or client data added anywhere — and no personal identifier
+      hard-coded into source, tests, or fixtures. Telemetry under `data/` describes people
+      by its nature; the control there is what `ingest/` retains (§5, stage 6 amendment),
+      not a claim that the data is anonymous.
 - [ ] Summary states what changed, why, residual risks, and rollback.
 - [ ] Any approval gate (§5.1) that was hit has a recorded human approval.
 

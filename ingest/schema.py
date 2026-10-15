@@ -33,10 +33,16 @@ Design (DESIGN.md §5, new boundary 9):
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any, Literal, cast, get_args
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal, TypeVar, cast, get_args
 
 from ingest.errors import MalformedProjectionError
+
+#: One of the nested groups whose every field is an optional string. Named so
+#: :func:`_clip_group` keeps the group's own type rather than widening every
+#: caller's. ``EmailContext`` is excluded: it also carries two collections,
+#: so it is bounded field by field.
+_GroupT = TypeVar("_GroupT", "Actor", "Device", "Endpoint", "CloudContext")
 
 #: The five telemetry domains the platform ingests. ``unknown`` is a real
 #: outcome, not a failure to try: a source that cannot be confidently
@@ -61,6 +67,12 @@ PARSE_STATUS_VALUES: frozenset[str] = frozenset(get_args(ParseStatus))
 MAX_FIELD_LEN = 2048
 MAX_RAW_EXCERPT = 4096
 MAX_OBSERVABLES = 64
+#: How many entries a single declared evidence path may contribute when it
+#: lands on a container. A record carrying a thousand-element list must not
+#: be able to inflate an excerpt, and a parser that models a list models a
+#: bounded one — ``email``'s recipient cap is the same number for the same
+#: reason.
+MAX_PROJECTED_ITEMS = 32
 #: Parser notes per event. Bounded for the same reason as observables:
 #: on read the ceiling is what distinguishes a record this platform wrote
 #: from one that grew outside it.
@@ -277,6 +289,64 @@ class NormalizedEvent:
             notes=_str_tuple(payload, "notes", "event", MAX_NOTES),
         )
 
+    def bounded(self) -> NormalizedEvent:
+        """Return this event with every read-time bound applied on write.
+
+        The write-side twin of the validation in :meth:`from_dict`, kept
+        beside it for the reason ``from_dict`` itself exists: a bound
+        *asserted* in one place and *applied* in another drifts, and when
+        this one drifted the symptom was not a rejected record but a stored
+        one that could never be read back.
+
+        **The defect this closes.** Every individual field a parser writes is
+        bounded by ``text()`` at :data:`MAX_FIELD_LEN`. ``message`` is not a
+        field — it is assembled from several of them, and nothing re-bounded
+        the result, while ``from_dict`` validates it at ``MAX_FIELD_LEN``
+        like any other. An ordinary encoded-PowerShell ``CommandLine`` —
+        the single most common malicious artifact in endpoint telemetry —
+        produces a 2168-character message, which ``append`` accepted and
+        every subsequent ``query`` then refused with
+        ``MalformedProjectionError``. ``run_cycle`` does not catch it, so one
+        such record stopped every later detection cycle on that store, for
+        good. Nine of the fifteen ingest fixtures reproduce it under
+        ``MAX_FIELD_LEN``-length field values, across eight of the ten
+        vendors. Measured end to end before the fix, and the same defect
+        class as the ``_unrecognized`` message bound recorded in
+        ``ingest/normalize.py`` — found by looking for its siblings.
+
+        Truncation is mechanical and silent *here*; ``ingest.normalize``
+        notes it and demotes ``parse_status``, because a summary cut short can
+        drop the only copy of a value that lives nowhere else (a CloudTrail
+        ``mfaAuthenticated``, a Defender ``ThreatTypes``), and a reader must
+        be able to tell a complete summary from a cut one.
+        """
+        return replace(
+            self,
+            vendor=self.vendor[:MAX_FIELD_LEN],
+            vendor_event_id=_clip(self.vendor_event_id),
+            message=self.message[:MAX_FIELD_LEN],
+            activity=_clip(self.activity),
+            actor=_clip_group(self.actor, _ACTOR_KEYS),
+            device=_clip_group(self.device, _DEVICE_KEYS),
+            src_endpoint=_clip_group(self.src_endpoint, _ENDPOINT_KEYS),
+            dst_endpoint=_clip_group(self.dst_endpoint, _ENDPOINT_KEYS),
+            cloud=_clip_group(self.cloud, _CLOUD_KEYS),
+            # ``email`` is spelled out because it is the one group with
+            # collection fields as well as scalars — the same reason
+            # ``_email_from`` reads it by hand rather than through ``_group``.
+            email=EmailContext(
+                sender=_clip(self.email.sender),
+                subject=_clip(self.email.subject),
+                message_id=_clip(self.email.message_id),
+                delivery_action=_clip(self.email.delivery_action),
+                recipients=_clip_each(self.email.recipients, MAX_OBSERVABLES),
+                urls=_clip_each(self.email.urls, MAX_OBSERVABLES),
+            ),
+            observables=_clip_each(self.observables, MAX_OBSERVABLES),
+            raw_excerpt=self.raw_excerpt[:MAX_RAW_EXCERPT],
+            notes=_clip_each(self.notes, MAX_NOTES),
+        )
+
     def to_match_view(self) -> dict[str, str]:
         """Flatten to the string map detection rules match against.
 
@@ -455,6 +525,23 @@ def _str_tuple(payload: Mapping[str, Any], key: str, where: str, limit: int) -> 
                 f"{where}.{key}[{index}]: exceeds the {MAX_FIELD_LEN}-char bound"
             )
     return tuple(value)
+
+
+def _clip(value: str | None, limit: int = MAX_FIELD_LEN) -> str | None:
+    """Bound an optional string without turning absence into emptiness."""
+    return value if value is None else value[:limit]
+
+
+def _clip_each(values: tuple[str, ...], count: int) -> tuple[str, ...]:
+    """Bound a tuple's length and each of its entries."""
+    return tuple(value[:MAX_FIELD_LEN] for value in values[:count])
+
+
+def _clip_group(group: _GroupT, declared: tuple[str, ...]) -> _GroupT:
+    """Bound every declared scalar on one nested group, by the same key list
+    ``from_dict`` validates it with — so the two cannot name different fields.
+    """
+    return replace(group, **{name: _clip(getattr(group, name)) for name in declared})
 
 
 def _group(

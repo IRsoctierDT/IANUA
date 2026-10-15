@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ingest._coerce import dig, epoch, first, observables, strings, text
-from ingest.parsers import Signature
+from ingest.parsers import FieldPath, Signature
 from ingest.schema import Actor, Device, Endpoint, NormalizedEvent
 
 # --------------------------------------------------------------------------
@@ -120,6 +120,35 @@ def _parse_entra(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for Entra ID sign-ins.
+#: ``authenticationDetails`` is a *list* of method objects, and the path
+#: continues through it: each element contributes its
+#: ``authenticationMethod`` and nothing else.
+_ENTRA_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("appDisplayName",),
+    ("appId",),
+    ("authenticationDetails", "authenticationMethod"),
+    ("authenticationRequirement",),
+    ("conditionalAccessStatus",),
+    ("correlationId",),
+    ("createdDateTime",),
+    ("deviceDetail", "deviceId"),
+    ("deviceDetail", "displayName"),
+    ("deviceDetail", "operatingSystem"),
+    ("id",),
+    ("ipAddress",),
+    ("location", "countryOrRegion"),
+    ("riskLevelDuringSignIn",),
+    ("riskState",),
+    ("status", "errorCode"),
+    ("status", "failureReason"),
+    ("userDisplayName",),
+    ("userId",),
+    ("userPrincipalName",),
+)
+
+
 # --------------------------------------------------------------------------
 # Okta System Log
 # --------------------------------------------------------------------------
@@ -185,7 +214,29 @@ def _parse_okta(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for the Okta System Log. ``actor``, ``outcome``
+#: and ``client`` are declared by their leaves: recognition only checks that
+#: ``actor`` and ``outcome`` are objects, which reads no value, and an Okta
+#: ``debugContext`` carries far more than the one behaviours field read here.
+_OKTA_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("actor", "alternateId"),
+    ("actor", "displayName"),
+    ("actor", "id"),
+    ("client", "device"),
+    ("client", "geographicalContext", "country"),
+    ("client", "ipAddress"),
+    ("client", "userAgent", "os"),
+    ("debugContext", "debugData", "behaviors"),
+    ("eventType",),
+    ("outcome", "reason"),
+    ("outcome", "result"),
+    ("published",),
+    ("uuid",),
+)
+
+
 SIGNATURES: tuple[Signature, ...] = (
-    Signature("entra-id", "identity", _recognizes_entra, _parse_entra),
-    Signature("okta", "identity", _recognizes_okta, _parse_okta),
+    Signature("entra-id", "identity", _recognizes_entra, _parse_entra, _ENTRA_FIELDS),
+    Signature("okta", "identity", _recognizes_okta, _parse_okta, _OKTA_FIELDS),
 )

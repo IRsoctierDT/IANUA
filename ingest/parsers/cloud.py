@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ingest._coerce import dig, epoch, first, observables, text
-from ingest.parsers import Signature
+from ingest.parsers import FieldPath, Signature
 from ingest.schema import Actor, CloudContext, Device, Endpoint, NormalizedEvent
 
 # --------------------------------------------------------------------------
@@ -104,6 +104,29 @@ def _parse_cloudtrail(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for CloudTrail. ``userIdentity`` is declared by
+#: its leaves, not as a whole: the object also carries access-key material
+#: and session attributes this module never reads.
+_CLOUDTRAIL_FIELDS: tuple[FieldPath, ...] = (
+    ("awsRegion",),
+    ("errorCode",),
+    ("eventID",),
+    ("eventName",),
+    ("eventSource",),
+    ("eventTime",),
+    ("recipientAccountId",),
+    ("sourceIPAddress",),
+    ("userAgent",),
+    ("userIdentity", "accountId"),
+    ("userIdentity", "arn"),
+    ("userIdentity", "principalId"),
+    ("userIdentity", "sessionContext", "attributes", "mfaAuthenticated"),
+    ("userIdentity", "sessionContext", "sessionIssuer", "userName"),
+    ("userIdentity", "type"),
+    ("userIdentity", "userName"),
+)
+
+
 # --------------------------------------------------------------------------
 # Azure Activity Log
 # --------------------------------------------------------------------------
@@ -173,7 +196,39 @@ def _parse_azure(payload: Mapping[str, Any]) -> NormalizedEvent:
     )
 
 
+#: The evidence allow-list for Azure Activity. ``operationName`` and
+#: ``status`` are declared both as a scalar and by their sub-keys, because
+#: the export spells each either way; when a record carries the object form,
+#: the un-named sub-keys contribute their names and not their values.
+_AZURE_FIELDS: tuple[FieldPath, ...] = (
+    ("@timestamp",),
+    ("caller",),
+    ("callerIpAddress",),
+    ("category",),
+    ("claims", "appid"),
+    ("claims", "name"),
+    ("correlationId",),
+    ("eventDataId",),
+    ("eventTimestamp",),
+    ("location",),
+    ("operationName",),
+    ("operationName", "localizedValue"),
+    ("operationName", "value"),
+    ("resourceId",),
+    ("resourceProvider",),
+    ("resourceUri",),
+    ("resultType",),
+    ("status",),
+    ("status", "value"),
+    ("subscriptionId",),
+    ("tenantId",),
+    ("time",),
+)
+
+
 SIGNATURES: tuple[Signature, ...] = (
-    Signature("aws-cloudtrail", "cloud", _recognizes_cloudtrail, _parse_cloudtrail),
-    Signature("azure-activity", "cloud", _recognizes_azure, _parse_azure),
+    Signature(
+        "aws-cloudtrail", "cloud", _recognizes_cloudtrail, _parse_cloudtrail, _CLOUDTRAIL_FIELDS
+    ),
+    Signature("azure-activity", "cloud", _recognizes_azure, _parse_azure, _AZURE_FIELDS),
 )
