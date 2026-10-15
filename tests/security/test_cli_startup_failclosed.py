@@ -1,0 +1,265 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
+"""Scheduled entry points must fail closed at startup, and leave nothing behind.
+
+The four CLIs a scheduler runs unattended — collector, pipeline, retention,
+backup — share one startup contract. It is asserted here for all four at once,
+in one table, because **the grouping is the control**: every defect this file
+pins took the shape "three copies fixed, one missed", and a per-CLI test file
+is how that shape survives review.
+
+The properties:
+
+* **An unnamed root is refused.** ``Path("") == Path(".")`` and
+  ``Path(".").is_dir()`` is ``True``, so the documented scheduler line
+  ``--root "$IANUA_ROOT"`` with the variable unset passed an ``is_dir()``
+  check and built a complete shadow ``data/`` tree in whatever the working
+  directory happened to be — the collector storing events into it, every
+  signal green. Measured on all four. That is the failure
+  ``docs/PRODUCTION_SOC_PLAN.md`` names as the catastrophic one, reached by
+  the likeliest misconfiguration there is.
+* **A refused startup creates nothing** — not a shadow tree in the working
+  directory, not the root it was told to use, not even its own lock file.
+  Startup validates, and only then opens; the lock is the last thing the
+  startup block touches, so nothing that can fail happens after a descriptor
+  is open.
+* **A startup failure is a translated exit code, never a traceback.** A lock
+  path that is a *directory* used to escape as ``IsADirectoryError`` with exit
+  1, where the documented contract says 2: ``_prepare_lock`` had moved
+  ``mkdir``/``touch``/``chmod`` inside the caller's ``try`` and left the
+  ``open`` behind in the context manager, outside every ``try`` — in three
+  CLIs, while the fourth had no ``_prepare_lock`` at all.
+* **The table is complete.** A fifth scheduled CLI cannot be added without
+  appearing here: the coverage guard reads ``scripts/`` and fails if anything
+  defines ``_single_instance`` without a row in this file.
+
+:func:`store.paths.validated_root` is the shared implementation of the first
+two, so its own refusals are asserted directly as well.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+from scripts import run_backup, run_collector, run_pipeline, run_retention
+from store.paths import validated_root
+
+#: Spellings of a root that names nothing. All of them are ``Path(".")`` once
+#: argparse is done, which is the whole problem: the working directory is a
+#: perfectly good directory, so the check cannot be an ``is_dir()``.
+UNNAMED_ROOTS = ("", ".", "./", "././.")
+
+#: What argparse hands over for an unset shell variable: the empty spelling.
+#: Taken from the table rather than written inline, because ruff flags an empty
+#: ``Path`` literal as a redundant way of writing the current directory — and
+#: that equivalence *is* the defect, so the spelling has to survive the lint.
+UNSET_ROOT = Path(UNNAMED_ROOTS[0])
+
+
+class _Bespoke(Exception):
+    """A caller's own error type, to prove the helper raises what it is given."""
+
+
+@dataclass(frozen=True)
+class Cli:
+    """One scheduled entry point: how to invoke it, and where it locks."""
+
+    name: str
+    main: Callable[[list[str]], int]
+    #: The lock file, relative to ``--root``.
+    lock: Path
+    #: The collector is the only one that needs a declared source to get as
+    #: far as the lock.
+    needs_source: bool = False
+
+
+CLIS: tuple[Cli, ...] = (
+    Cli(
+        "run_collector",
+        run_collector.main,
+        Path("data") / "collect" / "collect.lock",
+        needs_source=True,
+    ),
+    Cli("run_pipeline", run_pipeline.main, Path("data") / "pipeline" / "cycle.lock"),
+    Cli("run_retention", run_retention.main, Path("data") / "events" / "retention.lock"),
+    Cli("run_backup", run_backup.main, Path("data") / "backups" / "backup.lock"),
+)
+_IDS = [cli.name for cli in CLIS]
+
+
+def _argv(cli: Cli, root: Path | str, tmp_path: Path, *extra: str) -> list[str]:
+    """Build an argv for ``cli`` with ``root`` passed through verbatim.
+
+    ``root`` is taken as given (a bare ``""`` stays ``""``) because the defect
+    lives in how the *argument* is spelled, not in how a ``Path`` renders it.
+    """
+    argv = ["--root", str(root), "--caller", "soc-test", *extra]
+    if cli.needs_source:
+        source = tmp_path / "source.log"
+        source.write_text("one line\n", encoding="utf-8")
+        argv += ["--source", str(source)]
+    return argv
+
+
+def _tree(directory: Path) -> set[Path]:
+    """Every path under ``directory``, relative — an artifact snapshot."""
+    return {path.relative_to(directory) for path in directory.rglob("*")}
+
+
+# ------------------------------------------------------------------ the CLIs
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+@pytest.mark.parametrize("unnamed", UNNAMED_ROOTS)
+def test_an_unnamed_root_is_refused_and_builds_no_shadow_tree(
+    cli: Cli,
+    unnamed: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The working directory must not become the lab-data root by default."""
+    work = tmp_path / "scheduler-cwd"
+    work.mkdir()
+    # The ``chdir`` is the point, not scaffolding: an implementation that
+    # resolved the argument before comparing it would find a real, writable
+    # directory here and accept it.
+    monkeypatch.chdir(work)
+
+    assert cli.main(_argv(cli, unnamed, tmp_path)) == 2
+    assert _tree(work) == set(), "a refused startup built a shadow tree in the cwd"
+    assert "must be named explicitly" in capsys.readouterr().err
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_root_that_does_not_exist_is_refused_not_created(
+    cli: Cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``data/`` is created beneath the root, never the root itself."""
+    missing = tmp_path / "unmounted-volume"
+
+    assert cli.main(_argv(cli, missing, tmp_path)) == 2
+    assert not missing.exists(), "a refused startup created the root it was handed"
+    assert "not an existing directory" in capsys.readouterr().err
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_lock_path_that_is_a_directory_is_translated_not_raised(
+    cli: Cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unusable lock path exits 2, not a traceback with exit 1.
+
+    Returning at all is half the assertion: an escaping ``IsADirectoryError``
+    would fail this test by propagating out of ``main``.
+    """
+    root = tmp_path / "root"
+    (root / cli.lock).mkdir(parents=True)
+
+    assert cli.main(_argv(cli, root, tmp_path)) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: "), err
+    # Named specifically, because exit 2 is also what a bad root yields: this
+    # pins that the *lock* failure is the one being translated.
+    assert "Is a directory" in err
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_startup_refused_after_the_root_leaves_no_lock_behind(
+    cli: Cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A valid root, an unreadable policy bundle: still nothing created.
+
+    This pins the ordering inside the startup block — the lock is opened last,
+    after everything that can fail. Open it first and this test sees the lock
+    file and its two parent directories left behind by a run that refused.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+
+    code = cli.main(_argv(cli, root, tmp_path, "--policy", str(tmp_path / "absent.json")))
+
+    assert code == 2
+    assert "policy bundle" in capsys.readouterr().err
+    assert _tree(root) == set(), "a refused startup left state under the root"
+
+
+@pytest.mark.security
+def test_every_single_instance_cli_has_a_row_here() -> None:
+    """A fifth scheduled CLI cannot quietly skip this contract.
+
+    The defects above were each "fixed in three of the four". Keying the
+    coverage on ``_single_instance`` rather than on a hand-kept list is what
+    makes the fourth impossible to forget.
+    """
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    locked = {
+        path.stem
+        for path in scripts.glob("*.py")
+        if "def _single_instance(" in path.read_text(encoding="utf-8")
+    }
+    assert locked == {cli.name for cli in CLIS}
+
+
+# --------------------------------------------------------- validated_root
+@pytest.mark.security
+@pytest.mark.parametrize("unnamed", UNNAMED_ROOTS)
+def test_validated_root_compares_before_it_resolves(
+    unnamed: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolution erases the distinction, so it must come second.
+
+    ``Path("").resolve()`` is the working directory — indistinguishable from an
+    operator who meant it. With a real directory as the cwd, an implementation
+    that resolved first would accept every spelling here.
+    """
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(_Bespoke, match="must be named explicitly"):
+        validated_root(Path(unnamed), error=_Bespoke)
+
+
+@pytest.mark.security
+def test_validated_root_refuses_a_root_that_does_not_exist(tmp_path: Path) -> None:
+    with pytest.raises(_Bespoke, match="not an existing directory"):
+        validated_root(tmp_path / "absent", error=_Bespoke)
+
+
+@pytest.mark.security
+def test_validated_root_refuses_a_file(tmp_path: Path) -> None:
+    """A root is a directory; a regular file at that path is a typo."""
+    occupied = tmp_path / "root"
+    occupied.write_text("not a directory\n", encoding="utf-8")
+    with pytest.raises(_Bespoke, match="not an existing directory"):
+        validated_root(occupied, error=_Bespoke)
+
+
+@pytest.mark.security
+def test_validated_root_returns_a_resolved_root(tmp_path: Path) -> None:
+    """An accepted root comes back resolved, so later joins are unambiguous."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    assert validated_root(link, error=_Bespoke) == real.resolve()
+
+
+@pytest.mark.security
+def test_validated_root_raises_the_callers_error_type(tmp_path: Path) -> None:
+    """Each entry point keeps its own exception taxonomy and exit code."""
+    with pytest.raises(_Bespoke):
+        validated_root(UNSET_ROOT, error=_Bespoke)
+    with pytest.raises(ValueError):
+        validated_root(UNSET_ROOT, error=ValueError)
+
+
+@pytest.mark.security
+def test_validated_root_names_what_it_refused(tmp_path: Path) -> None:
+    """``what`` is how an operator learns *which* argument was wrong."""
+    with pytest.raises(_Bespoke, match="--root must be named explicitly"):
+        validated_root(UNSET_ROOT, error=_Bespoke, what="--root")

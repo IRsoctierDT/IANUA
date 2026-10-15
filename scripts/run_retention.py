@@ -62,6 +62,7 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -81,7 +82,7 @@ from agents.policies.bundle import (  # noqa: E402
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
-from store.paths import confine  # noqa: E402
+from store.paths import confine, validated_root  # noqa: E402
 
 #: Default window, in days. A number had to be chosen; this one is the value
 #: ``store/README.md`` already used in its illustrative snippet, so the
@@ -106,7 +107,7 @@ DRY_RUN_CLASS: ActionClass = "read_only"
 APPLY_CLASS: ActionClass = "destructive"
 
 
-def _prepare_lock(directory: Path) -> Path:
+def _prepare_lock(directory: Path) -> TextIO:
     """Create the lock file before any lock is attempted.
 
     Separated from :func:`_single_instance` so its ``mkdir``/``touch``/``chmod``
@@ -118,18 +119,21 @@ def _prepare_lock(directory: Path) -> Path:
     path = directory / LOCK_FILE
     path.touch(mode=_FILE_MODE, exist_ok=True)
     path.chmod(_FILE_MODE)
-    return path
+    # The ``open`` belongs here too. Moving only ``mkdir``/``touch``/``chmod``
+    # left a lock path that is a *directory* tracebacking with
+    # ``IsADirectoryError`` and exit 1, in all three CLIs that had this fix.
+    return path.open("a", encoding="utf-8")
 
 
 @contextlib.contextmanager
-def _single_instance(path: Path) -> Iterator[bool]:
+def _single_instance(handle: TextIO) -> Iterator[bool]:
     """Hold an exclusive lock for one pass; yield False if another holds it.
 
     A declined lock is not an error and must not exit non-zero: a scheduled
     retention pass overlapping a slow one is expected, and failing would mail
     the operator until they learned to ignore it.
     """
-    with path.open("a", encoding="utf-8") as handle:
+    with handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -241,10 +245,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not math.isfinite(args.keep_days) or args.keep_days < 0:
             raise ValueError(f"--keep-days must be finite and >= 0, got {args.keep_days!r}")
+        # This CLI had **no** root check at all, so `--root ""` reported on a
+        # shadow store in the working directory and `--apply` would have
+        # pruned it. Shared with every other entry point now.
+        args.root = validated_root(args.root, error=ValueError, what="--root")
         principal = Principal("retention", args.caller)
         lock_path = confine(args.root, LOCK_SUBDIR, LOCK_FILE, error=StoreError, what="lock")
-        lock = _prepare_lock(lock_path.parent)
         engine = load_bundle(args.policy)
+        # Last in the startup try, deliberately: the only statement here that
+        # opens a descriptor, so nothing can fail after it and abandon the handle.
+        lock = _prepare_lock(lock_path.parent)
     except (PrincipalError, PolicyBundleError, StoreError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

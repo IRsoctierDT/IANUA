@@ -71,6 +71,7 @@ import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -90,7 +91,7 @@ from agents.policies.bundle import (  # noqa: E402
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
 from store import DEFAULT_FILENAME, EVENTS_SUBDIR, EventStore, StoreError  # noqa: E402
-from store.paths import confine  # noqa: E402
+from store.paths import confine, validated_root  # noqa: E402
 
 #: Where backups live: a sibling of the state they copy, inside the same
 #: gitignored root, so a backup can never be the thing that commits evidence.
@@ -144,7 +145,7 @@ EXCLUDED: dict[str, str] = {
 }
 
 
-def _prepare_lock(directory: Path) -> Path:
+def _prepare_lock(directory: Path) -> TextIO:
     """Create the lock file before any lock is attempted.
 
     Separated from :func:`_single_instance` so its ``mkdir``/``touch``/``chmod``
@@ -158,17 +159,17 @@ def _prepare_lock(directory: Path) -> Path:
     path = directory / LOCK_FILE
     path.touch(mode=_FILE_MODE, exist_ok=True)
     path.chmod(_FILE_MODE)
-    return path
+    return path.open("a", encoding="utf-8")
 
 
 @contextlib.contextmanager
-def _single_instance(path: Path) -> Iterator[bool]:
+def _single_instance(handle: TextIO) -> Iterator[bool]:
     """Hold an exclusive lock for one pass; yield False if another holds it.
 
     A declined lock is not an error: a scheduled backup overlapping a slow one
     is expected, and failing would mail the operator until they ignored it.
     """
-    with path.open("a", encoding="utf-8") as handle:
+    with handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -568,38 +569,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _validate_root(root: Path) -> Path:
-    """Refuse a root that does not already exist as a real directory.
-
-    ``Path("") == Path(".")`` and ``Path(".").is_dir()`` is True, so an unset
-    shell variable in a scheduler line passes an ``is_dir()`` check and builds
-    a complete shadow tree in whatever the working directory happens to be —
-    reproduced against the three older CLIs here, one of which silently stored
-    20,700 events into one. Comparing the *argument* against empty, before any
-    resolution, is what closes it.
-    """
-    if str(root) in {"", "."}:
-        raise ValueError(
-            "--root must name a directory explicitly; an empty or '.' root is how "
-            "an unset shell variable becomes a shadow data tree that reports success"
-        )
-    resolved = root.resolve()
-    if not resolved.is_dir():
-        raise ValueError(f"--root {root} does not exist as a directory")
-    return resolved
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     started_at = time.monotonic()
 
     try:
-        root = _validate_root(args.root)
+        root = validated_root(args.root, error=ValueError, what="--root")
         principal = Principal("backup", args.caller)
         name = args.name or f"backup-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
         destination = confine(root, BACKUP_SUBDIR, name, error=StoreError, what="backup")
-        lock = _prepare_lock(root / BACKUP_SUBDIR)
         engine = load_bundle(args.policy)
+        # Last in the startup try, deliberately: the only statement here that
+        # opens a descriptor, so nothing can fail after it and abandon the handle.
+        lock = _prepare_lock(root / BACKUP_SUBDIR)
     except (PrincipalError, PolicyBundleError, StoreError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

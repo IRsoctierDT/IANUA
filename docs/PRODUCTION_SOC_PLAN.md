@@ -201,6 +201,21 @@ forever — every signal reading healthy while the SOC sees nothing. A missing
 root now exits `2`. Create it as part of deployment, not by running the
 pipeline.
 
+An `is_dir()` check was not enough, and the gap was the likeliest
+misconfiguration there is. `Path("") == Path(".")`, and the working directory
+is always a directory, so `--root "$IANUA_ROOT"` with the variable unset passed
+the check and built exactly the shadow tree described above — measured on all
+four scheduled CLIs (pipeline, collector, retention, backup), one of which
+stored events into it, and retention had no root check at all. The argument is
+now compared **before** it is resolved, because resolution is what erases the
+distinction (`Path("").resolve()` is the working directory, indistinguishable
+from an operator who meant it), through one shared `store.paths.validated_root`
+rather than a copy per CLI. An empty or `.` root exits `2` with a message
+naming the unset-variable case, and a refused startup creates nothing — not the
+shadow tree, not the root, not its own lock file. Pinned for all four by
+`tests/security/test_cli_startup_failclosed.py`, which also fails if a fifth
+scheduled CLI is added without a row in it.
+
 **Exit codes**, which are the whole interface a scheduler sees: `0` the cycle
 ran (including the common idle case — a non-zero exit for "nothing new" would
 page someone nightly), `1` the cycle or a persisted cursor failed, `2` bad

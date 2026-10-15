@@ -95,3 +95,53 @@ def confine(
         # loosening that pattern does not silently open a traversal.
         raise error(f"{what} path {candidate} escapes {directory}")
     return candidate
+
+
+def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data root") -> Path:
+    """Return ``root`` resolved, or raise ``error`` if it is not a usable root.
+
+    Every scheduled entry point takes a ``--root`` and creates ``data/``
+    beneath it, never the root itself — so a root that does not already exist
+    is a typo or an unmounted volume, not a fresh deployment. Three of the
+    four CLIs each carried their own copy of that check, one carried none, and
+    **all four shared a hole**: ``Path("") == Path(".")`` and
+    ``Path(".").is_dir()`` is ``True``, so an unset shell variable in the
+    documented scheduler line — ``--root "$IANUA_ROOT"`` with nothing in it —
+    passed the check and built a complete shadow ``data/`` tree in whatever
+    the working directory happened to be.
+
+    Measured on all three older CLIs: exit 0 every time, and the collector
+    silently wrote an ``events.sqlite3`` into the shadow tree. That is the
+    failure ``docs/PRODUCTION_SOC_PLAN.md`` names as the catastrophic one —
+    "every signal reading healthy while the SOC sees nothing" — reached by the
+    likeliest misconfiguration there is.
+
+    The argument is compared **before** it is resolved, because resolution is
+    what erases the distinction: ``Path("").resolve()`` is the working
+    directory, indistinguishable from an operator who meant it.
+
+    One implementation, because four copies of a guard is how three of them
+    stay fixed and one does not — which is the shape this very defect took.
+
+    Args:
+        root: The ``--root`` argument, exactly as the operator supplied it.
+        error: The exception type to raise, so each caller keeps its taxonomy.
+        what: A noun for the message.
+
+    Raises:
+        error: If ``root`` is empty, ``.``, or not an existing directory.
+    """
+    if str(root) in {"", "."}:
+        raise error(
+            f"{what} must be named explicitly; an empty or '.' root is how an unset "
+            "shell variable becomes a shadow data tree that reports success. Pass an "
+            "absolute path."
+        )
+    resolved = root.resolve()
+    if not resolved.is_dir():
+        raise error(
+            f"{what} {root} is not an existing directory; data/ is created beneath the "
+            "root but never the root itself, so this is a typo or an unmounted volume "
+            "rather than a fresh deployment"
+        )
+    return resolved

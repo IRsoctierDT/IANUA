@@ -96,6 +96,7 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -128,6 +129,7 @@ from pipeline import (  # noqa: E402
     save_cursor,
 )
 from store import EventStore, StoreError  # noqa: E402
+from store.paths import validated_root  # noqa: E402
 
 #: The pipeline's own audit log, beside its cursor under the lab-data root.
 #: Mirrors ``compliance/evidence.py``, which keeps its chain at
@@ -150,8 +152,35 @@ LOCK_FILE = "cycle.lock"
 _FILE_MODE = 0o600
 
 
+def _prepare_lock(directory: Path) -> TextIO:
+    """Create and open the lock file, before any lock is attempted.
+
+    This CLI never received the fix its two siblings have, and the gap was
+    measured: with ``data/pipeline`` unusable — a full disk, a read-only
+    volume, or the path occupied by a regular file — the ``mkdir`` ran at
+    ``__enter__``, outside every ``try``, and the cycle on the five-minute
+    timer emitted a raw traceback and **exit 1 where the documented contract
+    says 2**. Worse, it died before the :class:`AuditLogger` existed, so the
+    chain recorded nothing at all — not even the "permitted attempt with no
+    outcome" that the runbook names as the signal worth alerting on.
+
+    The ``open`` belongs here too, not in the context manager: the sibling
+    CLIs had moved ``mkdir``/``touch``/``chmod`` and left the ``open`` behind,
+    so a lock path that is a *directory* still tracebacked with
+    ``IsADirectoryError`` in all three. ``pipeline/cursor.py`` warns about
+    exactly this "fixed one copy, not the other" shape in its own docstring.
+    """
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / LOCK_FILE
+    path.touch(mode=_FILE_MODE, exist_ok=True)
+    path.chmod(_FILE_MODE)
+    # Appended to, never truncated: the open handle carries the lock, not the
+    # contents.
+    return path.open("a", encoding="utf-8")
+
+
 @contextlib.contextmanager
-def _single_instance(directory: Path) -> Iterator[bool]:
+def _single_instance(handle: TextIO) -> Iterator[bool]:
     """Hold an exclusive lock for the duration of one cycle.
 
     **A correctness control, not a performance one.** Two cycles running at
@@ -182,12 +211,7 @@ def _single_instance(directory: Path) -> Iterator[bool]:
     printed, because a cycle that silently did nothing is the failure mode this
     whole stage exists to avoid.
     """
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / LOCK_FILE
-    # Opened for append so an existing lock file is never truncated: the open
-    # file handle carries the lock, not the contents.
-    with path.open("a", encoding="utf-8") as handle:
-        path.chmod(_FILE_MODE)
+    with handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -389,12 +413,11 @@ def main(argv: list[str] | None = None) -> int:
         #
         # An operator deploys to a directory that exists, so a missing root is a
         # misconfiguration rather than a fresh install.
-        if not args.root.is_dir():
-            raise ValueError(
-                f"--root {args.root} is not an existing directory; the pipeline creates "
-                "data/ beneath the root but never the root itself, so this is a typo or "
-                "an unmounted volume rather than a fresh deployment"
-            )
+        # Shared with every other entry point now. This copy checked only
+        # `is_dir()`, and `Path("") == Path(".")` is a directory — so the
+        # shadow tree the comment above describes was reachable through the
+        # likeliest misconfiguration of all, an unset shell variable.
+        args.root = validated_root(args.root, error=ValueError, what="--root")
         if args.lookback < 0:
             raise ValueError(f"lookback must be >= 0 seconds, got {args.lookback}")
         if args.batch < 1:
@@ -409,6 +432,9 @@ def main(argv: list[str] | None = None) -> int:
         # a missing or malformed bundle stops the pipeline rather than falling
         # back to an implicit allow.
         engine = load_bundle(args.policy)
+        # Last in the startup try, deliberately: the only statement here that
+        # opens a descriptor, so nothing can fail after it and abandon the handle.
+        lock = _prepare_lock(path.parent)
     except (
         PrincipalError,
         ThresholdError,
@@ -424,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with _single_instance(path.parent) as acquired:
+    with _single_instance(lock) as acquired:
         if not acquired:
             print("skipped: another cycle holds the lock; this invocation did nothing.")
             return 0

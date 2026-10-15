@@ -101,6 +101,7 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -137,6 +138,7 @@ from collect import (  # noqa: E402
     save_offsets,
 )
 from store import EventStore, StoreError  # noqa: E402
+from store.paths import validated_root  # noqa: E402
 
 from ingest import normalize_many  # noqa: E402
 
@@ -156,7 +158,7 @@ ACTION_CLASS: ActionClass = "collection"
 ACTION_NAME = "collect_logs"
 
 
-def _prepare_lock(directory: Path) -> Path:
+def _prepare_lock(directory: Path) -> TextIO:
     """Create the lock file and return it, before any lock is attempted.
 
     Separated from :func:`_single_instance` so that its ``mkdir``, ``touch``
@@ -172,11 +174,18 @@ def _prepare_lock(directory: Path) -> Path:
     path = directory / LOCK_FILE
     path.touch(mode=_FILE_MODE, exist_ok=True)
     path.chmod(_FILE_MODE)
-    return path
+    # Opened here too, not in the context manager. The fix above moved
+    # `mkdir`/`touch`/`chmod` inside the caller's `try` and left the `open`
+    # behind, so a lock path that is a *directory* still tracebacked with
+    # `IsADirectoryError` and exit 1 — while this function's docstring
+    # claimed nothing in the context manager could fail for a reason the
+    # caller would have to translate. Measured on all three CLIs that
+    # carried this fix; the pipeline had never received it at all.
+    return path.open("a", encoding="utf-8")
 
 
 @contextlib.contextmanager
-def _single_instance(path: Path) -> Iterator[bool]:
+def _single_instance(handle: TextIO) -> Iterator[bool]:
     """Hold an exclusive lock for the duration of one pass.
 
     A correctness control, not an optimization. :class:`AuditLogger` derives
@@ -191,15 +200,16 @@ def _single_instance(path: Path) -> Iterator[bool]:
     It also serializes offset writes, so two passes cannot each read the same
     region and race to persist different positions.
 
-    Takes a path already created by :func:`_prepare_lock`, so nothing here
-    can fail for a reason the caller would have to translate into an exit code.
+    Takes a handle already opened by :func:`_prepare_lock`, so nothing here
+    can fail for a reason the caller would have to translate into an exit code
+    — which is only true now that the ``open`` moved there as well.
 
     Yields ``True`` when the lock was taken, ``False`` when another pass holds
     it. A declined lock is not an error, and must not exit non-zero: a
     minutely schedule is *expected* to overlap occasionally, and failing would
     mail the operator every minute until they learned to ignore it.
     """
-    with path.open("a", encoding="utf-8") as handle:
+    with handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -338,17 +348,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.max_bytes < 1:
             raise ValueError(f"--max-bytes must be >= 1, got {args.max_bytes}")
-        if not args.root.is_dir():
-            raise ValueError(
-                f"--root {args.root} is not an existing directory; the collector "
-                "creates data/ beneath the root but never the root itself, so this "
-                "is a typo or an unmounted volume rather than a fresh deployment"
-            )
+        # Shared with every other entry point, because this check had four
+        # copies and one hole: `Path("") == Path(".")`, so `--root "$UNSET"`
+        # passed `is_dir()` and built a shadow data tree in the cwd.
+        args.root = validated_root(args.root, error=ValueError, what="--root")
         principal = Principal("collector", args.caller)
         sources = declare_all(tuple(args.source))
         path = offsets_path(args.root)
-        lock = _prepare_lock(path.parent)
         engine = load_bundle(args.policy)
+        # Last in the startup try, deliberately: the only statement here that
+        # opens a descriptor, so nothing can fail after it and abandon the handle.
+        lock = _prepare_lock(path.parent)
     except (PrincipalError, CollectError, PolicyBundleError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
