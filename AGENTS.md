@@ -386,7 +386,11 @@ python -m pytest
 ruff check .
 
 # 4. Static type checking (full CI scope)
-mypy agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance sli
+#    The interpreter flag is NOT decoration: mypy resolves imports against its
+#    own interpreter, so a standalone install does not share one with the
+#    project. Measured without it on a fresh container: 134 errors in 132
+#    files, 132 of them a missing `pytest` stub. CI carries it too.
+mypy --python-executable "$(command -v python)" agents attack intel ingest store correlation pipeline collect scripts tests dashboard mcp rag compliance sli
 
 # 5. Security static analysis (SAST) — same config and scope as CI
 bandit -c pyproject.toml -r agents attack intel ingest store correlation pipeline collect scripts mcp sli
@@ -416,12 +420,27 @@ python -m pytest --cov=agents --cov=scripts --cov-report=term-missing --cov-fail
 # Dependency vulnerability scan (SCA)
 pip-audit
 
-# Secret scanning — fail the build on any detected credential
-detect-secrets scan --baseline .secrets.baseline
+# Secret scanning — fail the build on any detected credential.
+#
+# `detect-secrets-hook`, NOT `detect-secrets scan`. Measured: `scan --baseline`
+# rescans and *rewrites* the tracked baseline in place — bumping
+# `generated_at`, shifting line numbers, and silently absorbing any NEW finding
+# as an accepted entry — and it exits 0 either way. So the command this block
+# used to give could not fail the build on a detected credential, which is the
+# one thing the line above claims it does, and it dirtied a tracked file as a
+# side effect. `detect-secrets-hook` exits 1 on a secret not in the baseline,
+# exits 0 when clean, and leaves the baseline untouched in both cases
+# (measured, both directions). It is also what `.pre-commit-config.yaml`
+# already runs, so the charter was the only place disagreeing with the repo.
+detect-secrets-hook --baseline .secrets.baseline $(git ls-files)
 # or: gitleaks detect --no-banner
+#
+# To ACCEPT a new finding, updating the baseline is a deliberate, reviewable
+# act: `detect-secrets scan --baseline .secrets.baseline`, then read the diff
+# and commit it.
 
 # Optional: type-strictness on new modules
-mypy --strict <changed_module>
+mypy --python-executable "$(command -v python)" --strict <changed_module>
 ```
 
 > If a tool above is not yet wired into the repo, the **first** task is to add it to

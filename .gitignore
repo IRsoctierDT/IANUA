@@ -16,6 +16,11 @@ htmlcov/
 
 # Local IDE / tool config
 .claude/settings.local.json
+# Transient git worktrees an isolated agent runs in. Listed as one subtree
+# rather than ignoring .claude wholesale, because the IANUA-rename gate
+# excludes exactly this prefix and a tracked .claude file must still be
+# scanned — see scripts/rename_to_ianua.py::EXCLUDED_PREFIXES.
+.claude/worktrees/
 .claude/agents/
 .claude/launch.json
 .claude/ai-command-center.code-workspace

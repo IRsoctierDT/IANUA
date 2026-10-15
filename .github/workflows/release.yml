@@ -112,7 +112,7 @@ jobs:
             fi
           done
           echo "mypy scope:$scope"
-          mypy $scope
+          mypy --python-executable "$(command -v python)" $scope
           pytest
       - name: Build distributions from the tagged commit
         run: python -m build

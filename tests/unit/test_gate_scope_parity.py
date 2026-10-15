@@ -102,6 +102,49 @@ UNGATED = {
 }
 
 
+#: Flags the mypy invocation is expected to carry, and the reason. mypy
+#: resolves imports against its OWN interpreter, so a standalone or pipx
+#: install does not share one with the project: measured on a fresh container,
+#: the bare command emits 134 errors in 132 files (132 of them a missing
+#: ``pytest`` stub) while the flag gives "no issues in 287 source files". It is
+#: a no-op where mypy is installed beside the dependencies, which is why every
+#: invocation carries it rather than two commands diverging.
+_REQUIRED_MYPY_FLAG = "--python-executable"
+
+
+def _mypy_packages(command: str) -> set[str]:
+    """The package list from a mypy command line, with its flags stripped.
+
+    Asserts the interpreter flag is present rather than tolerating its absence:
+    dropping it is a silent regression to 134 phantom errors in a required
+    check, and the obvious next move for whoever sees them is to stop running
+    the check.
+    """
+    assert _REQUIRED_MYPY_FLAG in command, (
+        f"the mypy command dropped {_REQUIRED_MYPY_FLAG}: {command!r} — see the note above"
+    )
+    # Strip shell command substitutions before splitting. The documented
+    # invocation passes `"$(command -v python)"`, which a naive split turns
+    # into four tokens — two of them looking like a flag and a package. Parsed
+    # here rather than contorting the command, because the command is what an
+    # agent copies and it should read naturally.
+    command = re.sub(r"\$\([^)]*\)", "", command)
+    tokens = command.split()
+    assert tokens and tokens[0] == "mypy", f"not a mypy command: {command!r}"
+    packages: set[str] = set()
+    skip_next = False
+    for token in tokens[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if token.startswith("-"):
+            # A flag that takes a separate value consumes the next token.
+            skip_next = "=" not in token and token in {_REQUIRED_MYPY_FLAG}
+            continue
+        packages.add(token)
+    return packages
+
+
 def _pyproject() -> dict:
     return tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -132,7 +175,7 @@ def test_coverage_scopes_match() -> None:
 def test_ci_mypy_and_bandit_lines_match() -> None:
     ci = (_REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     mypy_line = next(line for line in ci.splitlines() if re.search(r"run: mypy ", line))
-    assert set(mypy_line.split()[2:]) == MYPY_SCOPE
+    assert _mypy_packages(mypy_line.split("run: ", 1)[1]) == MYPY_SCOPE
     bandit_line = next(line for line in ci.splitlines() if "run: bandit" in line)
     scope = set(bandit_line.split()[2:]) - {"-c", "pyproject.toml", "-r"}
     assert scope == BANDIT_SCOPE
@@ -174,15 +217,65 @@ def test_precommit_scopes_match() -> None:
 @pytest.mark.unit
 def test_agents_md_command_blocks_match() -> None:
     charter = (_REPO / "AGENTS.md").read_text(encoding="utf-8")
-    mypy_match = re.search(r"^mypy (.+)$", charter, re.MULTILINE)
+    mypy_match = re.search(r"^(mypy .+)$", charter, re.MULTILINE)
     assert mypy_match is not None, "AGENTS.md §7 must show the mypy command"
-    assert set(mypy_match.group(1).split()) == MYPY_SCOPE, (
+    assert _mypy_packages(mypy_match.group(1)) == MYPY_SCOPE, (
         "AGENTS.md §7 mypy scope drifted from the real gate"
     )
     bandit_match = re.search(r"^bandit -c pyproject\.toml -r (.+)$", charter, re.MULTILINE)
     assert bandit_match is not None, "AGENTS.md §7 must show the bandit command"
     assert set(bandit_match.group(1).split()) == BANDIT_SCOPE, (
         "AGENTS.md §7 bandit scope drifted from the real gate"
+    )
+
+
+@pytest.mark.unit
+def test_the_charters_secret_scan_is_read_only_and_fails_closed() -> None:
+    """§7.1's secret-scanning command must be the hook, not `scan`.
+
+    Not a style preference, measured both ways:
+
+    * ``detect-secrets scan --baseline .secrets.baseline`` rescans and
+      **rewrites** the tracked baseline in place — bumping ``generated_at``,
+      shifting line numbers, and silently absorbing a NEW finding as an
+      accepted entry — and exits ``0`` either way. So the command §7.1 used to
+      give could not do the one thing its own heading claims ("fail the build
+      on any detected credential"), and it dirtied a tracked file as a side
+      effect.
+    * ``detect-secrets-hook --baseline .secrets.baseline <files>`` exits ``1``
+      on a secret not in the baseline, exits ``0`` when clean, and leaves the
+      baseline untouched in both cases.
+
+    It is also what ``.pre-commit-config.yaml`` already runs, so the charter
+    was the only place disagreeing with the repository.
+
+    Pinned because planting the revert left every other test in this file
+    green: nothing asserted this command, so the fix could have come straight
+    back out. Comment lines are excluded from the ban, because the block
+    deliberately documents ``scan`` as the *deliberate* way to accept a new
+    finding into the baseline.
+    """
+    charter = (_REPO / "AGENTS.md").read_text(encoding="utf-8")
+    section = re.search(r"### 7\.1 Extended gate.*?```bash\n(.*?)```", charter, re.DOTALL)
+    assert section is not None, "AGENTS.md §7.1 must carry a bash block"
+    block = section.group(1)
+    runnable = [
+        line for line in block.splitlines() if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert any("detect-secrets-hook --baseline" in line for line in runnable), (
+        "§7.1 does not run detect-secrets-hook; a `scan --baseline` gate cannot fail "
+        "and rewrites a tracked file"
+    )
+    offenders = [line for line in runnable if "detect-secrets scan" in line]
+    assert not offenders, (
+        f"§7.1 runs {offenders} as a gate — `scan` exits 0 and rewrites the baseline; "
+        "it belongs in a comment as the deliberate way to accept a finding"
+    )
+
+    hook = (_REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    assert "id: detect-secrets" in hook, (
+        "pre-commit no longer runs detect-secrets, so the charter and the repo disagree again"
     )
 
 
