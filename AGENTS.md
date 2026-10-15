@@ -279,6 +279,24 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   by default and deletes only under a committed `destructive` grant. Measured at roughly
   1.8 KB per event, a `*/5` schedule at the default batch size is ~15 GB/month, so a
   retention decision is an operational requirement and not a tidiness preference.
+
+  **What "bounded" means, precisely, because a pass returns no disk.** `prune` is a
+  `DELETE`, which moves pages onto SQLite's free list without truncating the file, and the
+  store is opened at `auto_vacuum=0`. Measured through the shipped CLI with the grant: a
+  20,889,600-byte store, `events_removed: 10200` of 12000, exit 0 — and the file was
+  **20,889,600 bytes afterwards**, same inode, `page_count` unchanged, `freelist_count`
+  0 → 4247. The report has no byte, size or disk field, so nothing in the output says so.
+  What a pass buys is a **plateau**: freed pages are reused by later appends and the file
+  grows only when they run out (measured — 15,000 further events moved it not one byte
+  while the free list drained to 87), so the store settles at the largest live set it has
+  ever held. That is a real bound and the sentence above stands, but it bounds the *live
+  set*, not the filesystem. Returning bytes is a manual `VACUUM` which this repository does
+  not ship — `grep -rni vacuum .` is zero matches, `EventStore` exposes no vacuum method
+  and its connection is private — and which an operator runs themselves against the
+  database (measured: -84.9% on a pruned store in 21.9 ms, inode, mode, `attest()` digest,
+  `event_id`s, `meta`, indexes and both append-only triggers all preserved). An agent
+  should not write code that *assumes* a pass reclaims disk, and should not read this
+  bullet as a claim that it does; `docs/RETENTION.md` carries the procedure and its costs.
 - **And a pass never deletes past the detection cycle, which is a second grant.** The
   threshold is clamped to the pipeline cursor, because the two used to be mutually
   invisible: measured, 40 events with only the oldest 5 processed and `--keep-days 3
