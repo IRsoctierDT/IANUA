@@ -42,7 +42,7 @@ from typing import Any
 
 from ingest import keyvalue
 from ingest._coerce import FieldPath, depth_within, observables, project, text
-from ingest.errors import UnsupportedInputError
+from ingest.errors import IngestError, UnsupportedInputError
 from ingest.parsers import Signature, cloud, email, endpoint, identity, network
 from ingest.schema import (
     MAX_FIELD_LEN,
@@ -153,7 +153,24 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     if stripped.startswith(("{", "[")):
         try:
             decoded = json.loads(stripped)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
+            # ``ValueError``, not ``json.JSONDecodeError``, and the widening is
+            # the fix rather than tidying. ``JSONDecodeError`` *is* a
+            # ``ValueError``, so this still catches every malformed document —
+            # and it now also catches the one well-formed document CPython
+            # refuses to decode: an integer literal past
+            # ``sys.get_int_max_str_digits()`` (4300 digits by default), whose
+            # conversion is quadratic. ``json.loads`` raises a bare
+            # ``ValueError`` for it, anywhere in the document, nested or not.
+            #
+            # That raise escaped ``normalize`` entirely. Measured end to end:
+            # a file of three lines, one of them a JSON object with a
+            # 5000-digit number, gave two identical collector passes —
+            # ``0 event(s) stored``, ``offsets held``, ``[first-run]``, exit 1
+            # — because ``normalize_many`` built a list and
+            # ``run_collector.py`` writes a source's cursor only after its
+            # events are durable. The source was stalled permanently and the
+            # two healthy lines in that file were never stored.
             return _unrecognized(
                 evidence=_carried(raw),
                 notes=("input looked like JSON but did not decode; carried as text",),
@@ -180,8 +197,103 @@ def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[N
 
     One unparseable record never costs the batch: each degrades to its own
     ``unknown`` event, and the caller sees exactly which ones did.
+
+    **That sentence was false, and it is now held by two layers instead of
+    asserted by one.** It is a consequence of rule 2 — nothing a record
+    contains may raise out of ``normalize`` — and when rule 2 leaked, a list
+    comprehension here turned one bad record into the loss of every record
+    beside it. Measured: a three-line file with one JSON object holding a
+    5000-digit integer stored **none** of the three, and because
+    ``scripts/run_collector.py`` writes a source's cursor only once its events
+    are durable, the source re-read the same window on every pass forever —
+    two identical passes, ``offsets held``, ``[first-run]``, exit 1. Loud, and
+    permanent, and recoverable only by editing a log the collector is licensed
+    to read but never to write.
+
+    The first layer is the fix: ``_coerce.text`` and ``_coerce.epoch`` are
+    total over the numbers Python refuses to render, and the JSON decode guard
+    catches ``ValueError`` rather than only ``JSONDecodeError``. This loop is
+    the second, and it is deliberately the *wider* one — a batch boundary
+    whose contract is "one bad record never costs the batch" cannot keep that
+    contract by naming exception types, because the next leak will be a type
+    nobody listed. ``tests/security`` pins that the committed corpus never
+    reaches it, so it firing means something changed rather than something is
+    tolerated.
+
+    What it does not do is let the collector advance past records it failed to
+    store: the degraded event *is* stored, so the cursor advance is honest.
+    A raise from the store itself is outside this and still fails closed.
     """
-    return [normalize(record) for record in records]
+    out: list[NormalizedEvent] = []
+    for record in records:
+        try:
+            out.append(normalize(record))
+        except IngestError:
+            # Propagated, deliberately, and the first version of this loop did
+            # not. ``ingest/errors.py`` draws the line this layer turns on:
+            # malformed telemetry degrades, and only an input that cannot be
+            # telemetry at all — a wrong Python type — raises, "because those
+            # signal a caller bug rather than a bad log line". Absorbing
+            # ``UnsupportedInputError`` here would launder exactly that bug
+            # into a thousand degraded events, and ``MalformedProjectionError``
+            # says a stored row was damaged after it was written, which the
+            # same file says has no honest degradation. Measured: an object
+            # with a raising ``__repr__`` came back as an event noting
+            # ``UnsupportedInputError`` instead of refusing.
+            raise
+        except Exception as exc:
+            # The outer layer. Deliberately unnamed: see the docstring.
+            out.append(_normalization_raised(record, exc))
+    return out
+
+
+def _normalization_raised(record: Any, exc: BaseException) -> NormalizedEvent:
+    """An event recording that a record was seen and could not be normalized.
+
+    Must itself be total, or the second layer has the first layer's hole. So
+    the evidence is built without rendering the record's values: a ``str`` or
+    ``bytes`` record is carried as text, and a mapping contributes its key
+    names only — the same "shape, not content" rule ``project`` applies, and
+    the only rendering that cannot raise on a value Python will not print.
+
+    The note names the exception *type* and not its message, because a
+    message is often record content (a ``KeyError``'s is a key name) and this
+    note is written to an append-only store that refuses ``UPDATE``.
+
+    **The rendering is itself guarded, because the first version of it was
+    not.** A ``Mapping`` subclass whose ``__iter__`` raises defeated the key-
+    name branch — ``list(record)`` raises again, inside the ``except`` that
+    was handling the first raise — and ``RuntimeError`` escaped
+    ``normalize_many`` exactly as the ``ValueError`` had. Measured while
+    writing this function, which is the point: a layer that exists because
+    "the next leak will be a type nobody listed" cannot be total by listing
+    types.
+    """
+    try:
+        if isinstance(record, bytes):
+            carried = record.decode("utf-8", errors="replace")[:MAX_RAW_EXCERPT]
+        elif isinstance(record, str):
+            carried = record[:MAX_RAW_EXCERPT]
+        elif isinstance(record, Mapping):
+            named = [text(key) for key in list(record)[:MAX_PROJECTED_ITEMS]]
+            carried = json.dumps(sorted(key for key in named if key is not None))
+        else:
+            carried = type(record).__name__
+    except Exception:
+        # Not logged, and nothing here may reach a logger: ``ingest`` imports
+        # no clock, no filesystem and no transport, which is what makes it
+        # testable as a pure function (``tests/security`` pins all three). The
+        # note below is the record of what happened, and it travels with the
+        # event into the store rather than into a log the operator has to
+        # correlate by hand.
+        carried = "a record that could not be rendered"
+    return _unrecognized(
+        evidence=_carried(carried),
+        notes=(
+            f"normalizing this record raised {type(exc).__name__}; it is kept "
+            f"unparsed so that the batch and the collector cursor survive it",
+        ),
+    )
 
 
 def _normalize_mapping(payload: Mapping[str, Any]) -> NormalizedEvent:
@@ -542,11 +654,29 @@ def _serialize(value: Mapping[str, Any]) -> str:
     passing a mapping directly certainly can. Nothing a record contains may
     raise out of ``normalize`` — that is rule 2, and an excerpt is not worth
     losing an event over.
+
+    **Three tiers, because the second one raised on exactly the input it was
+    there to absorb.** ``str(value)`` on a mapping renders its values, so a
+    mapping holding an integer past ``sys.get_int_max_str_digits()`` raised
+    ``ValueError`` out of the fallback — out of the function whose docstring
+    states rule 2. ``json.dumps`` fails first on the same value (``default``
+    is consulted only for types JSON cannot represent, and ``int`` is not one,
+    so the encoder calls ``int.__repr__`` and that is what refuses), so both
+    tiers were defeated by one value. The third tier renders key *names*
+    only, which are strings and coerce through the now-total :func:`text`:
+    shape, not content, exactly as ``project``'s second rule has it, and it
+    cannot raise.
     """
     try:
         return json.dumps(value, sort_keys=True, default=str)[:MAX_RAW_EXCERPT]
     except (TypeError, ValueError, RecursionError):
+        pass
+    try:
         return str(value)[:MAX_RAW_EXCERPT]
+    except (TypeError, ValueError, RecursionError):
+        pass
+    named = [text(key) for key in list(value)[:MAX_PROJECTED_ITEMS]]
+    return json.dumps(sorted(key for key in named if key is not None))[:MAX_RAW_EXCERPT]
 
 
 def _unmodelled(payload: Mapping[str, Any], *, notes: tuple[str, ...]) -> NormalizedEvent:

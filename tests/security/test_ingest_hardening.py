@@ -31,6 +31,7 @@ import json
 import re
 import sys
 import typing
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -47,9 +48,10 @@ from ingest import (
     NormalizedEvent,
     _coerce,
     normalize,
+    normalize_many,
 )
 from ingest._coerce import _DOMAIN, _HASH, _IPV4, _IPV6, _URL, observables, project
-from ingest.errors import MalformedProjectionError
+from ingest.errors import IngestError, MalformedProjectionError, UnsupportedInputError
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore
 
@@ -1998,3 +2000,276 @@ def test_a_poisoned_store_does_not_break_every_later_cycle(tmp_path: Path) -> No
         )
         result = run_cycle(store, cursor=load_cursor(cursor_path(tmp_path)))
     assert result.events_read == 2, "a long line still breaks the detection cycle"
+
+
+#: An integer CPython refuses to render. ``str(int)`` is quadratic, so since
+#: 3.11 it raises past ``sys.get_int_max_str_digits()`` (4300 by default) — and
+#: ``float()`` has no value for one this large either. One number, two
+#: exception types, four call sites that each propagated it.
+_UNRENDERABLE_DIGITS = 5000
+_UNRENDERABLE_INT = 10 ** (_UNRENDERABLE_DIGITS - 1)
+_UNRENDERABLE_LITERAL = "9" * _UNRENDERABLE_DIGITS
+
+
+@pytest.mark.security
+def test_the_unrenderable_probe_is_actually_unrenderable_here() -> None:
+    """The precondition, or every test below is green over an ordinary number.
+
+    If a future interpreter raises the digit limit past this probe, these
+    tests must say so rather than quietly stop testing anything. Both
+    refusals are pinned, because the fix had to handle both: ``str`` raises
+    ``ValueError`` and ``float`` raises ``OverflowError``, and a guard naming
+    one of them leaves the other live.
+    """
+    limit = sys.get_int_max_str_digits()
+    assert limit and limit < _UNRENDERABLE_DIGITS, (
+        f"the probe has {_UNRENDERABLE_DIGITS} digits against a limit of "
+        f"{limit}; it no longer reaches the condition these tests exist for"
+    )
+    with pytest.raises(ValueError):
+        str(_UNRENDERABLE_INT)
+    with pytest.raises(OverflowError):
+        float(_UNRENDERABLE_INT)
+
+
+#: ``(id, record, raised_before_the_fix)`` for every shape by which an
+#: unrenderable number can reach this layer. The four JSON rows are the only
+#: ones a *collector* can deliver, since it passes log lines as ``str``, and
+#: the first is the one measured end to end; the mapping rows arrive through
+#: ``normalize``'s declared ``Mapping[str, Any]`` domain.
+#:
+#: The third field is measured, by reverting all four guards at once and
+#: asking each row whether it raises. **Six of the eight do. Two do not**, and
+#: they are kept as controls rather than dropped, because what stops them is
+#: worth recording: ``mapping-unmodelled-key`` never reaches ``text()`` at all
+#: — the evidence allow-list withholds the value before anything renders it —
+#: and in ``mapping-nested`` the declared path lands on a *mapping*, which
+#: contributes its key names and never its values (``project``'s second rule).
+#: So the retention control turns out to block two of the four routes into
+#: this layer as a side effect. Stating that is the point; implying all eight
+#: were live would be the overclaim.
+_UNRENDERABLE_RECORDS: tuple[tuple[str, object, bool], ...] = (
+    ("json-top-level-int", '{"EventID": 1, "Counter": ' + _UNRENDERABLE_LITERAL + "}", True),
+    ("json-nested-int", '{"EventID": 1, "x": {"y": ' + _UNRENDERABLE_LITERAL + "}}", True),
+    ("json-int-in-a-list", '{"EventID": 1, "x": [' + _UNRENDERABLE_LITERAL + "]}", True),
+    ("json-as-bytes", ('{"EventID": 1, "n": ' + _UNRENDERABLE_LITERAL + "}").encode(), True),
+    ("mapping-modelled-key", {"EventID": _UNRENDERABLE_INT, "Channel": "Security"}, True),
+    ("mapping-timestamp", {"EventID": 1, "@timestamp": _UNRENDERABLE_INT}, True),
+    ("mapping-unmodelled-key", {"EventID": 1, "Counter": _UNRENDERABLE_INT}, False),
+    ("mapping-nested", {"EventID": 1, "Provider": {"Name": _UNRENDERABLE_INT}}, False),
+)
+
+
+@pytest.mark.security
+def test_most_of_those_rows_really_did_raise_before_the_fix() -> None:
+    """A "must not raise" table whose rows never raised asserts nothing.
+
+    The count is pinned rather than the rows' flags being decoration: if a
+    later change makes the allow-list cover a third route, this fails and the
+    table gets corrected instead of quietly shrinking to controls.
+    """
+    live = [name for name, _, raised in _UNRENDERABLE_RECORDS if raised]
+    inert = [name for name, _, raised in _UNRENDERABLE_RECORDS if not raised]
+    assert len(live) == 6, f"{live} reach the condition, which is not what was measured"
+    assert inert == ["mapping-unmodelled-key", "mapping-nested"], inert
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "record",
+    [record for _, record, _ in _UNRENDERABLE_RECORDS],
+    ids=[name for name, _, _ in _UNRENDERABLE_RECORDS],
+)
+def test_an_unrenderable_number_degrades_instead_of_raising(record: object) -> None:
+    """Rule 2 — nothing a record contains may raise out of ``normalize``.
+
+    The rule was already written, in ``_serialize``'s docstring, and leaked in
+    four places at once. One 5000-digit integer:
+
+    * ``json.loads`` raises a bare ``ValueError``, which the decode guard did
+      not catch because it named ``json.JSONDecodeError``;
+    * ``_coerce.text`` raises from ``str(value)``;
+    * ``_coerce.epoch`` raises ``OverflowError`` from ``float(value)``;
+    * ``_serialize``'s *fallback* raises from ``str(value)`` — the function
+      whose docstring states the rule.
+
+    The consequence was not one lost field. ``normalize_many`` was a list
+    comprehension, so the raise discarded the whole batch, and
+    ``scripts/run_collector.py`` records a source's cursor only once its
+    events are durable — so the source re-read the same window on every pass,
+    forever. Measured on a three-line file with one such line, twice in a row:
+
+        exit=1  stored=0  offsets={}  "offsets held"  "[first-run]"
+
+    with the two healthy lines never stored, recoverable only by editing a log
+    the collector is licensed to read and never to write.
+
+    Six of these eight rows raised before the fix; the other two were already
+    blocked by the evidence allow-list, and the table says which is which.
+    """
+    event = normalize(record)  # type: ignore[arg-type]
+    assert event.parse_status in {"structured", "partial", "text"}
+    assert event.raw_excerpt is not None
+
+
+@pytest.mark.security
+def test_every_coercion_helper_is_total_over_an_unrenderable_number() -> None:
+    """Pinned at the helpers, because all ten parsers reach them directly.
+
+    ``normalize`` is not the only entry point into these: a parser calls
+    ``text``, ``first``, ``strings``, ``epoch`` and ``observables`` on values
+    it chose, so a guard that only covered ``normalize`` would leave every
+    parser live. Asserted here rather than inferred from the end-to-end tests
+    above.
+    """
+    huge = _UNRENDERABLE_INT
+    assert _coerce.text(huge) is None
+    assert _coerce.epoch(huge) is None
+    assert _coerce.first(huge) is None
+    assert _coerce.strings([huge], limit=4) == ()
+    assert _coerce.observables(huge) == ()
+    # A declared path landing on it renders as present-but-blank rather than
+    # omitted: the record *did* carry the key, which is a different claim from
+    # not carrying it, and the same distinction `project`'s first rule draws.
+    assert _coerce.project({"a": huge}, [("a",)]) == {"a": None}
+
+
+@pytest.mark.security
+def test_a_serializable_number_is_still_rendered() -> None:
+    """The other direction, so the guards are not a blanket refusal of ints.
+
+    A 400-digit integer is under the limit and must survive intact, and a
+    timestamp that *is* a large float must still parse. Without this, a guard
+    that returned ``None`` for every number would pass everything above.
+    """
+    renderable = 10**400
+    assert len(_coerce.text(renderable) or "") == 401
+    assert _coerce.epoch(1_760_000_000) == 1_760_000_000.0
+    assert _coerce.epoch(1_760_000_000_000) == 1_760_000_000.0
+    assert _coerce.observables(f"198.51.100.7 seen {renderable} times") == ("198.51.100.7",)
+
+
+@pytest.mark.security
+def test_one_unparseable_record_does_not_cost_the_batch() -> None:
+    """``normalize_many``'s docstring claim, asserted rather than stated.
+
+    It has said "one unparseable record never costs the batch" since it was
+    written. A list comprehension holds that only while ``normalize`` is
+    total, which it was not — so the claim was false for the one input that
+    reached it, and the cost was the whole batch plus the source's cursor.
+    """
+    healthy_first = (
+        "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
+    )
+    poison = '{"EventID": 1, "Counter": ' + _UNRENDERABLE_LITERAL + "}"
+    healthy_last = json.dumps(
+        {
+            "eventSource": "s3.amazonaws.com",
+            "eventName": "GetObject",
+            "eventTime": "2026-10-15T09:00:02Z",
+        }
+    )
+
+    events = normalize_many([healthy_first, poison, healthy_last])
+
+    assert len(events) == 3, "the poison record cost its neighbours"
+    assert events[2].vendor == "aws-cloudtrail", "order was not preserved"
+    assert events[0].vendor != "unknown"
+
+
+@pytest.mark.security
+def test_a_record_that_resists_every_rendering_still_degrades() -> None:
+    """The second layer, and its own first version had the first layer's hole.
+
+    ``normalize_many`` keeps a blanket guard *as well as* the fixes above,
+    because a batch boundary whose contract is "one bad record never costs the
+    batch" cannot keep that contract by naming exception types — the next leak
+    will be a type nobody listed. This is the case that proves the guard is
+    reached and that its fallback rendering cannot itself raise: a ``Mapping``
+    whose ``__iter__`` raises defeated the first version, because the
+    key-name fallback called ``list(record)`` inside the ``except`` that was
+    handling the first raise.
+    """
+
+    class RefusesEverything(Mapping[str, object]):
+        def __iter__(self) -> Iterator[str]:
+            raise RuntimeError("iteration refused")
+
+        def __len__(self) -> int:
+            raise RuntimeError("len refused")
+
+        def __getitem__(self, key: str) -> object:
+            raise RuntimeError("getitem refused")
+
+    events = normalize_many([RefusesEverything(), "a healthy plain line"])
+
+    assert len(events) == 2
+    assert any("raised RuntimeError" in note for note in events[0].notes), (
+        f"the degraded event does not say what happened: {events[0].notes}"
+    )
+    # The note names the exception type and not its message, because a message
+    # is often record content and this lands in an append-only store.
+    assert not any("iteration refused" in note for note in events[0].notes)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("bad", [7, 7.5, None, object()], ids=["int", "float", "none", "object"])
+def test_a_wrong_python_type_is_still_refused_not_degraded(bad: object) -> None:
+    """The blanket guard must not launder the one refusal this layer declares.
+
+    ``ingest/errors.py`` draws the line the whole layer turns on: malformed
+    telemetry degrades, and only an input that cannot be telemetry at all
+    raises, "because those signal a caller bug rather than a bad log line".
+    The first version of the blanket guard swallowed ``UnsupportedInputError``
+    — measured, an object with a raising ``__repr__`` came back as a degraded
+    event instead of refusing — which would turn one caller bug into a
+    thousand plausible-looking events in an append-only store.
+    """
+    with pytest.raises(UnsupportedInputError):
+        normalize_many([bad])  # type: ignore[list-item]
+    assert issubclass(UnsupportedInputError, IngestError)
+    assert issubclass(MalformedProjectionError, IngestError)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("name", _fixture_names())
+def test_the_blanket_guard_is_not_reached_by_any_committed_fixture(name: str) -> None:
+    """A second layer that fires routinely is a first layer that is broken.
+
+    The blanket guard exists for the leak nobody listed, which means its
+    firing is information. If a fixture starts reaching it, something changed
+    in ``normalize`` and the right response is to fix that rather than to
+    accept a degraded event — so this pins that none of them does today.
+    """
+    fixtures = json.loads(
+        (Path(__file__).resolve().parents[1] / "fixtures" / "ingest_fixtures.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    record = fixtures[name]["record"]
+    for event in normalize_many([record, json.dumps(record)]):
+        assert not any("raised" in note for note in event.notes), (
+            f"{name} reaches the blanket guard: {event.notes}"
+        )
+
+
+@pytest.mark.security
+def test_the_excerpt_serializer_degrades_to_shape_when_it_cannot_render() -> None:
+    """``_serialize``'s third tier, which exists because the second raised.
+
+    Both of its first two tiers are defeated by one value. ``json.dumps``
+    consults ``default`` only for types JSON cannot represent, and ``int`` is
+    not one, so the encoder calls ``int.__repr__`` and *that* is what refuses;
+    then ``str(mapping)`` renders its values and refuses the same way. The
+    third tier names keys only — shape, not content, which is
+    ``project``'s second rule — and cannot raise, because key names are
+    strings and coerce through the now-total ``text``.
+    """
+    from ingest.normalize import _serialize
+
+    rendered = _serialize({"Counter": _UNRENDERABLE_INT, "Body": "a message body"})
+
+    assert rendered == '["Body", "Counter"]', rendered
+    # And the tier is a fallback, not the new behaviour: an ordinary mapping
+    # still serializes with its values.
+    assert _serialize({"a": "b"}) == '{"a": "b"}'

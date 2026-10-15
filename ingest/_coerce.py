@@ -71,7 +71,25 @@ def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
-        raw = str(value)
+        try:
+            raw = str(value)
+        except ValueError:
+            # CPython refuses to render an integer past
+            # ``sys.get_int_max_str_digits()`` (4300 by default) because the
+            # conversion is quadratic, so ``str()`` on a big enough int is not
+            # a total function. Refused the same way a container is: the record
+            # carried *something* here and this layer cannot render it, so the
+            # field is absent rather than the record lost.
+            #
+            # Letting it raise cost far more than a field. Measured end to end
+            # before this guard: one JSON log line holding a 5000-digit integer
+            # made ``normalize`` raise, ``normalize_many`` discard the whole
+            # batch, and ``scripts/run_collector.py`` skip its cursor write —
+            # two identical passes, ``0 event(s) stored``, ``offsets held``,
+            # ``[first-run]``, exit 1, forever, with the two healthy lines in
+            # that file never stored. Recovery needed an operator to edit a log
+            # the collector reads read-only.
+            return None
     elif isinstance(value, str):
         raw = value
     else:
@@ -252,7 +270,15 @@ def epoch(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        seconds = float(value)
+        try:
+            seconds = float(value)
+        except OverflowError:
+            # No float exists for an int past ~1.8e308. Same refusal as an
+            # unparseable string and for the same reason — a fabricated
+            # ordering would corrupt every correlation built on it — and the
+            # same totality requirement as ``text()`` above: this is reached
+            # through ten parsers on attacker-influenced values.
+            return None
         # Values past ~2286 in seconds are almost certainly milliseconds.
         if seconds > 1e11:
             seconds /= 1000.0
