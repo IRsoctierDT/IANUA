@@ -488,12 +488,49 @@ pip-audit
 # exits 0 when clean, and leaves the baseline untouched in both cases
 # (measured, both directions). It is also what `.pre-commit-config.yaml`
 # already runs, so the charter was the only place disagreeing with the repo.
-detect-secrets-hook --baseline .secrets.baseline $(git ls-files)
-# or: gitleaks detect --no-banner
+#
+# NUL-delimited, and that is not style. An unquoted `$(git ls-files)` here —
+# which is what this block gave until measured — word-splits the 58 tracked
+# paths that contain spaces under `sample-logs/github log debugging/`. One of
+# them is `5_Run python -m build.txt`, so argparse receives a bare `-m` and
+# the command dies with `error: unrecognized arguments: -m build.txt ...` at
+# **exit 2, having scanned nothing**. A gate that cannot run cannot "fail the
+# build on any detected credential", which is the one thing the line above
+# claims it does, so the previous form was a second way of saying the same
+# defect this block already records.
+#
+# The trailing `--` is the same defect's third route, and it is the worst of
+# the three because it exits **0**. `xargs` appends the paths as plain
+# arguments, so one tracked file whose name begins with a dash is read as a
+# flag: measured in a throwaway repo holding one AWS-access-key-shaped
+# literal and a file named `--help`, the form without a terminator printed
+# usage and exited 0 with that key unscanned — a secret-scanning gate
+# reporting green over a committed credential. With `--` the same repo exits
+# 1 and names `AWS Access Key` at `planted.py:1`. (The literal itself is
+# deliberately not reproduced here: this gate flags it, correctly, and §5
+# forbids a key in a comment as much as in source.) A dash-led name is legal
+# and `git add -- --help` commits it, so this is reachable from any pull
+# request. Found by review, not by us.
+git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --
+#
+# If this prints "Your baseline file (.secrets.baseline) is unstaged" and exits
+# 3, that is not a finding — the hook refuses to run against a baseline with
+# uncommitted edits, so `git add .secrets.baseline` first. Measured; it is the
+# state you are in immediately after accepting a finding below.
+#
+# `gitleaks detect --no-banner` is NOT an equivalent — an earlier version of
+# this block offered it as "or:", and the two demonstrably disagree. CI runs
+# gitleaks; §7.1 runs detect-secrets. Measured on one tree: gitleaks green
+# while detect-secrets was red on two findings that had been unbaselined since
+# `2496c2e` (#217) — three merges with a §7.1 gate red and a green pipeline,
+# because nothing in CI ran this one. Both now run in CI (`ci.yml` stage 2) and
+# both are required; treat them as two gates that catch different things.
 #
 # To ACCEPT a new finding, updating the baseline is a deliberate, reviewable
 # act: `detect-secrets scan --baseline .secrets.baseline`, then read the diff
-# and commit it.
+# and commit it. Read **all** of that diff — the same `scan --baseline`
+# rewrite-in-place described above will absorb anything else that has drifted
+# in the same opaque write, so the review is the control, not the command.
 
 # Optional: type-strictness on new modules
 mypy --python-executable "$(command -v python)" --strict <changed_module>
@@ -518,7 +555,12 @@ in the pipeline."
    exactly, so this list is part of that claim: it had drifted to six of the fourteen,
    and `tests/unit/test_gate_scope_parity.py` now pins this prose as well as the §7
    block. Keep the two in step — the parity test is what caught `sli` missing here.
-3. **Security** — `bandit` (SAST), `pip-audit` (SCA), `gitleaks` (secrets), CodeQL.
+3. **Security** — `bandit` (SAST), `pip-audit` (SCA), **both** secret scanners
+   (`detect-secrets` against the reviewed baseline, and `gitleaks`), CodeQL.
+   The two are not interchangeable and both are required: measured on one tree,
+   `gitleaks` was green while `detect-secrets` was red on two findings — which
+   is how a red §7.1 gate sat behind a green pipeline for three merges while
+   CI ran only `gitleaks`.
    Any finding above the agreed severity threshold **blocks merge**.
 4. **Tests** — `pytest` on 3.11 and 3.12 with coverage gate (`--cov-fail-under=85`);
    `tests/security` must be green; sandbox enforcement runs in a Linux container.
