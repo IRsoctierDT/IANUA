@@ -26,7 +26,9 @@ from __future__ import annotations
 import ast
 import base64
 import dataclasses
+import hashlib
 import json
+import re
 import sys
 import typing
 from pathlib import Path
@@ -43,9 +45,10 @@ from ingest import (
     MAX_RAW_EXCERPT,
     SIGNATURES,
     NormalizedEvent,
+    _coerce,
     normalize,
 )
-from ingest._coerce import observables, project
+from ingest._coerce import _DOMAIN, _HASH, _IPV4, _IPV6, _URL, observables, project
 from ingest.errors import MalformedProjectionError
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore
@@ -858,8 +861,14 @@ def test_the_field_bound_never_fabricates_an_indicator(payload: str) -> None:
 
     A 50-character hex run matches no hash pattern at all, so the bound did
     not sever a real indicator — it **manufactured** one. The guard now lives
-    in ``_coerce._bounded_for_scan``, immediately around the slice, so it
-    covers every caller including the ten parsers rather than one call site.
+    in ``observables()`` itself, which applies each value's own cut to that
+    value's own matches, so it covers every caller including the ten parsers
+    rather than one call site.
+
+    This paragraph said the guard lived in ``_coerce._bounded_for_scan``
+    through rounds eleven and twelve, by which point that helper had been
+    deleted. A docstring naming code that is gone is the same defect class
+    these rounds keep finding, one file over.
 
     Swept rather than taken at one offset, because three of the four previous
     rounds here were argued from a single case.
@@ -901,11 +910,10 @@ def test_that_bound_sweep_actually_walks_the_cut_through_the_payload(
 def test_the_field_bound_trim_loses_nothing_at_or_under_the_bound() -> None:
     """The corpus has no value near ``MAX_FIELD_LEN``, so these pin that edge.
 
-    ``_bounded_for_scan`` detects truncation by coercing at ``MAX_FIELD_LEN +
-    1`` and comparing lengths. That is new code on the hot path of all ten
-    parsers, and the committed corpus cannot exercise it: its longest value is
-    far under the bound. So the risk is a value trimmed that was never
-    truncated — a silent loss on real telemetry — and these are the cases that
+    The cut is applied to each match's span rather than to the text, and the
+    committed corpus cannot exercise that at all: its longest value is far
+    under the bound. So the risk is an indicator dropped that the bound never
+    severed — a silent loss on real telemetry — and these are the cases that
     would show it.
 
     The last row is the one worth keeping. ``_WHITESPACE_RUN`` is
@@ -962,7 +970,15 @@ _BOUND_CASES: tuple[tuple[str, str, bool], ...] = (
     # matches no hash until the bound cuts it to 40, and a 64-character sha256
     # pushed past the bound becomes a sha1.
     ("fifty-hex-run", "P" * 2007 + " " + "f" * 50 + " tail", False),
-    ("sha256-cut-at-40", "P" * 2008 + "a" * 63 + "b", False),
+    # The space is load-bearing and was missing. `_HASH` anchors on `\b`, and
+    # `"P" * 2008 + "a" * 63` is one unbroken run of word characters, so no
+    # match could start at the hex run under *any* version of this code.
+    # Measured against the pre-round-ten slice-then-match shape: the
+    # `fifty-hex-run` row above fabricated a sha1 and this one produced `[]`.
+    # So the row asserted `not extracted` over something unreachable. Found in
+    # round twelve, by planting a shrunken lookahead and noticing this row
+    # stayed green when the plant should have reached it.
+    ("sha256-cut-at-40", "P" * 2007 + " " + "a" * 63 + "b", False),
 )
 
 
@@ -1000,6 +1016,308 @@ def test_the_field_bound_drops_only_what_it_severed(value: str, must_extract: bo
         assert extracted, "a complete indicator ending well before the bound was dropped"
     else:
         assert not extracted, f"the bound fabricated {extracted!r}"
+
+
+#: Inputs built to maximise each extractor's match, from that pattern's own
+#: quantifiers, with an over-long variant where one can confirm the quantifier
+#: caps the match rather than the input running out. Measured contribution,
+#: probe to width:
+#:
+#:     _IPV4    15  from ipv4 and ipv4-overlong
+#:     _IPV6    39  from ipv6 and ipv6-overlong
+#:     _HASH    64  from hash only
+#:     _URL    264  from url (itself 308 characters, so it caps)
+#:     _DOMAIN 408  from domain and domain-overlong
+#:
+#: ``hash-overlong`` contributes **nothing** and the row is kept to say so:
+#: ``_HASH`` anchors on ``\b`` at both ends, so an unbroken 200-character run
+#: has no interior boundary and matches at no length. There is therefore no
+#: probe here that would catch a *new* ``_HASH`` alternative — only the
+#: pattern digest above does, which is why it exists.
+_MAXIMAL_FOR: tuple[tuple[str, str], ...] = (
+    ("ipv4", "255.255.255.255"),
+    ("ipv4-overlong", "255." * 20 + "255"),
+    ("ipv6", "aaaa:" * 7 + "aaaa"),
+    ("ipv6-overlong", "aaaa:" * 20 + "aaaa"),
+    ("hash", "a" * 64),
+    ("hash-overlong", "a" * 200),
+    ("url", "https://" + "a" * 300),
+    ("domain", ("a" + "b" * 61 + "c.") * 6 + "d" * 24),
+    # 24 d's, not 60. A `[A-Za-z]{2,24}` TLD followed by more letters can
+    # never satisfy its trailing `\b`, so a 60-character tail made this probe
+    # match *nothing* and the over-long case contributed no width at all.
+    # Measured by planting `{1,6}` -> `{1,60}` in `_DOMAIN`: the full suite
+    # stayed green, 217 passed, with a pattern that can match 3864 characters
+    # against a 1024-character lookahead.
+    ("domain-overlong", ("a" + "b" * 61 + "c.") * 20 + "d" * 24),
+)
+
+#: Widest match each extractor can produce, measured over the corpus above.
+#: Recorded per pattern rather than as one number so a widening of any single
+#: pattern is attributed, and so the margin's headroom is visible.
+_WIDEST_MATCH: tuple[tuple[str, re.Pattern[str], int], ...] = (
+    ("_IPV4", _IPV4, 15),
+    ("_IPV6", _IPV6, 39),
+    ("_HASH", _HASH, 64),
+    ("_URL", _URL, 264),
+    ("_DOMAIN", _DOMAIN, 408),
+)
+
+
+#: sha256 over the five extractor patterns, exactly as the measured widths
+#: below were taken from them:
+#:
+#:     _IPV4    \b(?:\d{1,3}\.){3}\d{1,3}\b
+#:     _IPV6    \b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b
+#:     _HASH    \b(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})\b
+#:     _URL     \bhttps?://[^\s\"'<>\\]{3,256}
+#:     _DOMAIN  \b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.){1,6}[A-Za-z]{2,24}\b
+#:
+#: Pinned as a digest rather than as five string literals because the width
+#: corpus below is built *from these quantifiers*, so it cannot cover a
+#: quantifier that does not exist yet — a new ``_HASH`` alternative would need
+#: a probe with the right word boundaries and the committed corpus would stay
+#: green. Pinning the source text instead makes any edit to a pattern fail
+#: here and send the author back to re-measure. Same shape as the mapping
+#: ruleset and intel library digests (AGENTS.md §7 step 6).
+_PATTERN_DIGEST = "6df689241f37b388d6c027f8e075284375ddafb9b87a7da35b06517eb09e4244"
+
+
+def _pattern_digest() -> str:
+    """sha256 over the live extractor patterns, named so a diff is readable."""
+    joined = "\n".join(f"{name}={pattern.pattern}" for name, pattern, _ in _WIDEST_MATCH)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.security
+def test_the_extractor_patterns_are_the_ones_the_widths_were_measured_from() -> None:
+    """Any edit to a pattern invalidates the lookahead, so pin the sources.
+
+    Not a style check. ``_SCAN_LOOKAHEAD`` is sound only while it exceeds the
+    widest match these five can produce, and the widths below are measured
+    from inputs built to each pattern's current quantifiers. Widen a
+    quantifier and the matching probe silently stops being maximal — measured:
+    ``{1,6}`` to ``{1,60}`` in ``_DOMAIN`` left the whole suite green with a
+    pattern that can match 3864 characters against a 1024-character lookahead,
+    because the over-long domain probe had a 60-character tail and a
+    ``[A-Za-z]{2,24}`` TLD followed by more letters can never satisfy its
+    trailing ``\\b``. The probe is fixed; this digest is what stops the next
+    one from being wrong silently.
+    """
+    assert _pattern_digest() == _PATTERN_DIGEST, (
+        "an extractor pattern changed:\n"
+        + "\n".join(f"  {name} = {pattern.pattern}" for name, pattern, _ in _WIDEST_MATCH)
+        + f"\nre-measure the widest match each can produce and recheck "
+        f"_SCAN_LOOKAHEAD ({_coerce._SCAN_LOOKAHEAD}) against it, then update "
+        "_PATTERN_DIGEST and the widths in _WIDEST_MATCH"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("name", "pattern", "widest"),
+    _WIDEST_MATCH,
+    ids=[name for name, _, _ in _WIDEST_MATCH],
+)
+def test_no_extractor_can_match_wider_than_the_scan_lookahead(
+    name: str, pattern: re.Pattern[str], widest: int
+) -> None:
+    """The lookahead must exceed every match width, or the window severs one.
+
+    ``observables()`` scans ``MAX_FIELD_LEN + _SCAN_LOOKAHEAD`` characters and
+    keeps the matches ending at or before ``MAX_FIELD_LEN``. That is equivalent
+    to scanning the whole record **only** while no match beginning at or before
+    the cut can reach past the window edge — so the lookahead has to be wider
+    than the widest match any of these five can produce.
+
+    Measured, not derived from the quantifiers: a derivation from these five
+    patterns has been wrong in four of the last six review rounds on this
+    function. The expected widths are recorded so a pattern that widens shows
+    up as this test failing rather than as an extraction that silently
+    disagrees with a full scan.
+    """
+    measured = max(
+        (len(match.group()) for _, probe in _MAXIMAL_FOR for match in pattern.finditer(probe)),
+        default=0,
+    )
+    assert measured == widest, (
+        f"{name} now matches up to {measured} characters, not {widest} — "
+        f"recheck _SCAN_LOOKAHEAD ({_coerce._SCAN_LOOKAHEAD}) against it"
+    )
+    assert measured < _coerce._SCAN_LOOKAHEAD, (
+        f"{name} can match {measured} characters, which the "
+        f"{_coerce._SCAN_LOOKAHEAD}-character lookahead cannot span"
+    )
+
+
+def _straddling_domain(gap_labels: int = 5, tld: int = 24) -> str:
+    """A value whose short domain ends at the cut and whose long one runs past.
+
+    This is the shape that makes the window observable at all, and it took
+    three attempts to build. The gap between the two matches is label content
+    no extractor can *end* on — a ``_DOMAIN`` TLD is letters, so a label
+    closing on a digit offers no valid end and a hyphen run offers none either
+    — which is what stops the window's own edge from simply terminating a
+    match there.
+
+    * short form ``a.bc``, ending exactly at ``MAX_FIELD_LEN``, kept by a
+      scan that cannot see past the window;
+    * long form ``a.bc------…1.a------…1.…zzz``, 346 characters, which a full
+      scan matches instead and then discards for ending past the cut.
+
+    So a window too narrow to hold the long form extracts an indicator the
+    record does not contain. Measured: margins 0..319 fabricate ``a.bc``.
+    """
+    head = "a.bc"
+    labels = ["bc" + "-" * 60 + "1"] + ["a" + "-" * 61 + "1"] * (gap_labels - 1)
+    tail = "a." + ".".join(labels) + "." + "z" * tld
+    start = MAX_FIELD_LEN - len(head)
+    return "P" * (start - 1) + " " + tail + " end"
+
+
+def _ending_at_the_cut(indicator: str, tail: str) -> str:
+    """A value whose indicator ends exactly at the cut, with ``tail`` after it.
+
+    The kept side of the window, which the first version of this corpus had
+    almost none of: ten of its eleven values were built around an indicator the
+    cut discards, so ``test_the_window_corpus_actually_reaches_past_the_window``
+    failed on its own corpus. That is the precondition doing its job, and the
+    corpus is widened rather than the precondition lowered.
+    """
+    pad = MAX_FIELD_LEN - len(indicator) - 1
+    return "P" * pad + " " + indicator + " " + tail
+
+
+#: Values whose extraction the scan window could plausibly change: each either
+#: runs past the window edge, or places an indicator across the cut, or both.
+#: The dot-dense entry is the one review measured — 0.153 s against 0.0069 s —
+#: and it is also the entry a benign-padding probe of mine understated: in one
+#: run, 101 ms whole-record for dot-dense against 27 ms for the same 256 KB of
+#: ``A`` padding, which is the input that benchmark used.
+_WINDOW_CORPUS: tuple[tuple[str, str], ...] = (
+    # Discarded side: nothing survives the cut, and the window must agree.
+    ("dot-dense", "a." * 131072),
+    ("straddling-widest-domain", _straddling_domain()),
+    ("straddling-narrow-domain", "P" * 2036 + " sub.example" + "-" * 14 + "a.com end"),
+    ("url-wholly-past-the-cut", "P" * MAX_FIELD_LEN + " http://late.example/p " + "A" * 5000),
+    ("hex-run-crossing-the-cut", "P" * 2000 + "f" * 100000),
+    ("ipv6-run-crossing-the-cut", "P" * 2040 + "2001:db8:85a3:0:0:8a2e:370:7334" * 500),
+    ("maximal-url-straddling", "P" * 2040 + " https://" + "u" * 400),
+    ("non-ascii-across-the-cut", "P" * 2040 + " caf\u00e9.example.com " + "B" * 9000),
+    ("exactly-one-window-long", "P" * (MAX_FIELD_LEN + 1024)),
+    ("one-past-the-window", "P" * (MAX_FIELD_LEN + 1025)),
+    # Kept side: the indicator is inside the cut and must survive the window.
+    ("indicators-then-huge-tail", "198.51.100.7 http://a.example/p " + "A" * 200000),
+    ("url-ending-at-the-cut", _ending_at_the_cut("http://a.example/p", "A" * 9000)),
+    (
+        "maximal-url-ending-at-the-cut",
+        _ending_at_the_cut("https://" + "u" * 256, "A" * 9000),
+    ),
+    ("hash-then-dot-dense", _ending_at_the_cut("a" * 64, "a." * 131072)),
+    (
+        "ipv6-then-huge-tail",
+        _ending_at_the_cut("2001:0db8:85a3:0000:0000:8a2e:0370:7334", "A" * 200000),
+    ),
+    (
+        "kept-domain-then-straddling-one",
+        "early.indicator.example " + _straddling_domain(),
+    ),
+)
+
+_WINDOW_IDS = [name for name, _ in _WINDOW_CORPUS]
+_WINDOW_VALUES = [value for _, value in _WINDOW_CORPUS]
+
+
+def _observables_over_the_whole_record(value: str) -> tuple[str, ...]:
+    """What ``observables()`` returns with the window opened to the record."""
+    original = _coerce._SCAN_LOOKAHEAD
+    _coerce._SCAN_LOOKAHEAD = MAX_RAW_BYTES
+    try:
+        return observables(value)
+    finally:
+        _coerce._SCAN_LOOKAHEAD = original
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("value", _WINDOW_VALUES, ids=_WINDOW_IDS)
+def test_the_scan_window_extracts_exactly_what_the_whole_record_would(value: str) -> None:
+    """Round twelve: the window is a cost fix and must not be a behaviour fix.
+
+    Round eleven ended by scanning the **whole** record and keeping the matches
+    that fit inside the cut, which is correct and was measured at ~22x the
+    previous cost on dot-dense input — ``observables("a." * 131072)`` at
+    0.153 s against 0.0069 s, on a path every parser runs for every value and
+    reachable by anything that can write a dot-heavy line into a collected log.
+    Review asked for the window; the window is only sound if it changes nothing
+    but the cost.
+
+    Asserted differentially against the production function with its own
+    lookahead widened, rather than against a reference implementation written
+    here. A second implementation would drift from the ordering, the dedup and
+    the ``MAX_OBSERVABLES`` bound, and would then be testing itself.
+    """
+    assert observables(value) == _observables_over_the_whole_record(value)
+
+
+@pytest.mark.security
+def test_that_differential_can_see_a_lookahead_too_narrow_to_be_sound() -> None:
+    """The test above must have teeth, since the margin is the whole guarantee.
+
+    Everything about this shape rests on one number. If the differential were
+    green for any lookahead, it would be pinning nothing and a later "tidy the
+    constant down to 64" would pass review. So: shrink the lookahead and the
+    corpus must disagree with a full scan.
+
+    Measured on the straddling-domain value — margins 0..319 fabricate
+    ``a.bc``, an indicator the record does not contain. 320 is not 408, and the
+    gap is honest: a straddling match this test can *build* tops out around
+    346 characters, because the gap region has to be content no extractor can
+    end on and ``_DOMAIN`` caps at 6 labels. So this pins the margin against
+    being shrunk below ~320, and the width test above is what pins it against
+    408.
+    """
+    value = _straddling_domain()
+    reference = _observables_over_the_whole_record(value)
+    assert reference == (), "the long domain ends past the cut, so nothing is retained"
+
+    original = _coerce._SCAN_LOOKAHEAD
+    narrow: list[int] = []
+    try:
+        for margin in (0, 16, 64, 128, 256, 319):
+            _coerce._SCAN_LOOKAHEAD = margin
+            if observables(value) != reference:
+                narrow.append(margin)
+    finally:
+        _coerce._SCAN_LOOKAHEAD = original
+
+    assert narrow == [0, 16, 64, 128, 256, 319], (
+        f"only {narrow} of the too-narrow lookaheads were detectable — the "
+        "differential is weaker than it reads"
+    )
+    assert _coerce._SCAN_LOOKAHEAD >= 408, (
+        f"the shipped lookahead is {_coerce._SCAN_LOOKAHEAD}, under the widest "
+        "match _DOMAIN can produce"
+    )
+
+
+@pytest.mark.security
+def test_the_window_corpus_actually_reaches_past_the_window() -> None:
+    """Or the differential above compares a value with itself.
+
+    Three of the eleven rounds on this function were green-over-nothing at the
+    level above the defect, so the precondition is asserted rather than
+    assumed: the corpus needs values longer than the window, and it needs at
+    least one indicator extracted and at least one discarded, or "the window
+    agrees" is a statement about the empty set.
+    """
+    window = MAX_FIELD_LEN + _coerce._SCAN_LOOKAHEAD
+    past = [name for name, value in _WINDOW_CORPUS if len(value) > window]
+    assert len(past) >= 6, f"only {past} exceed the {window}-character window"
+
+    yielding = [name for name, value in _WINDOW_CORPUS if observables(value)]
+    assert len(yielding) >= 3, f"only {yielding} yield any observable at all"
+    empty = [name for name, value in _WINDOW_CORPUS if not observables(value)]
+    assert len(empty) >= 3, f"only {empty} yield none, so the discard side is untested"
 
 
 @pytest.mark.security

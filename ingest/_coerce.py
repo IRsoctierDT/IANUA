@@ -26,7 +26,6 @@ from ingest.schema import (
     MAX_NESTING_DEPTH,
     MAX_OBSERVABLES,
     MAX_PROJECTED_ITEMS,
-    MAX_RAW_BYTES,
 )
 
 #: C0/C1 control characters, minus tab/newline/carriage-return, which are
@@ -45,6 +44,15 @@ _IPV6 = re.compile(r"\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b")
 _HASH = re.compile(r"\b(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})\b")
 _URL = re.compile(r"\bhttps?://[^\s\"'<>\\]{3,256}", re.IGNORECASE)
 _DOMAIN = re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.){1,6}[A-Za-z]{2,24}\b")
+
+#: How far past the retained cut the extractors are run. No match that begins
+#: at or before the cut can extend further than the widest match its own
+#: pattern permits (``_DOMAIN`` is widest at 6 labels of 63 plus a 24-character
+#: TLD, so 408), so a window of cut-plus-this yields exactly the matches a
+#: scan of the whole record would keep — without the ~22x cost review measured
+#: for scanning it. See :func:`_scan_source` for why the margin, and not the
+#: arithmetic behind it, is what ``tests/security`` pins.
+_SCAN_LOOKAHEAD = 1024
 
 
 def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
@@ -291,12 +299,12 @@ def depth_within(value: Any, limit: int = MAX_NESTING_DEPTH) -> bool:
 
 
 def _scan_source(value: Any) -> tuple[str, int] | None:
-    """The value's full cleaned text, plus how much of it the bound retains.
+    """The value's cleaned text as far as a match can reach, plus the cut.
 
-    Returns the text **unbounded** and the cut position, because the extractors
-    must run on the complete string: a bound applied *before* matching lets a
-    regex backtrack into a shorter valid match, and that match is then
-    indistinguishable from a complete one.
+    Returns the text bounded at ``MAX_FIELD_LEN + _SCAN_LOOKAHEAD`` and the
+    cut position, because the extractors must run past the cut: a bound
+    applied *at* the cut lets a regex backtrack into a shorter valid match,
+    and that match is then indistinguishable from a complete one.
 
     Five rounds were spent learning that. A bound that cuts a token makes the
     prefix match as whole — a 64-character sha256 cut at 40 is a well-formed
@@ -316,43 +324,64 @@ def _scan_source(value: Any) -> tuple[str, int] | None:
        defeated by backtracking: ``_DOMAIN`` and ``_IPV6`` can match a
        *shorter* valid indicator ending before the cut, so
        ``deep.sub.indicator.example.com`` cut mid-label still yielded
-       ``deep.sub.indicator.example``.
+       ``deep.sub.indicator.example``;
+    4. match the *whole* record and keep the matches that fit — correct, and
+       paid on every byte of every value. Still linear in the record, but with
+       a constant that backtracking makes large: review measured
+       ``observables("a." * 131072)`` at 0.153 s against 0.0069 s for a
+       bounded scan, a ~22x regression on a path every parser runs for every
+       value, reachable by anything that can write a dot-heavy line into a
+       collected log.
 
-    Matching the whole string and keeping the matches that fit needs no
-    character class and no span arithmetic about backtracking: a match wholly
-    inside the bound is exactly what the bounded evidence contains, and one
-    that crosses it is exactly what the bound severed.
+    So the text is bounded, but at the cut **plus a lookahead wide enough that
+    no match reaching the cut can be severed by it**. A match that starts at
+    or before the cut cannot extend further than the widest match its own
+    pattern permits, so a window of that width yields exactly the matches a
+    full-record scan would keep. Widest match per extractor, measured from
+    inputs built to maximise each (``tests/security`` pins this):
 
-    The value is already bounded overall by ``MAX_RAW_BYTES`` on the record,
-    so "unbounded" here means at most a few hundred kilobytes, not arbitrary.
-    **It is not free, and the cost is stated rather than discovered later.**
-    The previous shape bounded the text *before* matching, so extraction cost
-    the same whatever arrived; this one scales with the value. Measured, per
-    ``observables()`` call:
+        _IPV4 15 · _IPV6 39 · _HASH 64 · _URL 264 · _DOMAIN 408
 
-        realistic event value, ~2 KB          0.36 ms
-        2 KB of padding                       0.13 ms
-        64 KB of padding                      3.79 ms
-        256 KB of padding (MAX_RAW_BYTES)    19.6 ms
-        256 KB of URL-shaped text            36.0 ms
+    :data:`_SCAN_LOOKAHEAD` is 1024 — two and a half times the widest — and
+    that margin is the one number this shape's correctness rests on. A
+    derivation from these five patterns has been wrong in four of the last six
+    rounds here, so the derivation is *not* the guarantee. ``tests/security``
+    pins it three ways instead, each one plant-verified:
 
-    So a pathological single value costs ~275x what it used to, and a
-    realistic one costs the same as before — events measure ~1.8 KB. The
-    ceiling is bounded by ``MAX_RAW_BYTES`` and, for the carried path, by the
-    collector's ``--max-bytes`` (8 MiB per source per pass, so ~32 such lines,
-    ~1.2 s), which is why correctness was preferred to the cheaper shape.
+    * **differentially** — the window and the whole record must extract the
+      same set over a corpus built to straddle the cut;
+    * **by teeth** — shrinking the lookahead must break that. Measured on a
+      domain whose short form ends exactly at the cut and whose long form runs
+      346 characters past it, margins 0..319 fabricate ``a.bc``, an indicator
+      the record does not contain;
+    * **by digest** — the five patterns are pinned, because the width corpus
+      is built *from their quantifiers* and cannot cover one that does not
+      exist yet. Measured: a 2048-character alternative added to ``_HASH`` is
+      caught by the digest and by nothing else in the suite.
 
-    The cheaper shape exists and was deliberately not taken: match on
-    ``cleaned[:MAX_FIELD_LEN + margin]`` where ``margin`` exceeds the longest
-    match any extractor can produce (``_DOMAIN`` is the longest at 6 labels of
-    63 plus a 24-character TLD, so 408), since no match starting before the
-    cut can extend further than that. It is equivalent and costs ~0.16 ms
-    flat. It also needs one more derivation from the patterns' quantifiers —
-    and a derivation from these five patterns is precisely the thing that has
-    been wrong in four of the last six rounds here, so it is not being
-    introduced unreviewed.
+    Measured cost per ``observables()`` call, window against whole record on
+    the same inputs:
+
+        realistic event value, ~2 KB      0.32 ms     0.32 ms    1.0x
+        2 KB of padding                   0.12 ms     0.12 ms    1.0x
+        64 KB of padding                  1.13 ms     5.17 ms    4.6x
+        256 KB of padding                 8.28 ms    27.30 ms    3.3x
+        256 KB of URL-shaped text         9.57 ms    48.75 ms    5.1x
+        256 KB of dot-dense "a."          5.18 ms   101.10 ms   19.5x
+
+    A realistic event is unchanged, since events measure ~1.8 KB and sit
+    wholly inside the window. The dot-dense case review raised drops from
+    0.101 s to 0.0052 s here; review measured 0.153 s against 0.0069 s on its
+    own machine, which is the same shape.
+
+    Of what remains on a 256 KB value, 4.2-5.0 ms is ``text()``'s own linear
+    cleanup and is paid whatever the window is. An earlier note here put the
+    windowed cost at "~0.16 ms flat"; that figure was taken on benign ``A``
+    padding, which understates the dot-dense case, and it was the third time
+    in this function's history that a probe input was chosen without first
+    asking what the mechanism is sensitive to.
     """
-    cleaned = text(value, limit=MAX_RAW_BYTES)
+    cleaned = text(value, limit=MAX_FIELD_LEN + _SCAN_LOOKAHEAD)
     if cleaned is None:
         return None
     return cleaned, MAX_FIELD_LEN
