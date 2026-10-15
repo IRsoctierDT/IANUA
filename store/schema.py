@@ -65,6 +65,10 @@ MAX_PROJECTION_BYTES = 64 * 1024
 #: for more. An unbounded read of a security-event store is how a dashboard
 #: query turns into an out-of-memory restart during an incident.
 MAX_QUERY_LIMIT = 10_000
+#: Domain separator in the completeness digest's preimage, so a digest taken
+#: over this store's ids can never be confused with a hash of the same bytes
+#: computed for any other purpose.
+DIGEST_PREFIX = "ianua.store.attest.v1:"
 
 
 def canonical_json(payload: dict[str, Any]) -> str:
