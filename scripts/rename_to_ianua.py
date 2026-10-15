@@ -24,6 +24,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SELF = Path(__file__).resolve()
 EXCLUDED_PARTS = {
+    # Machine-local agent state, not shipped content. It holds transient git
+    # worktrees, and a worktree contains a *copy* of this script — which is
+    # excluded by resolved-path equality below and so does not match the copy.
+    # That copy necessarily contains every legacy identifier, because it is
+    # the rename table, so walking into it fails the gate on its own source.
+    # CI never has a worktree here, so the failure is local-only: an agent
+    # running the gate per AGENTS.md §7 sees a red check it did not cause.
+    ".claude",
     ".git",
     ".mypy_cache",
     ".pytest_cache",
