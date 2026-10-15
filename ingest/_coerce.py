@@ -325,6 +325,32 @@ def _scan_source(value: Any) -> tuple[str, int] | None:
 
     The value is already bounded overall by ``MAX_RAW_BYTES`` on the record,
     so "unbounded" here means at most a few hundred kilobytes, not arbitrary.
+    **It is not free, and the cost is stated rather than discovered later.**
+    The previous shape bounded the text *before* matching, so extraction cost
+    the same whatever arrived; this one scales with the value. Measured, per
+    ``observables()`` call:
+
+        realistic event value, ~2 KB          0.36 ms
+        2 KB of padding                       0.13 ms
+        64 KB of padding                      3.79 ms
+        256 KB of padding (MAX_RAW_BYTES)    19.6 ms
+        256 KB of URL-shaped text            36.0 ms
+
+    So a pathological single value costs ~275x what it used to, and a
+    realistic one costs the same as before — events measure ~1.8 KB. The
+    ceiling is bounded by ``MAX_RAW_BYTES`` and, for the carried path, by the
+    collector's ``--max-bytes`` (8 MiB per source per pass, so ~32 such lines,
+    ~1.2 s), which is why correctness was preferred to the cheaper shape.
+
+    The cheaper shape exists and was deliberately not taken: match on
+    ``cleaned[:MAX_FIELD_LEN + margin]`` where ``margin`` exceeds the longest
+    match any extractor can produce (``_DOMAIN`` is the longest at 6 labels of
+    63 plus a 24-character TLD, so 408), since no match starting before the
+    cut can extend further than that. It is equivalent and costs ~0.16 ms
+    flat. It also needs one more derivation from the patterns' quantifiers —
+    and a derivation from these five patterns is precisely the thing that has
+    been wrong in four of the last six rounds here, so it is not being
+    introduced unreviewed.
     """
     cleaned = text(value, limit=MAX_RAW_BYTES)
     if cleaned is None:
