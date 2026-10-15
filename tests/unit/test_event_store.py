@@ -308,3 +308,134 @@ def test_prune_keys_on_ingestion_not_source_time(tmp_path: Path) -> None:
 def test_prune_on_an_empty_store_is_a_no_op(tmp_path: Path) -> None:
     with EventStore.open(tmp_path) as store:
         assert store.prune(before=1.0) == 0
+
+
+# --------------------------------------------------------------------------
+# attest() — the completeness control, which had no direct test at all
+# --------------------------------------------------------------------------
+
+
+def _seeded(root: Path, count: int) -> EventStore:
+    """A store holding ``count`` DISTINCT events.
+
+    Distinct content matters: ``event_id`` is a sha256 over the projection, so
+    appending the same line twice is a deliberate no-op. A fixture that loops
+    over one identical line yields a store of **one** row — measured while
+    writing this, when a 500-iteration loop attested as ``events=1``.
+    """
+    store = EventStore.open(root)
+    for index in range(count):
+        store.append(
+            normalize(f"Failed password for u{index} from 10.0.0.{index % 250} port 22 ssh2"),
+            ingested_at=1_760_000_000.0 + index,
+        )
+    return store
+
+
+@pytest.mark.unit
+def test_attestation_is_stable_across_a_reopen(tmp_path: Path) -> None:
+    """The digest describes content, not layout, or a verified copy is useless."""
+    with _seeded(tmp_path, 50) as store:
+        first = store.attest()
+    with EventStore.open(tmp_path) as reopened:
+        second = reopened.attest()
+    assert first == second
+    assert first.events == 50
+    assert first.observables > 0
+
+
+@pytest.mark.unit
+def test_an_attestation_commits_to_its_own_count(tmp_path: Path) -> None:
+    """A prefix of one store cannot digest the same as another store's whole set.
+
+    The documented reason the count goes into the preimage. Asserted by
+    building the prefix for real rather than by reading the code: a 20-event
+    store and the first 20 events of a 40-event store hold the same ids, and
+    must still attest differently from the larger store.
+    """
+    small, large = tmp_path / "small", tmp_path / "large"
+    small.mkdir()
+    large.mkdir()
+    with _seeded(small, 20) as store:
+        twenty = store.attest()
+    with _seeded(large, 40) as store:
+        forty = store.attest()
+    assert twenty.events == 20
+    assert forty.events == 40
+    assert twenty.digest != forty.digest
+
+    # And the same content attests identically in a different store.
+    other = tmp_path / "other"
+    other.mkdir()
+    with _seeded(other, 20) as store:
+        assert store.attest().digest == twenty.digest
+
+
+@pytest.mark.unit
+def test_attesting_refuses_when_the_count_and_the_id_scan_disagree(tmp_path: Path) -> None:
+    """The digest must commit to what it actually hashed.
+
+    The count and the id stream are two separate statements, so the preimage
+    could commit to a number that did not equal the number of ids hashed into
+    it — an attestation internally inconsistent, well-formed, and comparing
+    unequal for a reason nobody could read off it.
+
+    **This test is the teeth for that guard, and it needs the injection**
+    because on a healthy store the two numbers always agree, so a guard
+    asserting they do cannot fail on any real fixture. Removing the check
+    makes this test red and nothing else in the suite notices.
+
+    Honest about provenance: the shape that prompted the guard was an
+    adversarial measurement reporting ``COUNT(*)`` of 1500 against 1502
+    streamed ids on a database SQLite called malformed. I could not reproduce
+    it — a bluntly truncated copy raises ``DatabaseError: database disk image
+    is malformed`` out of SQLite first — so the guard rests on the plain
+    argument rather than on that measurement, and this test injects the
+    disagreement rather than pretending to produce it naturally.
+    """
+    with _seeded(tmp_path, 10) as store:
+        assert store.attest().events == 10, "the fixture is not what this test needs"
+
+        # A proxy rather than a patched method: `sqlite3.Connection.execute`
+        # is read-only on the instance, so the injection has to sit one level
+        # out. Found by trying the simpler thing first.
+        real = store._conn
+        store._conn = _CountInflater(real, 999)  # type: ignore[assignment]
+        try:
+            with pytest.raises(StoreIntegrityError, match="attestation is inconsistent"):
+                store.attest()
+        finally:
+            store._conn = real
+
+        # And the healthy path still works once the injection is removed.
+        assert store.attest().events == 10
+
+
+class _OneRow:
+    """A stand-in for the single ``sqlite3.Row`` the counts query returns."""
+
+    def __init__(self, values: dict[str, int]) -> None:
+        self._values = values
+
+    def fetchone(self) -> dict[str, int]:
+        return self._values
+
+
+class _CountInflater:
+    """A connection proxy that lies about ``COUNT(*)`` and nothing else.
+
+    Everything else delegates, so the id scan returns the store's real ids and
+    the disagreement is exactly the one the guard is for.
+    """
+
+    def __init__(self, real: Any, events: int) -> None:
+        self._real = real
+        self._events = events
+
+    def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        if "COUNT(*) FROM events" in sql:
+            return _OneRow({"events": self._events, "observables": self._events})
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)

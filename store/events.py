@@ -646,6 +646,25 @@ class EventStore:
         and the audit chain is the tamper evidence. What this catches is
         *loss*: a truncated transfer, a copy that raced a writer, a half
         restore, a prune nobody meant to run.
+
+        **The count it commits to is the count it actually digested.** The
+        count and the id stream are two separate statements, so the preimage
+        could previously commit to a number that did not equal the number of
+        ids hashed into it — an attestation internally inconsistent, yet
+        well-formed and comparing unequal for a reason nobody could read off
+        it. The ids are now counted as they stream and the two are asserted
+        equal, which costs one integer and turns that case from a mismatched
+        digest into a named error.
+
+        Honest about the provenance: the shape that prompted this was an
+        adversarial measurement reporting ``COUNT(*)`` of 1500 against 1502
+        streamed ids on a database SQLite called malformed, taken with a
+        three-file-copy race harness. **I could not reproduce that shape** —
+        a bluntly truncated copy raises ``DatabaseError: database disk image
+        is malformed`` out of SQLite before this method can return anything.
+        So this change does not rest on that measurement. It rests on the
+        plain argument that a digest should commit to what it hashed, which
+        holds whether or not the corrupt case is reachable.
         """
         counts = self._conn.execute(
             "SELECT (SELECT COUNT(*) FROM events) AS events, "
@@ -656,9 +675,17 @@ class EventStore:
         # The count goes into the preimage first, so a prefix of one store's
         # ids cannot digest the same as another store's whole set.
         running.update(f"{DIGEST_PREFIX}{events}\n".encode())
+        streamed = 0
         for row in self._conn.execute("SELECT event_id FROM events ORDER BY event_id"):
             running.update(str(row["event_id"]).encode("ascii"))
             running.update(b"\n")
+            streamed += 1
+        if streamed != events:
+            raise StoreIntegrityError(
+                f"attestation is inconsistent: the digest commits to {events} event(s) "
+                f"but {streamed} id(s) were read. The count and the id scan are separate "
+                "statements and disagreed, so this store cannot be attested."
+            )
         return Attestation(
             events=events,
             observables=int(counts["observables"]),
