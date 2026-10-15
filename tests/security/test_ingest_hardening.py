@@ -830,6 +830,126 @@ def test_that_sweep_actually_walks_the_cut_through_the_indicator(payload: str) -
     assert severed >= 5, f"no offset cuts into {payload!r} ({severed})"
 
 
+#: Offsets that walk the ``MAX_FIELD_LEN`` bound across a payload on the
+#: *carried* path — plain text, which no parser models. Measured regimes over
+#: these 70 offsets, bound-after-payload / bound-inside-payload:
+#:
+#:     url 29/23 · sha256 0/52 · ipv6 19/33 · domain 28/24 · hexrun 8/44
+_BOUND_SWEEP = range(1990, 2060)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("payload", _CUT_VALUES[:5], ids=_CUT_IDS[:5])
+def test_the_field_bound_never_fabricates_an_indicator(payload: str) -> None:
+    """``MAX_FIELD_LEN`` is a cut like any other, and a cut can forge an IOC.
+
+    Round ten, and the one that located the mechanism rather than another of
+    its symptoms. Rounds six and eight guarded an excerpt tail *as it was
+    built*; round nine showed ``text()``'s own bound runs afterwards and
+    defeats any such guard; this one showed that deleting the tail did not
+    help, because the same bound is applied by ``observables()`` to **every**
+    value it is given. The carried path is the plain demonstration — it
+    handles plain text, malformed JSON and oversized records, i.e. exactly the
+    input no parser got to model:
+
+        normalize("P"*2007 + " " + "f"*50 + " tail")
+          50-char hex run retained in raw_excerpt : True
+          observables                             : ('f'*40,)   <- a sha1
+
+    A 50-character hex run matches no hash pattern at all, so the bound did
+    not sever a real indicator — it **manufactured** one. The guard now lives
+    in ``_coerce._bounded_for_scan``, immediately around the slice, so it
+    covers every caller including the ten parsers rather than one call site.
+
+    Swept rather than taken at one offset, because three of the four previous
+    rounds here were argued from a single case.
+    """
+    fabricated = [
+        (offset, observable)
+        for offset in _BOUND_SWEEP
+        for observable in normalize("P" * offset + " " + payload + " tail").observables
+        if observable != payload and payload.startswith(observable)
+    ]
+
+    assert not fabricated, (
+        f"{len(fabricated)} offset(s) forged a prefix of {payload!r} at the "
+        f"field bound: {fabricated[:4]}"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("payload", _CUT_VALUES[:5], ids=_CUT_IDS[:5])
+def test_that_bound_sweep_actually_walks_the_cut_through_the_payload(
+    payload: str,
+) -> None:
+    """Both regimes must occur or the sweep above is green over nothing."""
+    whole = inside = 0
+    for offset in _BOUND_SWEEP:
+        message = normalize("P" * offset + " " + payload + " tail").message or ""
+        if payload in message:
+            whole += 1
+        elif payload[:6] in message:
+            inside += 1
+
+    assert inside >= 5, f"the bound never lands inside {payload!r} ({inside})"
+    assert whole + inside >= 20, (
+        f"{payload!r} is barely reached by this offset range (whole={whole}, inside={inside})"
+    )
+
+
+@pytest.mark.security
+def test_no_extractor_can_match_across_an_indicator_terminator() -> None:
+    """``_bounded_for_scan``'s trim is only sound if this holds.
+
+    It cuts a truncated value back past its last ``_CUT_TOKEN`` character and
+    relies on that leaving a string which cannot be ending *inside* a match.
+    That holds because every extractor's character class is a subset of
+    ``_URL``'s — a claim about five regexes, which is exactly the kind of
+    claim this layer has had wrong repeatedly, so it is asserted rather than
+    argued.
+
+    This test existed before, was deleted with the excerpt-tail guard it then
+    justified, and is back because the same derivation is load-bearing again
+    in a place every caller reaches.
+    """
+    from ingest import _coerce
+
+    patterns = {
+        name: getattr(_coerce, name) for name in ("_URL", "_IPV4", "_IPV6", "_HASH", "_DOMAIN")
+    }
+    # Expanded, not compressed: `_IPV6` has no `::` support, so the probe
+    # `2001:db8::1` an earlier version used produced zero matches and that
+    # extractor asserted nothing. The guard below is the general form.
+    probes = (
+        "http://a.example/p",
+        "198.51.100.7",
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+        "a" * 64,
+        "evil.example.com",
+    )
+    terminators = sorted(set(" \t\n\r\f\v\"'<>\\"))
+    assertions = dict.fromkeys(patterns, 0)
+    for terminator in terminators:
+        probe = terminator.join(probes)
+        for name, pattern in patterns.items():
+            for match in pattern.findall(probe):
+                found = match if isinstance(match, str) else "".join(match)
+                assertions[name] += 1
+                assert terminator not in found, (
+                    f"{name} matched across {terminator!r}: {found!r} — the "
+                    f"trim in _bounded_for_scan is unsound"
+                )
+
+    unexercised = sorted(name for name, count in assertions.items() if not count)
+    assert not unexercised, (
+        f"{unexercised} matched nothing in the probe corpus, so this test "
+        f"asserted nothing about them. Add a probe each extractor recognises."
+    )
+    assert _coerce._CUT_TOKEN.sub("", "keep me http://cut.example/pa") == "keep me ", (
+        "_CUT_TOKEN no longer drops exactly the trailing token"
+    )
+
+
 @pytest.mark.security
 def test_the_leaf_walk_tolerates_an_unsorted_declaration() -> None:
     """``sysmon`` declares its fields unsorted, and the forward scan needs the sort.

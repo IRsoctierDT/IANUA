@@ -45,6 +45,32 @@ _HASH = re.compile(r"\b(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{40}|[0-9A-Fa-f]{32})\b")
 _URL = re.compile(r"\bhttps?://[^\s\"'<>\\]{3,256}", re.IGNORECASE)
 _DOMAIN = re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.){1,6}[A-Za-z]{2,24}\b")
 
+#: The trailing run of a value that the ``MAX_FIELD_LEN`` bound may have cut in
+#: half, defined as the characters no extractor above can match: whitespace
+#: plus ``_URL``'s five exclusions. ``_URL``'s class is the widest of the five
+#: — ``_IPV4`` is digits and dot, ``_IPV6`` hex and colon, ``_HASH`` hex,
+#: ``_DOMAIN`` alnum, dot and hyphen — so a string ending on one of these
+#: cannot be ending *inside* a match.
+#:
+#: **Its placement is the whole point, and three rounds of review were spent
+#: learning that.** The same pattern was applied twice in
+#: ``normalize._retained_values``, to an excerpt tail as that tail was built,
+#: and both times a later cut defeated it: once by a JSON escape, once by
+#: ``text()``'s own bound running *after* the guard. The guard belongs where
+#: the cut is made — here, immediately around the slice — so that it protects
+#: every caller rather than one call site. Measured on the version that
+#: guarded only the call site:
+#:
+#:     normalize("P"*2007 + " " + "f"*50 + " tail")
+#:       50-char hex run retained in raw_excerpt : True
+#:       observables                             : ('f'*40,)   <- a sha1
+#:
+#: A 50-character hex run matches no hash pattern — ``_HASH`` wants exactly 32,
+#: 40 or 64 — so the bound manufactured a plausible IOC that was never in the
+#: record. On the carried path, which handles plain text, malformed JSON and
+#: oversized records, i.e. the input a parser never got to model.
+_CUT_TOKEN = re.compile(r"[^\s\"'<>\\]+\Z")
+
 
 def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
     """Coerce a scalar to a bounded, printable string, or ``None``.
@@ -289,6 +315,32 @@ def depth_within(value: Any, limit: int = MAX_NESTING_DEPTH) -> bool:
     return True
 
 
+def _bounded_for_scan(value: Any) -> str | None:
+    """Coerce for extraction without letting the bound cut an indicator in half.
+
+    ``text()`` ends in ``cleaned[:limit]``, and an extractor run over the
+    result will happily match a token that slice severed: a 64-character
+    sha256 cut at 40 is a well-formed sha1, and a URL cut anywhere is a
+    shorter URL. A severed indicator is worse than a lost one — it is a
+    *false* join key in an indexed, append-only column that
+    ``correlation/entities.py`` joins entities on, and ``UPDATE`` is refused,
+    so the row can only be pruned whole.
+
+    So a value that the bound actually truncates has its final token dropped.
+    The cost is the mirror of the gain and is stated rather than implied: an
+    indicator genuinely ending at character 2048 of a value is no longer
+    extracted, because nothing in the bounded text distinguishes it from one
+    the slice severed. Values at or under the bound are untouched, which is
+    every value in the committed fixture corpus.
+    """
+    probe = text(value, limit=MAX_FIELD_LEN + 1)
+    if probe is None:
+        return None
+    if len(probe) <= MAX_FIELD_LEN:
+        return probe
+    return _CUT_TOKEN.sub("", probe[:MAX_FIELD_LEN]) or None
+
+
 def observables(*values: Any, limit: int = MAX_OBSERVABLES) -> tuple[str, ...]:
     """Extract atomic indicators from parser-selected values.
 
@@ -309,7 +361,7 @@ def observables(*values: Any, limit: int = MAX_OBSERVABLES) -> tuple[str, ...]:
             seen.add(key)
             found.append(item)
 
-    corpus = [coerced for coerced in (text(value) for value in values) if coerced]
+    corpus = [coerced for coerced in (_bounded_for_scan(value) for value in values) if coerced]
     joined = " ".join(corpus)
     urls = _URL.findall(joined)
     _add(urls)
