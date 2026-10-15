@@ -405,11 +405,18 @@ def measure_audit_chains_intact(root: Path, now: float) -> Measurement:
     which is the contract ``scripts/audit_verify.py`` states and the one
     place that forgot it is recorded in ``DESIGN.md`` as a defect.
 
-    Graded on ``intact`` (the hash chain) and not on ``signature``: a chain
-    whose head signature reads ``missing`` usually means the verifying key is
-    not in this process's environment, which is an operator configuration
-    question rather than evidence of tampering. The signature states are
-    reported in the detail so that question is still visible.
+    Graded on ``intact``, and that is **not** the same as "the hash chain and
+    not the signature" — which is what this paragraph used to claim.
+    Measured: with a verifier configured, an intact chain whose signature has
+    been tampered with reports ``intact=False, signature='invalid'``, so
+    ``intact`` incorporates the signature verdict. What the original claim was
+    reaching for is true only of the *default* deployment: the verifier comes
+    from :func:`verifier_from_env`, so with no key in this process's
+    environment there is no verifier, a chain reads ``signature='unsigned'``,
+    and that alone cannot breach the objective — which is the configuration
+    question the paragraph meant to keep out of the grade. Once a key *is*
+    configured, a bad signature breaches, deliberately. The signature states
+    are reported in the detail either way so the question stays visible.
     """
     del now
     verifier = verifier_from_env()

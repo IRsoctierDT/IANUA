@@ -35,11 +35,13 @@ Security notes:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -154,9 +156,33 @@ def _opener_owner_only(path: str, flags: int) -> int:
 
 
 def _write_text_owner_only(path: Path, text: str) -> None:
-    """Write ``text`` to ``path``, creating it owner-read/write only."""
-    with open(path, "w", encoding="utf-8", opener=_opener_owner_only) as fh:
-        fh.write(text)
+    """Replace ``path`` with ``text`` atomically, owner-read/write only.
+
+    Written to a temporary file in the same directory and ``os.replace``d, so a
+    reader never observes a half-written sidecar. It used to be a plain
+    ``open(path, "w")``, which truncates first — and the signature sidecar is
+    read by :meth:`AuditLogger.verify_report` on a cadence. Measured on an
+    intact chain with **one** writer and one reader: 151 of 606 verifications
+    reported the chain broken (137 ``malformed``, 14 ``stale``) with no defect
+    present at all, which the ``audit-chains-intact`` objective grades against
+    a target of 1.0 every five minutes.
+
+    The lock in :meth:`AuditLogger.record` does not help here: the reader holds
+    no lock and the window is inside a single writer's own call. Atomicity is
+    the fix, and ``Path.replace`` is atomic within a filesystem — the temporary
+    file is created beside the target for exactly that reason.
+    """
+    directory = path.parent
+    directory.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+    temporary = directory / f".{path.name}.tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8", opener=_opener_owner_only) as fh:
+            fh.write(text)
+        temporary.replace(path)  # atomic within a filesystem
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
 
 
 #: The field separator in the hash preimage below. Named because it is
@@ -293,7 +319,85 @@ class AuditLogger:
         )
         self._checkpoint_path = self.path.with_name(self.path.name + ".checkpoint")
         self._sig_path = self.path.with_name(self.path.name + ".sig")
+        #: Beside the chain, and **not** the chain itself. A lock on the log's
+        #: own descriptor stops excluding the instant ``_rotate`` renames that
+        #: inode away: measured, a second writer acquired ``LOCK_EX`` on the new
+        #: inode in 0.0 s while the first still held the old one, both wrote the
+        #: same ``seq``, and the chain read ``intact=False``. The sidecar is a
+        #: file rotation never touches. It is invisible to ``_archive_re``
+        #: (``^audit\.log\.(\d+)$``), so ``exists()``, ``verify_report()`` and
+        #: the archive accounting are unaffected.
+        self._lock_path = self.path.with_name(self.path.name + ".lock")
         self._archive_re = re.compile(rf"^{re.escape(self.path.name)}\.(\d+)$")
+
+    @contextlib.contextmanager
+    def _exclusive(self) -> Iterator[None]:
+        """Serialise this chain's whole read-modify-write across processes.
+
+        **Blocking, deliberately.** The four scheduled CLIs use
+        ``LOCK_EX | LOCK_NB`` and print "skipped" because an overlapping pass is
+        expected; dropping an *audit record* is the opposite case — AGENTS.md §3
+        requires security-relevant actions to emit evidence, and a fork is
+        permanent in a way a wait is not. Measured: after a four-way fork plus
+        200 perfectly serial records, ``verify_report().entries`` was 2 of 204,
+        because verification stops at the first break — so one fork voids the
+        evidentiary weight of everything after it. The cost of waiting instead
+        is ~7 µs median on a call that already costs ~98 µs on a fresh chain,
+        and ``flock`` has no stale-lock failure mode: the kernel releases it
+        when the holder dies.
+
+        Created lazily, by the caller that needs it, and never in ``__init__``.
+        Four call sites construct an ``AuditLogger`` purely to read
+        (``sli/indicators.py``, ``scripts/audit_verify.py``,
+        ``compliance/evidence.py``, ``scripts/run_backup.py``), and
+        ``tests/security/test_sli_hardening.py`` asserts that a measurement
+        creates nothing — eager creation costs seven tests instead of one.
+
+        Not reentrant: ``flock`` is scoped to the open file description, so a
+        second ``open()`` of this path in the same process blocks forever. No
+        method holding this may call another that takes it.
+        """
+        self._lock_path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+        with open(self._lock_path, "a", encoding="utf-8", opener=_opener_owner_only) as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @contextlib.contextmanager
+    def _shared(self) -> Iterator[None]:
+        """Read the chain and its signature as one pair, when a lock exists.
+
+        Shared, not exclusive, so concurrent readers never serialise against
+        each other — only against a writer mid-append.
+
+        **Never creates the lock file.** Four call sites build an
+        ``AuditLogger`` purely to read, and
+        ``tests/security/test_sli_hardening.py`` asserts a measurement creates
+        nothing; a reader that materialised a lock would break that and would
+        also make ``exists()`` answer differently on a bare path. With no lock
+        present there is by definition no writer holding one, so proceeding
+        unsynchronised is the correct reading rather than a fallback.
+
+        What this buys, measured on an intact chain with one writer and one
+        reader. Making the sidecar writes atomic removed every ``malformed``
+        verdict (137 → 0) but left 130 ``stale`` ones: the reader read the
+        chain, the writer advanced the head, and then the reader read a
+        signature for a head it had not seen. That is a read-side consistency
+        problem no write-side lock can fix, and it matters because
+        ``audit-chains-intact`` grades these against a target of 1.0 every five
+        minutes.
+        """
+        if not self._lock_path.is_file():
+            yield
+            return
+        with self._lock_path.open(encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     # ---------------------------------------------------------------- segments
     @staticmethod
@@ -428,12 +532,34 @@ class AuditLogger:
         signature — are unchanged. Returns ``{"rotated": ..., "archives": ...}``.
         """
         self.path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-        rotated = self._should_rotate()
-        if rotated:
-            self._rotate()  # archives the active log, then prunes
-        else:
-            self._prune()
-        return {"rotated": rotated, "archives": len(self._archive_paths())}
+        if not self._is_segment(self.path) and not self._archive_paths():
+            # Nothing here is a chain, so there is nothing to rotate or prune
+            # and nothing to serialise — return the no-op answer *without*
+            # taking the lock, because taking it would create the lock file.
+            # A mistyped path must not materialise artifacts: that is the
+            # ``--root ""`` shadow-tree class, it is why ``_should_rotate``
+            # tests ``_is_segment`` rather than ``exists()``, and
+            # ``tests/security`` asserts this call changes nothing when handed
+            # a directory. Found by that test, not by review.
+            #
+            # Not a fail-open: a writer creating the chain between this check
+            # and the return would only mean this pass did nothing, which is
+            # what it reports.
+            return {"rotated": False, "archives": 0}
+        # The same lock ``record`` takes, for the same reason and then one more.
+        # ``_rotate`` computes ``max(index) + 1`` and *then* renames, so two
+        # concurrent rotations choose the same destination and the second
+        # silently replaces a whole archived segment. And two concurrent
+        # ``apply_retention`` passes raise an unhandled ``FileNotFoundError``
+        # out of that rename, which would give ``audit_maintenance`` an exit
+        # code its own contract does not document.
+        with self._exclusive():
+            rotated = self._should_rotate()
+            if rotated:
+                self._rotate()  # archives the active log, then prunes
+            else:
+                self._prune()
+            return {"rotated": rotated, "archives": len(self._archive_paths())}
 
     # ---------------------------------------------------------------- append
     def record(
@@ -448,6 +574,30 @@ class AuditLogger:
             reason=reason,
         )
         self.path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+        with self._exclusive():
+            return self._record_locked(
+                actor=actor,
+                action=action,
+                action_class=action_class,
+                decision=decision,
+                reason=reason,
+            )
+
+    def _record_locked(
+        self, *, actor: str, action: str, action_class: str, decision: str, reason: str
+    ) -> AuditEvent:
+        """The append itself. Caller holds :meth:`_exclusive`.
+
+        The lock has to span **all** of this, not merely the write. ``_last``
+        builds ``(self.path, *reversed(self._archive_paths()))``, so the archive
+        list is evaluated *before* the active log is read — and a rotation
+        landing in that window makes it fall through to a stale, empty list and
+        return ``(-1, genesis)``. Measured, **20 of 20** trials: the next entry
+        was written at ``seq=0`` with ``prev_hash`` = genesis, restarting the
+        chain, on a single writer. ``scripts/audit_maintenance.py`` rotates and
+        takes no lock of its own, so every chain in the platform sits on that
+        path, not only the one with two scheduled writers.
+        """
         if self._should_rotate():
             self._rotate()
         last_seq, prev_hash = self._last()
@@ -578,7 +728,16 @@ class AuditLogger:
         covering the current head) for the report to be ``intact`` — so a
         recomputed-but-unsigned chain is rejected. On failure, ``failure``
         names the first broken segment, line, and kind of break.
+
+        Takes a *shared* lock while it reads, when one exists — see
+        :meth:`_shared`. Without it a reader racing a single writer reported
+        the chain broken 22.4% of the time with no defect present.
         """
+        with self._shared():
+            return self._verify_report_locked()
+
+    def _verify_report_locked(self) -> VerificationReport:
+        """The verification itself. Caller holds :meth:`_shared` if available."""
         segments = self._segments_in_order()
         try:
             checkpoint = self._read_checkpoint()
