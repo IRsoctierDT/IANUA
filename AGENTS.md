@@ -249,26 +249,141 @@ licensed here authenticates every request before it does anything.
 - **Read-only, and health/state only.** The listener serves a projection of state the node
   has already computed: the `attest()` digest, the event count, the high-water mark, each
   chain's verdict, and when the last backup and last promotion verification ran. It accepts
-  **no** mutation, **no** file upload, and **no** command. There is no code path from a
-  request to a write, and a security test asserts it rather than a docstring claiming it.
-- **Aggregates and digests, never event content.** This is §5's exfiltration prohibition
-  applied to a socket, and it is the bullet most likely to be eroded later by someone adding
-  "just the latest incident" to a health response. A count is metadata; a sha256 over
-  `event_id`s is a fingerprint and not a preimage; an event, a `raw_excerpt`, an observable
-  or an incident is **evidence**, and evidence does not leave the node over this channel.
-  The stage 6 amendment's reasoning carries over unchanged: what a parser modelled is what
-  the store holds, and none of it is what this serves.
-- **Authenticated before anything else happens.** Every request carries an HMAC over its
-  body, keyed from the environment and verified with `hmac.compare_digest`. **No key
-  configured means the listener refuses to start**, never that it serves openly — the same
-  fail-closed shape as the rest of the platform, and the opposite of the default that made
-  an unsigned audit chain verify as intact. The key is never committed, never logged and
-  never in an error message, exactly as `AUDIT_HMAC_KEY` already is.
-- **Bound to a declared address, never discovered.** The operator names the interface and
-  port on the command line; there is no default that listens everywhere. `0.0.0.0` is
-  refused outright rather than warned about, for the same reason `collect/` refuses a glob:
-  a surface that binds to whatever it finds eventually binds to something nobody meant to
-  expose.
+  **no** mutation, **no** file upload, and **no** command.
+
+  **No *application or store* mutation — and audit writes are required, not merely
+  permitted.** The first version of this bullet forbade any "code path from a request to a
+  write" at all, and review was right that the absolute conflicts with §3's auditability
+  principle: a failed HMAC verification *is* a security-relevant action, so a listener that
+  cannot record one lets an attacker probe it indefinitely and invisibly. The narrow rule is
+  that a request may reach **the audit chain and nothing else** — never the event store,
+  never a position file, never any other file. Both outcomes are recorded: an accepted
+  request and a rejected one, since only the rejections reveal probing.
+
+  **Bounded on *both* outcomes, because an audit write per request is a denial-of-service
+  amplifier.** `AuditLogger.record` is a lock-serialised append to a hash chain, so a flood
+  would otherwise convert cheap requests into contended disk writes on the active node — and
+  #53 exists because that chain is fragile under concurrency. Accepted and rejected requests
+  are therefore both aggregated or rate-limited rather than written one-for-one, and the
+  implementation PR owes a measured figure for the bound rather than a claim that one exists.
+  A security test asserts the store and the positions are unreachable from a request, rather
+  than a docstring claiming it.
+
+  The first version of this paragraph bounded **rejections only**, and review was right that
+  this leaves the amplifier open on the path that is not bounded. Three ways in, and the
+  third needs no key at all: an authorized passive node polling faster than its schedule; a
+  compromised one, which holds the key and can poll without limit; and a **replayed** valid
+  request, which has a valid MAC and so takes the *accepted* path. An on-path attacker who
+  captures one valid request can therefore flood the active node's audit chain without ever
+  knowing the key.
+
+  **Request freshness is therefore server-enforced, not merely echoed.** The nonce above was
+  specified as binding the *response*, which does nothing for the request: the listener must
+  **reject** a nonce it has seen, or one outside a bounded freshness window, before the
+  request reaches the audit chain at all. That is the third time on this amendment that the
+  first draft protected the direction that does not matter — request MAC without response
+  MAC, and now response freshness without request freshness — and it is recorded as a
+  pattern because the next reviewer should expect to find a fourth.
+- **A versioned, committed allow-list of named fields — not a category.** The first
+  version of this bullet licensed "aggregates and digests", and review was right that a
+  *category* is the wrong enforcement point: it would make a digest of a low-entropy
+  observable look licensed when it is dictionary-testable, and a per-identity count look
+  licensed when a small domain discloses the identity. A category cannot distinguish those
+  from a row count, so the rule is an allow-list of **exact fields, committed and
+  versioned**, and any field not on it requires another boundary review rather than an
+  argument that it belongs to a permitted kind.
+
+  Licensed by name, each with the reason it is safe: the `attest()` digest **as a
+  comparison and not as a value, and only above a declared cardinality floor** (see
+  below); the total event count; the ingestion high-water mark; each chain's
+  present/intact/entry-count verdict; and the timestamps of the last backup and last
+  promotion verification. **Explicitly not licensed**, and named because they are the
+  plausible next additions: a digest or count scoped to any subset an adversary can choose
+  or guess, anything per-identity, per-host or per-source, and any field derived from a
+  single event. The distinction is entropy, not aggregation — "it's only a hash" and "it's
+  only a count" are both how this erodes.
+
+  **The digest's safety was asserted and is now a condition, because at low cardinality it
+  is a presence oracle.** The first version of this bullet licensed it on the grounds that
+  it is "a fingerprint of the whole, not of any member, and the set is large" — and review
+  was right that the parenthesis is not guaranteed by anything. `event_id` is a sha256 over
+  the canonical projection with **no store-injected entropy** (`ingested_at` is a separate
+  column), `DIGEST_PREFIX` is a public constant, and `attest()` hashes the count followed by
+  the sorted ids. So the whole preimage is known except the ids themselves.
+
+  Measured, through the shipped code, with the attacker computing the id offline from a raw
+  log line and no access to the store: **at `count == 1` a guess alone reproduces the served
+  digest exactly** (a wrong guess does not, so the oracle discriminates), and at `count` of
+  2, 5 and 40 a guess alone fails while a guess plus every *other* id succeeds. Two
+  consequences, and the second is the sharper one:
+
+  - The forging work is **multiplicative in cardinality** against an attacker who knows
+    nothing else, which is why a floor helps at all.
+  - It collapses to **one guess** for an attacker who already knows the other events. For a
+    real store holding every source's telemetry that means they already hold the evidence,
+    which is why the floor is still worth having — but it is a bound and not an
+    elimination, and saying otherwise is how the first version of this bullet went wrong.
+
+  It also **contradicted the not-licensed list three lines above it**: at `count == 1` the
+  digest *is* "a field derived from a single event", which that list already forbids. The
+  document disagreed with itself, and the mechanism followed the permissive half.
+
+  So: the digest crosses as a **comparison**. The passive node puts its own locally computed
+  digest in the (already authenticated) request and the active node answers match or differ,
+  which discloses one bit instead of a preimage and removes the on-path offline oracle
+  entirely at no operational cost — the passive already knows its own digest. And the
+  comparison is **withheld below a declared minimum cardinality of at least 1000 events**,
+  below which only the count crosses. That floor is deliberately generous: withholding costs
+  almost nothing (a store that small is a freshly restored or near-empty node, where the
+  count alone answers the operator's question) while being wrong costs a presence oracle, and
+  an asymmetric cost is a reason to err high rather than to tune.
+
+  **The residual, stated rather than implied.** Against an *authorized* peer — or anyone
+  holding its key — the comparison is an **interactive** oracle: guess, send, read match.
+  Rate-limiting bounds that and does not remove it, and nothing here defends against a
+  compromised holder of the channel key, which is equally true of everything else the
+  channel serves.
+
+  This is §5's exfiltration prohibition applied to a socket. An event, a `raw_excerpt`, an
+  observable, an indicator or an assembled incident is **evidence**, and evidence does not
+  leave the node over this channel. The stage 6 amendment's reasoning carries over
+  unchanged: what a parser modelled is what the store holds, and none of it is what this
+  serves.
+- **Authenticated in both directions, and the response is the direction that matters.**
+  Every request carries an HMAC over its body, keyed from the environment and verified with
+  `hmac.compare_digest`. **And so does every response**, bound to a fresh nonce the request
+  supplies.
+
+  The first version of this bullet authenticated the request only, and review found the
+  hole: a request MAC proves the caller knew the key and says nothing about whether the
+  *answer* is genuine. But the answer is the entire point of this channel — it is what
+  informs a promotion decision. An on-path attacker who cannot forge a request can still
+  forge "peer is dead", or alter the digest and chain verdicts the operator is reading, and
+  either one corrupts exactly the decision the channel exists to support. Authenticating
+  the request protected the direction that does not matter. The nonce is not decoration
+  either: without it a captured valid response replays later, presenting an hour-old
+  "healthy" as current, which is the same stale-truth failure an unsigned audit chain has.
+
+  **No key configured means the listener refuses to start**, never that it serves openly —
+  the same fail-closed shape as the rest of the platform, and the opposite of the default
+  that made an unsigned audit chain verify as intact. The key is never committed, never
+  logged and never in an error message, exactly as `AUDIT_HMAC_KEY` already is.
+- **Bound to a declared address, never discovered — and the refusal is on the *parsed*
+  value.** The operator names the interface and port on the command line; there is no
+  default that listens everywhere. Any address that parses as **unspecified, in either
+  family**, is refused outright rather than warned about, for the same reason `collect/`
+  refuses a glob: a surface that binds to whatever it finds eventually binds to something
+  nobody meant to expose.
+
+  The first version of this bullet refused the literal string `0.0.0.0`, and review found
+  the bypass. Measured with `ipaddress.ip_address(x).is_unspecified`, **six spellings are
+  unspecified and a literal rule catches one of them**: `0.0.0.0`, `::`, `::0`,
+  `0:0:0:0:0:0:0:0`, the fully expanded `0000:…:0000`, and the IPv4-mapped
+  `::ffff:0.0.0.0`. `::` binds every IPv6 interface and, depending on `IPV6_V6ONLY`, accepts
+  IPv4-mapped connections too — so the literal rule was satisfiable while exposing precisely
+  the all-interface surface it existed to prevent. This is the defect class this repository
+  keeps finding in its own controls: a rule written as a string that the thing it means to
+  stop can simply spell differently.
 - **The active node listens; the passive node reaches out.** So the node that will be
   *promoted* — the one whose integrity matters most at the moment it matters — has no
   inbound surface at all. Egress is therefore from the passive node only, to a single host
