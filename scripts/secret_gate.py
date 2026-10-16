@@ -56,13 +56,18 @@ pre-run state is put back.
 
 What is refused before the hook runs, each because the hook would otherwise
 misreport it or run over it as if it were reviewed: a ``--root`` that is not a
-git work tree, or not its top level (``git ls-files`` in a sub-directory lists
-that sub-tree only, so the gate would scan a fraction and report on it); a
-baseline that is missing, is a symlink (git tracks and stages the link while
-the hook reads and rewrites the target), is untracked or ignored (never
-reviewed), does not parse as a baseline, or carries *unstaged* edits. A
-*staged* edit is what §7.1's acceptance procedure leaves behind before the
-commit, the hook accepts it, and so does this script: it is gated, not refused.
+directory, not a git work tree, or not its top level (``git ls-files`` in a
+sub-directory lists that sub-tree only, so the gate would scan a fraction and
+report on it); a baseline that is missing, is a symlink (git tracks and stages
+the link while the hook reads and rewrites the target), is a hard link (the
+hook's rewrite would go through the shared inode to a file outside this
+script's stated scope), is untracked or ignored (never reviewed), does not
+parse as a baseline, or carries *unstaged* edits; and **any tracked file with
+unstaged changes** — the hook reads the work tree while a commit records the
+index, so a credential staged and then removed by an unstaged edit scans clean
+and is committed anyway (measured; found by review on #242). A *staged* edit
+is what §7.1's acceptance procedure leaves behind before the commit, the hook
+accepts it, and so does this script: it is gated, not refused.
 
 Exit codes: 0 clean (including after a staged refresh whose re-scan passed);
 1 findings, nothing changed; 2 the gate could not run or could not settle (any
@@ -70,6 +75,7 @@ refusal above, a hook exit code the hook does not have, a rewrite that is not
 a refresh, or a re-scan after staging that did not exit 0) — and on every
 exit-2 path the baseline holds its pre-run bytes and the index its pre-run
 entry; 3 ``--no-stage`` found a stale baseline and restored the pre-run bytes.
+Exit 1 is never a traceback: every refusal above is a message and exit 2.
 """
 
 from __future__ import annotations
@@ -155,6 +161,9 @@ def baseline_refusal(root: Path) -> str | None:
     * **untracked or ignored** — the hook runs and reports (its own check is
       only ``git diff --name-only``), but the gate compares against a reviewed,
       committed baseline, and one git does not track was never reviewed.
+    * **a hard link** — the symlink and git checks both pass for a link whose
+      bytes match the tracked baseline, and the hook's rewrite then goes through
+      the shared inode to the other name, outside this gate's stated scope.
     * **unstaged edits** — the hook refuses them at exit 1, a finding's code.
       Staged edits are not refused by the hook or here: §7.1's acceptance
       procedure stages the reviewed baseline before committing it, and this
@@ -165,6 +174,11 @@ def baseline_refusal(root: Path) -> str | None:
         return f"{BASELINE} is a symlink; the hook would read and rewrite its target"
     if not baseline.is_file():
         return f"no {BASELINE} at {root}"
+    if baseline.stat().st_nlink > 1:
+        return (
+            f"{BASELINE} is a hard link ({baseline.stat().st_nlink} links); the hook's rewrite "
+            "would go through the shared inode to a file outside this gate's scope"
+        )
     staged = _git(root, "ls-files", "--stage", "--", str(BASELINE))
     if staged.returncode != 0 or not staged.stdout.strip():
         return (
@@ -183,6 +197,24 @@ def baseline_refusal(root: Path) -> str | None:
             "them, then re-run"
         )
     return None
+
+
+def unstaged_changes(root: Path) -> list[str]:
+    """Tracked paths whose work-tree content differs from the index.
+
+    The hook scans the work tree; ``git commit`` records the index. A credential
+    that is staged and then removed by an unstaged edit therefore scans clean
+    and is committed anyway (measured), so the gate refuses to run over a tree
+    where the two differ — stage or stash first, and the scan is of what will
+    be committed. Untracked files are not listed: they are neither scanned nor
+    committed.
+    """
+    completed = _git(root, "diff", "--name-only", "-z")
+    if completed.returncode != 0:
+        raise subprocess.SubprocessError(
+            f"git diff failed: {_text(completed.stderr).strip() or completed.returncode}"
+        )
+    return sorted(_text(entry) for entry in completed.stdout.split(b"\0") if entry)
 
 
 def parse_baseline(data: bytes) -> dict[str, Any]:
@@ -318,6 +350,9 @@ def main(argv: list[str] | None = None) -> int:
             f"error: {HOOK} is not installed; it is a declared dev dependency (pip install -e '.[dev]')"
         )
         return EXIT_UNUSABLE
+    if not root.is_dir():
+        print(f"error: {root} is not a directory")
+        return EXIT_UNUSABLE
     top = repository_top_level(root)
     if top is None:
         print(f"error: {root} is not inside a git work tree (git exits {_GIT_NOT_A_REPOSITORY})")
@@ -331,6 +366,19 @@ def main(argv: list[str] | None = None) -> int:
     refusal = baseline_refusal(root)
     if refusal is not None:
         print(f"error: {refusal}")
+        return EXIT_UNUSABLE
+    try:
+        dirty = unstaged_changes(root)
+    except subprocess.SubprocessError as exc:
+        print(f"error: {exc}")
+        return EXIT_UNUSABLE
+    if dirty:
+        shown = ", ".join(dirty[:10]) + (f", … ({len(dirty)} in all)" if len(dirty) > 10 else "")
+        print(
+            f"error: {len(dirty)} tracked file(s) have unstaged changes: {shown}. The hook scans "
+            "the work tree while a commit records the index, so the scan would not be of what is "
+            "committed. Stage or stash them, then re-run"
+        )
         return EXIT_UNUSABLE
 
     baseline = root / BASELINE

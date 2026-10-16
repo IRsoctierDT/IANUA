@@ -849,13 +849,18 @@ git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --
 # stop short of: `python scripts/secret_gate.py`. It invokes the hook WITHOUT
 # xargs (so it sees the real exit codes — through xargs a finding's 1 and a
 # refresh's 3 both arrive as 123). Before the hook runs it refuses every state
-# the hook would misreport or silently accept: a root that is not the
-# repository top level (a sub-directory root scans a fraction of the tree), and
-# a baseline that is missing, a symlink, untracked, unparseable, or carrying
-# UNSTAGED edits — the hook reports an unparseable or an unstaged baseline at
-# exit 1, a finding's code, and runs over a symlinked or untracked one as if it
-# were reviewed. A STAGED edit is what the ACCEPT procedure below leaves behind
-# and is gated, not refused. On exit 3 it verifies that the rewrite is a
+# the hook would misreport or silently accept: a root that is not a directory
+# or not the repository top level (a sub-directory root scans a fraction of the
+# tree); a baseline that is missing, a symlink, a hard link, untracked,
+# unparseable, or carrying UNSTAGED edits — the hook reports an unparseable or
+# an unstaged baseline at exit 1, a finding's code, runs over a symlinked or
+# untracked one as if it were reviewed, and rewrites a hard-linked one through
+# the shared inode; and ANY tracked file with unstaged changes, because the
+# hook scans the work tree while a commit records the index — measured on
+# #242, a key-shaped literal staged and then removed by an unstaged edit scanned
+# clean at exit 0 while `git show :file` still held it (found by review). A
+# STAGED edit is what the ACCEPT procedure below leaves behind and is gated,
+# not refused. On exit 3 it verifies that the rewrite is a
 # refresh — line numbers may move, an entry may be retired, `generated_at` may
 # change, the filter set may gain only `is_baseline_file`; no entry may appear,
 # no surviving entry may change, and the version, the plugin set and every

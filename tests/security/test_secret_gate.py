@@ -129,15 +129,16 @@ def _staged(repo: Path) -> list[str]:
 
 
 def _unstaged_edit_elsewhere(repo: Path) -> None:
-    """An unstaged change to another tracked file, so "stages nothing" and "stages that
+    """An untracked file beside the tracked ones, so "stages nothing" and "stages that
     one file and nothing else" are measured against something a ``git add -A`` would
-    have swept up, rather than against a tree with nothing to stage."""
-    (repo / "clean.py").write_text("x = 2\n", encoding="utf-8")
+    have swept up, rather than against a tree with nothing to stage. Untracked rather
+    than an unstaged edit to a tracked file, because the gate refuses the latter."""
+    (repo / "extra.py").write_text("y = 2\n", encoding="utf-8")
 
 
 def _assert_only_the_unstaged_edit_remains_unstaged(repo: Path) -> None:
     status = _git(repo, "status", "--porcelain")
-    assert " M clean.py" in status, status
+    assert "?? extra.py" in status, status
 
 
 def _baseline(repo: Path) -> dict[str, Any]:
@@ -466,6 +467,67 @@ def test_an_unparseable_baseline_is_unusable_not_a_finding(
     assert "is not a baseline" in capsys.readouterr().out
     assert _staged(repo) == []
     _assert_the_hook_never_ran(plan)
+
+
+@pytest.mark.security
+def test_a_staged_credential_with_an_unstaged_removal_is_refused_not_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review on #242. The hook scans the work tree; ``git commit`` records the
+    index. Measured before the fix: a key-shaped literal staged in ``staged.py`` and then
+    removed by an unstaged edit scanned clean at exit 0 while ``git show :staged.py`` still
+    held it. The gate now refuses any tracked file whose work tree differs from the index,
+    before the hook runs."""
+    repo = _repo(tmp_path)
+    (repo / "staged.py").write_text(f'K = "{_key_shaped()}"\n', encoding="utf-8")
+    _git(repo, "add", "--", "staged.py")
+    (repo / "staged.py").write_text("K = None\n", encoding="utf-8")
+    assert "AKIA" in _git(repo, "show", ":staged.py"), "the premise: the index holds the literal"
+    plan = _a_hook_that_would_pass(tmp_path, monkeypatch)
+
+    assert main(["--root", str(repo)]) == EXIT_UNUSABLE
+    out = capsys.readouterr().out
+    assert "unstaged changes" in out and "staged.py" in out, out
+    _assert_the_hook_never_ran(plan)
+
+
+@pytest.mark.security
+def test_a_hard_linked_baseline_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review on #242. A hard link to a file outside the repository with the
+    tracked baseline's bytes passes the symlink and git checks; measured, the hook's refresh
+    then rewrote the external file through the shared inode. Refused before the hook runs,
+    and the external file is untouched."""
+    repo = _repo(tmp_path, accepted=True)
+    external = tmp_path / "external.json"
+    external.write_bytes((repo / BASELINE).read_bytes())
+    (repo / BASELINE).unlink()
+    (repo / BASELINE).hardlink_to(external)
+    assert (repo / BASELINE).stat().st_nlink == 2
+    assert _git(repo, "status", "--porcelain") == "", "the premise: git sees no change"
+    _shift_accepted_literal(repo)
+    before = external.read_bytes()
+    plan = _a_hook_that_would_pass(tmp_path, monkeypatch)
+
+    assert main(["--root", str(repo)]) == EXIT_UNUSABLE
+    assert "hard link" in capsys.readouterr().out
+    assert external.read_bytes() == before
+    _assert_the_hook_never_ran(plan)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("kind", ["missing", "regular-file"])
+def test_an_invalid_root_is_refused_without_a_traceback(
+    tmp_path: Path, kind: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review on #242: a nonexistent root or a regular file raised from the first
+    ``subprocess.run(cwd=root)`` before the guarded block, exiting 1 — a finding's code."""
+    target = tmp_path / "nowhere"
+    if kind == "regular-file":
+        target.write_text("", encoding="utf-8")
+    assert main(["--root", str(target)]) == EXIT_UNUSABLE
+    assert "is not a directory" in capsys.readouterr().out
 
 
 @pytest.mark.security

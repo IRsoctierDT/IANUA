@@ -21,8 +21,12 @@ All notable changes to this project. Versions correspond to git tags.
   refused a retirement as an acceptance. A retirement cannot hide a relocation — a literal
   moved to another tracked file is a new finding there, exit 1, and the refresh is
   suppressed (measured). An independent four-lens review of the first commit then found the
-  symlink, untracked, unparseable, sub-directory and staged-then-failed cases, each
-  reproduced before it was fixed. `tests/security/test_secret_gate.py` pins every branch
+  symlink, untracked, unparseable, sub-directory and staged-then-failed cases, and Codex's
+  review of #242 found three more — a credential staged and then removed by an unstaged
+  edit scanned clean while the index still held it (the gate now refuses any tracked file
+  with unstaged changes: the hook scans the work tree, a commit records the index), a
+  hard-linked baseline the hook would rewrite through the shared inode, and a nonexistent
+  `--root` that exited with a traceback — each reproduced before it was fixed. `tests/security/test_secret_gate.py` pins every branch
   in throwaway repositories with the real hook, drives the outcomes it cannot produce on
   demand with a stand-in named as such, and its last test requires this repository's
   committed baseline to pass the hook at exit 0 on every run (the hook's full run over the
