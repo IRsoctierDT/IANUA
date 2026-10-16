@@ -130,6 +130,3 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
-  # --- OSSF Scorecard Scanning (scorecard) --------------------------------      
-   - name: OSSF Scorecard action
-  uses: ossf/scorecard-action@v2.5.0     
