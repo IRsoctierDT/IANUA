@@ -457,6 +457,20 @@ def _escaping_names(nodes: typing.Iterable[ast.AST]) -> set[str]:
                     func.attr == "join"
                     and len(node.args) == 1
                     and isinstance(node.args[0], ast.Name)
+                    # The RECEIVER has to be a string literal written here.
+                    # It used to be unchecked, so ANY one-argument method
+                    # named ``join`` sanctioned its argument — measured, a
+                    # ``class _Renderer`` with ``def join(self, parts):
+                    # parts.append(self._extra)`` passed ``renderer.join(parts)``
+                    # and kept ``parts`` literal-only. Requiring a constant is
+                    # exactly what ``store/events.py`` writes (``" AND ".join``
+                    # and ``"".join``); a module constant as receiver
+                    # (``_AND.join(x)``) would be refused, which is a false
+                    # positive in the fail-closed direction and the price of
+                    # not threading an env into a function computed before one
+                    # exists.
+                    and isinstance(func.value, ast.Constant)
+                    and isinstance(func.value.value, str)
                 ):
                     sanctioned.add(id(node.args[0]))  # " AND ".join(clauses)
         elif isinstance(node, (ast.If, ast.While, ast.IfExp)) and isinstance(node.test, ast.Name):
@@ -490,12 +504,23 @@ def _nested_scope_names(scope: ast.AST) -> set[str]:
     closed the *rebinding* half of that; this closes the mutation half, which
     is the common one — ``parts.append(before)`` inside a closure needs no
     ``nonlocal`` declaration at all, and was measured accepted.
+
+    ``ClassDef`` belongs in this walk, and the reason is worth stating because
+    the caller *exempts* a class body from this penalty. The two are different
+    things. A class **body** is executed immediately, in the enclosing frame,
+    and can read and mutate that frame's locals — measured accepted before
+    this: ``class _Collected: parts.append(before)`` inside the function that
+    then joins ``parts``. A **method** is a separate scope that cannot read a
+    class-body local as a closure variable at all, which is why
+    :func:`_scope_env` skips the penalty when the scope under analysis *is* a
+    class. Nested class body: penalised here. Methods of a class being
+    analysed: exempt there.
     """
     names: set[str] = set()
     for node in ast.walk(scope):
         if node is scope:
             continue
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
             names |= {inner.id for inner in ast.walk(node) if isinstance(inner, ast.Name)}
     return names
 
@@ -564,8 +589,15 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
         inferred: dict[str, str] = {}
         for node in _scope_nodes(scope):
             if isinstance(node, ast.Assign):
+                # ``parts = sink = [_SELECT]`` binds ONE list to two names, and
+                # neither of them escapes under the use-whitelist: both targets
+                # are in Store context, so there is no Load appearance to
+                # catch. Measured accepted — ``sink.append(before)`` then
+                # ``"".join(parts)``. A chained assignment is an alias by
+                # construction, so every target is demoted.
+                chained = len([t for t in node.targets if isinstance(t, ast.Name)]) > 1
                 for target in node.targets:
-                    if isinstance(target, ast.Name):
+                    if isinstance(target, ast.Name) and not chained:
                         _note(inferred, target.id, _provenance(node.value, env))
                     else:
                         # ``x[i] = v`` and ``x.a = v`` say nothing about ``x``.
@@ -672,9 +704,18 @@ def _module_env(name: str, tree: ast.Module, package: dict[str, dict[str, str]])
                 for alias in node.names:
                     _note(inferred, alias.asname or alias.name, source.get(alias.name, _OTHER))
             elif isinstance(node, ast.Assign):
+                # Same alias-by-construction rule as the scope env: measured,
+                # ``DDL_PARTS = _SINK = [...]`` in one module, mutated through
+                # ``_SINK`` and read through ``from schema import DDL_PARTS``,
+                # survived the import boundary.
+                chained = len([t for t in node.targets if isinstance(t, ast.Name)]) > 1
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        _note(inferred, target.id, _provenance(node.value, env))
+                        _note(
+                            inferred,
+                            target.id,
+                            _OTHER if chained else _provenance(node.value, env),
+                        )
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 if node.value is not None:
                     _note(inferred, node.target.id, _provenance(node.value, env))
@@ -1073,6 +1114,54 @@ _REJECTED_ESCAPES = (
     ),
 )
 
+#: A third round from the same pass, against the version that closed the
+#: previous two. All four share a theme: a container reached under a name the
+#: analysis was not watching, or sanctioned on the strength of a method's
+#: *name* without checking what it is a method of.
+_REJECTED_ALIASING = (
+    (
+        "a chained assignment binds one list to two names",
+        "def run(conn, before):\n"
+        "    parts = sink = [_TEMPLATE]\n"
+        "    sink.append(before)\n"
+        '    conn.execute("".join(parts))\n',
+    ),
+    (
+        "a chained assignment on a literal-valued mapping",
+        "def run(conn, before, column):\n"
+        '    equality = overlay = {"vendor": "e.vendor = ?"}\n'
+        "    overlay.update({column: before})\n"
+        "    conn.execute(_TEMPLATE + equality[column])\n",
+    ),
+    (
+        "a nested class BODY mutates an enclosing container",
+        "def run(conn, before):\n"
+        "    parts = [_TEMPLATE]\n"
+        "\n"
+        "    class _Collected:\n"
+        "        parts.append(before)\n"
+        "\n"
+        '    conn.execute("".join(parts))\n',
+    ),
+    (
+        "a method merely NAMED join, whose receiver is not a literal",
+        "class _Renderer:\n"
+        "    def __init__(self, extra):\n"
+        "        self._extra = extra\n"
+        "\n"
+        "    def join(self, parts):\n"
+        "        parts.append(self._extra)\n"
+        '        return "".join(parts)\n'
+        "\n"
+        "\n"
+        "def run(conn, before):\n"
+        "    parts = [_TEMPLATE]\n"
+        "    renderer = _Renderer(before)\n"
+        "    renderer.join(parts)\n"
+        '    conn.execute("".join(parts))\n',
+    ),
+)
+
 #: Two further routes the same adversarial pass found against the restructure
 #: above, each with a runtime proof that executed ``DROP TABLE events``. Both
 #: have a structural cause rather than a missing construct: a ``def``/``class``
@@ -1229,6 +1318,7 @@ _REJECTED_MODULE_SCOPE = (
         *_REJECTED_ESCAPES,
         *_REJECTED_MODULE_SCOPE,
         *_REJECTED_SCOPE_SHAPES,
+        *_REJECTED_ALIASING,
     ),
 )
 def test_a_pattern_capture_or_unmodelled_mutation_demotes_the_name(label: str, body: str) -> None:
@@ -1340,6 +1430,35 @@ def test_no_statement_is_dispatched_through_a_dynamic_attribute() -> None:
                     f"dispatch a statement past the provenance check: "
                     f"{ast.unparse(node)[:120]}"
                 )
+
+
+@pytest.mark.security
+def test_a_chained_module_binding_does_not_survive_the_import_boundary() -> None:
+    """The alias rule has to hold across files, not just inside one scope.
+
+    Measured accepted before the chained-assignment rule reached
+    :func:`_module_env`: one module binds a fragment list to two names, a
+    helper there mutates it through the second, and a sibling imports it under
+    the first. The import resolution that makes ``executescript(DDL)`` work is
+    the same machinery that carried the stale provenance across.
+    """
+    schema = (
+        'DDL_PARTS = _SINK = ["SELECT COUNT(*) AS n FROM events WHERE vendor = "]\n'
+        "\n"
+        "\n"
+        "def add_clause(clause):\n"
+        "    _SINK.append(clause)\n"
+    )
+    events = (
+        "from sample.schema import DDL_PARTS, add_clause\n"
+        "\n"
+        "\n"
+        "def run(conn, before):\n"
+        "    add_clause(before)\n"
+        '    conn.execute("".join(DDL_PARTS))\n'
+    )
+    findings = _non_literal_statements({"sample.schema": schema, "sample.events": events})
+    assert findings, "a chained module binding survived the import boundary"
 
 
 @pytest.mark.security
