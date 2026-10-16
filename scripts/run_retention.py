@@ -47,7 +47,16 @@ optimization.
 **Exit codes**, which are the whole interface a scheduler sees: ``0`` a pass
 ran (including a dry run, and including a skip because another pass held the
 lock), ``1`` the store or the audit write failed, ``2`` bad arguments, ``3``
-blocked by policy — which is what an ungranted ``--apply`` returns.
+blocked by policy — which is what an ungranted ``--apply`` returns — and ``4``
+retryable contention.
+
+``4`` exists because ``1`` used to mean both "the evidence store is damaged"
+and "another writer held the lock for five seconds", which an operator must
+treat oppositely. ``docs/RETENTION.md`` carried a paragraph warning that
+"exit 1 is not always damage" instead of the code distinguishing them; that
+paragraph is gone. See ``scripts/_exit_codes.py`` for why this is a new code
+rather than ``0`` (nothing observes a pass that never ran) or ``3``
+(already "a human must grant this").
 
 **A pass never deletes past the detection cycle, unless an operator says so.**
 Retention prunes on ``ingested_at``; the pipeline cursor records how far
@@ -183,6 +192,7 @@ from pipeline import (  # noqa: E402
     cursor_path,
     load_cursor,
 )
+from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
 from scripts._locking import prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
@@ -934,10 +944,16 @@ def _run(
         )
         return 2
     except (StoreError, sqlite3.Error, ValueError, OSError) as exc:
-        # sqlite3.Error is neither OSError nor StoreError. `store/` now maps
+        # sqlite3.Error is neither OSError nor StoreError. `store/` maps
         # SQLite's two corruption verdicts to `StoreCorruptionError`, so this
-        # clause is defence in depth for the rest — a locked database
-        # (SQLITE_BUSY) still arrives here as itself, deliberately.
+        # clause is defence in depth for the rest — and a locked database
+        # (SQLITE_BUSY) arrives here as itself, deliberately, which is what
+        # the discrimination below is for. The order matters: contention is
+        # tested FIRST, because every contention error is also a
+        # `sqlite3.Error` and would otherwise be reported as damage.
+        if is_retryable_contention(exc):
+            print(f"error: the store is busy, nothing was pruned: {exc}", file=sys.stderr)
+            return EXIT_RETRYABLE
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

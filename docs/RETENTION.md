@@ -401,16 +401,23 @@ correlation margin" note.
 | Code | Meaning |
 |---|---|
 | `0` | A pass ran — reported, applied, **or skipped because another pass holds the lock** |
-| `1` | The store failed to open or verify, a schema mismatch, an audit write failed, the report could not be written — **or mere SQLite contention** |
+| `1` | The store failed to open or verify, a schema mismatch, an audit write failed, the report could not be written — **damage; page someone** |
 | `2` | Bad arguments, an unreadable pipeline cursor, a lock path that is a directory, or the whole-store refusal |
 | `3` | Blocked by policy (an ungranted `--apply`) |
+| `4` | **Retryable contention**: another writer held SQLite's write lock past the busy timeout. Nothing was pruned and every event is still present — retry, do not page |
+
+> **`4` is new, and this section used to warn about its absence.** A paragraph here read
+> "**Exit 1 is not always damage.** A concurrent writer holding SQLite's write lock past the
+> 5.0 s default busy timeout gives exit 1 … retry, do not page." That was the runbook
+> carrying a distinction the code would not make. The code makes it now, in all four
+> scheduled CLIs, and the paragraph is gone. An existing wrapper is safe either way: damage
+> still returns `1`, and contention returns a non-zero code a `rc != 0` test already
+> catches — but a wrapper that pages on `rc == 1` specifically will now stop paging for
+> contention, which is the point. The 5.0 s is Python's `sqlite3.connect` default rather
+> than a value this platform sets; `store/events.py` passes no `timeout`.
 
 Two things a scheduler must handle that the taxonomy above hides:
 
-- **Exit 1 is not always damage.** A concurrent writer holding SQLite's write lock past the
-  5.0 s default busy timeout gives exit 1 "error: database is locked" with nothing broken
-  and every event still present — retry, do not page. The four separate locks make this
-  reachable in normal operation on a busy node.
 - **The lock skip is invisible to a scheduler.** A second pass prints "skipped: another
   retention pass holds the lock; this invocation did nothing." on **stdout** and exits 0 —
   measured, including under `--json` (so a JSON log shipper must tolerate that line) and

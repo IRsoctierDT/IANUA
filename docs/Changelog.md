@@ -4,6 +4,19 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Changed
+- **The four scheduled CLIs now exit `4` for retryable SQLite contention**, where
+  they returned `1`. `1` had meant both "the evidence store is damaged, page
+  someone" and "another writer held the lock for five seconds, retry", which an
+  operator must treat oppositely — `docs/RETENTION.md` carried a paragraph
+  warning about the conflation rather than the code resolving it. Discrimination
+  is on SQLite's *primary* result code (`scripts/_exit_codes.py`), so it covers
+  all seven extended `SQLITE_BUSY`/`SQLITE_LOCKED` names without enumerating
+  them. Damage still returns `1`, so a wrapper testing `rc != 0` is unaffected
+  and one paging on `rc == 1` stops paging for contention. `run_collector`
+  reports `4` only when *every* failure in the pass was contention: one damaged
+  source alongside a busy one still returns `1`.
+
 ## v2.2.0 — Release Automation & Control Integrity — 2026-10-13
 
 ### Added
