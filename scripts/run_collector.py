@@ -94,14 +94,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import json
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator
 from pathlib import Path
-from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -138,6 +135,7 @@ from collect import (  # noqa: E402
     save_offsets,
 )
 from ingest import normalize_many  # noqa: E402
+from scripts._locking import prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import validated_root  # noqa: E402
 
@@ -150,74 +148,10 @@ AUDIT_FILE = "audit.log"
 LOCK_FILE = "collect.lock"
 
 #: Owner-only, matching the offsets, the cursor and the audit log.
-_FILE_MODE = 0o600
 
 #: Its own class, not ``read_only``. See the module docstring.
 ACTION_CLASS: ActionClass = "collection"
 ACTION_NAME = "collect_logs"
-
-
-def _prepare_lock(directory: Path) -> TextIO:
-    """Create the lock file and return it, before any lock is attempted.
-
-    Separated from :func:`_single_instance` so that its ``mkdir``, ``touch``
-    and ``chmod`` run inside the caller's startup ``try`` and an unwritable
-    ``data/collect`` becomes a message and exit 2 like every other startup
-    failure in this CLI. Inside the context manager they ran at ``__enter__``,
-    outside every ``try``, and reached the terminal as a traceback — and the
-    first operator to hit it is the one following the runbook, who runs the
-    documented manual pass as themselves after the documented root cron entry
-    has already created the directory as root. Found by review.
-    """
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / LOCK_FILE
-    path.touch(mode=_FILE_MODE, exist_ok=True)
-    path.chmod(_FILE_MODE)
-    # Opened here too, not in the context manager. The fix above moved
-    # `mkdir`/`touch`/`chmod` inside the caller's `try` and left the `open`
-    # behind, so a lock path that is a *directory* still tracebacked with
-    # `IsADirectoryError` and exit 1 — while this function's docstring
-    # claimed nothing in the context manager could fail for a reason the
-    # caller would have to translate. Measured on all three CLIs that
-    # carried this fix; the pipeline had never received it at all.
-    return path.open("a", encoding="utf-8")
-
-
-@contextlib.contextmanager
-def _single_instance(handle: TextIO) -> Iterator[bool]:
-    """Hold an exclusive lock for the duration of one pass.
-
-    A correctness control, not an optimization. :class:`AuditLogger` derives
-    each record's ``seq`` and ``prev_hash`` by reading the last line and
-    appending — a read-modify-write with no locking — so two concurrent
-    appenders fork the chain and ``verify()`` returns ``False`` for every
-    future reader. That is worse than losing records: it puts a false positive
-    into a tamper detector. Demonstrated against the pipeline's identical
-    shape before its lock existed: six concurrent invocations, a duplicate
-    ``seq``, and every process exiting ``0``.
-
-    It also serializes offset writes, so two passes cannot each read the same
-    region and race to persist different positions.
-
-    Takes a handle already opened by :func:`_prepare_lock`, so nothing here
-    can fail for a reason the caller would have to translate into an exit code
-    — which is only true now that the ``open`` moved there as well.
-
-    Yields ``True`` when the lock was taken, ``False`` when another pass holds
-    it. A declined lock is not an error, and must not exit non-zero: a
-    minutely schedule is *expected* to overlap occasionally, and failing would
-    mail the operator every minute until they learned to ignore it.
-    """
-    with handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -359,12 +293,12 @@ def main(argv: list[str] | None = None) -> int:
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
-        lock = _prepare_lock(path.parent)
+        lock = prepare_lock(path.parent, LOCK_FILE)
     except (PrincipalError, CollectError, PolicyBundleError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with _single_instance(lock) as acquired:
+    with single_instance(lock) as acquired:
         if not acquired:
             print("skipped: another pass holds the lock; this invocation did nothing.")
             return 0

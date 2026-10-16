@@ -543,30 +543,32 @@ def test_two_passes_cannot_run_at_once(tmp_path: Path) -> None:
     reader — a false positive in a tamper detector, which is worse than losing
     the records. Deterministic by construction rather than by racing processes.
     """
-    from scripts.run_collector import _prepare_lock, _single_instance
+    from scripts._locking import prepare_lock, single_instance
+    from scripts.run_collector import LOCK_FILE
 
     root = tmp_path / "root"
     root.mkdir()
-    # One ``_prepare_lock`` per attempt rather than one handle reused:
+    # One ``prepare_lock`` per attempt rather than one handle reused:
     # ``flock`` is held by the open file *description*, so re-locking a
     # single handle succeeds and would make this test vacuous.
-    with _single_instance(_prepare_lock(offsets_path(root).parent)) as first:
+    with single_instance(prepare_lock(offsets_path(root).parent, LOCK_FILE)) as first:
         assert first is True
-        with _single_instance(_prepare_lock(offsets_path(root).parent)) as second:
+        with single_instance(prepare_lock(offsets_path(root).parent, LOCK_FILE)) as second:
             assert second is False, "a second pass acquired the lock concurrently"
-    with _single_instance(_prepare_lock(offsets_path(root).parent)) as third:
+    with single_instance(prepare_lock(offsets_path(root).parent, LOCK_FILE)) as third:
         assert third is True, "the lock was not released"
 
 
 @pytest.mark.security
 def test_a_declined_lock_exits_zero_and_touches_nothing(tmp_path: Path) -> None:
     """A minutely schedule is expected to overlap; failing would train neglect."""
-    from scripts.run_collector import _prepare_lock, _single_instance, main
+    from scripts._locking import prepare_lock, single_instance
+    from scripts.run_collector import LOCK_FILE, main
 
     root = tmp_path / "root"
     root.mkdir()
     log = _log(tmp_path, "audit.log", body="type=SYSCALL node=web-01 auid=x comm=bash\n")
-    with _single_instance(_prepare_lock(offsets_path(root).parent)) as held:
+    with single_instance(prepare_lock(offsets_path(root).parent, LOCK_FILE)) as held:
         assert held is True
         assert main(["--root", str(root), "--source", str(log)]) == 0
     assert not offsets_path(root).exists(), "a skipped pass advanced the offsets"

@@ -88,17 +88,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
 import shutil
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -118,6 +115,7 @@ from agents.policies.bundle import (  # noqa: E402
     load_bundle,
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
+from scripts._locking import DIR_MODE, FILE_MODE, prepare_lock, single_instance  # noqa: E402
 from store import DEFAULT_FILENAME, EVENTS_SUBDIR, EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -131,8 +129,6 @@ MANIFEST_FILE = "manifest.json"
 AUDIT_SUBDIR = EVENTS_SUBDIR
 AUDIT_FILE = "audit.log"
 
-_DIR_MODE = 0o700
-_FILE_MODE = 0o600
 
 ACTION_NAME = "backup_state"
 #: Nothing existing is changed. See the module docstring on why a local copy
@@ -171,42 +167,6 @@ EXCLUDED: dict[str, str] = {
         "design — and restoring one is never necessary, so it is not kept."
     ),
 }
-
-
-def _prepare_lock(directory: Path) -> TextIO:
-    """Create the lock file before any lock is attempted.
-
-    Separated from :func:`_single_instance` so its ``mkdir``/``touch``/``chmod``
-    run inside the caller's startup ``try``, and an unwritable directory
-    becomes a message and exit 2 rather than a traceback. Opening the lock is
-    inside that ``try`` too, which the three older CLIs here do not do — a
-    lock path that is a directory tracebacks in each of them.
-    """
-    directory.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-    directory.chmod(_DIR_MODE)
-    path = directory / LOCK_FILE
-    path.touch(mode=_FILE_MODE, exist_ok=True)
-    path.chmod(_FILE_MODE)
-    return path.open("a", encoding="utf-8")
-
-
-@contextlib.contextmanager
-def _single_instance(handle: TextIO) -> Iterator[bool]:
-    """Hold an exclusive lock for one pass; yield False if another holds it.
-
-    A declined lock is not an error: a scheduled backup overlapping a slow one
-    is expected, and failing would mail the operator until they ignored it.
-    """
-    with handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _unsafe_path(base: Path, relative: Path, *, what: str) -> str | None:
@@ -269,9 +229,9 @@ def _narrow_tree(root: Path) -> None:
     first run, exactly the way it leaves the platform's. One sweep at the end
     cannot be forgotten by a later copy step.
     """
-    root.chmod(_DIR_MODE)
+    root.chmod(DIR_MODE)
     for child in sorted(root.rglob("*")):
-        child.chmod(_DIR_MODE if child.is_dir() else _FILE_MODE)
+        child.chmod(DIR_MODE if child.is_dir() else FILE_MODE)
 
 
 def _digest_file(path: Path) -> str:
@@ -402,23 +362,23 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
             "would restore as an empty store indistinguishable from a real one"
         )
 
-    destination.mkdir(mode=_DIR_MODE, parents=True, exist_ok=False)
-    destination.chmod(_DIR_MODE)
+    destination.mkdir(mode=DIR_MODE, parents=True, exist_ok=False)
+    destination.chmod(DIR_MODE)
 
     target_db = destination / EVENTS_SUBDIR / DEFAULT_FILENAME
-    target_db.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-    target_db.parent.chmod(_DIR_MODE)
+    target_db.parent.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
+    target_db.parent.chmod(DIR_MODE)
     _copy_database(source_db, target_db)
-    target_db.chmod(_FILE_MODE)
+    target_db.chmod(FILE_MODE)
 
     files: list[dict[str, object]] = []
     copied, refused = _copied_paths(root)
     for relative in copied:
         target = destination / relative
-        target.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-        target.parent.chmod(_DIR_MODE)
+        target.parent.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
+        target.parent.chmod(DIR_MODE)
         shutil.copy2(root / relative, target)
-        target.chmod(_FILE_MODE)
+        target.chmod(FILE_MODE)
         files.append(
             {
                 "path": str(relative),
@@ -619,12 +579,12 @@ def main(argv: list[str] | None = None) -> int:
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
-        lock = _prepare_lock(root / BACKUP_SUBDIR)
+        lock = prepare_lock(root / BACKUP_SUBDIR, LOCK_FILE)
     except (PrincipalError, PolicyBundleError, StoreError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with _single_instance(lock) as acquired:
+    with single_instance(lock) as acquired:
         if not acquired:
             print("skipped: another backup pass holds the lock; this invocation did nothing.")
             return 0
@@ -680,7 +640,7 @@ def _run(
             manifest_path.write_text(
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
-            manifest_path.chmod(_FILE_MODE)
+            manifest_path.chmod(FILE_MODE)
             attestation = manifest["store"]["attestation"]  # type: ignore[index]
             payload = {
                 "backup": str(destination),
