@@ -23,8 +23,17 @@ All notable changes to this project. Versions correspond to git tags.
   security-relevant action §3 requires recording. It does not fence and cannot
   promote. `dependencies = []` is untouched.
 
-  Review found four defects in the first draft and all four were confirmed — the
-  argument for amending before building rather than after.
+  Review found **six** defects across two rounds and all six were confirmed, none
+  refuted — the argument for amending before building rather than after, and the
+  second round is the more useful half: a reviewed draft is not a correct one. The
+  later two were the `attest()` digest being a **presence oracle at low cardinality**
+  (measured: at `count == 1` an `event_id` derived offline from a raw log line
+  reproduces the served digest, since the id carries no store-injected entropy and
+  `DIGEST_PREFIX` is public — so the digest now crosses as a *comparison* withheld
+  below 1000 events, not as a value), and the audit-write bound covering **rejections
+  only** (a replayed valid request takes the *accepted* path and needs no key, so one
+  captured request could flood the hash chain — both outcomes are bounded now, and
+  request freshness is server-enforced rather than echoed into the response).
 
 ### Added
 - **`run_backup --verify-restore BACKUP`, the promotion gate.** `--verify` checked
