@@ -924,8 +924,10 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # restore that loses observable rows and no event rows satisfies
         # `quick_check`, the count and the digest together. Measured on merged
         # code: 20 observables deleted of 20, events untouched, digest equal,
-        # exit 0. Indicator pivots return nothing on a store this gate had just
-        # called verified, because `correlation/entities.py` joins on this table.
+        # exit 0. An indicator pivot (`query(observable=...)`) returns nothing on a
+        # store this gate had just called verified. (Not correlation: measured,
+        # `correlation/entities.py` never reads `observables`; an earlier version
+        # of this comment said it joined on this table.)
         #
         # The manifest already carried the number: `attestation.to_dict()` is
         # stored whole, so this reads a field that was sitting in the file.
@@ -961,8 +963,8 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             problems.append(
                 f"SUBSTITUTED: the live store holds exactly {live_observables} "
                 "observable(s) as attested, but not the same rows — the observables "
-                "digest differs. Indicator pivots on this store join on values the "
-                "backup never held. This is not the store that was backed up"
+                "digest differs. An indicator pivot on this store returns events for "
+                "values the backup never held. This is not the store that was backed up"
             )
 
         # The two attestation fields this verifier never read while `--verify`

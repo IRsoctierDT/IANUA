@@ -129,8 +129,10 @@ What it refuses, each with the direction named rather than a bare mismatch:
 **Why `LOSS` covers observables separately.** The completeness digest is a sha256 over the
 `event_id` set only, so a restore that loses rows from `observables` and none from `events`
 passes `quick_check`, the event count *and* the digest — measured, 20 observables destroyed
-of 20 and the gate exited 0 before this was added. Indicator pivots return nothing on such a
-store, because `correlation/entities.py` joins on that table.
+of 20 and the gate exited 0 before this was added. An indicator pivot (`query(observable=…)`)
+returns nothing on such a store. (An earlier version of this sentence said `correlation/entities.py`
+joins on that table; measured, it never reads `observables` — entity resolution uses typed fields
+only — so the loss is to the pivot and to the attestation, not to correlation.)
 
 **Why the format is v2, and what a v1 backup can still do.** A count is not a commitment to
 contents: review of the gate above showed that replacing observable rows one-for-one left

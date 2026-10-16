@@ -182,8 +182,9 @@ All notable changes to this project. Versions correspond to git tags.
   **Observables were never compared.** The completeness digest is a sha256 over
   the `event_id` set only, so observables are not in the preimage. Measured: 20
   observable rows destroyed of 20, events untouched — `quick_check` ok, event
-  count equal, digest equal, **exit 0**. Indicator pivots return nothing on such
-  a store, because `correlation/entities.py` joins on that table. The number was
+  count equal, digest equal, **exit 0**. An indicator pivot (`query(observable=…)`) returns
+  nothing on such a store — the pivot and the attestation are what lose; `correlation/`
+  never reads `observables`, and an earlier version of this entry said it did. The number was
   sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
   it, with `ADDED` for the legitimate re-collection direction.
 

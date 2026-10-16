@@ -473,9 +473,11 @@ def test_observables_lost_without_events_is_refused(
     observables are **not** in the preimage. A restore that loses observable
     rows and no event rows satisfies ``quick_check``, the event count and the
     digest together. Measured on the merged gate: 20 observables deleted of 20,
-    events untouched, digest equal — exit 0, on a store whose indicator pivots
-    then return nothing, because ``correlation/entities.py`` joins on this
-    table.
+    events untouched, digest equal — exit 0, on a store whose indicator pivot
+    (``query(observable=...)``) then returns nothing. (An earlier version of this
+    sentence said ``correlation/entities.py`` joins on this table; measured, it
+    never reads ``observables`` — entity resolution uses typed fields only — so
+    the loss is to the pivot and the attestation, not to correlation.)
 
     The number was already in the manifest: ``attestation.to_dict()`` is stored
     whole, so the fix reads a field that was sitting in the file the gate had
