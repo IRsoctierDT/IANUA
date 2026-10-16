@@ -204,8 +204,18 @@ command line. The exception is deliberately narrow, and the narrowness is the co
   continuity digest and the data) comes from a single descriptor. Ancestor components are
   not walked, deliberately, because `/var/log` ancestors are legitimately symlinks on
   several distributions.
-- **Credential-shaped paths are refused**, not warned about. A collector copies what it
-  reads into `data/`, so collecting a private key would put a secret there.
+- **A named deny-list of credential paths is refused**, not warned about. A collector
+  copies what it reads into `data/`, so collecting a private key would put a secret there.
+  Read `_DENIED` in `collect/sources.py` for what it actually covers, and do not read this
+  bullet as a general credential detector — it is not one, and the code's own comment says
+  why ("a broader list would start refusing real logs, and a collector that refuses real
+  logs gets switched off"). Measured through `collect.declare`: `id_rsa`, `id_ed25519`,
+  `server.key` and `.env` are refused; `credentials.json`, `secrets.yaml` and
+  `api_token.txt` are **accepted**. An earlier version of this bullet said
+  "credential-shaped paths are refused", which an operator could reasonably read as a
+  guarantee the list does not provide. The control that actually bounds this is the
+  declared-paths rule above — a human types every source — and this list catches the
+  common mistakes, not an adversary and not every spelling.
 - **Read-only, always.** Sources are opened `"rb"`; a security test asserts no write mode
   reaches a source path. A collector that could modify the logs it reads could destroy the
   evidence it exists to preserve.
@@ -385,7 +395,7 @@ licensed here authenticates every request before it does anything.
   `scripts/run_backup.py --verify-restore` says on every success. A health response that
   reads "peer is dead" is an input to a human decision, never a trigger.
 - **No subprocess, no shell, and stdlib only.** `http.server`, `ssl`, `hmac`, `hashlib`,
-  `socket` — `dependencies = []` stands, and six security test files assert it. A consensus
+  `socket` — `dependencies = []` stands, and **five** security test files assert it — `test_collect_hardening.py`, `test_correlation_hardening.py`, `test_ingest_hardening.py`, `test_pipeline_hardening.py`, `test_store_hardening.py`, each asserting `config["project"]["dependencies"] == []`. An earlier version of this bullet said six; the number is named here so it is checkable rather than asserted. A consensus
   system would have been the one candidate needing a package, and it is not what was
   approved.
 
@@ -429,8 +439,26 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   to project in those cases and dropping the text would manufacture the blind spot rule 2
   exists to close, so the behaviour stands — but it is a residual of the control, not an
   exception for prose, and the earlier wording here understated it.
-- **Indicators come from modelled content only** — on every path, and this replaces an
-  earlier rule that said the opposite. An unclaimed record used to be *scanned* in full
+- **Indicators come from modelled content wherever a mapping was decoded**, and this
+  replaces an earlier rule that said the opposite. An earlier version of this bullet said
+  "on every path", and an audit measured that false: where nothing decodes to a mapping —
+  the three regimes the residual above names, and bare non-JSON prose — the retained
+  evidence *is* the verbatim record, extraction reads the retained evidence, and so the
+  charter's own worked example below is extracted in full. Measured on merged code, all
+  four regimes yield all five of its names. That is a consequence of the residual above
+  and not a second defect (retaining the text while refusing to scan it would be the
+  inconsistent posture), but the word "every" was wrong, and the security test that
+  pinned the rule was named for the wrong scope while exercising only the two mapping
+  paths. Both are corrected. The residual is now **labelled rather than merely pinned**:
+  every verbatim regime carries `parse_status="text"` (the schema's documented meaning,
+  "no parser claimed it; carried as opaque text") — measured before the change, three of
+  the four read `"partial"`, indistinguishable from a projected unclaimed record — so a
+  dashboard, an SLI or a retention pass can select verbatim-retained events from the store
+  and judge their fragments accordingly. `test_verbatim_retention_carries_a_uniform_marker`
+  in `tests/security/test_ingest_hardening.py` asserts the marker, that it discriminates
+  from the projected control, and that the stored row carries it. **Whether that residual should be closed is an open decision for the
+  owner**, and closing it means accepting a further detection cost on records that never
+  parsed. An unclaimed record used to be *scanned* in full
   for indicators while only its modelled paths were retained, on the reasoning that "the
   indicator survives the narrowing; the sentence around it does not". **The sentence
   survived too.** `_DOMAIN` matches any `word.Word` with no plausibility check, so an
@@ -438,8 +466,15 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   acct-7781.Watson" produced a `raw_excerpt` of `{}` — the withholding worked — and five
   observables: `Mr.Jones`, `urgently.Reply`, `44.Smith`, `acct-7781.Watson`,
   `Ms.Delacroix`. Personal names, in a table that is indexed, append-only and clearable
-  only by deleting whole rows, and false correlation join keys besides. Measured on merged
-  code, not argued.
+  only by deleting whole rows. Measured on merged code, not argued. An earlier version of
+  this sentence added "and false correlation join keys besides", and that part was never
+  measured: `correlation/entities.py` builds entity references from typed fields only and
+  never reads `observables`, so two verbatim records sharing all five names resolve to no
+  entity. Their reach is the store's indexed table (a pivot key for
+  `query(observable=…)`) and the backup attestation — not correlation. That is now a
+  guard, not a claim: `tests/security/test_correlation_hardening.py` asserts it
+  behaviourally and over `correlation/`'s AST, so wiring observables into entity
+  resolution later has to answer the plausibility question below in the open first.
 
   Extraction now reads the *retained* evidence, so there is no wider string to read and the
   separate one that existed for it is gone. **The cost is real and is the trade:** an
@@ -459,7 +494,10 @@ identifiers would be claiming not to work. So the posture is not "no personal da
 
   **What "bounded" means, precisely, because a pass returns no disk.** `prune` is a
   `DELETE`, which moves pages onto SQLite's free list without truncating the file, and the
-  store is opened at `auto_vacuum=0`. Measured through the shipped CLI with the grant: a
+  store runs at `auto_vacuum=0` — measured on a store `EventStore.open` just created, and
+  it is SQLite's *default*, not a pragma this repository sets: `auto_vacuum` appears
+  nowhere in `store/`, so nothing pins it and a future migration could change it without
+  touching this bullet. Measured through the shipped CLI with the grant: a
   20,889,600-byte store, `events_removed: 10200` of 12000, exit 0 — and the file was
   **20,889,600 bytes afterwards**, same inode, `page_count` unchanged, `freelist_count`
   0 → 4247. The report has no byte, size or disk field, so nothing in the output says so.
@@ -468,8 +506,13 @@ identifiers would be claiming not to work. So the posture is not "no personal da
   while the free list drained to 87), so the store settles at the largest live set it has
   ever held. That is a real bound and the sentence above stands, but it bounds the *live
   set*, not the filesystem. Returning bytes is a manual `VACUUM` which this repository does
-  not ship — `grep -rni vacuum .` is zero matches, `EventStore` exposes no vacuum method
-  and its connection is private — and which an operator runs themselves against the
+  not ship — no `vacuum` in any tracked *code* file (`docs/RETENTION.md`, `docs/RESTORE.md`
+  and this charter now document the procedure, so the `grep -rni vacuum .` an earlier
+  version of this bullet offered as the check returns five files and not zero; scope it to
+  code), `EventStore` exposes no vacuum method and its connection is private (`_conn`;
+  measured, its public surface is append/append_many/attest/close/count/count_before/
+  high_water_mark/next_stamp/open/path/prune/query/verify_integrity) — and which an
+  operator runs themselves against the
   database (measured: -84.9% on a pruned store in 21.9 ms, inode, mode, `attest()` digest,
   `event_id`s, `meta`, indexes and both append-only triggers all preserved). An agent
   should not write code that *assumes* a pass reclaims disk, and should not read this
@@ -735,9 +778,25 @@ pip-audit
 # finding's LINE NUMBER has shifted — any edit above it in the same file — the
 # hook rewrites the baseline to refresh it, prints "The baseline file was
 # updated. Probably to keep line numbers of secrets up-to-date. Please `git
-# add .secrets.baseline`", and exits non-zero. That is not a finding and not
-# the `scan --baseline` hazard above: the entry count, the digests, the plugin
-# set and the filter set are unchanged (verify that, then stage it). The
+# add .secrets.baseline`", and exits **3** — when invoked directly. Through the
+# `xargs` form below it surfaces as **123**, exactly as a finding does: xargs
+# reports any child exit in 1..125 as 123, so the documented command cannot
+# tell a refresh from a finding by exit code at all, and an earlier version of
+# this block implied it could. Read the message, or run the hook without xargs
+# (`scripts/secret_gate.py` does, and sees the real codes). Measured on this
+# tree: 123 printed above the "baseline file was updated" text and a script
+# that checked for 3 misread it as a finding. That is not a finding and not the
+# `scan --baseline` hazard above: the entry count, the digests and the plugin
+# set are unchanged (verify those three, stage it, then **run the gate again and
+# require exit 0**: the three checks prove the rewrite was location-only, and
+# only the re-scan proves the gate passes — measured, a finding present in the
+# same scan suppresses the refresh entirely, so the sequence is finished when a
+# run exits 0 against the staged baseline and not before). An earlier version of
+# this block said the FILTER set was unchanged too, and that is false —
+# measured on detect-secrets 1.5.0, the first such rewrite ADDS
+# `detect_secrets.filters.common.is_baseline_file` pinned to
+# `.secrets.baseline` and bumps `generated_at`. An agent told to verify an
+# unchanged filter set would refuse to stage a legitimate rewrite. The
 # difference that matters is that `scan` can absorb a NEW finding silently
 # while this only ever moves a line number of one already reviewed.
 #
@@ -757,18 +816,24 @@ pip-audit
 # flag: measured in a throwaway repo holding one AWS-access-key-shaped
 # literal and a file named `--help`, the form without a terminator printed
 # usage and exited 0 with that key unscanned — a secret-scanning gate
-# reporting green over a committed credential. With `--` the same repo exits
-# 1 and names `AWS Access Key` at `planted.py:1`. (The literal itself is
+# reporting green over a committed credential. With `--` the same repo names
+# `AWS Access Key` at `planted.py:1` and exits **123** — not 1, which an
+# earlier version of this block claimed: the hook exits 1 and `xargs` reports
+# any child exit in 1..125 as its own 123. Check for non-zero, not for 1. (The literal itself is
 # deliberately not reproduced here: this gate flags it, correctly, and §5
 # forbids a key in a comment as much as in source.) A dash-led name is legal
 # and `git add -- --help` commits it, so this is reachable from any pull
 # request. Found by review, not by us.
 git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --
 #
-# If this prints "Your baseline file (.secrets.baseline) is unstaged" and exits
-# 3, that is not a finding — the hook refuses to run against a baseline with
-# uncommitted edits, so `git add .secrets.baseline` first. Measured; it is the
-# state you are in immediately after accepting a finding below.
+# If this prints "Your baseline file (.secrets.baseline) is unstaged", that is
+# not a finding — the hook refuses to run against a baseline with uncommitted
+# edits, so `git add .secrets.baseline` first. It is the state you are in
+# immediately after accepting a finding below. It exits **1**, not 3 as an
+# earlier version of this block said, which is the SAME code as a real
+# finding: tell the two apart by the message, never by the exit code. The
+# refusal fires only when the baseline is tracked and dirty — an untracked
+# baseline, or a tracked clean one, does not trigger it.
 #
 # `gitleaks detect --no-banner` is NOT an equivalent — an earlier version of
 # this block offered it as "or:", and the two demonstrably disagree. CI runs

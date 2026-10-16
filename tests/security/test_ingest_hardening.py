@@ -64,7 +64,7 @@ from ingest._coerce import (
 from ingest.errors import IngestError, MalformedProjectionError, UnsupportedInputError
 from ingest.normalize import detect_source
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
-from store import DEFAULT_FILENAME, EventStore
+from store import DEFAULT_FILENAME, EventStore, Query
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _INGEST_ROOT = _REPO_ROOT / "ingest"
@@ -81,7 +81,10 @@ def test_oversized_record_is_refused_but_not_dropped() -> None:
     payload = "x" * (MAX_RAW_BYTES + 1024)
     event = normalize(payload)
     assert event.source_type == "unknown"
-    assert event.parse_status == "partial"
+    # "text", not "partial": the record was carried verbatim, and the status now
+    # follows from that rather than from the note explaining why. See
+    # test_verbatim_retention_carries_a_uniform_marker for the full measurement.
+    assert event.parse_status == "text"
     assert len(event.raw_excerpt) <= MAX_RAW_EXCERPT
     assert any("ceiling" in note for note in event.notes)
 
@@ -275,8 +278,12 @@ def test_an_implausible_dotted_quad_is_not_stored_as_an_address() -> None:
 
     That matters because a version string is the common case, not a contrived
     one: ``999.1.2.3`` and ``1.2.3.256`` are not addresses, and an observable
-    is an indexed, append-only correlation join key — two unrelated events
-    mentioning the same software version would correlate as sharing an IP.
+    is an indexed, append-only **pivot** key — a ``query(observable=...)`` for
+    that value would return two unrelated events mentioning the same software
+    version as though they shared an address. (Not a *correlation* join key:
+    ``correlation/entities.py`` never reads ``observables`` — measured, and
+    guarded in ``test_correlation_hardening.py`` — though an earlier version of
+    this sentence said so.)
     """
     assert _is_dotted_quad("255.255.255.255")
     assert not _is_dotted_quad("999.1.2.3")
@@ -464,6 +471,22 @@ def test_the_body_field_ban_list_is_still_declared() -> None:
 
 #: A token no fixture, parser, or schema field can legitimately produce.
 _MARKER = "UNMODELLED-VALUE-7f3a91"
+
+#: ``AGENTS.md`` §5's own worked example, verbatim, and the five fragments it
+#: records ``_DOMAIN`` as matching. Not a contrived string: it is the one the
+#: charter cites, so a change in behaviour shows up against the charter's own
+#: example rather than against a test-local one.
+_PROSE_BODY = (
+    "Dear Mr.Jones, please urgently.Reply about invoice 44.Smith "
+    "at acct-7781.Watson, cc Ms.Delacroix"
+)
+_PROSE_NAMES = (
+    "Mr.Jones",
+    "urgently.Reply",
+    "44.Smith",
+    "acct-7781.Watson",
+    "Ms.Delacroix",
+)
 
 
 def _stuff(value: Any, key: str) -> Any:
@@ -786,7 +809,7 @@ def test_the_withheld_key_note_stays_readable_after_it_is_written() -> None:
 
 
 @pytest.mark.security
-def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
+def test_indicators_come_only_from_modelled_content_on_both_mapping_paths() -> None:
     """The posture this test pins **replaces** the one it used to pin.
 
     It previously asserted the opposite: that an unclaimed record was scanned
@@ -799,17 +822,26 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     observables — ``Mr.Jones``, ``urgently.Reply``, ``44.Smith``,
     ``acct-7781.Watson``, ``Ms.Delacroix`` — because ``_DOMAIN`` matches any
     ``word.Word`` with no plausibility check. Those are personal names, in an
-    indexed append-only table that only whole-row deletion can clear, and
-    they are false correlation join keys besides.
+    indexed append-only table that only whole-row deletion can clear. (An
+    earlier version of this paragraph added "and false correlation join keys
+    besides"; measured, ``correlation/entities.py`` never reads ``observables``,
+    so they are false *pivot* keys in the store's index and nothing more — see
+    ``test_correlation_hardening.py``, which guards that this stays true.)
 
     The owner chose to extract from modelled content only, over adding a
     public-suffix dependency or a hand-kept TLD allow-list. **The cost is
     asserted here rather than left implicit**: an indicator that appears only
-    in an un-modelled field is now lost, on both paths. That is a real
-    detection cost on the one route §5 cared about — a vendor renaming the key
-    a signature matches — and the compensating signal is the withheld-key
-    note, which names what was dropped so an operator can write the
-    signature.
+    in an un-modelled field is now lost, on both paths **that decode to a
+    mapping** — which is the scope this test covers and all it ever covered.
+    It was named ``..._on_every_path`` until an audit measured the three
+    regimes that never decode to a mapping at all, where the retained
+    evidence *is* the verbatim record and extraction therefore reads it:
+    see ``test_verbatim_retention_carries_a_uniform_marker`` below, which
+    labels that residual, and ``test_correlation_hardening.py``, which guards
+    what correlation does with it (nothing). That is a real detection cost on the one
+    route §5 cared about — a vendor renaming the key a signature matches —
+    and the compensating signal is the withheld-key note, which names what
+    was dropped so an operator can write the signature.
 
     That sentence was the *whole* stated cost in the first version of this
     change and it was too narrow, which a reviewer caught: handing the
@@ -847,6 +879,98 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     assert claimed.vendor == "defender-o365"
     assert "http://evil.example/x" not in claimed.observables
     assert _MARKER not in json.dumps(claimed.to_dict(), default=str)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("regime", "raw"),
+    [
+        pytest.param(
+            "trailing-comma",
+            f'{{"Subject": "hi", "Body": "{_PROSE_BODY}",}}',
+            id="json-with-a-trailing-comma",
+        ),
+        pytest.param(
+            "array-not-object",
+            f'[{{"Subject": "hi", "Body": "{_PROSE_BODY}"}}]',
+            id="json-array-rather-than-an-object",
+        ),
+        pytest.param(
+            "bare-prose",
+            _PROSE_BODY,
+            id="never-json-at-all",
+        ),
+        pytest.param(
+            "over-the-ceiling",
+            json.dumps({"Subject": "hi", "Body": _PROSE_BODY, "pad": "x" * (MAX_RAW_BYTES + 100)}),
+            id="past-the-MAX_RAW_BYTES-ceiling",
+        ),
+    ],
+)
+def test_verbatim_retention_carries_a_uniform_marker(tmp_path: Path, regime: str, raw: str) -> None:
+    """Verbatim retention is a *labelled* state another component can act on.
+
+    The residual this test covers: where nothing decodes to a mapping there is
+    nothing to project, the record is retained verbatim, and indicator
+    extraction reads the retained evidence — so the charter's own worked
+    example, five personal names, is extracted in full. The first version of
+    this test only pinned that. Pinning what the code does is a claim with no
+    coverage of anything; the owner asked for a guard or a data point.
+
+    This is the data point. Measured before the change, the four regimes were
+    **not** uniformly marked: bare prose read ``parse_status="text"`` while a
+    trailing-comma record, a JSON array and a record over ``MAX_RAW_BYTES`` read
+    ``"partial"`` — the status the schema documents as "recognized, but required
+    fields were missing or malformed", and the same status a projected,
+    unclaimed mapping gets. So nothing downstream could tell "these observables
+    came from unparsed text" from "these came from modelled fields of an
+    unclaimed record". Now every verbatim regime is ``"text"`` (the documented
+    meaning: "no parser claimed it; carried as opaque text"), derived from how
+    the evidence was built rather than from whether a note was attached, and
+    the projected control stays ``"partial"`` so the marker discriminates.
+    Exactly one existing test had pinned the old inconsistency
+    (``test_oversized_record_is_refused_but_not_dropped``); 434 others were
+    green under the new status before any of them was edited.
+
+    The marker is stored: ``parse_status`` is a column, so a dashboard, an SLI
+    or a retention pass can select verbatim-retained events — and judge their
+    fragments accordingly — without re-parsing anything. The round trip below
+    proves the column carries it. What *correlation* does with these fragments
+    is guarded separately, in ``test_correlation_hardening.py``: nothing, by
+    construction, and that test goes red if that changes.
+    """
+    event = normalize(raw)
+    extracted = set(event.observables)
+    # Premise, asserted so the rest cannot be vacuous: the residual is real.
+    assert extracted >= set(_PROSE_NAMES), (
+        f"regime {regime!r} extracted {sorted(extracted)}; the residual this test labels "
+        "has changed shape — re-read AGENTS.md §5's indicators bullet"
+    )
+    assert event.vendor == "unrecognized" and event.source_type == "unknown"
+
+    # The data point: one status for every verbatim regime ...
+    assert event.parse_status == "text", (
+        f"regime {regime!r} is marked {event.parse_status!r}; verbatim retention must be "
+        "uniformly 'text' or no consumer can select it"
+    )
+    # ... and it discriminates: the same prose through the mapping path is
+    # projected, withheld, and marked as the schema documents for that case.
+    projected = normalize(json.dumps({"Subject": "hi", "Body": _PROSE_BODY}))
+    assert projected.parse_status == "partial" and not projected.observables, (
+        projected.parse_status,
+        projected.observables,
+    )
+
+    # Stored as such, so the marker reaches whoever reads the store.
+    root = tmp_path / "lab"
+    root.mkdir()
+    with EventStore.open(root) as store:
+        store.append(event, ingested_at=1_760_000_000.0)
+        store.append(projected, ingested_at=1_760_000_001.0)
+        stored = {s.event.parse_status: s.event for s in store.query(Query(limit=10))}
+    assert set(stored) == {"text", "partial"}, sorted(stored)
+    assert set(stored["text"].observables) >= set(_PROSE_NAMES)
+    assert not stored["partial"].observables
 
 
 #: The one indicator every record in the position table below carries.
