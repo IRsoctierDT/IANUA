@@ -30,6 +30,50 @@ All notable changes to this project. Versions correspond to git tags.
   ambiguous, and states on success that it verifies the *copy* and says nothing
   about whether exactly one node is active. Run it between steps 4 and 5.
 
+### Fixed
+- **`--verify-restore` exited `0` on three restores it should have refused, and in
+  every case the manifest already carried the datum the check never read.** Found
+  by review on the merged gate; all three measured through the shipped CLI before
+  anything was changed, and all three fixed together because they live in one
+  ~60-line loop.
+
+  **Observables were never compared.** The completeness digest is a sha256 over
+  the `event_id` set only, so observables are not in the preimage. Measured: 20
+  observable rows destroyed of 20, events untouched — `quick_check` ok, event
+  count equal, digest equal, **exit 0**. Indicator pivots return nothing on such
+  a store, because `correlation/entities.py` joins on that table. The number was
+  sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
+  it, with `ADDED` for the legitimate re-collection direction.
+
+  **Report entries were compared by prefix.** `_digest_prefix` hashes only the
+  first *n* bytes, which is right for an append-only stream and wrong for a
+  report. Measured: a 40-byte declared report, 94 bytes live with the prefix
+  intact — **exit 0**; and the same with 512 NUL bytes appended — also **exit 0**.
+  Reports are now compared by exact size *and* digest (`ALTERED`), while the hash
+  chains and the evidence stream keep prefix semantics. The allow-list is on the
+  **growing** side, so a tree added to `COPIED_TREES` later gets the strict
+  comparison without anyone remembering to ask: granting growth to something that
+  cannot grow hides a rewrite, while demanding equality of something that does
+  grow produces a loud finding an operator can read.
+
+  **The manifest was walked in one direction only.** `docs/RESTORE.md` step 4 is a
+  bare `cp -a`, which **merges** into a nonempty destination rather than replacing
+  it, so a file written after the backup survives the restore — and the loop
+  iterated `manifest["files"]`, so it could not see one. Measured: a backup at 20
+  events with one declared report, a live root grown to 35 events and a second
+  report describing them, store deleted and `cp -a` applied — **exit 0**, with
+  that report still claiming "Correlated 35 events" over a store holding 20, in
+  the tree `dashboard/app.py` reads. The live inventory of the copied trees is now
+  compared against the manifest (`UNDECLARED`), scoped to `COPIED_TREES` because
+  the rotation siblings beside the chains legitimately appear after a backup and a
+  blanket reverse walk would false-alarm.
+
+  Six `tests/security` cases, each paired with a control direction, and the
+  append-only/strict classifier is pinned from **both** sides: forcing everything
+  strict reds `test_a_correct_restore_verifies` — this command's own gate decision
+  appends to `data/events/audit.log` before the check reads it — and forcing
+  everything prefix reds the two report cases.
+
 ### Changed
 - **The four scheduled CLIs now exit `4` for retryable SQLite contention**, where
   they returned `1`. `1` had meant both "the evidence store is damaged, page

@@ -305,3 +305,221 @@ def test_added_events_are_reported_as_addition_and_not_as_loss(
         "an ordinary re-collection was reported as loss; this is the false alarm that "
         "would get the gate turned off"
     )
+
+
+# --- the manifest carries it; the comparison must read it ----------------------
+#
+# Three defects of one shape, found by review on the merged gate and fixed
+# together because they live in one loop. Each is paired with a control
+# direction: a check that refuses everything satisfies every refusal here.
+
+
+def _with_report(root: Path, name: str, body: str) -> Path:
+    """Write a report into the live root, as the dashboard's tree would hold it."""
+    reports = root / "data" / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    path = reports / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+@pytest.mark.security
+def test_a_report_that_grew_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Prefix comparison was wrong for a report, and review found it.
+
+    A live report holding the backed-up bytes **followed by anything at all**
+    passed ``_digest_prefix`` and produced a green promotion verdict. Measured
+    on the merged gate: a 40-byte declared report, 94 bytes live with 54
+    appended — exit 0.
+
+    A report has no legitimate append behaviour. It is rewritten whole, and
+    inside this check's window (``docs/RESTORE.md`` between steps 4 and 5)
+    nothing writes one at all, so growth means the live copy is not the
+    backed-up copy.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    _with_report(source, "incident.md", "# Incident\nStore held 40 events.\n")
+    backup = _take(source)
+    _restore(backup, live)
+
+    report = live / "data" / "reports" / "incident.md"
+    report.write_text(
+        report.read_text(encoding="utf-8") + "\n## APPENDED\nStore held 9000 events.\n",
+        encoding="utf-8",
+    )
+
+    assert _verify_restore(live, backup) == 1
+    assert "ALTERED" in capsys.readouterr().out
+
+
+@pytest.mark.security
+def test_a_report_rewritten_to_the_same_length_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The digest branch, not the size branch — a size check alone is not enough.
+
+    Asserted separately because the two branches fail for different reasons and
+    a same-length rewrite is the one a size comparison waves through. This is
+    the report equivalent of the ``REWRITTEN`` case on an append-only stream.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    _with_report(source, "incident.md", "# Incident\nStore held 40 events.\n")
+    backup = _take(source)
+    _restore(backup, live)
+
+    report = live / "data" / "reports" / "incident.md"
+    original = report.read_bytes()
+    report.write_bytes(b"x" * len(original))
+    assert report.stat().st_size == len(original), "this test's premise is a same-size rewrite"
+
+    assert _verify_restore(live, backup) == 1
+    assert "ALTERED" in capsys.readouterr().out
+
+
+@pytest.mark.security
+def test_an_append_only_stream_may_still_grow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control direction for the strict comparison, and it is load-bearing.
+
+    Tightening reports to exact equality must **not** tighten the hash chains
+    and the evidence stream, which grow by design — this command's own gate
+    decision appends to ``data/events/audit.log`` before the check reads it, so
+    demanding equality there would fail every correct restore. If this test and
+    :func:`test_a_report_that_grew_is_refused` are ever both green for the wrong
+    reason, the classifier has collapsed into one rule.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    evidence = source / "data" / "compliance" / "evidence.jsonl"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text(
+        "".join(json.dumps({"control": f"CTRL-{i}", "status": "pass"}) + "\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    backup = _take(source)
+    _restore(backup, live)
+
+    restored = live / "data" / "compliance" / "evidence.jsonl"
+    with restored.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"control": "CTRL-20", "status": "pass"}) + "\n")
+
+    assert _verify_restore(live, backup) == 0, (
+        "an append-only stream that grew was refused; the strict comparison for reports "
+        "has leaked onto the streams that legitimately append"
+    )
+    assert "restore verified" in capsys.readouterr().out
+
+
+@pytest.mark.security
+def test_a_report_the_manifest_never_listed_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reverse direction, which the gate never walked.
+
+    ``docs/RESTORE.md`` step 4 is a bare ``cp -a``, which **merges** into a
+    nonempty destination rather than replacing it. So a report written after the
+    backup was taken survives the restore, and the old loop — which iterated
+    ``manifest["files"]`` only — could not see it. Measured on the merged gate: a
+    backup at 20 events with one declared report, a live root grown to 35 events
+    and a second report describing them, store deleted and ``cp -a`` applied —
+    exit 0, with the later report still claiming "Correlated 35 events" over a
+    store holding 20.
+
+    ``dashboard/app.py`` reads this tree, so that report would be presented
+    against the restored store. The finding says ``UNDECLARED`` rather than
+    ``LOSS`` because the directions demand opposite responses.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    _with_report(source, "incident-old.md", "# Before the backup\n")
+    backup = _take(source)
+    _restore(backup, live)
+
+    # The report that outlived the restore.
+    _with_report(live, "incident-new.md", "# After the backup\nCorrelated 9000 events.\n")
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "UNDECLARED" in out, out
+    assert "incident-new.md" in out, "the finding must name the file an operator has to remove"
+    assert "NOT store evidence loss" in out, (
+        "a stale report and a short store demand opposite responses, so the direction "
+        "has to be unambiguous"
+    )
+
+
+@pytest.mark.security
+def test_observables_lost_without_events_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The headline of the three: every event-level check passes.
+
+    ``attest()``'s digest is a sha256 over the sorted ``event_id`` set, so
+    observables are **not** in the preimage. A restore that loses observable
+    rows and no event rows satisfies ``quick_check``, the event count and the
+    digest together. Measured on the merged gate: 20 observables deleted of 20,
+    events untouched, digest equal — exit 0, on a store whose indicator pivots
+    then return nothing, because ``correlation/entities.py`` joins on this
+    table.
+
+    The number was already in the manifest: ``attestation.to_dict()`` is stored
+    whole, so the fix reads a field that was sitting in the file the gate had
+    just parsed.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+
+    database = live / "data" / "events" / "events.sqlite3"
+    connection = sqlite3.connect(database)
+    attested = connection.execute("SELECT COUNT(*) FROM observables").fetchone()[0]
+    assert attested > 0, "this test's premise is that the seed produced observables"
+    connection.execute("DELETE FROM observables")
+    connection.commit()
+    connection.close()
+
+    # Every event-shaped property still holds, which is the whole point.
+    with EventStore.open(live) as store:
+        assert store.count() == _EVENTS
+        assert store.attest().observables == 0
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "LOSS" in out and "observable" in out, out
+
+
+@pytest.mark.security
+def test_more_observables_than_attested_reads_as_addition(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Re-collection grows both tables, and that must not read as loss.
+
+    The control direction for the observables check. ``docs/RESTORE.md`` step 5
+    re-collects, so a root checked after it legitimately holds more of both. The
+    gate still refuses — it is an exact comparison run outside its window — but
+    "you already re-collected" and "evidence is missing" demand opposite
+    responses, and a gate that confuses them gets switched off.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+
+    now = time.time()
+    with EventStore.open(live) as store:
+        for index in range(5):
+            store.append(
+                normalize(
+                    _RECORD.replace("svc-", "later-").replace("203.0.113.9", "198.51.100.7") % index
+                ),
+                ingested_at=store.next_stamp(now + 10_000 + index),
+            )
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "ADDED" in out, out
+    assert "NOT evidence loss" in out, out
