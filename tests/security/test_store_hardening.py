@@ -324,12 +324,38 @@ def _provenance(node: ast.expr, env: dict[str, str]) -> str:
     return _OTHER
 
 
+def _pattern_bound_names(node: ast.AST) -> set[str]:
+    """Names a structural-pattern node binds.
+
+    ``case statement:`` is a *capture* pattern: it binds the subject to
+    ``statement``, exactly as an assignment would. Measured before this
+    existed, and reported as a P1 on #224: ``statement = _TEMPLATE`` followed
+    by ``match before: case statement: pass`` left ``statement`` classified as
+    a literal while at runtime it held the caller's value — confirmed by
+    running the match, which printed ``'INJECTED'``.
+
+    Read off :class:`ast.pattern` rather than enumerating ``MatchAs``,
+    ``MatchStar`` and ``MatchMapping``: the binding slots are the ``name`` and
+    ``rest`` attributes, so a pattern node added by a later Python is covered
+    without this growing a version-keyed list. ``case _:`` carries
+    ``name=None`` and binds nothing.
+    """
+    if not isinstance(node, ast.pattern):
+        return set()
+    return {
+        bound
+        for attribute in ("name", "rest")
+        if isinstance(bound := getattr(node, attribute, None), str)
+    }
+
+
 def _opaque_names(scope: ast.AST) -> set[str]:
     """Names a scope binds by anything other than plain assignment.
 
-    A parameter is a caller's value by definition, and a ``for``, ``with`` or
-    ``except`` target is whatever the iterable yielded — none of them carry
-    provenance, and each shadows a module constant of the same name.
+    A parameter is a caller's value by definition, and a ``for``, ``with``,
+    ``except`` or ``match`` target is whatever the subject happened to be —
+    none of them carry provenance, and each shadows a module constant of the
+    same name.
     """
     names: set[str] = set()
     if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -349,6 +375,8 @@ def _opaque_names(scope: ast.AST) -> set[str]:
             names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             names.update(node.names)
+        else:
+            names |= _pattern_bound_names(node)
     return names
 
 
@@ -404,10 +432,21 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
             elif isinstance(node, ast.Call):
                 func = node.func
                 if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    # A method this checker does not model DEMOTES the name.
+                    # It used to ``continue`` here, which preserved whatever
+                    # the name's assignment said — so ``clauses.insert(1,
+                    # before)`` left the list literal-only and
+                    # ``"".join(clauses)`` executed
+                    # ``... WHERE vendor = 'x' OR 1=1 --``. Measured, and
+                    # reported as a P1 on #224. The comment on
+                    # :data:`_ACCUMULATORS` had promised this behaviour from
+                    # the start, naming ``insert``; the code did the opposite.
                     want = _ACCUMULATORS.get(func.attr)
-                    if want is None:
-                        continue
-                    kept = len(node.args) == 1 and _provenance(node.args[0], env) == want
+                    kept = (
+                        want is not None
+                        and len(node.args) == 1
+                        and _provenance(node.args[0], env) == want
+                    )
                     _note(inferred, func.value.id, _LITERAL_SEQ if kept else _OTHER)
         for name, kind in inferred.items():
             if name not in opaque:
@@ -416,7 +455,14 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
 
 
 def _mutated_names(tree: ast.Module) -> set[str]:
-    """Module-level names something in the module changes in place or rebinds."""
+    """Module-level names something in the module changes in place or rebinds.
+
+    A module-level ``match`` is exotic, but its capture binds a module name as
+    surely as an assignment does, and :func:`_module_env` reads only
+    assignments and imports. Leaving the asymmetry would be the
+    fixed-one-copy-not-the-other shape this repository warns about in
+    ``pipeline/cursor.py``, so pattern-bound names are demoted here too.
+    """
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
@@ -429,6 +475,8 @@ def _mutated_names(tree: ast.Module) -> set[str]:
                 names |= _target_names(target)
         elif isinstance(node, ast.Global):
             names.update(node.names)
+        elif isinstance(node, ast.pattern):
+            names |= _pattern_bound_names(node)
         elif isinstance(node, ast.Call):
             func = node.func
             if (
@@ -688,11 +736,139 @@ def run(conn, before):
 )
 
 
+#: A module head for the cases below, so each differs from the next by only
+#: the function body under test.
+_MODULE_HEAD = '_TEMPLATE = "SELECT COUNT(*) AS n FROM events WHERE vendor = "\n\n\n'
+
+#: The two P1 findings a reviewer raised on #224, and the four further variants
+#: the same two fixes closed. Measured against the pre-fix commit (``4fdf714``)
+#: and the fix: every one of the six was ACCEPTED before and is rejected now.
+#: Both reported routes produce a working injection — ``list.insert`` executed
+#: ``SELECT COUNT(*) AS n FROM events WHERE vendor = 'x' OR 1=1 --`` — and the
+#: ``match`` capture was confirmed by *running* it, which printed the caller's
+#: value where the literal had been.
+_REJECTED_PATTERN_AND_MUTATION = (
+    (
+        "match: a bare capture pattern rebinds the statement",
+        "def run(conn, before):\n"
+        "    statement = _TEMPLATE\n"
+        "    match before:\n"
+        "        case statement:\n"
+        "            pass\n"
+        "    conn.execute(statement)\n",
+    ),
+    (
+        "match: a star pattern (MatchStar) rebinds it",
+        "def run(conn, before):\n"
+        "    statement = _TEMPLATE\n"
+        "    match before:\n"
+        "        case [_, *statement]:\n"
+        "            pass\n"
+        "    conn.execute(statement)\n",
+    ),
+    (
+        "match: a mapping rest pattern (MatchMapping) rebinds it",
+        "def run(conn, before):\n"
+        "    statement = _TEMPLATE\n"
+        "    match before:\n"
+        '        case {"a": 1, **statement}:\n'
+        "            pass\n"
+        "    conn.execute(statement)\n",
+    ),
+    (
+        "match: an 'as' capture rebinds it",
+        "def run(conn, before):\n"
+        "    statement = _TEMPLATE\n"
+        "    match before:\n"
+        "        case str() as statement:\n"
+        "            pass\n"
+        "    conn.execute(statement)\n",
+    ),
+    (
+        "list.insert, the method the _ACCUMULATORS comment already named",
+        "def run(conn, before):\n"
+        "    clauses = [_TEMPLATE]\n"
+        "    clauses.insert(1, before)\n"
+        '    conn.execute("".join(clauses))\n',
+    ),
+    (
+        "dict.update on a literal-valued mapping read by subscript",
+        "def run(conn, before, column):\n"
+        '    equality = {"vendor": "e.vendor = ?"}\n'
+        '    equality.update({"vendor": before})\n'
+        "    conn.execute(_TEMPLATE + equality[column])\n",
+    ),
+)
+
+#: Routes that were ALREADY refused before those fixes. Kept separate so the
+#: table above cannot quietly take credit for them, and kept at all because
+#: they are the neighbours of what broke.
+_REJECTED_ALREADY = (
+    (
+        "list slice assignment",
+        "def run(conn, before):\n"
+        "    clauses = [_TEMPLATE]\n"
+        "    clauses[1:1] = [before]\n"
+        '    conn.execute("".join(clauses))\n',
+    ),
+    (
+        "list index assignment",
+        "def run(conn, before):\n"
+        "    clauses = [_TEMPLATE]\n"
+        "    clauses[0] = before\n"
+        '    conn.execute("".join(clauses))\n',
+    ),
+    (
+        "list.extend with a non-literal element",
+        "def run(conn, before):\n"
+        "    clauses = [_TEMPLATE]\n"
+        "    clauses.extend([before])\n"
+        '    conn.execute("".join(clauses))\n',
+    ),
+)
+
+
 @pytest.mark.security
 @pytest.mark.parametrize(("label", "source"), _REJECTED_MODULES)
 def test_the_provenance_check_rejects_each_multi_statement_route(label: str, source: str) -> None:
     """Routes that take more than one statement to express."""
     assert _non_literal_statements({"sample": source}), f"{label} was accepted"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "body"), (*_REJECTED_PATTERN_AND_MUTATION, *_REJECTED_ALREADY))
+def test_a_pattern_capture_or_unmodelled_mutation_demotes_the_name(label: str, body: str) -> None:
+    """Structural-pattern captures and container mutations this checker cannot model.
+
+    Two of these were reported as P1 findings on #224 and were genuine: the
+    ``match`` capture and ``list.insert``. The fix for each is general rather
+    than shaped to the report — pattern bindings are read off
+    :class:`ast.pattern`'s ``name``/``rest`` slots, and an unmodelled method on
+    a tracked container demotes it — which is why four further variants in this
+    table closed with them.
+    """
+    assert _non_literal_statements({"sample": _MODULE_HEAD + body}), f"{label} was accepted"
+
+
+@pytest.mark.security
+def test_a_wildcard_pattern_binds_nothing_and_must_stay_accepted() -> None:
+    """The permissive half of the pattern fix: ``case _:`` is not a binding.
+
+    ``MatchAs`` with ``name=None`` is the wildcard, and demoting on it would
+    make any ``match`` in this package poison every name in its scope. Measured
+    both before and after the fix: accepted, correctly, because ``statement``
+    really does still hold the literal.
+    """
+    body = (
+        "def run(conn, before):\n"
+        "    statement = _TEMPLATE\n"
+        "    match before:\n"
+        "        case _:\n"
+        "            pass\n"
+        "    conn.execute(statement)\n"
+    )
+    findings = _non_literal_statements({"sample": _MODULE_HEAD + body})
+    assert not findings, "a wildcard pattern must not demote:\n  " + "\n  ".join(findings)
 
 
 @pytest.mark.security
