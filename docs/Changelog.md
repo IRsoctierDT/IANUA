@@ -36,6 +36,38 @@ All notable changes to this project. Versions correspond to git tags.
   request freshness is server-enforced rather than echoed into the response).
 
 ### Added
+- **"Lab host" is now defined, and the definition is a committed, empty allow-list.**
+  `AGENTS.md` §5 forbade "sending network requests to non-lab hosts" and §5.1 gated
+  "requests to any non-lab host" — and nothing said what a lab host *was*, so the term
+  the whole egress permission rests on was enforced by whoever was reading it.
+  `agents/policies/egress.py` answers it declaratively, because **no property of an
+  address can**: RFC1918 is not a proxy for "lab", a routable address is not a
+  disqualifier, and reverse DNS is whatever the other side says. A lab host is one named
+  in `agents/policies/egress.json` with its authorization basis recorded beside it, and
+  the file ships **empty**, so every destination is denied today. This is `collect/`'s
+  control with one word changed: declared, never discovered.
+
+  **No network code ships.** The module answers one question — is this destination
+  declared? — and a `tests/security` case AST-asserts it imports no `socket`, `ssl`,
+  `http`, `urllib` or `subprocess`, because the definition of a boundary must not also
+  be a way across it. First of the three pieces the stage 7 amendment ordered
+  (allow-list, then listener, then puller).
+
+  **IP literals only**, which is the SSRF decision rather than a formatting rule: a
+  hostname resolves at connect time, so the file would name a name while the socket goes
+  wherever resolution answers. Refused on the **parsed** value — unspecified in any of
+  its six spellings, multicast, limited-broadcast, link-local
+  (`169.254.169.254` is the cloud metadata address), IPv4-mapped and scoped IPv6 forms
+  (they alias: `::ffff:127.0.0.1 != 127.0.0.1`), duplicates after normalization, and an
+  entry with no authorization basis. Also refused: a non-string address, because
+  `ip_address` accepts integers and `bool` is an `int` subclass — `{"address":
+  3232235777}` would have loaded as `192.168.1.1`, a destination no reviewer can see in
+  a diff. **Loopback and routable addresses are declarable deliberately**; a control
+  that cannot be exercised is one an operator switches off.
+
+  Declaring a peer turns a `tests/security` test red on purpose: an edit to the egress
+  allow-list should not pass review unnoticed.
+
 - **`run_backup --verify-restore BACKUP`, the promotion gate.** `--verify` checked
   a backup against its own manifest *before* a restore; `docs/RESTORE.md` step 4
   then copied it into place with `cp -a` and nothing looked at the result. A
