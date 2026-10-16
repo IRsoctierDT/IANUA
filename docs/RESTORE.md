@@ -67,7 +67,7 @@ What lands in it:
 | `data/{collect,events,pipeline,compliance}/audit.log` | plus rotated archives, checkpoints and head signatures |
 | `data/compliance/evidence.jsonl` | the compliance evidence trail |
 | `data/reports/*.md` | incident reports |
-| `manifest.json` | attestation, every file's size and sha256, each chain's verdict |
+| `manifest.json` | format `ianua.backup.v2`; the attestation (event and observable counts, the event digest, the **observables digest**, high-water mark, schema version), every file's size and sha256, each chain's verdict |
 
 What does not, and will not:
 
@@ -113,12 +113,16 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | Finding | Meaning |
 |---|---|
 | `LOSS` | fewer events **or fewer observables** than attested — **the dangerous one**; the copy is incomplete |
-| `SUBSTITUTED` | the attested count exactly, but a different set of events — not this backup |
-| `ADDED` | more events or observables than attested. **Not loss** — this is what step 5 does, so you ran the gate after re-collecting |
+| `SUBSTITUTED` | the attested count exactly, but different rows — a different set of events, **or the same number of observables with different values** (the observables digest differs). Not this backup |
+| `ADDED` | more events or observables than attested. Re-collection (step 5) is the expected cause — but a count plus a whole-set digest **cannot tell re-collection from substitution plus addition**, since the digest necessarily differs once rows were added. If you have **not** run step 5, treat this as `SUBSTITUTED` |
 | `TRUNCATED` / `REWRITTEN` | a declared **append-only** file shrank, or its history was replaced rather than appended to |
 | `ALTERED` | a declared file that is **not** append-only — a report — differs in size or digest. A report is rewritten whole and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
 | `UNDECLARED` | a file is in the live root that the manifest never listed, **or `data/reports` is itself a symlink**. Step 4's `cp -a` **merges**, so this is a file from before the restore that outlived it. **Not** store evidence loss — remove it, then re-run |
 | *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
+| `has no '…'` / `is not an integer` / `is not a string` / *store was not compared* | the manifest's attestation lacks a field (every one is required: `events`, `observables`, `digest`, `observables_digest`, `high_water`, `schema_version`) or carries one of the wrong type (counts and the schema version must be integers, digests strings, the mark a number or null — a string `"40"` is refused, not coerced). The store is **not** compared on what is left — a verdict on part of the evidence is not a verdict |
+| `store attestation schema_version: …` / `high_water: …` | the restored store's schema version differs from the attested one (a migration question, not a completeness one), or its high-water mark does while the event count matches. `--verify` has always compared every attestation field; `--verify-restore` now does too |
+| *the manifest is not a JSON object* / *has no 'store'* / *'files' is not a list* … (stderr, exit 1) | the manifest itself is damaged above the attestation. Nothing in it can be compared, so this is refused by name rather than indexed into a `KeyError` |
+| *superseded format* (stderr, exit 1) | the manifest is `ianua.backup.v1`. **Not a verdict on the copy.** See "Why the format is v2" below for what you can still do |
 | `POSITION PRESENT` | step 3 was skipped; see "The ordering rule" |
 | `no store at …` | the restore put none there. The check will **not** create one to measure — a read-only pass must not write the thing it was asked to inspect |
 
@@ -127,6 +131,22 @@ What it refuses, each with the direction named rather than a bare mismatch:
 passes `quick_check`, the event count *and* the digest — measured, 20 observables destroyed
 of 20 and the gate exited 0 before this was added. Indicator pivots return nothing on such a
 store, because `correlation/entities.py` joins on that table.
+
+**Why the format is v2, and what a v1 backup can still do.** A count is not a commitment to
+contents: review of the gate above showed that replacing observable rows one-for-one left
+the count, the event count, the event digest and `quick_check` all satisfied — exit 0 —
+while every indicator pivot joined on values the backup never held. The attestation now
+carries `observables_digest`, a sha256 over every `(event_id, value)` row with each field
+framed as its SQLite storage class, byte length and raw bytes (so a `BLOB` planted in the
+`TEXT` column cannot digest the same as the text of its `repr`, and bytes that are not UTF-8
+attest rather than abort), and the manifest format is `ianua.backup.v2` with every
+attestation field **mandatory and type-checked**. The owner chose this over a second verdict class for v1 backups, and the
+cost is deliberate: **this version refuses a `v1` manifest outright** (exit 1, on stderr,
+naming the format and this paragraph's recourse), because passing a backup on the checks a
+verifier happens to be able to run is how the substituted table reached green. A v1 backup
+is not thereby bad. To verify one, check out the repository revision that wrote it and run
+that revision's `--verify`/`--verify-restore`; then take a fresh backup with this version as
+soon as a live store exists, since a v1 backup can never satisfy this gate.
 
 **A symlinked `data/reports` is also `UNDECLARED`, and it needed saying separately.**
 No backup carries a symlink there, `dashboard/app.py` reads that path, and two existing
@@ -268,7 +288,7 @@ of events — so the store plateaus at its peak live set rather than shrinking. 
 disk is a manual `VACUUM`; `docs/RETENTION.md` has the procedure and its costs.
 
 The backup itself is cheap: the online backup API copies pages under a read lock and the
-attestation streams one `event_id` at a time, so neither loads the database into memory.
+attestation streams one `event_id` and one observable row at a time, so neither loads the database into memory.
 
 ## Future Enhancements
 

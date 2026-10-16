@@ -69,6 +69,11 @@ MAX_QUERY_LIMIT = 10_000
 #: over this store's ids can never be confused with a hash of the same bytes
 #: computed for any other purpose.
 DIGEST_PREFIX = "ianua.store.attest.v1:"
+#: Domain separator for the observables digest, distinct from the event digest's
+#: so the two preimages cannot be confused for one another. Versioned on its
+#: own: the event digest's definition is unchanged and every manifest written
+#: against it stays comparable on that field.
+OBSERVABLES_DIGEST_PREFIX = "ianua.store.observables.v1:"
 
 
 def canonical_json(payload: dict[str, Any]) -> str:

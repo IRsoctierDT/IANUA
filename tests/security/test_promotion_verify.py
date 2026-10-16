@@ -32,12 +32,19 @@ import json
 import shutil
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from ingest import normalize
-from scripts.run_backup import _live_tree_inventory
+from scripts.run_backup import (
+    ATTESTATION_FIELDS,
+    MANIFEST_FORMAT,
+    SUPERSEDED_FORMATS,
+    _live_tree_inventory,
+)
 from scripts.run_backup import main as backup_main
 from store import EventStore
 
@@ -302,8 +309,11 @@ def test_added_events_are_reported_as_addition_and_not_as_loss(
     assert _verify_restore(live, backup) == 1
     out = capsys.readouterr().out
     assert "ADDED" in out, out
-    assert "NOT evidence loss" in out, out
-    assert "LOSS" not in out.replace("NOT evidence loss", ""), (
+    # The finding used to assert "NOT evidence loss"; review showed a count plus
+    # a whole-set digest cannot establish that once rows were added, so it now
+    # names the expected cause and the caveat instead.
+    assert "treat this as SUBSTITUTED" in out, out
+    assert "LOSS:" not in out, (
         "an ordinary re-collection was reported as loss; this is the false alarm that "
         "would get the gate turned off"
     )
@@ -524,7 +534,8 @@ def test_more_observables_than_attested_reads_as_addition(
     assert _verify_restore(live, backup) == 1
     out = capsys.readouterr().out
     assert "ADDED" in out, out
-    assert "NOT evidence loss" in out, out
+    assert "treat this as SUBSTITUTED" in out, out
+    assert "LOSS:" not in out, out
 
 
 @pytest.mark.security
@@ -598,6 +609,15 @@ def test_a_manifest_without_a_usable_observable_count_is_refused(
     paths that way — so absence or a wrong type has to fail closed. ``True`` is
     in the parameters because ``bool`` is an ``int`` subclass and would otherwise
     compare as 1.
+
+    Since the manifest format bump, both absence and type are caught one layer
+    earlier and by name: ``_attestation_gaps`` requires every attestation field
+    with its type before the store is compared at all, so the ``None`` row
+    (which pops the key) reads ``has no 'observables'``, the wrong-type rows
+    read ``'observables' is not an integer``, and in every case the store
+    comparison is refused rather than run on what is left. The guard that used
+    to live beside the comparison is gone — review found that ``events`` next
+    to it was being *coerced* with ``int()`` rather than checked.
     """
     source, live = tmp_path / "source", tmp_path / "live"
     _seed(source)
@@ -613,4 +633,376 @@ def test_a_manifest_without_a_usable_observable_count_is_refused(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     assert _verify_restore(live, backup) == 1
-    assert "usable observable count" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    if value is None:
+        assert "has no 'observables'" in out, out
+    else:
+        assert "'observables' is not an integer" in out, out
+    assert "store was not compared" in out, out
+
+
+def _verify_backup(root: Path, backup: Path) -> int:
+    """The pre-restore self-check, ``--verify``, through the real CLI."""
+    return backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)])
+
+
+def _rewrite_manifest(backup: Path, mutate: Callable[[dict[str, Any]], None]) -> None:
+    """Edit the manifest in place, the way a damaged or hostile copy would present."""
+    path = backup / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    mutate(manifest)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+_MODES = pytest.mark.parametrize("mode", ["verify", "verify-restore"])
+
+
+def _run(mode: str, root: Path, backup: Path) -> int:
+    return _verify_backup(root, backup) if mode == "verify" else _verify_restore(root, backup)
+
+
+@pytest.mark.security
+def test_the_cli_writes_the_current_format_with_an_observables_digest(tmp_path: Path) -> None:
+    """Pin the format literal and the attestation's field set.
+
+    Nothing in the suite named ``ianua.backup.v1`` while it was the format, so
+    a silent bump — or a silent revert — would have changed what every backup
+    says about itself with no test going red. This names the literal, and
+    checks the digest this version exists to add is there and is a sha256.
+    """
+    source = tmp_path / "source"
+    _seed(source)
+    backup = _take(source)
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["format"] == MANIFEST_FORMAT == "ianua.backup.v2"
+    attestation = manifest["store"]["attestation"]
+    assert set(attestation) == set(ATTESTATION_FIELDS), set(attestation) ^ set(ATTESTATION_FIELDS)
+    assert "observables_digest" in ATTESTATION_FIELDS
+    digest = attestation["observables_digest"]
+    assert isinstance(digest, str) and len(digest) == 64 and int(digest, 16) >= 0, digest
+
+
+@pytest.mark.security
+def test_one_for_one_observable_substitution_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The finding that forced the format bump.
+
+    Count equal, event count equal, event digest equal, ``quick_check`` clean —
+    and every indicator pivot joins on a value the backup never held. On the
+    v1 gate this exited 0; nothing it compared could see it. The premise is
+    asserted (every other attested field unchanged) so that a red here means
+    the digest caught it and not something else.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    expected = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))["store"][
+        "attestation"
+    ]
+
+    connection = sqlite3.connect(live / "data" / "events" / "events.sqlite3")
+    try:
+        event, value = connection.execute(
+            "SELECT event_id, value FROM observables ORDER BY event_id, value LIMIT 1"
+        ).fetchone()
+        connection.execute(
+            "DELETE FROM observables WHERE event_id = ? AND value = ?", (event, value)
+        )
+        connection.execute(
+            "INSERT INTO observables (event_id, value) VALUES (?, ?)",
+            (event, f"{value}.substituted"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with EventStore.open(live) as store:
+        attested = store.attest().to_dict()
+    for field in ("events", "observables", "digest", "schema_version"):
+        assert attested[field] == expected[field], (field, attested[field], expected[field])
+    assert attested["observables_digest"] != expected["observables_digest"]
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "SUBSTITUTED" in out and "observable" in out, out
+    assert "LOSS" not in out, "the direction is wrong: nothing was lost, something was swapped"
+
+
+@pytest.mark.security
+@_MODES
+# The literal is named here as well as read from the map, so the parameter set
+# can never be empty and v1 is pinned BY NAME: with the v1 entry removed from
+# SUPERSEDED_FORMATS the map-only form silently tested nothing (found by review).
+@pytest.mark.parametrize("superseded", sorted({"ianua.backup.v1", *SUPERSEDED_FORMATS}))
+def test_a_superseded_manifest_format_is_refused_and_the_recourse_is_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, superseded: str
+) -> None:
+    """A v1 backup can never satisfy this gate, and the operator must read that.
+
+    Refused outright rather than verified "as far as possible": passing a
+    backup on the checks a verifier happens to be able to run is how a
+    substituted observables table reached a green verdict. The refusal is not
+    a verdict on the copy, says so, and names the recourse — the revision that
+    wrote it can verify it — because an operator holding only v1 backups in a
+    disaster will otherwise read this as "the restore is bad".
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _rewrite_manifest(backup, lambda m: m.__setitem__("format", superseded))
+
+    assert _run(mode, live, backup) == 1
+    err = capsys.readouterr().err
+    assert superseded in err and MANIFEST_FORMAT in err, err
+    assert "superseded" in err and "not a verdict on the copy" in err, err
+    assert "revision that wrote it" in err and "fresh backup" in err, err
+
+
+@pytest.mark.security
+@_MODES
+@pytest.mark.parametrize("unknown", ["ianua.backup.v3", "", 2, None, "IANUA.BACKUP.V2"])
+def test_an_unknown_manifest_format_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, unknown: object
+) -> None:
+    """Anything that is not exactly the current format is refused, naming it."""
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _rewrite_manifest(backup, lambda m: m.__setitem__("format", unknown))
+
+    assert _run(mode, live, backup) == 1
+    err = capsys.readouterr().err
+    assert "unknown backup format" in err and MANIFEST_FORMAT in err, err
+
+
+@pytest.mark.security
+@_MODES
+@pytest.mark.parametrize("field", ATTESTATION_FIELDS)
+def test_a_manifest_missing_an_attestation_field_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, field: str
+) -> None:
+    """Every attestation field is required before any is compared.
+
+    ``_verify_backup`` compared only the keys it found, so deleting a field
+    from the manifest removed that check — the fail-open shape review found in
+    ``_verify_restore``'s observables guard, one function over. Both verifiers
+    now refuse on absence; parametrized over the dataclass's own field list so
+    a field added later is covered without anyone remembering to add it here.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _rewrite_manifest(backup, lambda m: m["store"]["attestation"].__delitem__(field))
+
+    assert _run(mode, live, backup) == 1
+    out = capsys.readouterr().out
+    assert f"has no {field!r}" in out, out
+
+
+@pytest.mark.security
+@_MODES
+@pytest.mark.parametrize("value", [None, 20, True, ["x"], {"sha256": "x"}])
+def test_a_non_string_observables_digest_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, value: object
+) -> None:
+    """A digest that is present but not a string is refused, not skipped.
+
+    The comparison arm is guarded by ``isinstance(want_digest, str)``; this is
+    what makes that guard a refusal rather than a silent skip — the gap is
+    reported as a finding before the arm is reached.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _rewrite_manifest(
+        backup, lambda m: m["store"]["attestation"].__setitem__("observables_digest", value)
+    )
+
+    assert _run(mode, live, backup) == 1
+    out = capsys.readouterr().out
+    assert "'observables_digest' is not a string" in out, out
+
+
+@pytest.mark.security
+def test_verify_names_a_missing_store_file_instead_of_crashing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The regression the independent review caught before this shipped.
+
+    Binding the attestation only in the branch that opens the store, and then
+    reading it in the return on every path, raised ``UnboundLocalError`` on a
+    backup whose store file was gone — the most basic truncated-copy damage
+    this gate exists to name. The base branch printed ``... is missing``; the
+    first version of this change printed a traceback to stderr, nothing to
+    stdout, and never wrote the pass's audit record. No test covered it.
+    """
+    source = tmp_path / "source"
+    _seed(source)
+    backup = _take(source)
+    (backup / "data" / "events" / "events.sqlite3").unlink()
+
+    assert _verify_backup(source, backup) == 1
+    captured = capsys.readouterr()
+    assert "is missing" in captured.out, captured.out
+    assert captured.err == "", captured.err
+
+
+@pytest.mark.security
+def test_verify_names_an_escaping_store_path_instead_of_crashing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Same regression, second path: a manifest store path ``_unsafe_path`` refuses."""
+    source = tmp_path / "source"
+    _seed(source)
+    backup = _take(source)
+    _rewrite_manifest(backup, lambda m: m["store"].__setitem__("path", "../../../etc/passwd"))
+
+    assert _verify_backup(source, backup) == 1
+    captured = capsys.readouterr()
+    assert "manifest store path" in captured.out, captured.out
+    assert captured.err == "", captured.err
+
+
+@pytest.mark.security
+@_MODES
+@pytest.mark.parametrize("value", ["40", 40.9, True, [40], {"n": 40}, None])
+def test_a_non_integer_event_count_is_refused_not_coerced(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str, value: object
+) -> None:
+    """``int()`` is coercion, not a check — found by review.
+
+    ``"40"`` and ``40.9`` compared equal to a live count of 40 and the gate
+    exited 0 saying it "holds the 40.9 event(s)"; ``null`` and a list raised a
+    bare ``TypeError`` traceback. Every attestation field is now type-checked
+    in ``_attestation_gaps`` for both verifiers, and ``bool`` is refused
+    because it is an ``int`` subclass.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _rewrite_manifest(backup, lambda m: m["store"]["attestation"].__setitem__("events", value))
+
+    assert _run(mode, live, backup) == 1
+    captured = capsys.readouterr()
+    assert "'events' is not an integer" in captured.out, captured.out
+    assert captured.err == "", captured.err
+
+
+def _whole(replacement: object) -> Callable[[dict[str, Any]], None]:
+    def mutate(manifest: dict[str, Any]) -> None:
+        manifest.clear()
+        manifest["__replace_with__"] = replacement
+
+    return mutate
+
+
+@pytest.mark.security
+@_MODES
+@pytest.mark.parametrize(
+    ("mutate", "phrase"),
+    [
+        pytest.param(_whole(None), "not a JSON object", id="null-document"),
+        pytest.param(_whole([]), "not a JSON object", id="array-document"),
+        pytest.param(lambda m: m.__delitem__("store"), "has no 'store'", id="no-store"),
+        pytest.param(
+            lambda m: m.__setitem__("store", "x"), "'store' is not an object", id="store-string"
+        ),
+        pytest.param(lambda m: m.__delitem__("files"), "has no 'files'", id="no-files"),
+        pytest.param(
+            lambda m: m.__setitem__("files", {}), "'files' is not a list", id="files-object"
+        ),
+        pytest.param(lambda m: m.__delitem__("chains"), "has no 'chains'", id="no-chains"),
+        pytest.param(
+            lambda m: m.__setitem__("chains", []), "'chains' is not an object", id="chains-list"
+        ),
+    ],
+)
+def test_a_manifest_damaged_above_the_attestation_is_refused_by_name(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+    mutate: Callable[[dict[str, Any]], None],
+    phrase: str,
+) -> None:
+    """Containers above the attestation were indexed blind — found by review.
+
+    A manifest that is JSON ``null``, or whose ``store`` is a string, or that
+    lacks ``files``, surfaced as an ``AttributeError``/``TypeError``/``KeyError``
+    traceback. Refused by name on stderr (nothing in such a manifest can be
+    compared, so this is a refusal and not a finding), exit 1, no traceback.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    path = backup / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    mutate(manifest)
+    document = manifest.get("__replace_with__", manifest)
+    path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+
+    assert _run(mode, live, backup) == 1
+    captured = capsys.readouterr()
+    assert phrase in captured.err, captured.err
+    assert "Traceback" not in captured.err, captured.err
+
+
+@pytest.mark.security
+@_MODES
+def test_a_missing_attestation_is_a_finding_in_both_modes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    """No ``attestation`` at all is a finding on stdout, not a bare ``error: 'attestation'``."""
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _rewrite_manifest(backup, lambda m: m["store"].__delitem__("attestation"))
+
+    assert _run(mode, live, backup) == 1
+    captured = capsys.readouterr()
+    assert "has no 'attestation'" in captured.out, captured.out
+    assert captured.err == "", captured.err
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("field", "edit"),
+    [
+        pytest.param("schema_version", lambda v: v + 1, id="schema-version"),
+        pytest.param("high_water", lambda v: (v or 0.0) + 1.0, id="high-water"),
+    ],
+)
+def test_verify_restore_compares_the_two_fields_it_used_to_skip(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], field: str, edit: Callable[[Any], Any]
+) -> None:
+    """``--verify`` compared all six attestation fields; ``--verify-restore`` four.
+
+    Found by review: a live store whose mark had been changed verified green
+    here while ``--verify`` on identical bytes was red. ``schema_version`` is
+    compared always; ``high_water`` when the event count matches, since with
+    rows added or lost the mark necessarily moved and LOSS/ADDED names that.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _rewrite_manifest(
+        backup,
+        lambda m: m["store"]["attestation"].__setitem__(
+            field, edit(m["store"]["attestation"][field])
+        ),
+    )
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert f"store attestation {field}:" in out, out
+    assert "LOSS" not in out and "ADDED" not in out, out

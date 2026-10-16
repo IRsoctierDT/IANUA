@@ -1755,10 +1755,13 @@ def test_an_attestation_cannot_be_produced_over_rows_that_cannot_be_read(
 ) -> None:
     """The completeness control used to sign off on a store that had lost every row.
 
-    Both of ``attest()``'s statements are covering-index scans — measured with
-    ``EXPLAIN QUERY PLAN``: ``SCAN events USING COVERING INDEX
-    sqlite_autoindex_events_1`` for the id stream, ``... COVERING INDEX
-    events_ingested_at`` for the count. So the digest and the count prove the
+    Every one of ``attest()``'s statements is a covering-index scan — the id
+    stream, the counts, and the observables stream added for
+    ``observables_digest`` — measured with ``EXPLAIN QUERY PLAN`` and pinned by
+    ``test_every_attest_statement_is_a_covering_index_scan`` in
+    ``tests/unit/test_event_store.py`` rather than only stated here (this
+    sentence used to say "both", and nothing would have gone red when a third
+    was added). So the digests and the counts prove the
     *indexes* agree and say nothing about whether a row body is readable.
     Zeroing a 400-event store's 134 table leaf pages while leaving every index
     page intact produced a bit-identical digest and count while ``query()``
