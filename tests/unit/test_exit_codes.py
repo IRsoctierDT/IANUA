@@ -170,3 +170,54 @@ def test_the_exit_code_collides_with_nothing_already_in_use() -> None:
         and "EXIT_RETRYABLE" not in path.read_text(encoding="utf-8")
     }
     assert not offenders, f"{sorted(offenders)} return 4 for something other than contention"
+
+
+#: Phrases by which an operator-facing document enumerates the policy-blocking
+#: exit code. Whichever one a document uses, ``4`` has to be enumerated beside
+#: it — the set is the contract, and half the contract is worse than none.
+_POLICY_BLOCK_PHRASES = ("blocked by policy", "policy blocks", "if policy")
+
+
+@pytest.mark.unit
+def test_no_document_enumerates_the_exit_set_without_4() -> None:
+    """Wherever a document lists the scheduled CLIs' exit codes, ``4`` is in the list.
+
+    Keyed on the *content* a document must contain, not on the phrasing it
+    happens to use, and that distinction is the whole reason this exists. The
+    sweep done by hand for this change searched for the phrase "exit codes" and
+    found three documents; it **missed** ``docs/RESTORE.md``, which spells the
+    same contract as prose — "Exit ``0`` on success, ``1`` on failure, ``2`` on
+    bad arguments, ``3`` if policy blocks it" — and review caught it. The same
+    class of miss had already happened once on the HA decision record, where one
+    of two rows in a single file was corrected and the other left contradicting
+    it.
+
+    So the rule is anchored on the one thing every such enumeration contains: a
+    policy-blocking exit. If a document names one, ``4`` must appear near it.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    documents = sorted([*(repo / "docs").glob("*.md"), repo / "README.md"])
+    assert documents, "no documents found to check"
+
+    missing: list[str] = []
+    for path in documents:
+        text = path.read_text(encoding="utf-8")
+        lowered = text.lower()
+        for phrase in _POLICY_BLOCK_PHRASES:
+            start = 0
+            while (found := lowered.find(phrase, start)) != -1:
+                start = found + len(phrase)
+                # A window rather than the whole file: a document may mention a
+                # policy block in one place and exit codes in another without
+                # the two being one contract, and a whole-file check would pass
+                # on that coincidence.
+                window = text[max(0, found - 500) : found + 500]
+                if "`4`" not in window:
+                    line = text[:found].count("\n") + 1
+                    missing.append(f"{path.relative_to(repo)}:{line} ({phrase!r})")
+
+    assert not missing, (
+        "these documents enumerate a policy-blocking exit code without `4` beside it, "
+        "so an operator reading them cannot tell retryable contention from damage: "
+        f"{missing}"
+    )
