@@ -166,6 +166,71 @@ def test_one_invalid_entry_rejects_the_whole_file(tmp_path: Path) -> None:
         EgressAllowlist.load(path)
 
 
+@pytest.mark.security
+def test_a_file_that_reads_empty_cannot_enforce_a_host(tmp_path: Path) -> None:
+    """A duplicate ``hosts`` key would let the file read one way and enforce another.
+
+    Review found this and it defeats the control this module *is*. ``json.loads``
+    silently keeps the **last** value for a repeated key, so measured on the version
+    before the fix::
+
+        {"hosts": [], "hosts": [<a real host>]}  ->  len=1, ['8.8.8.8:9443']
+
+    The file's first ``hosts`` key is the empty list — which is exactly what the
+    shipped default looks like, and exactly what someone skimming for "is this still
+    empty?" would see. Every other assertion in this module rests on a reviewer reading
+    the committed destination in a diff, so a parse that quietly prefers the key they
+    did not read is not a schema nit.
+
+    Asserted here rather than beside the schema cases because the property is
+    default-deny, not well-formedness.
+    """
+    reads_empty = (
+        '{"version": 1, "hosts": [], "hosts": [{"address": "8.8.8.8", "port": 9443, '
+        f'"authorization": "{_BASIS}"}}]}}'
+    )
+    path = tmp_path / "egress.json"
+    path.write_text(reads_empty, encoding="utf-8")
+    with pytest.raises(EgressAllowlistError, match="duplicate key 'hosts'"):
+        EgressAllowlist.load(path)
+
+    # And the mirror: the host first, the empty list second. Before the fix this
+    # loaded as empty while the file plainly declares a destination — harmless by
+    # luck rather than by control, and the refusal covers both orders.
+    reads_declared = (
+        '{"version": 1, "hosts": [{"address": "8.8.8.8", "port": 9443, '
+        f'"authorization": "{_BASIS}"}}], "hosts": []}}'
+    )
+    path.write_text(reads_declared, encoding="utf-8")
+    with pytest.raises(EgressAllowlistError, match="duplicate key 'hosts'"):
+        EgressAllowlist.load(path)
+
+
+@pytest.mark.security
+def test_a_duplicate_address_or_basis_within_one_entry_is_refused(tmp_path: Path) -> None:
+    """The same mechanism inside an entry: the enforced destination is the unread one.
+
+    Measured before the fix: ``{"address": "10.0.0.5", "address": "8.8.8.8", …}``
+    enforced **8.8.8.8** while the first key is where a reader's eye lands, and a
+    second ``"authorization"`` replaced a real basis with ``"x"`` — so the §5
+    authorization record could be emptied without the diff looking emptied.
+
+    The refusal has to happen at *parse* time: by the time the loader inspects
+    ``set(entry)`` the duplicate is already collapsed, so the unknown-key check cannot
+    see it.
+    """
+    for body in (
+        '{"version": 1, "hosts": [{"address": "10.0.0.5", "address": "8.8.8.8", '
+        f'"port": 9443, "authorization": "{_BASIS}"}}]}}',
+        '{"version": 1, "hosts": [{"address": "10.0.0.5", "port": 9443, '
+        '"authorization": "owner approved for the lab pair", "authorization": "x"}]}',
+    ):
+        path = tmp_path / "egress.json"
+        path.write_text(body, encoding="utf-8")
+        with pytest.raises(EgressAllowlistError, match="duplicate key"):
+            EgressAllowlist.load(path)
+
+
 # --- what cannot be declared ---------------------------------------------------
 
 

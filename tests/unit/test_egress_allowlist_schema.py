@@ -81,6 +81,36 @@ def test_the_file_schema_is_refused_rather_than_read_optimistically(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("version", [True, False, 1.0, "1", None, [1]])
+def test_a_version_that_is_not_an_integer_is_refused(version: object, tmp_path: Path) -> None:
+    """``True == 1``, so a bare equality accepted ``{"version": true}`` as version 1.
+
+    Review found this, and the embarrassing part is that it is the **third** place in
+    the module that needs the guard: ``parse_address`` refuses a non-string for the
+    same reason (``ip_address(True)`` is ``0.0.0.1``) and ``parse_port`` refuses a
+    ``bool`` explicitly. It was written twice and omitted here. Measured before the
+    fix: ``{"version": true, "hosts": []}`` loaded cleanly, and so did ``1.0``, which
+    the finding did not name but the same equality admits.
+
+    ``False`` was already refused before the fix — by the *value* comparison, not by a
+    type check — so it is in this list to pin that the reason is now the type.
+    """
+    path = tmp_path / "egress.json"
+    path.write_text(json.dumps({"version": version, "hosts": []}), encoding="utf-8")
+    with pytest.raises(EgressAllowlistError, match="must be an integer"):
+        EgressAllowlist.load(path)
+
+
+@pytest.mark.unit
+def test_a_duplicate_key_anywhere_in_the_document_is_refused(tmp_path: Path) -> None:
+    """Parse-time, so it covers objects this loader never looks at by name."""
+    path = tmp_path / "egress.json"
+    path.write_text('{"version": 1, "version": 1, "hosts": []}', encoding="utf-8")
+    with pytest.raises(EgressAllowlistError, match="duplicate key 'version'"):
+        EgressAllowlist.load(path)
+
+
+@pytest.mark.unit
 def test_an_unknown_entry_key_is_refused(tmp_path: Path) -> None:
     """``adress`` is a typo, and ignoring it leaves the entry without its address."""
     payload = {"version": 1, "hosts": [{"adress": "127.0.0.1", "port": 9443, "authorization": "x"}]}

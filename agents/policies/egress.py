@@ -186,6 +186,42 @@ def parse_address(value: Any) -> _AddressType:
     return address
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``json.loads`` object hook that refuses a repeated key instead of taking the last.
+
+    Review found this, and it defeats the control this module *is*. ``json.loads``
+    silently keeps the last value for a duplicate name, so without this hook a
+    committed file could read one way and enforce another — and the whole claim here is
+    that a reviewer sees the destination in a diff.
+
+    Measured on the version without the hook, which is why this is a parse-time refusal
+    and not a later check:
+
+    * ``{"address": "10.0.0.5", "address": "8.8.8.8", ...}`` loaded and enforced
+      **8.8.8.8**, while the first key is what a reader's eye lands on.
+    * A second ``"authorization"`` replaced a real basis with ``"x"``.
+    * Worst, and the reason this is not cosmetic:
+      ``{"hosts": [], "hosts": [<a real host>]}`` loaded as **one declared host** while
+      the file's first ``hosts`` key is the empty list — which is exactly what the
+      shipped default looks like, and exactly what someone skimming for "is this still
+      empty?" would see.
+
+    It also has to be a *parse* hook rather than a key check afterwards: by the time
+    :meth:`EgressAllowlist.load` inspects ``set(entry)``, the duplicate is already
+    collapsed and the unknown-key check below cannot see it.
+    """
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise EgressAllowlistError(
+                f"duplicate key {key!r} in the egress allow-list. JSON keeps the last "
+                "value silently, so the file would read one way and enforce another — "
+                "and a reviewer reading the committed diff is this control"
+            )
+        seen.add(key)
+    return dict(pairs)
+
+
 def parse_port(value: Any) -> int:
     """Parse one declared or candidate port, refusing anything that is not 1..65535.
 
@@ -287,7 +323,7 @@ class EgressAllowlist:
                 "rather than treating it as empty, so a broken file is visible"
             ) from exc
         try:
-            data: Any = json.loads(raw)
+            data: Any = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
         except json.JSONDecodeError as exc:
             raise EgressAllowlistError(
                 f"egress allow-list is not valid JSON: {allowlist_path} ({exc})"
@@ -301,9 +337,22 @@ class EgressAllowlist:
                 "than ignored, because a misspelled 'hosts' would read as an empty "
                 "list and deny everything while looking declared"
             )
-        if data.get("version") != SUPPORTED_VERSION:
+        version = data.get("version")
+        # The type check is not pedantry and review found it missing: `bool` is an
+        # `int` subclass, so `True == 1` and a bare equality accepted
+        # `{"version": true}` as schema version 1 — measured. `1.0 == 1` too. This is
+        # the *third* place in this module that needs the guard (`parse_address` for
+        # the same reason, `parse_port` for the same reason), and the one place it was
+        # written twice and then omitted.
+        if isinstance(version, bool) or not isinstance(version, int):
             raise EgressAllowlistError(
-                f"unsupported egress allow-list version {data.get('version')!r} "
+                f"egress allow-list version must be an integer, not "
+                f"{type(version).__name__}: {version!r} — note that bool is an int "
+                "subclass, so `true` would otherwise compare equal to version 1"
+            )
+        if version != SUPPORTED_VERSION:
+            raise EgressAllowlistError(
+                f"unsupported egress allow-list version {version!r} "
                 f"(this loader understands {SUPPORTED_VERSION})"
             )
         if "hosts" not in data:
