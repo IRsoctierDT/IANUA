@@ -17,13 +17,29 @@
 # claims, graded by a third party instead of by us.
 #
 # `publish_results: false`, deliberately. Setting it true would POST results to
-# the OpenSSF REST API at https://api.securityscorecards.dev and enable a public
-# badge — outbound egress of repository metadata, which AGENTS.md §5.1 classes
-# as an external-network action requiring human approval with the URL shown in
-# full. The owner chose to keep results private, so nothing leaves this
-# repository: findings land only in this repo's own Code scanning tab and as a
-# run artifact. The trade is real and is the choice: no badge, and no entry in
-# the public OpenSSF dataset.
+# the OpenSSF REST API and enable a public badge — outbound egress of repository
+# metadata, which AGENTS.md §5.1 classes as an external-network action requiring
+# human approval with the URL shown in full. The endpoint is
+# https://api.scorecard.dev, read from the pinned action's own
+# `internal_publish_base_url` default (`action.yaml` at the SHA below) rather
+# than from memory: an earlier version of this comment said
+# `api.securityscorecards.dev`, which is the wrong host to show for a §5.1
+# approval. The owner was shown it and chose `false`.
+#
+# What that choice does and does NOT buy, because the first version of this
+# comment overstated it. IANUA is a PUBLIC repository, and the pinned action's
+# README says the Scorecard team runs a weekly scan of public repositories whose
+# results are publicly available, with `publish_results: true` *replacing* those
+# results with this workflow's. So `false` means **this run is not submitted to
+# OpenSSF** — it does not keep the repository out of the public dataset, and the
+# earlier claims of "keep results private" and "no entry in the public OpenSSF
+# dataset" were both wrong. What is given up is the badge and having the public
+# entry come from our own run rather than theirs.
+#
+# The SARIF artifact below is likewise not private: the same README states those
+# results are "available to anybody for five days after the run". That upload is
+# the owner's choice (Code scanning *and* the Actions tab) and stays; it is
+# recorded here so the next reader does not mistake it for a private channel.
 #
 # That choice is also why `id-token: write` is absent below. It exists solely to
 # sign published results, so with publishing off it would be a permission
