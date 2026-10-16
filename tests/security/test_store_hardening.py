@@ -775,10 +775,27 @@ def _executed_statements(
 
 
 def _package_envs(sources: dict[str, str]) -> dict[str, dict[str, str]]:
+    """Per-module provenance, with demotion applied across the whole package.
+
+    Both demotion passes used to run per module, and a package is not a
+    module. Measured accepted: module A declares ``_EQUALITY``, executes
+    ``_PREFIX + _EQUALITY[column]`` with it, and module B does
+    ``_EQUALITY[column] = clause`` on the name it imported from A. B's env was
+    demoted and A's was not, so the statement A executes was still classified
+    as a literal. A name that anything in the package mutates, or uses in a
+    way that hides a mutation, is suspect in **every** module of it — which is
+    the whole point of a package sharing one namespace of constants.
+    """
     trees = {name: ast.parse(text) for name, text in sources.items()}
+    suspect: set[str] = set()
+    for tree in trees.values():
+        suspect |= _mutated_names(tree)
+        suspect |= _escaping_names(ast.walk(tree))
     package: dict[str, dict[str, str]] = {}
     for _ in range(3):  # resolve imports between the package's own modules
         package = {name: _module_env(name, tree, package) for name, tree in trees.items()}
+    for env in package.values():
+        _demote_escaped(env, suspect)
     return package
 
 
@@ -1365,38 +1382,161 @@ def test_the_provenance_check_accepts_what_the_store_actually_does(
     assert not findings, f"{label} was refused: {expression}\n  " + "\n  ".join(findings)
 
 
-#: Builtins that hand out a namespace as a mutable mapping. Rebinding a
-#: module constant through one is invisible to any name-keyed analysis.
-_NAMESPACE_BUILTINS = frozenset({"globals", "vars", "locals"})
+#: Builtins that hand out, or write into, a namespace. Rebinding a module
+#: constant through one is invisible to any name-keyed analysis.
+_NAMESPACE_BUILTINS = frozenset({"globals", "vars", "locals", "setattr", "delattr"})
+
+#: Methods that change a container in place, as :data:`_MUTATORS`, but checked
+#: here against an *attribute* receiver rather than a bare name.
+_ATTRIBUTE_MUTATORS = _MUTATORS
 
 
 @pytest.mark.security
-def test_no_module_constant_is_rebound_through_the_module_dict() -> None:
-    """``globals()["_TEMPLATE"] = ...`` is closed by shape, not by analysis.
+def test_no_module_namespace_is_written_in_this_package() -> None:
+    """A Python module's namespace is writable from outside. Close that by shape.
 
-    Measured on merged code: a helper doing
-    ``globals()["_TEMPLATE"] = "SELECT ... WHERE " + clause`` left
-    ``_TEMPLATE`` classified as a literal and executed
-    ``SELECT COUNT(*) AS n FROM events WHERE vendor = 'sshd' OR 1=1 --``.
-    :func:`_target_names` walks the target, finds the ``Name`` ``globals``,
-    and dutifully demotes *that*.
+    This is the one class of route that **analysis cannot close**, and the
+    reason is a language property rather than a gap in the lattice: a module's
+    globals are an ordinary mutable mapping that any other module can reach.
+    An adversarial pass measured six spellings of it against merged code, each
+    leaving a constant classified as a literal while the executed statement
+    carried a caller's value:
 
-    Analysis cannot close this one. A constant key could be read off the
-    subscript, but ``globals()[key] = value`` with a computed key names a
-    module constant that is not knowable statically, so the lattice would
-    have to demote every name in the module to stay sound. Forbidding the
-    construct is both stronger and simpler, and measured at **zero**
-    occurrences across ``store/`` it costs nothing — the same reasoning as
-    the dynamic-dispatch rule below.
+    * ``globals()["_TEMPLATE"] = "SELECT ... WHERE " + clause`` —
+      :func:`_target_names` walks the target, finds the ``Name`` ``globals``,
+      and dutifully demotes *that*.
+    * ``sys.modules[__name__].__dict__.update(OVERRIDES)`` — the same thing
+      respelled, and it walked past the narrower version of this very test.
+    * ``events.WHERE_VENDOR = clause`` from a sibling module. Note what this
+      defeats: :func:`_demote_escaped` exempts strings because a string is
+      immutable, which is true of the *object* and false of the *binding*.
+    * ``setattr(events, name, clause)`` — the same route with a computed name,
+      so no analysis could know which constant it hits.
+    * ``schema._EQUALITY[column] = clause`` and
+      ``schema._EQUALITY.update(extra)`` — ``update`` is in
+      :data:`_MUTATORS`, but both demotion passes require a bare ``Name``
+      receiver, so an attribute receiver skipped the check entirely.
+    * ``from schema import *`` layered over a locally declared literal, which
+      binds the name ``"*"`` and meets with nothing.
+
+    Each is forbidden outright instead. Measured at **zero** occurrences
+    across ``store/`` for every one of the six, so the rule costs nothing
+    today, and unlike the lattice it is *sound*: there is no provenance
+    argument to get wrong. The attribute rules are deliberately scoped to the
+    base names bound by a plain ``import``, so ordinary instance state
+    (``self._conn``, ``self._cache.append(...)``) is untouched — it is a
+    *module* namespace that cannot be proven sealed, not every attribute.
     """
     for path in _store_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        modules = {
+            alias.asname or alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+
+        def _base(expression: ast.expr) -> str | None:
+            while isinstance(expression, (ast.Attribute, ast.Subscript)):
+                expression = expression.value
+            return expression.id if isinstance(expression, ast.Name) else None
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 assert node.func.id not in _NAMESPACE_BUILTINS, (
-                    f"{path}:{node.lineno}: {node.func.id}() hands out a namespace as a "
-                    f"mutable mapping, through which a module constant can be rebound "
-                    f"past the provenance check: {ast.unparse(node)[:120]}"
+                    f"{path}:{node.lineno}: {node.func.id}() reads or writes a namespace as "
+                    f"a mutable mapping, through which a module constant can be rebound past "
+                    f"the provenance check: {ast.unparse(node)[:120]}"
+                )
+            if isinstance(node, ast.ImportFrom):
+                assert all(alias.name != "*" for alias in node.names), (
+                    f"{path}:{node.lineno}: a star import can replace a locally declared "
+                    f"literal with a name this package cannot see: {ast.unparse(node)[:120]}"
+                )
+            if isinstance(node, ast.Attribute) and node.attr in {"modules", "__dict__"}:
+                assert _base(node) not in modules, (
+                    f"{path}:{node.lineno}: reaching a module's namespace directly bypasses "
+                    f"every provenance rule here: {ast.unparse(node)[:120]}"
+                )
+            if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+                targets = (
+                    node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+                )
+                for target in targets:
+                    if isinstance(target, (ast.Attribute, ast.Subscript)):
+                        assert _base(target) not in modules, (
+                            f"{path}:{node.lineno}: writing into an imported module's namespace "
+                            f"rebinds a constant that module believes is sealed: "
+                            f"{ast.unparse(target)[:120]}"
+                        )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _ATTRIBUTE_MUTATORS
+                and isinstance(node.func.value, (ast.Attribute, ast.Subscript))
+            ):
+                assert _base(node.func.value) not in modules, (
+                    f"{path}:{node.lineno}: mutating a container held in an imported module "
+                    f"skips every demotion pass, which needs a bare name receiver: "
+                    f"{ast.unparse(node)[:120]}"
+                )
+
+
+@pytest.mark.security
+def test_an_executor_is_never_taken_as_a_value() -> None:
+    """A sink reached as a *value* is the whole remaining class. Close it by shape.
+
+    :func:`_executed_statements` recognises a sink only where ``node.func`` is
+    an ``Attribute`` named in :data:`_EXECUTORS`. An adversarial pass measured
+    seven ``func`` shapes that are neither that nor the call-of-a-call the
+    rule below forbids — every one accepted with **zero statement sites**, and
+    every one injecting at runtime:
+
+    * ``ex = conn.execute`` then ``ex(built)`` — one line inside an existing
+      method, with ``conn.execute`` still verbatim in the diff
+    * ``sinks = {"count": conn.execute}`` then ``sinks["count"](built)``
+    * ``functools.partial(conn.execute, built)`` then ``runner()``
+    * ``(trace or conn.execute)(built)``
+    * ``(conn.executescript if script else conn.execute)(built)``
+    * ``for ex in (conn.execute,): ex(built)``
+    * ``tuple(map(conn.execute, [built]))``
+
+    Enumerating those seven would be the deny-list mistake a third time. What
+    they share is that each must mention the executor **as a value** before
+    calling it through something else, so the rule is that an executor
+    attribute may appear *only* as the function of a call. Together with the
+    no-call-of-a-call rule below, reaching a connection's ``execute`` without
+    naming it as a call's function requires ``getattr``, ``methodcaller`` or
+    ``__getattribute__`` — each of which is a call whose result is called, and
+    so already refused. Measured at zero occurrences across ``store/``: all
+    nineteen sites are already ``X.execute(...)``.
+
+    What held is worth recording too, because it says where the fail-closed
+    default earned its keep. Every attempt to reshape the *arguments* was
+    refused: ``conn.execute(*[built])``, ``conn.execute(**{"sql": built})``,
+    ``conn.execute(statement := built)``, ``executemany``/``executescript``
+    with a built statement, ``await conn.execute(built)``,
+    ``conn.cursor().execute(built)``, a subclass overriding ``execute``, and
+    even ``self.execute = conn.execute`` followed by ``self.execute(built)``
+    — which is still an attribute call named ``execute``.
+
+    And one hypothesis is **refuted**: ``sqlite3.Connection.execute(conn,
+    statement)`` does make this checker read the wrong argument — the finding
+    it emits names ``conn``, and the statement at argument 1 is never
+    classified — but it is refused anyway, because no expression evaluating to
+    a connection can carry literal provenance. Reading the wrong argument is
+    real and is not an evasion.
+    """
+    for path in _store_modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in _EXECUTORS:
+                assert id(node) in called, (
+                    f"{path}:{node.lineno}: {ast.unparse(node)[:60]} is taken as a value "
+                    f"rather than called. A sink reached through a later expression is "
+                    f"invisible to the provenance check, which finds sinks in the "
+                    f"function position of a call."
                 )
 
 
@@ -1459,6 +1599,46 @@ def test_a_chained_module_binding_does_not_survive_the_import_boundary() -> None
     )
     findings = _non_literal_statements({"sample.schema": schema, "sample.events": events})
     assert findings, "a chained module binding survived the import boundary"
+
+
+@pytest.mark.security
+def test_a_cross_module_mutation_demotes_the_declaring_module_too() -> None:
+    """Demotion is a property of the package, not of each module separately.
+
+    Measured accepted before :func:`_package_envs` applied the suspect set
+    package-wide: module A declares ``_EQUALITY``, executes
+    ``_PREFIX + _EQUALITY[column]`` with it, and module B does
+    ``_EQUALITY[column] = clause`` on the name it imported from A. B's env was
+    demoted and A's was not, so the statement A executes stayed classified as
+    a literal. The registry in this fixture is deliberately the real shape —
+    ``store/events.py``'s ``_EQUALITY``, whose own comment says the column
+    name in every statement is "a literal from this module rather than a value
+    threaded in from a caller".
+    """
+    schema = (
+        '_PREFIX = "SELECT COUNT(*) AS n FROM events WHERE "\n'
+        "_EQUALITY = {\n"
+        '    "source_type": "e.source_type = ?",\n'
+        '    "vendor": "e.vendor = ?",\n'
+        "}\n"
+        "\n"
+        "\n"
+        "def count_where(conn, column):\n"
+        "    return conn.execute(_PREFIX + _EQUALITY[column]).fetchone()\n"
+    )
+    events = (
+        "from sample.schema import _EQUALITY, count_where\n"
+        "\n"
+        "\n"
+        "def register_column(column, clause):\n"
+        "    _EQUALITY[column] = clause\n"
+        "\n"
+        "\n"
+        "def count(conn, column):\n"
+        "    return count_where(conn, column)\n"
+    )
+    findings = _non_literal_statements({"sample.schema": schema, "sample.events": events})
+    assert findings, "a cross-module mutation left the declaring module's env literal"
 
 
 @pytest.mark.security
