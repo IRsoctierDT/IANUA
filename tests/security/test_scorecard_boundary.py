@@ -8,11 +8,24 @@ the assertions about them live here rather than beside the structural checks in
 ``tests/unit/test_scorecard_workflow.py``:
 
 * **External network (§5, §5.1).** ``publish_results: true`` POSTs repository
-  metadata to the OpenSSF REST API at ``https://api.securityscorecards.dev``
-  and enables a public badge. §5.1 classes that as an external-network action
-  requiring human approval with the URL shown in full. The owner was shown it
-  and chose ``false``, so no egress is configured — and that is a decision, not
-  a default, which is why it is asserted.
+  metadata to the OpenSSF REST API at ``https://api.scorecard.dev`` and enables
+  a public badge. §5.1 classes that as an external-network action requiring
+  human approval with the URL shown in full. The owner was shown it and chose
+  ``false``, so no egress is configured — and that is a decision, not a
+  default, which is why it is asserted.
+
+  **The host was wrong here until review checked it**, and for a §5.1 record
+  that is the whole point: this said ``api.securityscorecards.dev``, while the
+  pinned action's ``internal_publish_base_url`` default is
+  ``https://api.scorecard.dev`` (read from ``action.yaml`` at the SHA this
+  workflow pins). An approval record naming the wrong endpoint documents
+  approval for something that was never proposed.
+
+  **And ``false`` buys less than this file used to claim.** IANUA is a *public*
+  repository; the pinned README says the Scorecard team scans public
+  repositories weekly and publishes those results regardless, with
+  ``publish_results: true`` merely *replacing* them with our own run's. So this
+  assertion pins "this run is not submitted", not "the results are private".
 * **A repository write permission (§3).** The job holds ``security-events:
   write`` to upload SARIF to Code scanning. One write, for one step.
 
@@ -75,8 +88,11 @@ def test_publishing_results_is_off() -> None:
     )
     assert scorecard["with"]["publish_results"] is False, (
         "publish_results is not False: this workflow would send repository metadata to "
-        "https://api.securityscorecards.dev, which AGENTS.md §5.1 gates on human approval "
-        "with the URL shown in full"
+        "https://api.scorecard.dev (the pinned action's internal_publish_base_url "
+        "default), which AGENTS.md §5.1 gates on human approval with the URL shown in "
+        "full. Note this does not make the results private — IANUA is public and OpenSSF "
+        "scans public repositories weekly either way; it decides whether OUR run is what "
+        "the public dataset carries"
     )
 
 

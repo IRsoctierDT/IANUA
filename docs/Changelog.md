@@ -78,6 +78,65 @@ All notable changes to this project. Versions correspond to git tags.
   `TRUNCATED`/`REWRITTEN`/`POSITION PRESENT` so the direction is never
   ambiguous, and states on success that it verifies the *copy* and says nothing
   about whether exactly one node is active. Run it between steps 4 and 5.
+- **OpenSSF Scorecard runs as a workflow, with its egress off and every action
+  SHA-pinned** (`.github/workflows/scorecard.yml`) — which is where Scorecard's
+  own installation instructions put it. It grades the posture this repository
+  already claims in §3 and §8 — actions pinned by SHA, least-privilege workflow
+  tokens, dangerous-pattern detection, automated dependency updates, a SAST tool
+  — by a third party instead of by us, reporting into this repo's Code scanning
+  tab and as a run artifact.
+
+  **`publish_results: false`, deliberately.** True would POST results to the
+  OpenSSF REST API at `https://api.scorecard.dev` and enable a public badge —
+  outbound egress of repository metadata, which §5.1 classes as an
+  external-network action needing human approval with the URL shown in full. The
+  owner was shown it and chose `false`. `id-token: write` is absent for the same
+  reason — it exists only to sign *published* results — and the job holds exactly
+  one write, `security-events`, to upload the SARIF.
+  `tests/security/test_scorecard_boundary.py` asserts all of it, so turning
+  publishing on is a deliberate edit that fails a test until that §5.1 decision
+  is revisited.
+
+  **What that choice does not buy, since the first draft of this entry claimed
+  more than it should.** IANUA is a **public** repository, and the pinned
+  action's own README states that the Scorecard team scans public repositories
+  weekly and publishes those results regardless, with `publish_results: true`
+  merely *replacing* them with our own run's. So `false` means **this run is not
+  submitted to OpenSSF** — not "results are private", and not "no entry in the
+  public OpenSSF dataset", both of which this entry said and neither of which is
+  true. What is given up is the badge and having the public entry come from our
+  run rather than theirs. The same README notes the SARIF run artifact is
+  "available to anybody for five days after the run", so the `retention-days: 5`
+  upload is not a private channel either; it is the owner's choice (Code scanning
+  *and* the Actions tab) and it stays, now recorded accurately.
+
+  The endpoint was wrong too, in all four places it appeared: this entry, the
+  workflow header and twice in the security test. `api.securityscorecards.dev`
+  was written from memory; `https://api.scorecard.dev` is the pinned action's own
+  `internal_publish_base_url` default, read out of `action.yaml` at the exact SHA
+  this workflow pins. §5.1 requires the URL **shown in full**, so an approval
+  record naming the wrong host documents approval for something nobody proposed.
+
+### Fixed
+- **The required pre-commit gate had been dead on `main` since #232, and the
+  Scorecard action it carried could never have run.** #232 appended three lines
+  to `.pre-commit-config.yaml`: a `- name:` / `uses:` pair, which is GitHub
+  Actions syntax rather than a pre-commit repository mapping (those need `repo`,
+  `rev` and `hooks`), misindented so the file was not valid YAML. Measured on the
+  merge commit `c043b1c`: `yaml.safe_load` raised a `ParserError` at line 134,
+  `pre-commit validate-config` exited 1, and `pre-commit run --all-files` died
+  with `InvalidConfigError` **before any hook ran** — so ruff, ruff-format, mypy,
+  bandit, `detect-secrets`, `detect-private-key`, `check-yaml` and the drift gates
+  were all silently skipped for every developer. A grep for `detect-secrets`
+  passed throughout the outage, which is why "declared" is not the property that
+  matters: the file has to **load**.
+
+  `.github/workflows/ci.yml` now runs `pre-commit validate-config`, which is the
+  gate that would have caught it. Two test layers back it up and are not
+  redundant: `validate-config` proves the file loads, while
+  `tests/unit/test_scorecard_workflow.py` proves nothing Actions-shaped has been
+  pasted back and `tests/security/test_scorecard_boundary.py` asserts the two
+  secret scanners are reachable *through a file that parses*.
 
 ### Changed
 - **The four scheduled CLIs now exit `4` for retryable SQLite contention**, where
