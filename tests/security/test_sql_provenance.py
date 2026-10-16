@@ -574,12 +574,152 @@ def test_the_three_module_identity_rules_are_not_vacuous() -> None:
     sources = _shipped_sources()
     swept = frozenset(sources)
     bound = {
-        module: sorted(sqlprov._module_bases(ast.parse(text), module, swept)[1])
+        module: sorted(sqlprov._module_bases(ast.walk(ast.parse(text)), module, swept)[1])
         for module, text in sources.items()
     }
     live = {module: names for module, names in bound.items() if names}
     total = sum(len(names) for names in live.values())
     assert total >= 11, f"only {total} swept-module bindings found, in {sorted(live)}"
+
+
+# --------------------------------------------------------------------------
+# Pinned: a module reached without an import, and a namespace named as a string
+# --------------------------------------------------------------------------
+#
+# Round two of review, and both P1s said the same thing: enumerating HOW a
+# module can arrive is a deny-list, and a deny-list is what this analysis keeps
+# being caught by. `importlib.import_module`, `importlib.reload` and a bare
+# `__import__` were on the list; `inspect.getmodule(run)`, a *qualified*
+# `builtins.__import__(...)`, `events.__setattr__("_SQL", clause)` and
+# `events.__getattribute__("__dict__").update(...)` were not, and all four were
+# measured accepted.
+#
+# So the question is inverted, as it has been at every other level here: not
+# "could this expression be a module?" but **"could this write land on a
+# constant the lattice trusts?"** — a closed, computable set. Measured at 72
+# names across the shipped packages, every one UPPER_SNAKE or
+# underscore-prefixed, with ZERO attribute writes to any of them. The rule is
+# base-independent, so it does not care how the module was obtained, and it
+# subsumes both P1s rather than extending a list by four names. The list is
+# kept as well, widened to `getmodule` and `__import__`, because it refuses the
+# factory call itself rather than waiting for the write.
+
+_REJECTED_MODULE_REACH = (
+    (
+        "inspect.getmodule of a same-module function, written inline",
+        "import inspect\n\n\n" + _DECLARING_SELF + "def plant(clause):\n"
+        '    inspect.getmodule(run)._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "inspect.getmodule, assigned first and written after",
+        "import inspect\n\n\n" + _DECLARING_SELF + "def plant(clause):\n"
+        "    mod = inspect.getmodule(run)\n"
+        '    mod._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "a QUALIFIED __import__, which the bare-name set cannot see",
+        "import builtins\n\n\n"
+        "def plant(clause):\n"
+        '    mod = builtins.__import__("sample.events", fromlist=["events"])\n'
+        '    mod._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "__setattr__, an assignment the assignment clause cannot see",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        '    events.__setattr__("_SQL", "SELECT x WHERE " + clause)\n',
+    ),
+    (
+        "__getattribute__('__dict__'), a namespace named as a string",
+        "from sample import events\n\n\n"
+        "def plant(extra):\n"
+        '    events.__getattribute__("__dict__").update(extra)\n',
+    ),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "source"), _REJECTED_MODULE_REACH)
+def test_a_module_reached_without_an_import_is_refused(label: str, source: str) -> None:
+    """All five were measured **accepted** on `483f9fd`, before this rule existed.
+
+    None of them is closed by naming a factory. The first three obtain a real
+    module object through a call the deny-list did not list; the last two reach
+    a namespace by passing its name as a *string*, so there is no attribute for
+    any attribute rule to match. What they have in common is only the
+    destination — a constant the lattice trusts — which is why the rule is
+    stated there instead.
+    """
+    sources = {"sample.events": _DECLARING, "sample.helper": source}
+    assert sqlprov.namespace_findings(sources), f"{label} was accepted"
+
+
+@pytest.mark.security
+def test_a_parameter_sharing_a_name_with_an_imported_module_is_not_a_finding() -> None:
+    """The P2, and it was a real false positive with a plausible trigger.
+
+    The swept-module bases were collected with one module-wide ``ast.walk``, so
+    a ``from sample import events`` anywhere in a file made **every** ``events``
+    load in that file a module binding — and an unrelated ``def identity(events):
+    return events`` was refused for a load that is a parameter and cannot be the
+    module. The trigger is not hypothetical: ``ingest/normalize.py``'s six swept
+    bindings are ``cloud``, ``email``, ``endpoint``, ``identity``, ``keyvalue``
+    and ``network``, every one a plausible parameter name, and the gate is
+    merge-blocking.
+
+    Resolution is per lexical scope now. The *other* half of the same fixture
+    must stay refused, and does: returning a module from the function that
+    imported it is an escape, which
+    ``test_a_swept_module_cannot_be_reached_under_another_name`` covers.
+    """
+    helper = """\
+from sample import events
+
+
+def use():
+    return events.run
+
+
+def identity(events):
+    return events
+"""
+    sources = {"sample.events": _DECLARING, "sample.helper": helper}
+    assert not sqlprov.namespace_findings(sources)
+
+
+@pytest.mark.security
+def test_the_trusted_set_is_constants_and_nothing_wider() -> None:
+    """The base-independent rule is only cheap while the trusted set is narrow.
+
+    It forbids writing *any* attribute spelled like a name the lattice trusts,
+    whatever the base. That is sound, and it would be ruinous if the trusted set
+    held ordinary words: ``obj.name = x`` would fail everywhere. Measured at 72
+    names, every one UPPER_SNAKE or underscore-prefixed, and zero attribute
+    writes to any of them across the shipped packages — so this asserts the
+    *shape* of the set rather than its contents, which may legitimately grow.
+    """
+    sources = _shipped_sources()
+    trusted = {
+        name
+        for env in sqlprov.package_envs(sources).values()
+        for name, kind in env.items()
+        if kind != sqlprov.OTHER
+    }
+    assert trusted, "the trusted set is empty, so the rule below watches nothing"
+    shaped = {name for name in trusted if name.startswith("_") or name.isupper()}
+    assert len(shaped) >= 60, f"only {len(shaped)} constant-shaped trusted names"
+
+    # The ones the rule deliberately does NOT protect, pinned by name. Both are
+    # assigned inside an ``if __name__ == "__main__":`` demo block, which is
+    # module scope because an ``if`` is not a scope. A third would mean either a
+    # new demo local or a §4 naming-convention breach, and either deserves a
+    # look rather than being absorbed silently.
+    assert sorted(trusted - shaped) == ["log", "sample"], (
+        f"the lowercase trusted names changed to {sorted(trusted - shaped)}. The "
+        "base-independent write rule skips these deliberately — protecting them would "
+        "refuse `anything.log = x` repository-wide — so each one is a name the other "
+        "rules must carry. Confirm that before updating this list."
+    )
 
 
 # --------------------------------------------------------------------------
