@@ -867,6 +867,26 @@ def shipped_package_roots(repo: Path) -> list[Path]:
 #: of them a module constant can be rebound past every rule below.
 NAMESPACE_BUILTINS = frozenset({"globals", "vars", "locals", "setattr", "delattr"})
 
+#: Attributes that ARE a namespace, whatever they hang off. Unlike ``modules``
+#: and ``__dict__`` — which are checked only against an imported module base,
+#: because ``.modules`` is a plausible ordinary attribute and ``record.__dict__``
+#: on a dataclass is ordinary introspection (``compliance/evidence.py`` does it)
+#: — none of these has any meaning except "the globals of something".
+#:
+#: Found by asking what the imported-base restriction leaves open, and both
+#: answers were reachable on merged code: ``run.__globals__["_TEMPLATE"] = ...``
+#: where ``run`` is a function *in the same module* (no import to restrict
+#: against), and ``inspect.currentframe().f_globals["_TEMPLATE"] = ...``, which
+#: is not a call-of-a-call either so that rule does not see it. Measured at
+#: zero occurrences across every shipped package, so the ban is free.
+NAMESPACE_ATTRIBUTES = frozenset({"__globals__", "f_globals", "f_locals", "f_builtins"})
+
+#: Calls that can hand back a module object named by a string, so the module
+#: arrives under a name no ``import`` statement bound and no rule below
+#: watches. Measured at zero occurrences across every shipped package.
+MODULE_FACTORY_ATTRIBUTES = frozenset({"import_module", "reload"})
+MODULE_FACTORY_NAMES = frozenset({"__import__", "__builtins__"})
+
 
 def _attribute_base(expression: ast.expr) -> str | None:
     """The bare name an attribute/subscript chain hangs off, if any."""
@@ -1001,13 +1021,49 @@ def namespace_findings(sources: dict[str, str]) -> list[str]:
     (``self._conn``, ``self._cache.append(...)``) and stdlib namespaces
     (``sys.path.insert``) are deliberately untouched.
 
-    Measured at **zero** findings across every shipped package.
+    **Three further rules close module *identity*, which review showed the six
+    above do not.** Codex filed a P1: narrowing the assignment clause to swept
+    module bases dropped ``import math as sink; from sample import events; sink
+    = events; sink._SQL = clause``, which the old ast.Import-only rule refused
+    only because ``sink`` happened to have been bound by an ``import``.
+    Measuring the class rather than the example showed the report understated
+    it — **nine sibling spellings were accepted by the baseline rule too** (a
+    plain alias, a chained assignment, tuple unpacking, the module passed to a
+    helper, the module in a container, ``importlib.import_module`` by string,
+    ``__globals__`` of an imported module's function, ``__globals__`` of a
+    same-module function, and ``f_globals`` of a frame). So this was mostly
+    open before the narrowing, which widened it by one spelling; restoring "any
+    imported base" would have re-closed one of the ten. No name-keyed lattice
+    can follow module identity through an assignment, a container or a call, so
+    the closure is by shape, which is this analysis's answer wherever identity
+    is not decidable:
+
+    * a swept module's binding may appear **only** as the base of an attribute
+      access — the same rule shape as "an executor may appear only as a call's
+      function";
+    * nothing may hand back a module named by a string
+      (:data:`MODULE_FACTORY_ATTRIBUTES`, :data:`MODULE_FACTORY_NAMES`);
+    * :data:`NAMESPACE_ATTRIBUTES` are refused whatever they hang off, because
+      none of them means anything but "the globals of something". ``__dict__``
+      is deliberately NOT among them and keeps the imported-base restriction:
+      banning it outright was measured at one real occurrence
+      (``compliance/evidence.py`` on a dataclass record).
+
+    Measured at **zero** findings across every shipped package — and not
+    vacuously so: eleven live swept-module bindings exist across four shipped
+    modules, which ``test_the_three_module_identity_rules_are_not_vacuous``
+    asserts.
     """
     swept = frozenset(sources)
     findings: list[str] = []
     for module, text in sorted(sources.items()):
         tree = ast.parse(text)
         imported, swept_bases = _module_bases(tree, module, swept)
+        # Every node that is the receiver of an attribute access, by identity.
+        # A swept module may appear ONLY here; see the escape clause below.
+        attribute_bases = {
+            id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)
@@ -1032,6 +1088,35 @@ def namespace_findings(sources: dict[str, str]) -> list[str]:
                 findings.append(
                     f"{module}:{node.lineno}: reaching a module's namespace directly "
                     f"bypasses every provenance rule here: {ast.unparse(node)[:120]}"
+                )
+            if isinstance(node, ast.Attribute) and node.attr in NAMESPACE_ATTRIBUTES:
+                findings.append(
+                    f"{module}:{node.lineno}: {node.attr} IS a namespace, whatever it hangs "
+                    f"off, so this reaches module globals without naming a module: "
+                    f"{ast.unparse(node)[:120]}"
+                )
+            if isinstance(node, ast.Call) and (
+                (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr in MODULE_FACTORY_ATTRIBUTES
+                )
+                or (isinstance(node.func, ast.Name) and node.func.id in MODULE_FACTORY_NAMES)
+            ):
+                findings.append(
+                    f"{module}:{node.lineno}: this hands back a module named by a string, so "
+                    f"the module arrives under a name no import bound and no rule here "
+                    f"watches: {ast.unparse(node)[:120]}"
+                )
+            if (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in swept_bases
+                and id(node) not in attribute_bases
+            ):
+                findings.append(
+                    f"{module}:{node.lineno}: the swept module bound to {node.id!r} is taken "
+                    f"as a value rather than used as an attribute base, from which it can be "
+                    f"rebound to a name no rule here watches: {ast.unparse(node)[:120]}"
                 )
             if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
                 targets = (

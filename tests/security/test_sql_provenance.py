@@ -35,6 +35,13 @@ change because it is a different claim: new coverage, not a fixed control.
   the six routes it claimed to forbid needed a binding the package never
   writes. :func:`_sql_provenance._module_bases` carries both corrections and
   the measurements; the four spellings are pinned below.
+* Review then found a **third** problem with the same rule, and that one was a
+  regression the narrowing had caused: a swept module re-bound to a name no
+  ``import`` statement bound. Codex reported one spelling; measuring the class
+  found nine more that the baseline rule had accepted as well, so the hole was
+  mostly open before and the narrowing widened it by one spelling. Module
+  identity does not travel with a name, so three shape rules close it — see
+  :func:`_sql_provenance.namespace_findings` and the pinned table below.
 """
 
 from __future__ import annotations
@@ -358,6 +365,221 @@ def test_a_write_outside_the_swept_set_is_not_a_finding(label: str, source: str)
     """
     sources = {"sample.events": _DECLARING, "sample.helper": source}
     assert not sqlprov.namespace_findings(sources), f"{label} was refused"
+
+
+# --------------------------------------------------------------------------
+# Pinned: a swept module reached under a name no import bound
+# --------------------------------------------------------------------------
+#
+# Codex filed a P1 against the narrowing above and it was right: narrowing the
+# assignment clause to *swept* module bases dropped a route the old
+# ast.Import-only rule happened to catch. Its example was
+#
+#     import math as sink        # `sink` is an imported base, and NOT swept
+#     from sample import events  # `events` IS a swept base
+#     sink = events              # `sink` now aliases a swept module
+#     sink._SQL = clause         # ... and rebinds its SQL constant
+#
+# which the old rule refused only because `sink` happened to have been bound by
+# an `import` statement. Measuring the class rather than the example showed the
+# report understated it: NINE sibling spellings were accepted by the baseline
+# rule too, so this was mostly open before and the narrowing widened it by one
+# spelling. Restoring "any imported base" would have re-closed one of the ten.
+#
+# So the closure is by shape, which is this analysis's answer wherever identity
+# is not decidable (compare the use-whitelist in `escaping_names` and "an
+# executor may appear only as a call's function"): a swept module's binding may
+# appear ONLY as the base of an attribute access, nothing may hand back a module
+# named by a string, and the attributes that ARE a namespace are refused
+# whatever they hang off. All three cost zero on shipped code, measured.
+
+_DECLARING_SELF = """\
+_SQL = "SELECT COUNT(*) AS n FROM events"
+
+
+def run(conn):
+    return conn.execute(_SQL).fetchone()
+
+
+"""
+
+_REJECTED_MODULE_IDENTITY = (
+    (
+        "the P1 verbatim: an unswept imported name re-bound to a swept module",
+        "import math as sink\nfrom sample import events\n\n\n"
+        "def plant(clause):\n"
+        "    global sink\n"
+        "    sink = events\n"
+        '    sink._SQL = "SELECT x WHERE " + clause\n',
+        True,  # the baseline refused this one — accepting it was MY regression
+    ),
+    (
+        "a plain alias, with no imported name to borrow",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        "    sink = events\n"
+        '    sink._SQL = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "a chained assignment, which aliases by construction",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        "    a = b = events\n"
+        '    b._SQL = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "tuple unpacking",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        "    (x,) = (events,)\n"
+        '    x._SQL = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "the module passed to a helper that writes it",
+        "from sample import events\n\n\n"
+        "def _write(mod, clause):\n"
+        '    mod._SQL = "SELECT x WHERE " + clause\n\n\n'
+        "def plant(clause):\n"
+        "    _write(events, clause)\n",
+        False,
+    ),
+    (
+        "the module held in a container",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        '    registry = {"e": events}\n'
+        '    registry["e"]._SQL = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "importlib.import_module, so no import statement binds it at all",
+        "import importlib\n\n\n"
+        "def plant(clause):\n"
+        '    mod = importlib.import_module("sample.events")\n'
+        '    mod._SQL = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "__globals__ of an imported module's function",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        '    events.run.__globals__["_SQL"] = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "__globals__ of a function in the SAME module, so no import to restrict",
+        _DECLARING_SELF + "def plant(clause):\n"
+        '    run.__globals__["_SQL"] = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "f_globals of a frame, which is not a call-of-a-call either",
+        "import inspect\n\n\n" + _DECLARING_SELF + "def plant(clause):\n"
+        '    inspect.currentframe().f_globals["_SQL"] = "SELECT x WHERE " + clause\n',
+        False,
+    ),
+    (
+        "setattr on the alias (the control: refused before this change too)",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        '    setattr(events, "_SQL", "SELECT x WHERE " + clause)\n',
+        True,
+    ),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("label", "source", "refused_by_baseline"),
+    [(label, source, baseline) for label, source, baseline in _REJECTED_MODULE_IDENTITY],
+    ids=[label.split(",")[0][:48] for label, _s, _b in _REJECTED_MODULE_IDENTITY],
+)
+def test_a_swept_module_cannot_be_reached_under_another_name(
+    label: str, source: str, refused_by_baseline: bool
+) -> None:
+    """A module's identity does not travel with the name it was imported under.
+
+    Measured against the baseline rule re-implemented over these exact sources:
+    **9 newly closed, 1 regression closed, 1 control**. The regression is the
+    first entry — the one Codex reported — and it is the only case the
+    ast.Import-only rule refused. The other nine were open before this PR and
+    before the narrowing, so the honest statement is that the narrowing widened
+    an existing hole by one spelling and the fix closes the hole.
+
+    Each case rebinds, at runtime, the module constant whose literal provenance
+    the lattice relies on. No name-keyed lattice can follow module identity
+    through an assignment, a container or a call, which is why the closure is
+    three shape rules rather than a dataflow.
+    """
+    sources = {"sample.events": _DECLARING, "sample.helper": source}
+    assert sqlprov.namespace_findings(sources), f"{label} was accepted" + (
+        " — and this one was refused BEFORE the narrowing, so accepting it is a regression,"
+        " not a pre-existing gap"
+        if refused_by_baseline
+        else ""
+    )
+
+
+@pytest.mark.security
+def test_the_module_identity_tally_is_the_one_stated() -> None:
+    """Pin the tally, so an unclassified case cannot quietly inflate it.
+
+    Two entries above were refused by the baseline rule: the P1 itself and the
+    ``setattr`` control. The other nine were accepted, which is the measurement
+    that makes "the narrowing widened an existing hole by one spelling" a
+    statement about this repository rather than a reading of the report.
+    """
+    baseline_refused = [label for label, _s, refused in _REJECTED_MODULE_IDENTITY if refused]
+    baseline_accepted = [label for label, _s, refused in _REJECTED_MODULE_IDENTITY if not refused]
+    assert len(baseline_refused) == 2, baseline_refused
+    assert len(baseline_accepted) == 9, baseline_accepted
+
+
+@pytest.mark.security
+def test_an_ordinary_objects_dict_is_not_a_module_namespace() -> None:
+    """``__dict__`` stays restricted to an imported module base, and must.
+
+    ``__globals__``, ``f_globals``, ``f_locals`` and ``f_builtins`` are refused
+    on **any** base, because none of them means anything but "the globals of
+    something". ``__dict__`` is different: on an ordinary object it is ordinary
+    introspection, and ``compliance/evidence.py`` does exactly that on a
+    dataclass record. Banning it outright was measured at one real occurrence,
+    so it keeps the imported-base restriction and this pins the difference.
+    """
+    holder = """\
+class Holder:
+    tag = "x"
+
+
+def relabel(h, v):
+    h.__dict__["tag"] = v
+"""
+    sources = {"sample.events": _DECLARING, "sample.holder": holder}
+    assert not sqlprov.namespace_findings(sources)
+
+
+@pytest.mark.security
+def test_the_three_module_identity_rules_are_not_vacuous() -> None:
+    """Four shipped modules really do bind a swept module, so the rules watch something.
+
+    A shape rule measured at zero findings is only worth having if the thing it
+    forbids is reachable. Measured: ``ingest/normalize.py`` binds six parser
+    modules, ``scripts/prepare_release.py`` three, ``scripts/release_notes.py``
+    one and ``dashboard/app.py`` one — eleven live module bindings across the
+    shipped packages, every one of which the escape rule now constrains.
+    """
+    sources = _shipped_sources()
+    swept = frozenset(sources)
+    bound = {
+        module: sorted(sqlprov._module_bases(ast.parse(text), module, swept)[1])
+        for module, text in sources.items()
+    }
+    live = {module: names for module, names in bound.items() if names}
+    total = sum(len(names) for names in live.values())
+    assert total >= 11, f"only {total} swept-module bindings found, in {sorted(live)}"
 
 
 # --------------------------------------------------------------------------
