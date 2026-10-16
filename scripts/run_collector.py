@@ -85,8 +85,10 @@ Exit codes:
 * ``1`` — a source could not be read, the store refused the write, the audit
   write failed, or offsets could not be persisted. Nothing was consumed; the
   next invocation re-reads.
-* ``2`` — bad arguments: an undeclarable source, an unusable ``--root``, or a
-  malformed policy bundle. Nothing ran and nothing was recorded.
+* ``2`` — refused before doing anything: bad arguments (an undeclarable
+  source, an unusable ``--root``, a malformed policy bundle), or the
+  single-instance lock could not be taken — a ``flock`` that failed for any
+  reason *other* than another pass holding it. Nothing ran, nothing recorded.
 * ``3`` — blocked by policy. The gate decision *is* recorded.
 * ``4`` — retryable contention: every failure in the pass was another writer
   holding the store's write lock. Sources that succeeded kept their events and

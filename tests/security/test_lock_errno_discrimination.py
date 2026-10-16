@@ -44,6 +44,7 @@ from typing import Any
 import pytest
 
 from scripts import run_backup, run_collector, run_pipeline, run_retention
+from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import LockUnavailableError, prepare_lock, single_instance
 
 _REAL_FLOCK: Callable[..., Any] = fcntl.flock
@@ -68,7 +69,13 @@ _NOT_CONTENTION = (
     ("ENOLCK", errno.ENOLCK, "the kernel's lock table is exhausted"),
     ("EOPNOTSUPP", errno.EOPNOTSUPP, "the filesystem does not implement flock"),
     ("EACCES", errno.EACCES, "permission denied on the lock"),
-    ("EINTR", errno.EINTR, "a signal interrupted the call"),
+    # Unreachable from CPython, measured rather than cited: six ``SIGALRM``s
+    # delivered during a *blocking* ``flock`` left the call to return normally at
+    # 2.00 s when the holder released it, so the interpreter retried the interrupt
+    # itself (PEP 475). Kept in the table anyway — an unreachable errno costs
+    # nothing on the side that pages, and would cost silence on the side that
+    # retries.
+    ("EINTR", errno.EINTR, "a signal interrupted the call — not reachable; see above"),
     ("EDEADLK", errno.EDEADLK, "the kernel detected a deadlock"),
 )
 
@@ -164,12 +171,20 @@ def test_every_cli_exits_2_with_a_message_not_0_with_a_skip(
 ) -> None:
     """The end-to-end property, for all four, against the measured pre-fix behaviour.
 
-    Exit 2 specifically, because that is the contract an unusable lock *path*
-    already has — ``prepare_lock``'s refusals land there — so an operator reads
-    one code for "the lock is not usable" however it failed. A traceback would
-    also have been honest and would also have been a regression: this module's
-    own history records a raw traceback at exit 1 where the contract says 2 as
-    a defect worth fixing.
+    Exit 2 specifically — and the first reason given for it was the weak one.
+    "An unusable lock *path* already exits 2" is an argument from precedent; it
+    does not say why the precedent is right, and these six errnos do not share
+    one operator action (``EBADF``/``EDEADLK`` mean this code has a bug,
+    ``EOPNOTSUPP``/``EACCES`` mean the deployment is wrong). The argument that
+    holds is that **an exit code's resolution should match the decisions its
+    consumer can make**, and a scheduler has two: retry, or page. Both of those
+    groups are *page*, and what separates them is in the message. ``1``'s
+    conflation was different in kind — it put retry and page under one code,
+    which is the distinction the scheduler itself acts on.
+
+    A traceback would also have been honest and would also have been a
+    regression: this module's own history records a raw traceback at exit 1
+    where the contract says 2 as a defect worth fixing.
     """
     for name, module, argv in _clis(tmp_path):
         monkeypatch.setattr(fcntl, "flock", _fail_acquire_with(errno.ENOLCK))
@@ -213,3 +228,47 @@ def test_a_genuinely_held_lock_still_exits_0_through_the_real_clis(
             code = module.main(argv)
         assert code == 0, f"{name}: a held lock gave exit {code}, not the benign 0"
         assert "skipped" in capsys.readouterr().out.lower(), f"{name}: no skip reported"
+
+
+@pytest.mark.security
+def test_enolck_is_refused_at_2_and_never_reported_as_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one errno weighed for exit ``4`` and refused, pinned with its reason.
+
+    ``ENOLCK`` is the only errno in the table above that *can* mean "not now":
+    a kernel short of lock records recovers on its own, which is exactly what
+    ``EXIT_RETRYABLE`` was added for in ``scripts/_exit_codes.py``. It is
+    refused anyway, and this is the assertion that stops the plausible-looking
+    "fix" from landing without the argument being revisited.
+
+    **The errno does not carry the distinction.** The same value is what a lock
+    service that cannot lock *at all* reports, and nothing in it says which
+    case this is — where SQLite's ``SQLITE_BUSY`` means "another connection
+    holds it" and nothing else, so there the reason *is* the code. The kernel's
+    own strings decline it too, asserted below rather than described: ``EAGAIN``
+    calls itself temporary and ``ENOLCK`` does not.
+
+    So the direction of the mistake decides it. On the permanent variant,
+    exit ``4`` means a scheduler retries forever and nothing pages — which is
+    this module's own defect, one layer up, with a non-zero code instead of a
+    zero one. A transient condition wrongly paged costs one page.
+    """
+    assert "temporarily" in os.strerror(errno.EAGAIN), (
+        "EAGAIN no longer calls itself temporary; the asymmetry this rests on has moved"
+    )
+    assert "temporarily" not in os.strerror(errno.ENOLCK), (
+        f"ENOLCK now reports itself as temporary ({os.strerror(errno.ENOLCK)!r}) — if the "
+        "kernel has started carrying the distinction, revisit the refusal below"
+    )
+
+    for name, module, argv in _clis(tmp_path):
+        monkeypatch.setattr(fcntl, "flock", _fail_acquire_with(errno.ENOLCK))
+        code = module.main(argv)
+        monkeypatch.undo()
+        assert code != EXIT_RETRYABLE, (
+            f"{name}: ENOLCK reported as retryable contention. A permanent ENOLCK — a "
+            "filesystem or lock service that cannot lock — would then be retried "
+            "forever with nothing paging, which is the defect this file exists for"
+        )
+        assert code == 2, f"{name}: ENOLCK gave exit {code}, not the documented 2"

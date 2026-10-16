@@ -46,9 +46,9 @@ optimization.
 
 **Exit codes**, which are the whole interface a scheduler sees: ``0`` a pass
 ran (including a dry run, and including a skip because another pass held the
-lock), ``1`` the store or the audit write failed, ``2`` bad arguments, ``3``
-blocked by policy — which is what an ungranted ``--apply`` returns — and ``4``
-retryable contention.
+lock), ``1`` the store or the audit write failed, ``2`` bad arguments or
+the single-instance lock could not be taken, ``3`` blocked by policy — which
+is what an ungranted ``--apply`` returns — and ``4`` retryable contention.
 
 ``4`` exists because ``1`` used to mean both "the evidence store is damaged"
 and "another writer held the lock for five seconds", which an operator must

@@ -80,8 +80,9 @@ connection.)
 
 **Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
 or verified (including a skip because another pass held the lock), ``1`` the
-backup, the verification or the audit write failed, ``2`` bad arguments, ``3``
-blocked by policy, ``4`` retryable contention — another writer held the
+backup, the verification or the audit write failed, ``2`` bad arguments or the
+single-instance lock could not be taken, ``3`` blocked by policy, ``4``
+retryable contention — another writer held the
 store's write lock, so no backup was taken and nothing was left behind. Retry
 rather than page; see ``scripts/_exit_codes.py``.
 """

@@ -402,7 +402,7 @@ correlation margin" note.
 |---|---|
 | `0` | A pass ran — reported, applied, **or skipped because another pass holds the lock** |
 | `1` | The store failed to open or verify, a schema mismatch, an audit write failed, the report could not be written — **damage; page someone** |
-| `2` | Bad arguments, an unreadable pipeline cursor, a lock path that is a directory, or the whole-store refusal |
+| `2` | Bad arguments, an unreadable pipeline cursor, a lock path that is a directory, the whole-store refusal, or **the single-instance lock could not be taken** — a `flock` that failed for any reason other than another pass holding it, which is a broken lock and not a busy one |
 | `3` | Blocked by policy (an ungranted `--apply`) |
 | `4` | **Retryable contention**: another writer held SQLite's write lock past the busy timeout. Nothing was pruned and every event is still present — retry, do not page |
 

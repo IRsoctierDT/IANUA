@@ -42,7 +42,9 @@ exit  meaning
 1     damage: the store would not open or verify, a schema
       mismatched, an audit write or report failed
 2     refused before doing anything: bad arguments, an unreadable
-      cursor, a lock path that is not a regular file
+      cursor, a lock path that is not a regular file, or the
+      single-instance lock could not be taken for a reason other
+      than contention
 3     blocked by policy — a destructive action without its grant
 4     retryable contention; retry, do not page
 ====  ============================================================
@@ -64,6 +66,18 @@ EXIT_RETRYABLE = 4
 #: connection's shared cache — **not reachable here**, since nothing in the
 #: repository opens a shared-cache connection (``grep -rn 'cache=shared'`` is
 #: empty), but it is contention by definition and costs nothing to admit.
+#:
+#: **The rule for admitting a code to this set**, stated because the first
+#: justification given for ``SQLITE_LOCKED`` above is the weak one: a code
+#: belongs here only when its meaning is *unambiguously* "not now, and nothing
+#: is broken". ``SQLITE_LOCKED`` qualifies on meaning and not on reachability —
+#: it is another holder, by definition, whether or not this platform can reach
+#: it. ``ENOLCK`` at a ``flock``, weighed for the same treatment in
+#: ``scripts/_locking.py`` and refused, does not: the one errno covers a
+#: transient kernel shortage *and* a filesystem that cannot lock at all. This
+#: is the unsafe side of the contract — a wrong admission here is retried
+#: forever and never pages — so an ambiguous code is refused rather than
+#: admitted cheaply.
 _CONTENTION_PRIMARY_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
 
 #: The low byte of a SQLite result code is its primary code; the high bytes

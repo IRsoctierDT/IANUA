@@ -95,8 +95,10 @@ Exit codes:
   cycle held the lock. The output distinguishes the three.
 * ``1`` — the cycle, the audit write, or the cursor save failed. The window was
   not consumed; the next invocation re-reads it.
-* ``2`` — bad arguments, an unreadable or unsafe ``--root``, or an unusable
-  policy bundle. Nothing ran and nothing was recorded.
+* ``2`` — refused before doing anything: bad arguments, an unreadable or
+  unsafe ``--root``, an unusable policy bundle, or the single-instance lock
+  could not be taken — a ``flock`` that failed for any reason *other* than
+  another cycle holding it. Nothing ran and nothing was recorded.
 * ``3`` — blocked by policy. The gate decision *is* recorded.
 * ``4`` — retryable contention: another writer held the store's write lock
   past the busy timeout. Nothing is broken, the window was not consumed, and

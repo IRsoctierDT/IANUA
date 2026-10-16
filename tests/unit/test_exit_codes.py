@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention
+from scripts._locking import LOCK_UNAVAILABLE_MESSAGE
 
 
 def _busy_error(tmp_path: Path) -> sqlite3.Error:
@@ -201,7 +202,14 @@ def test_no_document_enumerates_the_exit_set_without_4() -> None:
 
     missing: list[str] = []
     for path in documents:
-        text = path.read_text(encoding="utf-8")
+        # Whitespace-flattened before searching, and that is a repair rather
+        # than a flourish. Measured: rewrapping one of
+        # ``docs/PRODUCTION_SOC_PLAN.md``'s two enumerations so that "blocked
+        # by" ended a line dropped it out of this gate entirely — the phrase
+        # count went 2 → 1 and the test stayed green, because a contract split
+        # across a newline matches no anchor. An ordinary reflow could have
+        # done it, which makes it an evasion nobody has to intend.
+        text = " ".join(path.read_text(encoding="utf-8").split())
         lowered = text.lower()
         for phrase in _POLICY_BLOCK_PHRASES:
             start = 0
@@ -220,4 +228,87 @@ def test_no_document_enumerates_the_exit_set_without_4() -> None:
         "these documents enumerate a policy-blocking exit code without `4` beside it, "
         "so an operator reading them cannot tell retryable contention from damage: "
         f"{missing}"
+    )
+
+
+#: Every place that states the scheduled CLIs' exit-code contract to an
+#: operator. Committed by hand rather than discovered, because a discovered set
+#: is only as good as its detector and this one is checked for completeness
+#: separately below — which is the half that keeps the list from going stale.
+#:
+#: ``DESIGN.md`` is deliberately absent. Its decision rows record *why* the
+#: contract is what it is, as of the day it was decided; they are a historical
+#: log and are not rewritten when a contract gains a clause.
+_EXIT_CONTRACTS = (
+    "docs/PRODUCTION_SOC_PLAN.md",
+    "docs/RESTORE.md",
+    "docs/RETENTION.md",
+    "scripts/_exit_codes.py",
+    "scripts/run_backup.py",
+    "scripts/run_collector.py",
+    "scripts/run_pipeline.py",
+    "scripts/run_retention.py",
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("relative", _EXIT_CONTRACTS, ids=_EXIT_CONTRACTS)
+def test_every_exit_contract_names_the_lock_that_could_not_be_taken(relative: str) -> None:
+    """A condition reachable at ``2`` must appear in what ``2`` is documented to mean.
+
+    The defect this pins was found by challenging a decision rather than by a
+    gate. ``single_instance`` now returns exit ``2`` when ``flock`` fails for
+    any reason other than contention — and **none of these eight files
+    mentioned a lock at all**. All four CLI docstrings, this module's own
+    table, ``docs/RETENTION.md``, ``docs/RESTORE.md`` and
+    ``docs/PRODUCTION_SOC_PLAN.md`` twice said "bad arguments", so an operator
+    who got a ``2`` from a broken lock would have read the documented meaning
+    and gone looking at their argv.
+
+    Asserted against the **literal the code emits**, imported rather than
+    retyped, so the message an operator reads and the contract they look it up
+    in cannot drift apart by paraphrase. Whole-file rather than windowed on
+    purpose: the list is committed, so the coincidence a window guards against
+    cannot arise.
+
+    Whitespace-flattened, for the reason the sweep below now is — and the first
+    version of this test was *written* with the defect it had just repaired
+    there. It went red on four of the eight files, every one of them because
+    the phrase had been wrapped across a line by the same edit that added it.
+    A contract does not stop naming a condition because the sentence broke.
+    """
+    path = Path(__file__).resolve().parents[2] / relative
+    flattened = " ".join(path.read_text(encoding="utf-8").split())
+    assert LOCK_UNAVAILABLE_MESSAGE in flattened, (
+        f"{relative} states the exit-code contract without naming the lock failure "
+        f"that reaches exit 2 — an operator reading it is told to check their arguments"
+    )
+
+
+@pytest.mark.unit
+def test_the_committed_list_of_exit_contracts_is_complete() -> None:
+    """A ninth place that states the contract fails here rather than going stale.
+
+    The other half of the test above: that one is exact because its list is
+    committed, and a committed list is worthless if nothing notices a new
+    member. Anchored on the one clause every such enumeration contains — a
+    policy-blocking exit — over the same scope the document sweep walks plus
+    ``scripts/``.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    scope = sorted(
+        [*(repo / "docs").glob("*.md"), repo / "README.md", *(repo / "scripts").glob("*.py")]
+    )
+    found = {
+        str(path.relative_to(repo))
+        for path in scope
+        if any(
+            phrase in " ".join(path.read_text(encoding="utf-8").split()).lower()
+            for phrase in _POLICY_BLOCK_PHRASES
+        )
+    }
+    assert found == set(_EXIT_CONTRACTS), (
+        "the set of files stating the exit-code contract has changed; add or remove it in "
+        f"_EXIT_CONTRACTS so the assertion above covers it. Added: {sorted(found - set(_EXIT_CONTRACTS))}. "
+        f"Gone: {sorted(set(_EXIT_CONTRACTS) - found)}"
     )

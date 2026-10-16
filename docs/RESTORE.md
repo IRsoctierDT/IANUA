@@ -53,7 +53,8 @@ python -m scripts.run_backup --root /srv/ianua --json
 ```
 
 Writes `data/backups/backup-<UTC timestamp>/`, mirroring the root's own layout, with a
-`manifest.json`. Exit `0` on success, `1` on failure, `2` on bad arguments, `3` if policy
+`manifest.json`. Exit `0` on success, `1` on failure, `2` on bad arguments or because
+the single-instance lock could not be taken, `3` if policy
 blocks it, and `4` if another writer held the store's write lock — nothing was taken and
 nothing was left behind, so retry rather than page. A second concurrent pass exits `0` and
 does nothing, like every other scheduled entry point here.

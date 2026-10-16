@@ -77,6 +77,22 @@ DIR_MODE = 0o700
 #: handle carries the lock — but it lives among evidence.
 FILE_MODE = 0o600
 
+#: What an operator sees when the lock could not be taken for a reason that is
+#: not contention, and the phrase every statement of the exit-code contract has
+#: to carry.
+#:
+#: A named constant rather than four prose paraphrases, because the condition
+#: it describes is reachable at exit ``2`` while **none** of the nine places
+#: that enumerate the exit codes mentioned a lock at all — all four CLI
+#: docstrings, ``scripts/_exit_codes.py``, ``docs/RETENTION.md``,
+#: ``docs/RESTORE.md`` and ``docs/PRODUCTION_SOC_PLAN.md`` twice said "bad
+#: arguments", so an operator who got a 2 from a broken ``flock`` would read
+#: the documented meaning and go checking their argv.
+#: ``tests/unit/test_exit_codes.py`` now asserts this literal appears beside
+#: every one of those enumerations, so the message and the contract cannot
+#: drift apart by paraphrase.
+LOCK_UNAVAILABLE_MESSAGE = "the single-instance lock could not be taken"
+
 #: How the lock file is opened. Every flag is load-bearing; see
 #: :func:`prepare_lock` for what each one refuses and what it costs.
 #:
@@ -373,8 +389,48 @@ def single_instance(handle: TextIO) -> Iterator[bool]:
     test the thing that actually carries the distinction, not to prefer errnos.
 
     Anything else becomes :class:`LockUnavailableError`, which each caller
-    turns into a message and exit 2 — the same contract an unusable lock
-    *path* already has.
+    turns into a message and exit **2**.
+
+    **Why 2, and not ``4`` or a fifth code.** The reason first given here was
+    precedent — an unusable lock *path* already exits 2 — and precedent is the
+    weak form of the argument. Sorted by what a human then does, the errnos
+    behind this one code are not one condition: ``EBADF`` and ``EDEADLK`` mean
+    *this code has a bug*, ``EOPNOTSUPP`` and ``EACCES`` mean *this deployment
+    is wrong*, and ``ENOLCK`` can mean either. Three answers behind one code,
+    which is the shape of the defect ``scripts/_exit_codes.py`` exists to fix.
+
+    It is nonetheless right, because **an exit code's resolution should match
+    the decisions its consumer can make**, and the consumer is a scheduler with
+    two: retry, or page a human. "File a bug" and "fix the deployment" are both
+    *page*; they differ in what the human does next, and the human reads the
+    message, which carries the errno's own ``strerror`` and the path. What
+    ``1`` conflated was *retry* against *page* — the one distinction the
+    scheduler itself has to act on. This conflates two reasons to page, which
+    it does not.
+
+    **``ENOLCK`` was the one candidate for ``4``, and is refused fail-closed.**
+    It is the only errno here that can mean "not now": a kernel short of lock
+    records recovers on its own. But it is also what a lock service that cannot
+    lock *at all* reports, and the errno does not say which — where SQLite's
+    ``SQLITE_BUSY`` means "another connection holds it" and nothing else, so
+    there the reason *is* the code. The kernel's own strings decline the
+    distinction, measured: ``os.strerror(errno.EAGAIN)`` is "Resource
+    temporarily unavailable" while ``os.strerror(errno.ENOLCK)`` is "No locks
+    available", which does not call itself temporary. Admitting it to ``4``
+    would mean that on the permanent variant a scheduler retries forever and
+    nothing pages — *this defect exactly*, one layer up, with a non-zero code
+    instead of a zero one. A transient condition wrongly paged costs one page;
+    a permanent one wrongly retried costs the platform its single-instance
+    control, silently.
+
+    **``EINTR`` is unreachable from here, and that is measured rather than
+    cited.** Six ``SIGALRM``s delivered during a *blocking* ``flock`` left the
+    call to return normally at 2.00 s when the holder released it, so CPython
+    retries the interrupt itself (PEP 475) and never surfaces it; the
+    production call is ``LOCK_NB`` besides, which does not wait. It stays in
+    the refused set and in the test table anyway: an unreachable errno costs
+    nothing on the side that pages, and would cost silence on the side that
+    retries.
     """
     with handle:
         try:
@@ -386,7 +442,7 @@ def single_instance(handle: TextIO) -> Iterator[bool]:
         except OSError as exc:
             raise LockUnavailableError(
                 exc.errno,
-                f"the single-instance lock could not be taken: {exc.strerror}",
+                f"{LOCK_UNAVAILABLE_MESSAGE}: {exc.strerror}",
             ) from exc
         try:
             yield True
