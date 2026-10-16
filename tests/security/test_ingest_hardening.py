@@ -465,6 +465,22 @@ def test_the_body_field_ban_list_is_still_declared() -> None:
 #: A token no fixture, parser, or schema field can legitimately produce.
 _MARKER = "UNMODELLED-VALUE-7f3a91"
 
+#: ``AGENTS.md`` §5's own worked example, verbatim, and the five fragments it
+#: records ``_DOMAIN`` as matching. Not a contrived string: it is the one the
+#: charter cites, so a change in behaviour shows up against the charter's own
+#: example rather than against a test-local one.
+_PROSE_BODY = (
+    "Dear Mr.Jones, please urgently.Reply about invoice 44.Smith "
+    "at acct-7781.Watson, cc Ms.Delacroix"
+)
+_PROSE_NAMES = (
+    "Mr.Jones",
+    "urgently.Reply",
+    "44.Smith",
+    "acct-7781.Watson",
+    "Ms.Delacroix",
+)
+
 
 def _stuff(value: Any, key: str) -> Any:
     """Add an un-modelled key to ``value`` and to every mapping inside it."""
@@ -786,7 +802,7 @@ def test_the_withheld_key_note_stays_readable_after_it_is_written() -> None:
 
 
 @pytest.mark.security
-def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
+def test_indicators_come_only_from_modelled_content_on_both_mapping_paths() -> None:
     """The posture this test pins **replaces** the one it used to pin.
 
     It previously asserted the opposite: that an unclaimed record was scanned
@@ -805,11 +821,16 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     The owner chose to extract from modelled content only, over adding a
     public-suffix dependency or a hand-kept TLD allow-list. **The cost is
     asserted here rather than left implicit**: an indicator that appears only
-    in an un-modelled field is now lost, on both paths. That is a real
-    detection cost on the one route §5 cared about — a vendor renaming the key
-    a signature matches — and the compensating signal is the withheld-key
-    note, which names what was dropped so an operator can write the
-    signature.
+    in an un-modelled field is now lost, on both paths **that decode to a
+    mapping** — which is the scope this test covers and all it ever covered.
+    It was named ``..._on_every_path`` until an audit measured the three
+    regimes that never decode to a mapping at all, where the retained
+    evidence *is* the verbatim record and extraction therefore reads it:
+    see ``test_prose_indicators_survive_where_no_mapping_was_decoded``
+    below, which pins that residual. That is a real detection cost on the one
+    route §5 cared about — a vendor renaming the key a signature matches —
+    and the compensating signal is the withheld-key note, which names what
+    was dropped so an operator can write the signature.
 
     That sentence was the *whole* stated cost in the first version of this
     change and it was too narrow, which a reviewer caught: handing the
@@ -847,6 +868,67 @@ def test_indicators_come_only_from_modelled_content_on_every_path() -> None:
     assert claimed.vendor == "defender-o365"
     assert "http://evil.example/x" not in claimed.observables
     assert _MARKER not in json.dumps(claimed.to_dict(), default=str)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("regime", "raw"),
+    [
+        pytest.param(
+            "trailing-comma",
+            f'{{"Subject": "hi", "Body": "{_PROSE_BODY}",}}',
+            id="json-with-a-trailing-comma",
+        ),
+        pytest.param(
+            "array-not-object",
+            f'[{{"Subject": "hi", "Body": "{_PROSE_BODY}"}}]',
+            id="json-array-rather-than-an-object",
+        ),
+        pytest.param(
+            "bare-prose",
+            _PROSE_BODY,
+            id="never-json-at-all",
+        ),
+        pytest.param(
+            "over-the-ceiling",
+            json.dumps({"Subject": "hi", "Body": _PROSE_BODY, "pad": "x" * (MAX_RAW_BYTES + 100)}),
+            id="past-the-MAX_RAW_BYTES-ceiling",
+        ),
+    ],
+)
+def test_prose_indicators_survive_where_no_mapping_was_decoded(regime: str, raw: str) -> None:
+    """The residual of "indicators come from modelled content only".
+
+    ``AGENTS.md`` §5 stated that rule as holding "on every path", and the test
+    above was named for that claim while exercising only the two paths that
+    decode to a mapping. Measured on merged code, the claim is false wherever
+    nothing decodes to a mapping: the charter's own worked example — the one
+    it holds up as the harm, five personal names — is extracted in full.
+
+    This is a *consequence* of the residual directly above it in §5, not a
+    separate defect: where no mapping was decoded there is nothing to project,
+    the record is retained verbatim, and extraction reads the retained
+    evidence. Retaining the text and refusing to scan it would be the
+    inconsistent posture. The defect was the charter's word "every".
+
+    So this test asserts the behaviour as measured rather than as wished, and
+    its job is to make a change to it deliberate. If the owner decides prose
+    indicators must be suppressed in these regimes too, this test is what has
+    to be rewritten, in the open, with the detection cost named.
+    """
+    event = normalize(raw)
+    extracted = set(event.observables)
+
+    assert extracted >= set(_PROSE_NAMES), (
+        f"regime {regime!r} extracted {sorted(extracted)}; this test pins the MEASURED "
+        f"residual, so a change here is a posture change and §5 must be updated with it"
+    )
+    # And the text itself is retained, which is why the above follows.
+    serialized = json.dumps(event.to_dict(), default=str)
+    assert "Mr.Jones" in serialized, (
+        "the verbatim residual stopped applying, so the indicator residual should have "
+        "gone with it — re-read AGENTS.md §5's unclaimed-record bullet"
+    )
 
 
 #: The one indicator every record in the position table below carries.

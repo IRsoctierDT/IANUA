@@ -5,6 +5,31 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Changed
+- **Audit of `AGENTS.md`'s measured claims — six were wrong, every one re-measured
+  on current code.** The charter is what other agents are told is binding, so a
+  claim in it that the code does not hold is a defect. Corrected: (1) §5 said
+  indicators come from modelled content "on every path" — measured, all four
+  regimes that never decode to a mapping extract the charter's own worked example
+  in full, five personal names into the append-only observables table, and the
+  security test was named `..._on_every_path` while exercising only the two
+  mapping paths; renamed, and
+  `test_prose_indicators_survive_where_no_mapping_was_decoded` now pins the
+  residual across all four. (2) §5 said "credential-shaped paths are refused" —
+  `credentials.json`, `secrets.yaml` and `api_token.txt` are accepted; the bullet
+  now points at `_DENIED` and says what it does not cover. (3) §5's stage 7
+  amendment said six security test files assert `dependencies = []` — it is five,
+  now named. (4) §5 said `grep -rni vacuum .` is zero matches — it returns five
+  files; scoped to code. (5) §5 said the store "is opened at `auto_vacuum=0`" —
+  that is SQLite's default and no pragma sets it, so nothing pins it. (6) §7.1
+  gave two wrong exit codes: the unstaged-baseline refusal exits 1 (not 3, and
+  the same code as a real finding, so the message is the only signal), the
+  line-number rewrite exits 3, and through `xargs` a finding surfaces as 123;
+  §7.1 also claimed the filter set is unchanged across a line-number rewrite,
+  which is false on the first one. Claims that were re-measured and **hold**:
+  the three verbatim-retention residuals, the 58 space-bearing tracked paths and
+  the `--` terminator hazard, `scan --baseline`'s silent absorption, the
+  read-only collector assertions, `MAX_FIELD_LEN = 2048`, and ~15 GB/month at
+  `DEFAULT_BATCH = 1_000` on a `*/5` schedule.
 - **`AGENTS.md` §5 gains a stage 7 amendment licensing the active/passive peer
   channel**, and `DESIGN.md` §5 boundary 4 and new boundary 15 record the
   crossing. **Documentation only — no network code ships in this change.** The
