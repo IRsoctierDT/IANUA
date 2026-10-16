@@ -29,6 +29,7 @@ operator who met it.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from ingest import normalize
+from scripts.run_backup import _live_tree_inventory
 from scripts.run_backup import main as backup_main
 from store import EventStore
 
@@ -523,3 +525,92 @@ def test_more_observables_than_attested_reads_as_addition(
     out = capsys.readouterr().out
     assert "ADDED" in out, out
     assert "NOT evidence loss" in out, out
+
+
+@pytest.mark.security
+def test_a_symlinked_report_tree_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two guards exist for this and each declined it for a different reason.
+
+    Review found it. A backup that declared **no** reports, restored over a root
+    whose ``data/reports`` is a symlink to a directory outside the root, exited
+    ``0`` on the first version of the reverse walk: there were no manifest report
+    entries so ``_unsafe_path`` never ran, and the tree root was a symlink so the
+    walk skipped it. ``dashboard/app.py`` reads that path, so a planted file
+    would have been presented as this node's report.
+
+    The skip was lifted from ``_copied_paths``, where it is right — a backup must
+    not copy *through* a link and pull outside content in. Here the direction is
+    reversed and so is the correct behaviour.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+
+    reports = live / "data" / "reports"
+    if reports.exists():
+        shutil.rmtree(reports)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "planted.md").write_text("# Out of root\nCorrelated 9000 events.\n", "utf-8")
+    reports.symlink_to(outside, target_is_directory=True)
+    assert (reports / "planted.md").is_file(), "the premise is that the dashboard would read it"
+
+    # Asserted on the function's own return value, not on a word in the CLI's
+    # output blob. The first version of this test checked `"symlink" in out` and
+    # PASSED under a plant that disabled the symlink branch — because `is_dir()`
+    # follows the link, so the walk descended it and flagged the file inside as
+    # UNDECLARED, keeping the exit code at 1. A substring of a large report is a
+    # weak assertion: two different defects produce two different findings and
+    # both contain the word "UNDECLARED".
+    #
+    # The property that matters is that the walk does NOT descend the link: the
+    # tree root itself is the finding, and no path inside it is returned.
+    found, unsafe = _live_tree_inventory(live)
+    assert found == [], (
+        f"the walk descended the symlink and returned {[str(p) for p in found]} — it must "
+        "report the link itself, not enumerate whatever is behind it"
+    )
+    assert len(unsafe) == 1 and "symlink" in unsafe[0], unsafe
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "data/reports in the live root is a symlink" in out, out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("value", [None, "20", 20.0, True, [20]])
+def test_a_manifest_without_a_usable_observable_count_is_refused(
+    value: object, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A guard that skips on malformed input is a fail-open, and this one was.
+
+    Review found it inside the fix for a family of fail-opens, which is the part
+    worth remembering. The first version guarded the observables comparison with
+    ``isinstance(...) and isinstance(...)`` and silently skipped it otherwise —
+    measured, deleting ``observables`` from a v1 manifest *and* deleting every
+    live observable row gave exit ``0``, and so did a string ``"20"``.
+    ``_verify_backup`` compares only the keys it finds, so nothing else caught it.
+
+    The manifest is untrusted input here — ``_unsafe_path`` already treats its
+    paths that way — so absence or a wrong type has to fail closed. ``True`` is
+    in the parameters because ``bool`` is an ``int`` subclass and would otherwise
+    compare as 1.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if value is None:
+        manifest["store"]["attestation"].pop("observables")
+    else:
+        manifest["store"]["attestation"]["observables"] = value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert _verify_restore(live, backup) == 1
+    assert "usable observable count" in capsys.readouterr().out

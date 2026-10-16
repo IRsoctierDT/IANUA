@@ -345,20 +345,46 @@ def _is_append_only(relative: Path) -> bool:
     )
 
 
-def _live_tree_inventory(root: Path) -> list[Path]:
-    """Every file presently in the copied trees, relative to ``root``.
+def _live_tree_inventory(root: Path) -> tuple[list[Path], list[str]]:
+    """Every file presently in the copied trees, plus any tree root that is unsafe.
 
     The reverse of :func:`_copied_paths`' tree walk, and it exists because
     verification used to read the manifest in one direction only. See
     :func:`_verify_restore`'s ``UNDECLARED`` finding.
+
+    **A symlinked tree root is reported, never skipped**, and review found the
+    first version skipping it. That ``continue`` was lifted from
+    :func:`_copied_paths`, where skipping is correct — a backup must not copy
+    *through* a link and pull content from outside the lab root in. Here the
+    direction is reversed and so is the right behaviour: the link is already in
+    the live root, and ignoring it is how it survives a restore.
+
+    Measured on the first version: a backup that declared **no** reports,
+    restored over a root whose ``data/reports`` is a symlink to a directory
+    outside the root, exited ``0``. No manifest report entries meant
+    :func:`_unsafe_path` never ran; the symlinked root meant this walk skipped
+    it; and ``dashboard/app.py`` reads that path, so a planted file claiming
+    "Correlated 9000 events" would have been presented as this node's report.
+    Two guards exist for exactly this and each declined it for a different
+    reason, which is why the gap was invisible.
     """
     found: list[Path] = []
+    unsafe: list[str] = []
     for tree in COPIED_TREES:
         base = root / tree
-        if not base.is_dir() or base.is_symlink():
+        if base.is_symlink():
+            unsafe.append(
+                f"UNDECLARED: {tree} in the live root is a symlink to "
+                f"{str(base.readlink())!r}. No backup carries one, and "
+                "`dashboard/app.py` reads this path — so whatever it points at would be "
+                "presented as this node's reports. Remove the link and restore the real "
+                "directory"
+            )
+            continue
+        if not base.is_dir():
             continue
         found.extend(sorted(child.relative_to(root) for child in base.iterdir() if child.is_file()))
-    return found
+    return found, unsafe
 
 
 def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
@@ -710,7 +736,29 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # stored whole, so this reads a field that was sitting in the file.
         live_observables = attested.get("observables")
         want_observables = expected.get("observables")
-        if isinstance(live_observables, int) and isinstance(want_observables, int):
+        # Fail CLOSED on a manifest that cannot answer. The first version of this
+        # block guarded with `isinstance(...) and isinstance(...)` and silently
+        # SKIPPED the check otherwise — measured, deleting `observables` from a
+        # v1 manifest and then deleting every live observable row gave exit 0, and
+        # so did a string `"20"`. `_verify_backup` compares only the keys it
+        # finds, so nothing else caught it either. The manifest is untrusted input
+        # here (`_unsafe_path` already treats its paths that way), and a guard that
+        # skips on malformed input is a fail-open inside a fix for a family of
+        # fail-opens. `bool` is excluded explicitly, being an `int` subclass.
+        counts_usable = True
+        for whose, value in (
+            ("the backup's manifest", want_observables),
+            ("the live store", live_observables),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                counts_usable = False
+                problems.append(
+                    f"{whose} does not state a usable observable count ({value!r}, type "
+                    f"{type(value).__name__}). An `ianua.backup.v1` attestation always "
+                    "carries one, so this is a damaged or edited manifest and the "
+                    "completeness check cannot run — refused rather than skipped"
+                )
+        if counts_usable:
             if live_observables < want_observables:
                 problems.append(
                     f"LOSS: the live store holds {live_observables} observable(s); the "
@@ -781,7 +829,9 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # Scoped to COPIED_TREES deliberately. A blanket reverse walk would flag
     # the rotation siblings beside the chains, which legitimately appear after
     # a backup, so it would false-alarm and get the gate switched off.
-    for live_only in _live_tree_inventory(root):
+    live_files, unsafe_trees = _live_tree_inventory(root)
+    problems.extend(unsafe_trees)
+    for live_only in live_files:
         if live_only not in declared:
             problems.append(
                 f"UNDECLARED: {live_only} is in the live root but not in the backup "

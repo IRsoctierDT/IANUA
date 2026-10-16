@@ -68,11 +68,24 @@ All notable changes to this project. Versions correspond to git tags.
   the rotation siblings beside the chains legitimately appear after a backup and a
   blanket reverse walk would false-alarm.
 
-  Six `tests/security` cases, each paired with a control direction, and the
+  Eight `tests/security` cases, each paired with a control direction, and the
   append-only/strict classifier is pinned from **both** sides: forcing everything
   strict reds `test_a_correct_restore_verifies` — this command's own gate decision
   appends to `data/events/audit.log` before the check reads it — and forcing
   everything prefix reds the two report cases.
+
+  **Review then found two fail-opens in the fix itself**, which is the part worth
+  recording. *A symlinked `data/reports` was skipped rather than reported*: the
+  reverse walk's `continue` was lifted from the backup side, where refusing to
+  descend a link is correct, and on the verify side the same line is how the link
+  survives — measured, a backup declaring no reports restored over a root whose
+  `data/reports` points outside it exited `0`, with a planted file readable as this
+  node's report. Two guards exist for exactly that and each declined it for a
+  different reason. *And the new observables comparison was guarded by
+  `isinstance(...) and isinstance(...)`*, so a manifest that omitted the field, or
+  carried `"20"`, silently skipped the check — measured, deleting the field **and**
+  every live observable row gave exit `0`. The manifest is untrusted input here, so
+  both now fail closed.
 
 ### Changed
 - **The four scheduled CLIs now exit `4` for retryable SQLite contention**, where
