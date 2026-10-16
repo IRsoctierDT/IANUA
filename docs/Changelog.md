@@ -6,17 +6,27 @@ All notable changes to this project. Versions correspond to git tags.
 
 ### Added
 - **`scripts/secret_gate.py` runs §7.1's secret gate end to end, including the re-scan
-  after staging.** The documented procedure for a line-number refresh ended at "verify,
-  then stage"; verifying proves the rewrite was location-only and says nothing about
-  whether the gate then passes (the owner's point). The script invokes the hook without
-  `xargs` — through it a finding's exit 1 and a refresh's exit 3 both surface as 123 —
-  refuses a dirty baseline (the hook reports one at exit 1, a finding's code), verifies a
-  rewrite is location-only, stages only that file, and requires the post-staging re-scan
-  to exit 0. `tests/security/test_secret_gate.py` pins every branch in throwaway
-  repositories — including the measured precedence that a finding suppresses the refresh
-  — and its last test requires this repository's committed baseline to pass the hook at
-  exit 0 on every run (measured: 46 s over the 572 tracked files on this branch; a gate
-  that is not run is a claim).
+  after staging.** The documented procedure for a baseline refresh ended at "verify, then
+  stage"; verifying proves the rewrite was a refresh and says nothing about whether the
+  gate then passes (the owner's point). The script invokes the hook without `xargs` —
+  through it a finding's exit 1 and a refresh's exit 3 both surface as 123 — refuses up
+  front what the hook misreports or runs over silently (a root that is not the repository
+  top level; a baseline that is missing, a symlink, untracked, unparseable, or carrying
+  unstaged edits — a staged edit is the ACCEPT procedure's own state and is gated), verifies
+  that a rewrite is a refresh, stages only that file, requires the post-staging re-scan to
+  exit 0, and on every other path restores the pre-run bytes and index entry. **One charter
+  claim fell while building it:** §7.1 said the hook's exit-3 rewrite "only ever moves a
+  line number". Measured, deleting an accepted literal exits 3 with the same message and
+  *retires* the entry, so a refresh is "move or retire" and the first version of the script
+  refused a retirement as an acceptance. A retirement cannot hide a relocation — a literal
+  moved to another tracked file is a new finding there, exit 1, and the refresh is
+  suppressed (measured). An independent four-lens review of the first commit then found the
+  symlink, untracked, unparseable, sub-directory and staged-then-failed cases, each
+  reproduced before it was fixed. `tests/security/test_secret_gate.py` pins every branch
+  in throwaway repositories with the real hook, drives the outcomes it cannot produce on
+  demand with a stand-in named as such, and its last test requires this repository's
+  committed baseline to pass the hook at exit 0 on every run (the hook's full run over the
+  tree, 41 s here; a gate that is not run is a claim).
 
 ### Changed
 - **Audit of `AGENTS.md`'s measured claims — six were wrong, every one re-measured

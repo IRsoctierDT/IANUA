@@ -834,6 +834,17 @@ pip-audit
 # request. Found by review, not by us.
 git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --
 #
+# If this prints "Your baseline file (.secrets.baseline) is unstaged", that is
+# not a finding — the hook refuses to run against a baseline with uncommitted
+# edits, so `git add .secrets.baseline` first. It is the state you are in
+# immediately after accepting a finding below. It exits **1**, not 3 as an
+# earlier version of this block said, which is the SAME code as a real
+# finding: tell the two apart by the message, never by the exit code. The
+# refusal fires only when the baseline is tracked and has UNSTAGED edits — an
+# untracked baseline, a tracked clean one, or one whose edits are already
+# staged does not trigger it (measured: the hook's check is `git diff
+# --name-only`, which lists unstaged changes only).
+#
 # Or run the whole sequence, including the result the procedure above used to
 # stop short of: `python scripts/secret_gate.py`. It invokes the hook WITHOUT
 # xargs (so it sees the real exit codes — through xargs a finding's 1 and a
@@ -852,22 +863,14 @@ git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --
 # and requires exit 0. On every other path the pre-run bytes and the pre-run
 # index entry are put back, so a failed run leaves the tree as it found it.
 # Verifying the rewrite proves it was a refresh; only the re-scan proves the
-# gate passes. `tests/security/test_secret_gate.py` pins each branch in
-# throwaway repositories with the real hook, drives the outcomes the real hook
+# gate passes. `tests/security/test_secret_gate.py` pins every exit code and
+# every refusal in throwaway repositories with the real hook, drives the outcomes the real hook
 # cannot produce on demand (a code it does not have, a rewrite that is not a
 # refresh, a re-scan that fails after staging) with a stand-in named as such,
 # and in its last case requires this repository's own committed baseline to
-# pass the hook at exit 0 — so a baseline someone refreshed and did not re-scan
-# turns the suite red rather than sitting behind a green pipeline.
-#
-# If this prints "Your baseline file (.secrets.baseline) is unstaged", that is
-# not a finding — the hook refuses to run against a baseline with uncommitted
-# edits, so `git add .secrets.baseline` first. It is the state you are in
-# immediately after accepting a finding below. It exits **1**, not 3 as an
-# earlier version of this block said, which is the SAME code as a real
-# finding: tell the two apart by the message, never by the exit code. The
-# refusal fires only when the baseline is tracked and dirty — an untracked
-# baseline, or a tracked clean one, does not trigger it.
+# pass the hook at exit 0 — so a stale baseline (an edit above an accepted
+# literal, or the removal of one, committed without running the gate) turns
+# the suite red locally, before CI's own copy of this gate does.
 #
 # `gitleaks detect --no-banner` is NOT an equivalent — an earlier version of
 # this block offered it as "or:", and the two demonstrably disagree. CI runs
