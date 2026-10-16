@@ -12,6 +12,7 @@ refused until an operator has granted that one action in a committed file.
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -278,8 +279,16 @@ def test_a_declined_lock_exits_zero_and_changes_nothing(tmp_path: Path, capsys: 
     lock = prepare_lock(root / LOCK_SUBDIR, LOCK_FILE)
     # ``prepare_lock`` returns the open handle now, not the path, so the
     # ``open`` sits inside the caller's startup ``try`` with the rest of it.
-    # The file it holds is still the declared lock.
-    assert Path(lock.name).name == LOCK_FILE
+    # The file it holds is still the declared lock — asserted by INODE rather
+    # than by name, which is both necessary and better. Necessary because the
+    # handle no longer knows its path: ``os.fdopen`` yields a wrapper whose
+    # ``.name`` is the integer descriptor, so ``Path(lock.name)`` raises
+    # ``TypeError`` (measured, and it is the one test the #58 fix broke).
+    # Better because the inode is the property that fix is *about* — the type
+    # is checked on the descriptor precisely so that the thing inspected and
+    # the thing locked cannot be two different files, and comparing names
+    # could not tell the difference.
+    assert os.fstat(lock.fileno()).st_ino == (root / LOCK_SUBDIR / LOCK_FILE).stat().st_ino
 
     with single_instance(lock) as held:
         assert held is True

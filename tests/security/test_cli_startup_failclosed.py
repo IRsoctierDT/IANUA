@@ -40,6 +40,9 @@ two, so its own refusals are asserted directly as well.
 
 from __future__ import annotations
 
+import errno
+import os
+import socket
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -48,6 +51,14 @@ from pathlib import Path
 import pytest
 
 from scripts import run_backup, run_collector, run_pipeline, run_retention
+from scripts._locking import (
+    _DESCRIBED_TYPES,
+    DIR_MODE,
+    FILE_MODE,
+    _describe,
+    prepare_lock,
+    single_instance,
+)
 from store.paths import validated_root
 
 #: Roots that resolve to the working directory, or to somewhere else the
@@ -288,6 +299,408 @@ def test_an_existing_lock_directory_is_narrowed_not_left_as_found(cli: Cli, tmp_
 #: How a scheduled CLI declares that it takes the single-instance lock.
 #: Keyed on the import rather than on a ``def``, because the two functions
 #: now live in one module instead of four copies.
+# --------------------------------------------------------------------------
+# A hostile object at the lock path (#58)
+# --------------------------------------------------------------------------
+#
+# Measured on the code these replace, across all four CLIs: a FIFO with no
+# reader blocked FOREVER — exit 124 under `timeout`, zero bytes on either
+# stream, still blocked at 30 s with `wchan = wait_for_partner`. A FIFO WITH a
+# reader was worse: `flock` succeeded on the pipe and the pass ran its full
+# work, the collector committing an event and retention running a pass, both at
+# exit 0. And because `touch`, `chmod` and `open` all follow a symlink while
+# none of them asks what is there, a symlinked lock path chmodded its target —
+# including `/dev/null` (0o666 -> 0o600) and a directory outside the root
+# (0o755 -> drw-------) — while a DANGLING symlink created a new file outside
+# the lab-data root entirely.
+
+
+def _hold_reader(fifo: Path) -> int:
+    """Open a FIFO for reading so a writer's open returns instead of blocking."""
+    return os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+
+
+def _bind_socket(target: Path) -> socket.socket:
+    """Bind an AF_UNIX socket at ``target``, relatively.
+
+    ``sockaddr_un.sun_path`` is ~108 bytes and a pytest ``tmp_path`` plus the
+    lock's own subdirectory can exceed it, so the bind is done from inside the
+    directory. A harness detail, not a property of the control.
+    """
+    sock = socket.socket(socket.AF_UNIX)
+    here = Path.cwd()
+    try:
+        os.chdir(target.parent)
+        sock.bind(target.name)
+    finally:
+        os.chdir(here)
+    return sock
+
+
+#: ``(label, make the object, the word the message must contain)``. Each one
+#: opens happily, or blocks, without a type guard on the descriptor.
+#:
+#: **Only the two types an unprivileged process can create.** The first version
+#: of this table included a character device built with
+#: ``os.mknod(..., S_IFCHR, makedev(1, 3))``, which needs ``CAP_MKNOD``. It
+#: passed locally as root and failed all four CLIs on the CI runner with
+#: ``PermissionError: [Errno 1] Operation not permitted`` — measured, and the
+#: reason this comment exists. Gating it on ``geteuid() == 0`` was the wrong
+#: repair: a security assertion that skips in the environment that matters
+#: proves nothing there, which is the objection this repository already records
+#: against a ``dbstat``-conditional test in ``test_store_hardening.py``. The
+#: device branches are pinned instead by
+#: :func:`test_describe_names_every_non_regular_type_it_claims_to`, which
+#: *reads* an existing device node rather than creating one.
+_NOT_REGULAR = (
+    ("fifo-no-reader", lambda p: os.mkfifo(p, 0o600), "a FIFO"),
+    ("socket", _bind_socket, "a socket"),
+)
+
+
+#: Device nodes present on any Linux or macOS host, read rather than created.
+_CHARACTER_DEVICE = Path("/dev/null")
+
+#: ``_DESCRIBED_TYPES`` entries no assertion below exercises, each with the
+#: reason. Kept as an explicit accounting rather than left implicit so that
+#: adding a sixth type to the table fails this file instead of shipping unpinned.
+_UNEXERCISED_DESCRIPTIONS = frozenset(
+    {
+        # A block device cannot be created without CAP_MKNOD either, and unlike
+        # a character device there is no path guaranteed to exist on both CI
+        # runners and a developer's machine (/dev/loop0 and /dev/sda are both
+        # absent in containers). The predicate is the same ``stat.S_IS*``
+        # dispatch as the four that are exercised; faking an ``lstat`` to reach
+        # it would be mocking the function under test.
+        "a block device",
+    }
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+@pytest.mark.parametrize(
+    ("label", "make", "expected"), _NOT_REGULAR, ids=[c[0] for c in _NOT_REGULAR]
+)
+def test_a_lock_path_that_is_not_a_regular_file_is_refused_by_type(
+    cli: Cli,
+    label: str,
+    make: object,
+    expected: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Exit 2 with a message naming what is there, for every non-regular type.
+
+    The type is checked on the **descriptor** ``os.open`` returned, not on the
+    path, so the thing inspected and the thing locked are the same inode by
+    construction. A ``path.is_fifo()`` guard before the open would not be: a
+    ``rename`` between the check and the open yields a descriptor on a
+    different inode with nothing raised, leaving the hang in place behind a
+    check that visibly ran and passed.
+
+    The message names the object rather than inferring it from the errno. The
+    first version of this fix did infer it, and was wrong — ``os.open`` returns
+    ``ENXIO`` for a socket as well as for a reader-less FIFO, so a socket
+    reported itself as a FIFO.
+    """
+    root = tmp_path / "root"
+    (root / cli.lock).parent.mkdir(parents=True)
+    held = make(root / cli.lock)  # type: ignore[operator]
+    try:
+        assert cli.main(_argv(cli, root, tmp_path)) == 2
+        err = capsys.readouterr().err
+        assert err.startswith("error: "), err
+        assert expected in err, f"{label}: message does not name the object: {err}"
+    finally:
+        if isinstance(held, socket.socket):
+            held.close()
+
+
+#: ``(label, the mode the lock file already carries, is it recoverable)``.
+#:
+#: The open is ``O_RDONLY``, which is what makes ``0o400`` recoverable and what
+#: makes ``0o200`` refuse. Both rows are pinned deliberately: the second is the
+#: *price* of the first, and a silent change in either direction is a behaviour
+#: change four scheduled CLIs depend on. ``prepare_lock``'s docstring carries
+#: the measured table.
+_PREEXISTING_MODES = (
+    ("owner-read-only", 0o400, True),
+    ("owner-write-only", 0o200, False),
+    ("no-permissions", 0o000, False),
+    ("group-and-world-readable", 0o644, True),
+)
+
+
+@pytest.mark.security
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root bypasses the DAC checks this asserts, so the result would be vacuous",
+)
+@pytest.mark.parametrize(
+    ("label", "mode", "recoverable"), _PREEXISTING_MODES, ids=[c[0] for c in _PREEXISTING_MODES]
+)
+def test_a_pre_existing_lock_file_is_recovered_or_refused_by_its_mode(
+    label: str, mode: int, recoverable: bool, tmp_path: Path
+) -> None:
+    """A lock file an operator left read-only must not stop every scheduled pass.
+
+    Reported in review against the first version of this change, which opened
+    ``O_WRONLY``: a pre-existing ``0o400`` lock made ``os.open`` fail ``EACCES``
+    *before* the ``os.fchmod`` that would have widened it, so all four CLIs
+    refused to start until a human intervened — where the ``touch``/``chmod``/
+    ``open`` sequence this replaced had recovered the same file, because
+    ``chmod`` needs ownership rather than write permission.
+
+    ``0o400`` is not an exotic mode here: ``agents/tools/containment.py`` chmods
+    a quarantined payload to it for forensic preservation, and it is what any
+    "harden the data directory" script produces. Nothing in this repository puts
+    one at a *lock* path, so the trigger is an operator or an external script —
+    weaker than a code path, which is why this is pinned rather than argued.
+
+    **Why skipping as root is legitimate here and was not for the device node.**
+    The `mknod` case was gated out of *CI*, which is the one environment where a
+    security assertion has to hold. This skips the inverse way round: CI runs
+    unprivileged, so this assertion runs exactly where it matters, and it steps
+    aside only for a developer running as root — where the kernel ignores the
+    mode bits and the assertion would pass without testing anything.
+    """
+    directory = tmp_path / "data" / "pipeline"
+    directory.mkdir(parents=True)
+    lock_path = directory / "cycle.lock"
+    lock_path.touch()
+    lock_path.chmod(mode)
+    assert stat.S_IMODE(lock_path.stat().st_mode) == mode, "precondition not set up"
+
+    if not recoverable:
+        with pytest.raises(OSError) as caught:
+            prepare_lock(directory, "cycle.lock")
+        assert caught.value.errno == errno.EACCES, (
+            f"{label}: expected EACCES, got errno {caught.value.errno}"
+        )
+        # And the refusal left the operator's mode alone rather than half-fixing it.
+        assert stat.S_IMODE(lock_path.stat().st_mode) == mode
+        return
+
+    handle = prepare_lock(directory, "cycle.lock")
+    # Recovered to the owner-only mode the rest of the lab root uses...
+    assert stat.S_IMODE(lock_path.stat().st_mode) == FILE_MODE, (
+        f"{label}: lock left at {oct(stat.S_IMODE(lock_path.stat().st_mode))}"
+    )
+    # ...and the handle is a working lock, not merely an open file. This is the
+    # assertion that would catch O_RDONLY having broken exclusion: flock keys on
+    # the open file description, not on access mode, but that is a measured fact
+    # rather than an obvious one.
+    with single_instance(handle) as acquired:
+        assert acquired is True
+        second = prepare_lock(directory, "cycle.lock")
+        with single_instance(second) as overlapping:
+            assert overlapping is False, f"{label}: a read-only open stopped excluding"
+
+
+@pytest.mark.security
+def test_describe_names_every_non_regular_type_it_claims_to(tmp_path: Path) -> None:
+    """``_describe`` is what puts the object's name in the refusal message.
+
+    Pinned directly, and at this level deliberately: the end-to-end matrix
+    above can only plant the two types an unprivileged process can create, so
+    without this the character-device branch would be exercised nowhere that
+    CI runs. The device node is **read**, never created — see
+    ``_NOT_REGULAR``'s comment for the measured reason.
+
+    The last assertion is the one that matters for the future: it fails if a
+    type is added to ``_DESCRIBED_TYPES`` without a pin here, rather than
+    letting a new branch ship unexercised.
+    """
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo, 0o600)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "absent")
+    sock = _bind_socket(tmp_path / "sock")
+    try:
+        seen = {
+            "a FIFO": _describe(fifo),
+            "a symlink": _describe(link),
+            "a socket": _describe(tmp_path / "sock"),
+        }
+    finally:
+        sock.close()
+    assert seen["a FIFO"] == "a FIFO"
+    assert seen["a socket"] == "a socket"
+    # The symlink's description carries its own clause, so match the prefix.
+    assert (seen["a symlink"] or "").startswith("a symlink"), seen["a symlink"]
+
+    assert _CHARACTER_DEVICE.is_char_device(), (
+        f"{_CHARACTER_DEVICE} is not a character device on this host; the "
+        "character-device branch would go unexercised"
+    )
+    assert _describe(_CHARACTER_DEVICE) == "a character device"
+
+    # A regular file and a directory are not "worth naming" — _describe returns
+    # None so the caller keeps the kernel's own errno text (EISDIR's "Is a
+    # directory" is already exact, and a test asserts it elsewhere).
+    regular = tmp_path / "regular"
+    regular.write_text("", encoding="utf-8")
+    assert _describe(regular) is None
+    assert _describe(tmp_path) is None
+    assert _describe(tmp_path / "does-not-exist") is None
+
+    described = {description for _, description in _DESCRIBED_TYPES}
+    exercised = {"a FIFO", "a socket", "a character device"} | {
+        d for d in described if d.startswith("a symlink")
+    }
+    unaccounted = described - exercised - _UNEXERCISED_DESCRIPTIONS
+    assert not unaccounted, (
+        f"_DESCRIBED_TYPES gained {sorted(unaccounted)} with no assertion here — "
+        "pin it, or add it to _UNEXERCISED_DESCRIPTIONS with the reason"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_fifo_with_a_reader_is_refused_rather_than_locked(
+    cli: Cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The case that was worse than the hang, pinned separately.
+
+    With a reader attached the open returns immediately, so ``O_NONBLOCK``
+    cannot help and only the descriptor type check can: measured on the old
+    code, ``flock`` succeeded **on the pipe** and the pass ran its full work at
+    exit 0 — the collector committing an event, retention running a pass —
+    with nothing anywhere saying the single-instance lock was a pipe.
+    """
+    root = tmp_path / "root"
+    (root / cli.lock).parent.mkdir(parents=True)
+    os.mkfifo(root / cli.lock, 0o600)
+    reader = _hold_reader(root / cli.lock)
+    try:
+        assert cli.main(_argv(cli, root, tmp_path)) == 2
+        assert "a FIFO" in capsys.readouterr().err
+    finally:
+        os.close(reader)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_symlinked_lock_path_is_refused_and_its_target_untouched(
+    cli: Cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A symlink at the lock file is refused, and nothing reaches the target.
+
+    ``O_NOFOLLOW`` applies to the final component only — an ancestor symlink
+    still opens, which is AGENTS.md §5's posture for ``collect/`` ("No symlink
+    at the log file ... Ancestor components are not walked, deliberately") and
+    stricter, because the check and the open are one syscall.
+
+    The target's mode is the assertion that matters, not just the exit code:
+    measured on the old code, ``touch`` and ``chmod`` followed the link and
+    changed a file outside the root from ``0o644`` to ``0o600``.
+
+    ``run_retention`` refuses earlier and with its own wording, because it
+    alone passes the lock filename through ``store.paths.confine``, which
+    rejects a symlinked component before ``prepare_lock`` is reached. Both
+    refusals are exit 2 and both leave the target alone, which is what is
+    asserted here.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "target.txt"
+    target.write_text("sentinel")
+    target.chmod(0o644)
+    before = (target.stat().st_mode & 0o777, target.read_text())
+
+    root = tmp_path / "root"
+    (root / cli.lock).parent.mkdir(parents=True)
+    (root / cli.lock).symlink_to(target)
+
+    assert cli.main(_argv(cli, root, tmp_path)) == 2
+    assert capsys.readouterr().err.startswith("error: ")
+    assert (target.stat().st_mode & 0o777, target.read_text()) == before, (
+        "the symlink target outside the root was modified"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_dangling_symlinked_lock_path_creates_nothing_outside_the_root(
+    cli: Cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured on the old code: this CREATED a file outside the lab-data root.
+
+    ``O_CREAT`` on a dangling symlink creates the file wherever the link
+    points; with ``O_NOFOLLOW`` it is ``ELOOP`` instead. AGENTS.md §5 confines
+    everything this platform writes to the gitignored lab-data root, and a lock
+    path is the one place that confinement was escapable by a symlink nobody
+    checked.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    absent = outside / "absent.txt"
+
+    root = tmp_path / "root"
+    (root / cli.lock).parent.mkdir(parents=True)
+    (root / cli.lock).symlink_to(absent)
+
+    assert cli.main(_argv(cli, root, tmp_path)) == 2
+    assert capsys.readouterr().err.startswith("error: ")
+    assert not absent.exists(), "a refused startup created a file outside the root"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_refused_lock_path_leaves_its_directory_traversable(
+    cli: Cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A second defect, which nobody had filed, found while measuring the first.
+
+    With a **directory** at the lock path the old ``touch(exist_ok=True)``
+    *succeeded* — it merely ``utime``d it — so the following ``chmod`` left the
+    lock *directory* at ``0o600``, measured ``0o700 -> 0o600``. A refused
+    startup left the directory non-traversable, so the next pass could not
+    reach its own lock even after the operator removed the offending object.
+    One ``os.open`` never gets that far.
+    """
+    root = tmp_path / "root"
+    lock_directory = (root / cli.lock).parent
+    (root / cli.lock).mkdir(parents=True)
+
+    assert cli.main(_argv(cli, root, tmp_path)) == 2
+    assert "Is a directory" in capsys.readouterr().err
+    assert stat.S_IMODE(lock_directory.stat().st_mode) == DIR_MODE, (
+        "a refused startup left the lock directory non-traversable"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_a_pre_existing_lock_file_is_narrowed_to_owner_only(cli: Cli, tmp_path: Path) -> None:
+    """The narrowing of an **existing** lock file was pinned by nothing.
+
+    The only other assertion on the lock file's mode is in
+    :func:`test_an_existing_lock_directory_is_narrowed_not_left_as_found`,
+    where the file is freshly created — so a change that narrowed only on
+    creation would have passed every test while leaving a world-writable lock
+    file in place. Measured on the old code: all four narrowed it silently, and
+    the ``os.fchmod`` here keeps that.
+
+    It matters because ``os.fchmod`` is what replaced ``path.chmod``, and the
+    declined alternative — ``O_CREAT | O_EXCL`` first, so a file we did not
+    create is never chmodded — would have dropped this silently. That
+    alternative is recorded in ``scripts/_locking.py`` against the hard-link
+    residual it would close; this test is why it was not taken blind.
+    """
+    root = tmp_path / "root"
+    lock_path = root / cli.lock
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text("")
+    lock_path.chmod(0o666)
+
+    assert cli.main(_argv(cli, root, tmp_path)) in (0, 1)
+    assert stat.S_IMODE(lock_path.stat().st_mode) == FILE_MODE, (
+        "a pre-existing lock file was left wider than owner-only"
+    )
+
+
 _LOCKING_IMPORT = "from scripts._locking import"
 
 
