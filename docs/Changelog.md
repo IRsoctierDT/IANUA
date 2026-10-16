@@ -4,6 +4,20 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **`scripts/secret_gate.py` runs §7.1's secret gate end to end, including the re-scan
+  after staging.** The documented procedure for a line-number refresh ended at "verify,
+  then stage"; verifying proves the rewrite was location-only and says nothing about
+  whether the gate then passes (the owner's point). The script invokes the hook without
+  `xargs` — through it a finding's exit 1 and a refresh's exit 3 both surface as 123 —
+  refuses a dirty baseline (the hook reports one at exit 1, a finding's code), verifies a
+  rewrite is location-only, stages only that file, and requires the post-staging re-scan
+  to exit 0. `tests/security/test_secret_gate.py` pins every branch in throwaway
+  repositories — including the measured precedence that a finding suppresses the refresh
+  — and its last test requires this repository's committed baseline to pass the hook at
+  exit 0 on every run (measured: 46 s over the 572 tracked files on this branch; a gate
+  that is not run is a claim).
+
 ### Changed
 - **Audit of `AGENTS.md`'s measured claims — six were wrong, every one re-measured
   on current code.** The charter is what other agents are told is binding, so a

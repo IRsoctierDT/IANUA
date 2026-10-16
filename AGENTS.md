@@ -786,19 +786,27 @@ pip-audit
 # (`scripts/secret_gate.py` does, and sees the real codes). Measured on this
 # tree: 123 printed above the "baseline file was updated" text and a script
 # that checked for 3 misread it as a finding. That is not a finding and not the
-# `scan --baseline` hazard above: the entry count, the digests and the plugin
-# set are unchanged (verify those three, stage it, then **run the gate again and
-# require exit 0**: the three checks prove the rewrite was location-only, and
-# only the re-scan proves the gate passes — measured, a finding present in the
-# same scan suppresses the refresh entirely, so the sequence is finished when a
-# run exits 0 against the staged baseline and not before). An earlier version of
-# this block said the FILTER set was unchanged too, and that is false —
-# measured on detect-secrets 1.5.0, the first such rewrite ADDS
+# `scan --baseline` hazard above: no entry appears, no surviving entry changes
+# beyond its line number, and the version, the plugin set and every other key
+# are identical (verify that, stage it, then **run the gate again and require
+# exit 0**: the checks prove the rewrite was a refresh, and only the re-scan
+# proves the gate passes — measured, a finding present in the same scan
+# suppresses the refresh entirely, so the sequence is finished when a run exits
+# 0 against the staged baseline and not before). An earlier version of this
+# block said the FILTER set was unchanged too, and that is false — measured on
+# detect-secrets 1.5.0, the first such rewrite ADDS
 # `detect_secrets.filters.common.is_baseline_file` pinned to
 # `.secrets.baseline` and bumps `generated_at`. An agent told to verify an
-# unchanged filter set would refuse to stage a legitimate rewrite. The
-# difference that matters is that `scan` can absorb a NEW finding silently
-# while this only ever moves a line number of one already reviewed.
+# unchanged filter set would refuse to stage a legitimate rewrite. And it said
+# the ENTRY COUNT was unchanged and that the hook "only ever moves a line
+# number of one already reviewed" — false too, measured the same way: delete an
+# accepted literal from its file and the hook exits 3, prints the same "keep
+# line numbers" message, and RETIRES the entry, so `results` shrinks. That is
+# the second thing a refresh may do, and the only other one. It cannot hide a
+# relocation: a literal moved to another tracked file is a new finding there,
+# exit 1, and the refresh is suppressed. The difference that matters is that
+# `scan` can absorb a NEW finding silently, while the hook's own rewrite can
+# only move or retire one already reviewed.
 #
 # NUL-delimited, and that is not style. An unquoted `$(git ls-files)` here —
 # which is what this block gave until measured — word-splits the 58 tracked
@@ -825,6 +833,32 @@ pip-audit
 # and `git add -- --help` commits it, so this is reachable from any pull
 # request. Found by review, not by us.
 git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline --
+#
+# Or run the whole sequence, including the result the procedure above used to
+# stop short of: `python scripts/secret_gate.py`. It invokes the hook WITHOUT
+# xargs (so it sees the real exit codes — through xargs a finding's 1 and a
+# refresh's 3 both arrive as 123). Before the hook runs it refuses every state
+# the hook would misreport or silently accept: a root that is not the
+# repository top level (a sub-directory root scans a fraction of the tree), and
+# a baseline that is missing, a symlink, untracked, unparseable, or carrying
+# UNSTAGED edits — the hook reports an unparseable or an unstaged baseline at
+# exit 1, a finding's code, and runs over a symlinked or untracked one as if it
+# were reviewed. A STAGED edit is what the ACCEPT procedure below leaves behind
+# and is gated, not refused. On exit 3 it verifies that the rewrite is a
+# refresh — line numbers may move, an entry may be retired, `generated_at` may
+# change, the filter set may gain only `is_baseline_file`; no entry may appear,
+# no surviving entry may change, and the version, the plugin set and every
+# other key must be identical — stages that one file, and then RE-RUNS the hook
+# and requires exit 0. On every other path the pre-run bytes and the pre-run
+# index entry are put back, so a failed run leaves the tree as it found it.
+# Verifying the rewrite proves it was a refresh; only the re-scan proves the
+# gate passes. `tests/security/test_secret_gate.py` pins each branch in
+# throwaway repositories with the real hook, drives the outcomes the real hook
+# cannot produce on demand (a code it does not have, a rewrite that is not a
+# refresh, a re-scan that fails after staging) with a stand-in named as such,
+# and in its last case requires this repository's own committed baseline to
+# pass the hook at exit 0 — so a baseline someone refreshed and did not re-scan
+# turns the suite red rather than sitting behind a green pipeline.
 #
 # If this prints "Your baseline file (.secrets.baseline) is unstaged", that is
 # not a finding — the hook refuses to run against a baseline with uncommitted
