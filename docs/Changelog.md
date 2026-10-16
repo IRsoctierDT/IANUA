@@ -4,6 +4,20 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Changed
+- **`AGENTS.md` §5 gains a stage 7 amendment licensing the active/passive peer
+  channel**, and `DESIGN.md` §5 boundary 4 and new boundary 15 record the
+  crossing. **Documentation only — no network code ships in this change.** The
+  owner approved an inbound listener and egress to a declared peer; §5.1 wants a
+  written authorization basis before a boundary is crossed, so the basis lands
+  first. The licensed surface is deliberately smaller than either thing it
+  permits: a read-only health/state listener on the **active** node, HMAC
+  authenticated with no-key meaning refuse-to-start, bound to an operator-declared
+  address with `0.0.0.0` refused outright, and egress only from the **passive**
+  node to one host in a committed allow-list that is empty by default. Aggregates
+  and digests cross; events, excerpts, observables and incidents never do. It does
+  not fence and cannot promote. `dependencies = []` is untouched.
+
 ### Added
 - **`run_backup --verify-restore BACKUP`, the promotion gate.** `--verify` checked
   a backup against its own manifest *before* a restore; `docs/RESTORE.md` step 4
