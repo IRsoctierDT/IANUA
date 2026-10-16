@@ -76,8 +76,12 @@ All notable changes to this project. Versions correspond to git tags.
 - **`--verify-restore` exited `0` on three restores it should have refused, and in
   every case the manifest already carried the datum the check never read.** Found
   by review on the merged gate; all three measured through the shipped CLI before
-  anything was changed, and all three fixed together because they live in one
-  ~60-line loop.
+  anything was changed, and fixed together because they share that shape and two of
+  them turn on one classifier. An earlier version of this entry said they "live in
+  one ~60-line loop", and that was never measured. Measured: `_verify_restore` is
+  258 lines; only the report comparison is inside the manifest loop, the reverse
+  walk is a separate loop after it, and the observables check is a separate block
+  before it. The observables fix could have shipped alone.
 
   **Observables were never compared.** The completeness digest is a sha256 over
   the `event_id` set only, so observables are not in the preimage. Measured: 20
