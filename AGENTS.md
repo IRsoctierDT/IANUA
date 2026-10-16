@@ -408,6 +408,70 @@ welcome; weaponized exploit chains aimed at unowned targets are not. When in dou
 whether something is offensive vs. defensive, **ask the human and document the
 authorization basis**.
 
+**"Lab host" is a declaration, not a property of an address.** The prohibition above
+turns on the term ("sending network requests to non-lab hosts"), and so does the §5.1
+external-network gate ("requests to any non-lab host") — and until `agents/policies/egress.py`
+neither said what one *was*, so the term the whole egress permission rests on was
+enforced by whoever happened to be reading it. It is now defined, and the definition is
+declarative because **no property of an address can answer it**: RFC1918 is not a proxy
+for "lab" (a corporate LAN and a cloud VPC are both private and neither is one), a
+routable address is not a disqualifier (a lab VM with a public address is still yours),
+and reverse DNS is whatever the other side's operator says it is.
+
+A lab host is therefore **one named in `agents/policies/egress.json`**, with the
+authorization basis this paragraph already demanded recorded in the entry beside it.
+Everything else is not a lab host. The file ships **empty**, so the default answer is
+no — and it is no because nothing has been declared, not because a rule failed to
+match. This is `collect/`'s control with one word changed: **declared, never
+discovered.**
+
+What the mechanism refuses, and why, since each refusal is a decision rather than
+tidiness — all of it measured against `ipaddress` rather than assumed:
+
+- **A hostname. IP literals only.** A name is resolved at connect time, so the
+  committed file would name a *name* while the socket goes wherever resolution
+  answers — the SSRF and rebinding class §6.1 ranks first, plus a
+  time-of-check/time-of-use gap. This is the same argument as `collect/`'s
+  absolute-paths-only rule: a relative path means whatever the working directory
+  happens to be, and a hostname means whatever the resolver happens to say. **The
+  cost is real and is the trade**: an operator whose peer moves edits a committed
+  file and has the change reviewed.
+- **Anything that is not a JSON string.** `ipaddress.ip_address` accepts integers and
+  JSON carries them: measured, `ip_address(2130706433)` is `127.0.0.1`,
+  `ip_address(0)` is `0.0.0.0`, and — `bool` being an `int` subclass —
+  `ip_address(True)` is `0.0.0.1`. So `{"address": 3232235777}` would have loaded as
+  `192.168.1.1`: a declared destination no reviewer can see in a diff.
+- **Unspecified, multicast, limited-broadcast, link-local**, on the **parsed** value.
+  Six spellings are unspecified and a literal-string rule catches one of them;
+  `169.254.169.254` is the cloud instance-metadata address and the canonical SSRF
+  target. Note that a *positive* shape test would not do: measured, `224.0.0.1` is
+  `is_multicast` **and** `is_global`, so "allow if global" would allow multicast.
+  Note also that `is_reserved` cannot stand in for a broadcast check — measured,
+  `ip_address("::1").is_reserved` is **True**, so refusing everything reserved would
+  refuse IPv6 loopback and make a single-box lab undeclarable.
+- **IPv4-mapped and scoped IPv6 forms**, because they *alias*: measured,
+  `::ffff:127.0.0.1 != 127.0.0.1` and `fe80::1%2 != fe80::1`, with unequal hashes. A
+  declared host that silently does not match itself written the other way is a
+  confusing non-match, not a control.
+- **A duplicate after normalization**, since `::1` and `0:0:0:0:0:0:0:1` are one entry
+  written twice and the authorization basis that goes unread is the second one.
+- **An entry with no authorization basis.** This paragraph's own requirement, made
+  mechanical rather than aspirational.
+
+**Loopback and routable addresses are deliberately declarable.** Loopback because a
+single-box lab and this repository's own tests need it, and a control that cannot be
+exercised is one an operator switches off rather than uses. Routable because the
+definition is declarative — refusing `is_global` would contradict it. What makes an
+entry reviewable is the authorization field, not the address class.
+
+**Two controls, and neither alone is sufficient.** The policy bundle's `allow` list
+names the *action* that may egress (the standing-grant shape `run_retention.py --apply`
+established); `egress.json` names the *destination*. Comparison is on the parsed
+address and the integer port, never on text. A missing, unreadable or malformed
+allow-list **raises** rather than resolving to "empty, so deny" — both refuse egress,
+but one of them tells the operator their file is broken instead of behaving as though
+they had declared nothing.
+
 ### 5.1 Approval Gates (human-in-the-loop)
 
 An agent must **pause and obtain explicit human approval** before any action that is

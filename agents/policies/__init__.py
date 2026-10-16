@@ -9,6 +9,10 @@ Public API:
   fail-closed).
 - :func:`load_bundle` / :data:`DEFAULT_BUNDLE_PATH` / :class:`PolicyBundleError` — load
   the policy from a declarative JSON bundle (fail-closed) instead of editing Python.
+- :class:`EgressAllowlist` / :class:`LabHost` / :data:`DEFAULT_EGRESS_ALLOWLIST_PATH` —
+  what "lab host" means: a destination named in the committed egress allow-list, which
+  ships empty, so the default answer is deny. The bundle's ``allow`` list names the
+  *action* that may egress; this names the *destination*, and neither alone suffices.
 - :class:`AuditLogger` / :class:`AuditEvent` — append tamper-evident, hash-chained
   audit records for security-relevant decisions.
 - :func:`guard` — evaluate an action and record the decision in one call.
@@ -34,6 +38,13 @@ from agents.policies.audit import (
     verifier_from_env,
 )
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle
+from agents.policies.egress import (
+    DEFAULT_EGRESS_ALLOWLIST_PATH,
+    EgressAllowlist,
+    EgressAllowlistError,
+    EgressDenied,
+    LabHost,
+)
 from agents.policies.principal import Principal, PrincipalError, coerce
 from agents.policies.signing import (
     Ed25519Signer,
@@ -48,6 +59,7 @@ from agents.policies.signing import (
 __all__ = [
     "AUDIT_FIELD_DELIMITER",
     "DEFAULT_BUNDLE_PATH",
+    "DEFAULT_EGRESS_ALLOWLIST_PATH",
     "ActionClass",
     "AuditEvent",
     "AuditFieldError",
@@ -55,7 +67,11 @@ __all__ = [
     "Decision",
     "Ed25519Signer",
     "Ed25519Verifier",
+    "EgressAllowlist",
+    "EgressAllowlistError",
+    "EgressDenied",
     "HmacSigner",
+    "LabHost",
     "PolicyBundleError",
     "PolicyDecision",
     "PolicyEngine",
