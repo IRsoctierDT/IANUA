@@ -416,10 +416,16 @@ Two things a scheduler must handle that the taxonomy above hides:
   measured, including under `--json` (so a JSON log shipper must tolerate that line) and
   including for an **ungranted `--apply`**, which returns 0 instead of 3 because the skip
   precedes the gate. No audit record is written for a skip.
-- **A `retention.lock` that is a FIFO hangs forever.** Measured: `timeout 10` returned 124,
-  no message, no audit record, no flock taken — so every subsequent scheduled pass blocks
-  identically and retention stalls silently. Controls discriminate: a regular file exits 0
-  and a directory exits 2. Put a timeout on the scheduler unit (tracked).
+- **A `retention.lock` that is not a regular file now exits 2 with a message.** It used to
+  hang forever: measured, `timeout 10` returned 124 with no message, no audit record and no
+  flock taken, so every subsequent scheduled pass blocked identically and retention stalled
+  silently. Worse, a FIFO *with a reader* did not hang at all — `flock` succeeded on the pipe
+  and the pass ran to completion at exit 0, with nothing saying the single-instance lock was
+  not a file. The lock is now opened once, non-blocking, with symlinks refused at the leaf,
+  and its type checked on the descriptor: a FIFO, socket or device node exits 2 naming what
+  is there, a symlink exits 2 without touching its target, and a directory still exits 2 with
+  "Is a directory". A scheduler timeout remains good hygiene for unrelated stalls, but it is
+  no longer the only thing standing between a hostile lock path and a silent halt.
 
 The **whole-store refusal** is the guard worth knowing by heart: when the window reaches
 past every event in the store, the pass exits 2 rather than deleting everything, naming
