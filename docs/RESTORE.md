@@ -93,6 +93,44 @@ Re-attests the store, re-hashes every file, and re-verifies every chain against 
 manifest. Exit `1` and a list of problems on any mismatch. **Verify before you need it** —
 on the schedule, not during the incident.
 
+### Verifying a restore (the promotion gate)
+
+```bash
+python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup
+```
+
+`--verify` and `--verify-restore` sit at opposite ends of a restore and are not
+interchangeable. The first asks *"is this backup sound?"*; the second asks *"did the
+restore put it there?"* — comparing the **live root** against the attestation the backup
+carried. It exists because step 4 is a bare `cp -a` whose failure is invisible: a store
+missing most of its pages opens through `EventStore.open()` without raising and reports a
+plausible count, 353 of 400 in one measurement. Structure cannot catch that; only the
+carried expectation can. `EventStore.attest()` gates on `PRAGMA quick_check` on the way, so
+the integrity read is free.
+
+What it refuses, each with the direction named rather than a bare mismatch:
+
+| Finding | Meaning |
+|---|---|
+| `LOSS` | fewer events than attested — **the dangerous one**; the copy is incomplete |
+| `SUBSTITUTED` | the attested count exactly, but a different set of events — not this backup |
+| `ADDED` | more events than attested. **Not loss** — this is what step 5 does, so you ran the gate after re-collecting |
+| `TRUNCATED` / `REWRITTEN` | a declared append-only file shrank, or its history was replaced rather than appended to |
+| `POSITION PRESENT` | step 3 was skipped; see "The ordering rule" |
+| `no store at …` | the restore put none there. The check will **not** create one to measure — a read-only pass must not write the thing it was asked to inspect |
+
+**Run it between steps 4 and 5.** It is an exact comparison, and step 5 legitimately grows
+the store, so afterwards you get `ADDED` rather than a clean verdict. That is why the
+report names the direction: "you already re-collected" and "evidence is missing" demand
+opposite responses.
+
+**A green verdict is not permission to promote.** It speaks about the copy only. It says
+nothing about the *fence* — whether exactly one node is active. The only candidate fence
+that clears this repository's charter today is operator-driven promotion, and the operator
+is the fence **only if they stopped the former active's timers** (step 1 above, run on the
+*old* node). That is procedural and no code here can check it; `DESIGN.md`'s active/passive
+decision row records why.
+
 ### Restoring
 
 ```bash
@@ -121,6 +159,13 @@ rm -f /srv/ianua/data/collect/offsets.json /srv/ianua/data/pipeline/cursor.json
 
 # 4. Put the state back.
 cp -a /path/to/backup/data/. /srv/ianua/data/
+
+# 4b. THE PROMOTION GATE. Verify what actually landed, BEFORE re-collecting.
+#     Step 4 is a plain copy and nothing used to look at the result. A store
+#     missing most of its pages opens cleanly and reports a plausible count,
+#     so this compares the live root against the attestation the backup
+#     carried rather than checking that the database looks healthy.
+python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup   # must exit 0
 
 # 5. Re-collect. Every source is re-read; content addressing stores only what is new.
 python -m scripts.run_collector --root /srv/ianua --source /var/log/auth.log --json

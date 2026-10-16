@@ -78,9 +78,23 @@ case already had a test: a backup taken while a writer holds the store open
 writes nothing to the source, because the backup is then not the last
 connection.)
 
+**Two verifications, at opposite ends of a restore.** ``--verify`` checks a
+backup against its own manifest *before* you trust it. ``--verify-restore``
+checks the live ``--root`` *after* step 4 of ``docs/RESTORE.md`` has copied
+that backup into place — the promotion gate, and the half that was missing:
+step 4 is a bare ``cp -a`` and nothing looked at the result. The asymmetry
+matters because a store missing most of its pages **opens cleanly and reports
+a plausible count** (353 of 400 events, measured in
+``tests/integration/test_restore_drill.py``), so a half-finished copy leaves a
+working SOC quietly short of evidence. See :func:`_verify_restore` for what it
+compares and, more importantly, for what a green verdict does **not** say — it
+speaks about the copy and says nothing about whether exactly one node is
+active.
+
 **Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
 or verified (including a skip because another pass held the lock), ``1`` the
-backup, the verification or the audit write failed, ``2`` bad arguments or the
+backup, either verification or the audit write failed — including any mismatch
+found by ``--verify`` or ``--verify-restore``, ``2`` bad arguments or the
 single-instance lock could not be taken, ``3`` blocked by policy, ``4``
 retryable contention — another writer held the
 store's write lock, so no backup was taken and nothing was left behind. Retry
@@ -249,6 +263,30 @@ def _digest_file(path: Path) -> str:
     running = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
+            running.update(block)
+    return running.hexdigest()
+
+
+def _digest_prefix(path: Path, length: int) -> str:
+    """sha256 of the FIRST ``length`` bytes of a file.
+
+    The right comparison for an append-only artifact. A restored audit chain
+    or evidence trail legitimately grows the moment anything runs — including
+    this very verification, whose gate decision appends to
+    ``data/events/audit.log`` before the check reads it — so byte equality
+    against the manifest is the wrong property and would fail on a correct
+    restore. "The backed-up content is a *prefix* of what is there now" is the
+    property that actually matters: it fails on truncation and on any rewrite
+    of history, and passes on honest growth.
+    """
+    running = hashlib.sha256()
+    remaining = length
+    with path.open("rb") as handle:
+        while remaining > 0:
+            block = handle.read(min(1024 * 1024, remaining))
+            if not block:
+                break
+            remaining -= len(block)
             running.update(block)
     return running.hexdigest()
 
@@ -511,6 +549,153 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     }
 
 
+def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
+    """Verify the **live** ``root`` holds what ``backup``'s manifest attested.
+
+    The promotion gate. ``--verify`` checks a backup against its own manifest
+    *before* a restore; nothing checked the live tree *after* one, and
+    ``docs/RESTORE.md`` step 4 is a bare ``cp -a``. That is the dangerous
+    direction, measured: a store missing most of its pages **opens cleanly
+    through** :meth:`store.EventStore.open` **and reports a plausible count** —
+    353 of 400 events in ``tests/integration/test_restore_drill.py``. So an
+    interrupted copy leaves a working SOC quietly missing evidence, at the one
+    moment an operator is least able to notice.
+
+    Structure cannot catch that, which is why this compares against the
+    expectation the backup *carried* rather than checking that the database
+    looks healthy. :meth:`store.EventStore.attest` gates on
+    ``PRAGMA quick_check`` on the way, so the integrity read comes free.
+
+    **What a green verdict does NOT say.** It speaks only about the copy. It
+    says nothing about the fence — whether exactly one node is active. The
+    only candidate fence clearing today's charter is operator-driven promotion,
+    and the operator is the fence *only if they stopped the former active's
+    timers*; that is procedural and this repository cannot check it. See
+    ``DESIGN.md``'s active/passive decision row. Do not read "restore verified"
+    as "safe to promote".
+
+    **The window is narrow and the report says so rather than merely failing.**
+    This is an exact comparison, so it is valid between ``docs/RESTORE.md``
+    steps 4 and 5 — re-collection in step 5 legitimately adds events. Run late,
+    an operator gets a mismatch; the findings below name the *direction*, so
+    "you already re-collected" never reads the same as "evidence is missing".
+    """
+    manifest_path = backup / MANIFEST_FILE
+    if not manifest_path.is_file():
+        raise StoreError(f"no {MANIFEST_FILE} in {backup}; this is not a backup")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format") != "ianua.backup.v1":
+        raise StoreError(f"unknown backup format {manifest.get('format')!r}")
+
+    problems: list[str] = []
+    store_entry = manifest["store"]
+    expected = store_entry["attestation"]
+    live_events: int | None = None
+
+    # The store. Existence is checked FIRST and deliberately: EventStore.open
+    # CREATES the database if absent, so opening it blind would have this
+    # verification manufacture an empty store and then report the loss of every
+    # event — a read-only check that writes the thing it was asked to inspect.
+    db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
+    if not db.is_file():
+        problems.append(
+            f"no store at {db}: the restore did not put one there, and this check will "
+            "not create one to measure"
+        )
+    else:
+        with EventStore.open(root) as live:
+            attested = live.attest().to_dict()
+        live_events = int(attested.get("events", -1))
+        want_events = int(expected["events"])
+        if live_events < want_events:
+            problems.append(
+                f"LOSS: the live store holds {live_events} event(s); the backup attested "
+                f"{want_events}. {want_events - live_events} are missing. A partial copy "
+                "opens cleanly and reports a plausible count, which is why this is checked "
+                "against the manifest and not against the database looking healthy"
+            )
+        elif live_events > want_events:
+            problems.append(
+                f"ADDED: the live store holds {live_events} event(s); the backup attested "
+                f"{want_events}. This is what docs/RESTORE.md step 5 (re-collect) does, so "
+                "it is expected if you have already run it — this check belongs between "
+                "steps 4 and 5. It is NOT evidence loss"
+            )
+        elif attested.get("digest") != expected["digest"]:
+            problems.append(
+                f"SUBSTITUTED: the live store holds exactly {live_events} event(s) as "
+                "attested, but a different set of them — the completeness digest differs. "
+                "Equal counts with unequal digests means this is not the store that was "
+                "backed up"
+            )
+
+    # Declared files. Prefix rather than equality: see _digest_prefix.
+    for entry in manifest["files"]:
+        unsafe = _unsafe_path(root, Path(str(entry["path"])), what="manifest path")
+        if unsafe is not None:
+            problems.append(unsafe)
+            continue
+        path = root / str(entry["path"])
+        backed_up = int(entry["size"])
+        if not path.is_file():
+            problems.append(f"{entry['path']} is missing from the live root")
+            continue
+        live_size = path.stat().st_size
+        if live_size < backed_up:
+            problems.append(
+                f"TRUNCATED: {entry['path']} is {live_size} bytes; the backup holds "
+                f"{backed_up}. An append-only artifact cannot legitimately shrink"
+            )
+        elif _digest_prefix(path, backed_up) != entry["sha256"]:
+            problems.append(
+                f"REWRITTEN: {entry['path']}'s first {backed_up} bytes do not match the "
+                "backup, so its history was not appended to — it was replaced"
+            )
+
+    # Positions must be ABSENT. Step 3 deletes them and no backup carries one;
+    # a position present here is the newer-offsets state docs/RESTORE.md calls
+    # the single unrecoverable skew.
+    for relative, why in sorted(EXCLUDED.items()):
+        if (root / relative).exists():
+            problems.append(
+                f"POSITION PRESENT: {relative} exists in the live root. "
+                f"docs/RESTORE.md step 3 removes it before the store comes back, because "
+                f"{why.split(':')[0]}"
+            )
+
+    # Chains: entries may only GROW, and must still verify.
+    chains = _verify_chains(root)
+    for name, state in sorted(chains.items()):
+        recorded = manifest["chains"].get(name)
+        if not isinstance(state, dict) or not isinstance(recorded, dict):
+            continue
+        if recorded.get("present") and not state.get("present"):
+            problems.append(f"{name}: present in the backup, absent from the live root")
+            continue
+        if not state.get("present"):
+            continue
+        if not state.get("intact"):
+            problems.append(f"{name}: chain does not verify: {state.get('failure')}")
+        live_entries = state.get("entries")
+        kept = recorded.get("entries")
+        if isinstance(live_entries, int) and isinstance(kept, int) and live_entries < kept:
+            problems.append(
+                f"{name}: {live_entries} entries in the live root, {kept} in the backup — "
+                "an append-only chain lost history"
+            )
+
+    return {
+        "root": str(root),
+        "backup": str(backup),
+        "taken_at": manifest.get("taken_at"),
+        "events": expected["events"],
+        "live_events": live_events,
+        "verified": not problems,
+        "problems": problems,
+        "chains": chains,
+    }
+
+
 def _wide_paths(root: Path) -> list[str]:
     """Lab-data paths readable or writable beyond their owner.
 
@@ -563,6 +748,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--verify-restore",
+        type=Path,
+        default=None,
+        metavar="BACKUP",
+        help=(
+            "Verify that --root's LIVE tree holds what BACKUP's manifest attested, "
+            "instead of taking a backup. The promotion gate: --verify checks a backup "
+            "before a restore, this checks the restored root after one. Run it between "
+            "steps 4 and 5 of docs/RESTORE.md; exits 1 on any mismatch. It speaks only "
+            "about the copy and says nothing about whether exactly one node is active."
+        ),
+    )
+    parser.add_argument(
         "--caller",
         default=None,
         help="Who this pass is for, recorded in the audit chain. Never inferred.",
@@ -574,7 +772,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Policy bundle to enforce (default: the committed bundle).",
     )
     parser.add_argument("--json", action="store_true", help="Emit the report as JSON.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.verify is not None and args.verify_restore is not None:
+        # Not a mutually_exclusive_group: that reports "not allowed with", which
+        # does not say which check the operator wanted. These two verify
+        # different things at different points in a restore, so naming both is
+        # the useful message.
+        parser.error(
+            "--verify and --verify-restore do different things: --verify checks a backup "
+            "against its own manifest BEFORE a restore, --verify-restore checks the live "
+            "--root AFTER one. Pass one."
+        )
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -627,8 +836,14 @@ def _run(
     engine: object,
     started_at: float,
 ) -> int:
-    verifying = args.verify is not None
-    label = f"{ACTION_NAME}:{'verify' if verifying else 'take'}"
+    if args.verify is not None:
+        mode = "verify"
+    elif args.verify_restore is not None:
+        mode = "verify-restore"
+    else:
+        mode = "take"
+    verifying = mode != "take"
+    label = f"{ACTION_NAME}:{mode}"
 
     try:
         audit = AuditLogger(root / AUDIT_SUBDIR / AUDIT_FILE, signing_key=signing_key_from_env())
@@ -652,8 +867,10 @@ def _run(
         return 1
 
     try:
-        if verifying:
+        if mode == "verify":
             payload = _verify_backup(args.verify.resolve())
+        elif mode == "verify-restore":
+            payload = _verify_restore(root, args.verify_restore.resolve())
         else:
             manifest = _take_backup(root, destination)
             manifest_path = destination / MANIFEST_FILE
@@ -697,7 +914,7 @@ def _run(
             action_class=BACKUP_CLASS,
             decision="allow",
             reason=escape_delimiter(
-                f"{'verified' if verifying else 'wrote'} backup {payload['backup']} "
+                f"{mode if verifying else 'wrote'} backup {payload['backup']} "
                 f"holding {payload.get('events')} event(s); "
                 + (
                     f"verified={payload.get('verified')} problems={len(payload.get('problems', []))}"  # type: ignore[arg-type]
@@ -715,7 +932,7 @@ def _run(
             payload["elapsed_seconds"] = round(time.monotonic() - started_at, 3)
             print(json.dumps(payload, sort_keys=True, default=str))
         else:
-            _print_text(payload, verifying=verifying)
+            _print_text(payload, mode=mode)
     except OSError as exc:
         print(f"error: pass ran but its report could not be written: {exc}", file=sys.stderr)
         return 1
@@ -725,17 +942,39 @@ def _run(
     return 0
 
 
-def _print_text(payload: dict[str, object], *, verifying: bool) -> None:
-    if verifying:
+def _print_text(payload: dict[str, object], *, mode: str) -> None:
+    if mode != "take":
         raw = payload["problems"]
         problems = raw if isinstance(raw, list) else []
+        restored = mode == "verify-restore"
+        subject = (
+            f"{payload.get('root')} against {payload['backup']}"
+            if restored
+            else (str(payload["backup"]))
+        )
         if payload["verified"]:
+            if restored:
+                print(
+                    f"restore verified: {payload['root']} holds the "
+                    f"{payload['events']} event(s) {payload['backup']} attested, every "
+                    "declared file carries the backed-up history as a prefix, and every "
+                    "chain still verifies."
+                )
+                # Said on success, not only in the docs, because a green line
+                # here is exactly what an operator will quote as justification
+                # for promoting — and it does not justify that.
+                print(
+                    "  NOTE: this verifies the COPY. It says nothing about the fence — "
+                    "whether the former active node's timers are stopped. That is "
+                    "procedural; see DESIGN.md's active/passive row and docs/RESTORE.md."
+                )
+                return
             print(
                 f"verified {payload['backup']}: {payload['events']} event(s), "
                 f"attestation and every file digest match the manifest."
             )
             return
-        print(f"FAILED to verify {payload['backup']}: {len(problems)} problem(s)")
+        print(f"FAILED to verify {subject}: {len(problems)} problem(s)")
         for problem in problems:
             print(f"  - {problem}")
         return
