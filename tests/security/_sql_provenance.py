@@ -884,8 +884,27 @@ NAMESPACE_ATTRIBUTES = frozenset({"__globals__", "f_globals", "f_locals", "f_bui
 #: Calls that can hand back a module object named by a string, so the module
 #: arrives under a name no ``import`` statement bound and no rule below
 #: watches. Measured at zero occurrences across every shipped package.
-MODULE_FACTORY_ATTRIBUTES = frozenset({"import_module", "reload"})
+#: ``getmodule`` and ``__import__`` joined after review: ``inspect.getmodule(
+#: run)`` hands back the *current* module from an ordinary same-module
+#: function, and ``builtins.__import__("pkg.mod", fromlist=[...])`` is a
+#: *qualified* ``__import__``, which :data:`MODULE_FACTORY_NAMES` cannot see
+#: because that set matches a bare ``Name``. Both were measured accepted.
+MODULE_FACTORY_ATTRIBUTES = frozenset({"import_module", "reload", "getmodule", "__import__"})
 MODULE_FACTORY_NAMES = frozenset({"__import__", "__builtins__"})
+
+#: The attribute-access dunders. Ordinary attribute syntax is what this
+#: repository writes, so these are refused on any base: ``events.__setattr__(
+#: "_TEMPLATE", clause)`` is an assignment the assignment clause cannot see
+#: (it is a ``Call``), and ``events.__getattribute__("__dict__").update(...)``
+#: reaches a namespace through a receiver that is a ``Call`` rather than an
+#: ``Attribute``. Both were measured accepted. Zero occurrences shipped.
+ATTRIBUTE_ACCESS_DUNDERS = frozenset(
+    {"__setattr__", "__getattribute__", "__getattr__", "__delattr__"}
+)
+
+#: Namespace names used as *strings* rather than as attributes, which is how
+#: ``__getattribute__("__dict__")`` evades :data:`NAMESPACE_ATTRIBUTES`.
+NAMESPACE_STRINGS = frozenset({"__dict__"}) | NAMESPACE_ATTRIBUTES
 
 
 def _attribute_base(expression: ast.expr) -> str | None:
@@ -896,7 +915,7 @@ def _attribute_base(expression: ast.expr) -> str | None:
 
 
 def _module_bases(
-    tree: ast.Module, module: str, swept: frozenset[str]
+    nodes: Iterable[ast.AST], module: str, swept: frozenset[str]
 ) -> tuple[set[str], set[str]]:
     """``(every imported module base, bases that bind a SWEPT module)``.
 
@@ -958,7 +977,7 @@ def _module_bases(
 
     imported: set[str] = set()
     swept_bases: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 # `import a.b` binds `a` and reaches `a.*`; `import a.b as c`
@@ -985,6 +1004,212 @@ def _module_bases(
                     imported.add(bound)
                     swept_bases.add(bound)
     return imported, swept_bases
+
+
+def _written_attribute(expression: ast.expr) -> str | None:
+    """The attribute name a write actually lands on, past any subscripts.
+
+    ``mod._EQUALITY["vendor"] = clause`` writes *into* ``_EQUALITY``, so the
+    name that matters is ``_EQUALITY`` and not the subscript.
+    """
+    probe = expression
+    while isinstance(probe, ast.Subscript):
+        probe = probe.value
+    return probe.attr if isinstance(probe, ast.Attribute) else None
+
+
+def _swept_imports_in(scope: ast.AST, module: str, swept: frozenset[str]) -> set[str]:
+    """Names bound to a swept module by an import **in this scope only**.
+
+    :func:`_module_bases` takes nodes rather than a tree precisely so this can
+    hand it ``_scope_nodes(scope)``, which stops at a nested scope.
+    """
+    return _module_bases(_scope_nodes(scope), module, swept)[1]
+
+
+def _declared_global(scope: ast.AST) -> set[str]:
+    """Names a scope declares ``global`` or ``nonlocal``.
+
+    :func:`rebinding_names` counts these as bindings, correctly for provenance:
+    a ``global`` hands the binding to someone else, so this scope cannot vouch
+    for its value. For module *identity* the opposite holds — ``global events``
+    is an explicit statement that ``events`` IS the module-level binding — so
+    they must not be subtracted as shadows. Review filed that as a P1 and it
+    was right: measured, ``global events`` followed by ``events.sample =
+    clause`` produced no finding.
+    """
+    names: set[str] = set()
+    for node in _scope_nodes(scope):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+    return names
+
+
+def _scoped_swept_bases(
+    scope: ast.AST, module: str, swept: frozenset[str], inherited: frozenset[str]
+) -> frozenset[str]:
+    """Which names name a swept module *in this scope*, honouring shadowing.
+
+    Review filed the module-wide version as a P2 and it was right. The bases
+    were collected with one module-wide ``ast.walk``, so a ``from ingest import
+    identity`` anywhere in a file made **every** ``identity`` load in that file
+    a swept-module binding — and an unrelated ``def f(identity): return
+    identity`` was then refused for a load that is a parameter and cannot be
+    the module. Not hypothetical: the swept bindings measured in
+    ``ingest/normalize.py`` are ``cloud``, ``email``, ``endpoint``,
+    ``identity``, ``keyvalue`` and ``network``, every one a plausible parameter
+    name, against a merge-blocking gate.
+
+    A scope's own imports bind; everything :func:`_opaque_names` reports
+    shadows, except the names :func:`_declared_global` reports, which are the
+    opposite of a shadow. A plain ``Assign`` deliberately does **not** shadow:
+    AST order is not flow order, so a single per-scope set cannot tell
+    ``events = 3`` before a write from one after it, and keeping the name a
+    module binding is the fail-closed reading.
+    """
+    bound_here = _swept_imports_in(scope, module, swept)
+    shadowed = _opaque_names(scope) - bound_here - _declared_global(scope)
+    return frozenset((inherited - shadowed) | bound_here)
+
+
+def _swept_module_checks(
+    nodes: typing.Iterable[ast.AST],
+    module: str,
+    active: frozenset[str],
+    attribute_bases: set[int],
+) -> list[str]:
+    """The three swept-module rules over a set of nodes with one active set."""
+    findings: list[str] = []
+    for node in nodes:
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in active
+            and id(node) not in attribute_bases
+        ):
+            findings.append(
+                f"{module}:{node.lineno}: the swept module bound to {node.id!r} is taken "
+                f"as a value rather than used as an attribute base, from which it can be "
+                f"rebound to a name no rule here watches: {ast.unparse(node)[:120]}"
+            )
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+            targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, (ast.Attribute, ast.Subscript))
+                    and _attribute_base(target) in active
+                ):
+                    findings.append(
+                        f"{module}:{node.lineno}: writing into a swept module's namespace "
+                        f"rebinds a constant that module believes is sealed: "
+                        f"{ast.unparse(target)[:120]}"
+                    )
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in MUTATORS
+            and isinstance(node.func.value, (ast.Attribute, ast.Subscript))
+            and _attribute_base(node.func.value) in active
+        ):
+            findings.append(
+                f"{module}:{node.lineno}: mutating a container held in a swept module "
+                f"skips every demotion pass, which needs a bare name receiver: "
+                f"{ast.unparse(node)[:120]}"
+            )
+    return findings
+
+
+def _scoped_module_findings(
+    scope: ast.AST,
+    module: str,
+    swept: frozenset[str],
+    attribute_bases: set[int],
+    inherited: frozenset[str],
+    skip: frozenset[int] = frozenset(),
+) -> list[str]:
+    """The swept-module rules per lexical scope, with two boundaries review found.
+
+    **A class body's locals are not visible to its methods.** Python's class
+    scope is not a closure scope, which this analysis states elsewhere and this
+    function did not honour: passing a class body's ``active`` into its methods
+    meant a ``class C`` whose body shadowed a module-level import had that
+    removal inherited by every method, while the method's own ``events`` still
+    resolves from module globals at runtime. Measured accepted. A ClassDef's
+    children therefore inherit what the *class* inherited.
+
+    **Decorators and argument defaults evaluate in the ENCLOSING scope.**
+    ``_scope_nodes`` stops at a nested scope, so those expressions were only
+    ever reached on the recursive pass — with the inner parameters already
+    applied as shadows. Measured accepted: ``def plant(clause, events=events):
+    events.sample = clause`` escapes the module through its own default, and
+    the parameter named ``events`` hid it. They are checked here, against this
+    scope's bindings, and skipped on the way down so a finding is not reported
+    twice.
+    """
+    active = _scoped_swept_bases(scope, module, swept, inherited)
+    findings = _swept_module_checks(
+        (node for node in _scope_nodes(scope) if id(node) not in skip),
+        module,
+        active,
+        attribute_bases,
+    )
+    # A class body executes in the enclosing frame, but its locals are NOT a
+    # closure its methods can read. See the docstring.
+    for_children = inherited if isinstance(scope, ast.ClassDef) else active
+    for child in _nested_scopes(scope):
+        outer = [node for expr in _evaluated_in_enclosing_scope(child) for node in ast.walk(expr)]
+        findings += _swept_module_checks(outer, module, active, attribute_bases)
+        findings += _scoped_module_findings(
+            child, module, swept, attribute_bases, for_children, frozenset(id(n) for n in outer)
+        )
+    return findings
+
+
+def _nested_scopes(scope: ast.AST) -> list[ast.AST]:
+    """The scopes directly inside ``scope``, without descending past them."""
+    found: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            found.append(node)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _main_guard_bound(tree: ast.Module) -> set[str]:
+    """Names bound only inside an ``if __name__ == "__main__":`` block.
+
+    These earn provenance because an ``if`` is not a scope, and they are the
+    reason the trusted-write rule needed narrowing — measured, `log` and
+    `sample` are demo locals in two agent modules. Excluding them is **sound,
+    not a compromise**: the guard is false on import, so the name is never
+    bound in an imported module and no other module can write to it. Measured:
+    six names across the shipped packages, and **no executed statement inside
+    any guard**, so nothing the lattice must judge depends on one.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "__name__"
+            and any(
+                isinstance(other, ast.Constant) and other.value == "__main__"
+                for other in test.comparators
+            )
+        ):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = inner.targets if isinstance(inner, ast.Assign) else [inner.target]
+                for target in targets:
+                    names |= target_names(target)
+    return names
 
 
 def namespace_findings(sources: dict[str, str]) -> list[str]:
@@ -1055,12 +1280,36 @@ def namespace_findings(sources: dict[str, str]) -> list[str]:
     asserts.
     """
     swept = frozenset(sources)
+    # The trusted set is what makes the first rule below base-INDEPENDENT:
+    # instead of asking "could this expression be a module?", which is what
+    # review walked past twice, it asks "could this write land on a constant
+    # the lattice trusts?" — a closed, computable set. Measured at 72 names
+    # across the shipped packages, every one an UPPER_SNAKE or
+    # underscore-prefixed constant, with zero attribute writes to any of them.
+    envs = package_envs(sources)
+    guarded = {name: _main_guard_bound(ast.parse(text)) for name, text in sources.items()}
+    # The destination set for the base-independent rule below: a name is a
+    # protected destination if SOME module trusts it outside any
+    # ``if __name__ == "__main__":`` block. The guard matters and is not a
+    # shape heuristic — the first draft filtered on UPPER/underscore instead,
+    # and review then found three scope routes that were exploitable only
+    # through the lowercase names that filter let through. The guard is the
+    # real predicate: it is false on import, so a guard-bound name is never
+    # bound in an imported module and no other module can write to it.
+    # Measured: 72 trusted names, 70 outside a guard, zero of those lowercase,
+    # and no executed statement inside any guard.
+    trusted = {
+        name
+        for module, env in envs.items()
+        for name, kind in env.items()
+        if kind != OTHER and name not in guarded[module]
+    }
     findings: list[str] = []
     for module, text in sorted(sources.items()):
         tree = ast.parse(text)
-        imported, swept_bases = _module_bases(tree, module, swept)
+        imported, _module_wide = _module_bases(ast.walk(tree), module, swept)
         # Every node that is the receiver of an attribute access, by identity.
-        # A swept module may appear ONLY here; see the escape clause below.
+        # A swept module may appear ONLY here; see the escape clause.
         attribute_bases = {
             id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Attribute)
         }
@@ -1095,6 +1344,12 @@ def namespace_findings(sources: dict[str, str]) -> list[str]:
                     f"off, so this reaches module globals without naming a module: "
                     f"{ast.unparse(node)[:120]}"
                 )
+            if isinstance(node, ast.Attribute) and node.attr in ATTRIBUTE_ACCESS_DUNDERS:
+                findings.append(
+                    f"{module}:{node.lineno}: {node.attr} performs an attribute read or "
+                    f"write that the assignment and mutator clauses cannot see, because it "
+                    f"is a call: {ast.unparse(node)[:120]}"
+                )
             if isinstance(node, ast.Call) and (
                 (
                     isinstance(node.func, ast.Attribute)
@@ -1103,47 +1358,47 @@ def namespace_findings(sources: dict[str, str]) -> list[str]:
                 or (isinstance(node.func, ast.Name) and node.func.id in MODULE_FACTORY_NAMES)
             ):
                 findings.append(
-                    f"{module}:{node.lineno}: this hands back a module named by a string, so "
-                    f"the module arrives under a name no import bound and no rule here "
-                    f"watches: {ast.unparse(node)[:120]}"
+                    f"{module}:{node.lineno}: this hands back a module, so the module "
+                    f"arrives under a name no import bound and no rule here watches: "
+                    f"{ast.unparse(node)[:120]}"
                 )
-            if (
-                isinstance(node, ast.Name)
-                and isinstance(node.ctx, ast.Load)
-                and node.id in swept_bases
-                and id(node) not in attribute_bases
-            ):
-                findings.append(
-                    f"{module}:{node.lineno}: the swept module bound to {node.id!r} is taken "
-                    f"as a value rather than used as an attribute base, from which it can be "
-                    f"rebound to a name no rule here watches: {ast.unparse(node)[:120]}"
-                )
+            if isinstance(node, ast.Call):
+                for argument in node.args:
+                    if (
+                        isinstance(argument, ast.Constant)
+                        and isinstance(argument.value, str)
+                        and argument.value in NAMESPACE_STRINGS | trusted
+                    ):
+                        findings.append(
+                            f"{module}:{node.lineno}: a namespace or a trusted constant is "
+                            f"named as a STRING here, which reaches it without an attribute "
+                            f"for any rule to match: {ast.unparse(node)[:120]}"
+                        )
+            # ---- base-independent: nothing may write a trusted constant ----
             if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
                 targets = (
                     node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
                 )
                 for target in targets:
-                    if (
-                        isinstance(target, (ast.Attribute, ast.Subscript))
-                        and _attribute_base(target) in swept_bases
-                    ):
+                    if _written_attribute(target) in trusted:
                         findings.append(
-                            f"{module}:{node.lineno}: writing into a swept module's namespace "
-                            f"rebinds a constant that module believes is sealed: "
+                            f"{module}:{node.lineno}: this writes an attribute spelled like a "
+                            f"constant the lattice trusts, whatever the base evaluates to: "
                             f"{ast.unparse(target)[:120]}"
                         )
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr in MUTATORS
-                and isinstance(node.func.value, (ast.Attribute, ast.Subscript))
-                and _attribute_base(node.func.value) in swept_bases
+                and _written_attribute(node.func.value) in trusted
             ):
                 findings.append(
-                    f"{module}:{node.lineno}: mutating a container held in a swept module "
-                    f"skips every demotion pass, which needs a bare name receiver: "
+                    f"{module}:{node.lineno}: this mutates an attribute spelled like a "
+                    f"constant the lattice trusts, whatever the base evaluates to: "
                     f"{ast.unparse(node)[:120]}"
                 )
+        # ---- the swept-module rules, per lexical scope ----
+        findings += _scoped_module_findings(tree, module, swept, attribute_bases, frozenset())
     return findings
 
 

@@ -574,12 +574,339 @@ def test_the_three_module_identity_rules_are_not_vacuous() -> None:
     sources = _shipped_sources()
     swept = frozenset(sources)
     bound = {
-        module: sorted(sqlprov._module_bases(ast.parse(text), module, swept)[1])
+        module: sorted(sqlprov._module_bases(ast.walk(ast.parse(text)), module, swept)[1])
         for module, text in sources.items()
     }
     live = {module: names for module, names in bound.items() if names}
     total = sum(len(names) for names in live.values())
     assert total >= 11, f"only {total} swept-module bindings found, in {sorted(live)}"
+
+
+# --------------------------------------------------------------------------
+# Pinned: a module reached without an import, and a namespace named as a string
+# --------------------------------------------------------------------------
+#
+# Round two of review, and both P1s said the same thing: enumerating HOW a
+# module can arrive is a deny-list, and a deny-list is what this analysis keeps
+# being caught by. `importlib.import_module`, `importlib.reload` and a bare
+# `__import__` were on the list; `inspect.getmodule(run)`, a *qualified*
+# `builtins.__import__(...)`, `events.__setattr__("_SQL", clause)` and
+# `events.__getattribute__("__dict__").update(...)` were not, and all four were
+# measured accepted.
+#
+# So the question is inverted, as it has been at every other level here: not
+# "could this expression be a module?" but **"could this write land on a
+# constant the lattice trusts?"** — a closed, computable set. Measured at 72
+# names across the shipped packages, every one UPPER_SNAKE or
+# underscore-prefixed, with ZERO attribute writes to any of them. The rule is
+# base-independent, so it does not care how the module was obtained, and it
+# subsumes both P1s rather than extending a list by four names. The list is
+# kept as well, widened to `getmodule` and `__import__`, because it refuses the
+# factory call itself rather than waiting for the write.
+
+_REJECTED_MODULE_REACH = (
+    (
+        "inspect.getmodule of a same-module function, written inline",
+        "import inspect\n\n\n" + _DECLARING_SELF + "def plant(clause):\n"
+        '    inspect.getmodule(run)._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "inspect.getmodule, assigned first and written after",
+        "import inspect\n\n\n" + _DECLARING_SELF + "def plant(clause):\n"
+        "    mod = inspect.getmodule(run)\n"
+        '    mod._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "a QUALIFIED __import__, which the bare-name set cannot see",
+        "import builtins\n\n\n"
+        "def plant(clause):\n"
+        '    mod = builtins.__import__("sample.events", fromlist=["events"])\n'
+        '    mod._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "__setattr__, an assignment the assignment clause cannot see",
+        "from sample import events\n\n\n"
+        "def plant(clause):\n"
+        '    events.__setattr__("_SQL", "SELECT x WHERE " + clause)\n',
+    ),
+    (
+        "__getattribute__('__dict__'), a namespace named as a string",
+        "from sample import events\n\n\n"
+        "def plant(extra):\n"
+        '    events.__getattribute__("__dict__").update(extra)\n',
+    ),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "source"), _REJECTED_MODULE_REACH)
+def test_a_module_reached_without_an_import_is_refused(label: str, source: str) -> None:
+    """All five were measured **accepted** on `483f9fd`, before this rule existed.
+
+    None of them is closed by naming a factory. The first three obtain a real
+    module object through a call the deny-list did not list; the last two reach
+    a namespace by passing its name as a *string*, so there is no attribute for
+    any attribute rule to match. What they have in common is only the
+    destination — a constant the lattice trusts — which is why the rule is
+    stated there instead.
+    """
+    sources = {"sample.events": _DECLARING, "sample.helper": source}
+    assert sqlprov.namespace_findings(sources), f"{label} was accepted"
+
+
+@pytest.mark.security
+def test_a_parameter_sharing_a_name_with_an_imported_module_is_not_a_finding() -> None:
+    """The P2, and it was a real false positive with a plausible trigger.
+
+    The swept-module bases were collected with one module-wide ``ast.walk``, so
+    a ``from sample import events`` anywhere in a file made **every** ``events``
+    load in that file a module binding — and an unrelated ``def identity(events):
+    return events`` was refused for a load that is a parameter and cannot be the
+    module. The trigger is not hypothetical: ``ingest/normalize.py``'s six swept
+    bindings are ``cloud``, ``email``, ``endpoint``, ``identity``, ``keyvalue``
+    and ``network``, every one a plausible parameter name, and the gate is
+    merge-blocking.
+
+    Resolution is per lexical scope now. The *other* half of the same fixture
+    must stay refused, and does: returning a module from the function that
+    imported it is an escape, which
+    ``test_a_swept_module_cannot_be_reached_under_another_name`` covers.
+    """
+    helper = """\
+from sample import events
+
+
+def use():
+    return events.run
+
+
+def identity(events):
+    return events
+"""
+    sources = {"sample.events": _DECLARING, "sample.helper": helper}
+    assert not sqlprov.namespace_findings(sources)
+
+
+@pytest.mark.security
+def test_the_trusted_destination_set_excludes_only_main_guard_locals() -> None:
+    """What the trusted-write rule protects, and why the predicate is the guard.
+
+    The rule forbids writing *any* attribute spelled like a name the lattice
+    trusts, whatever the base. That is only cheap while the trusted set holds
+    constants: if it held ordinary words, ``obj.name = x`` would fail
+    everywhere. The first draft filtered on shape — UPPER or underscore — and
+    review then found **three scope routes exploitable only through the
+    lowercase names that filter let through**. The filter was a proxy; this is
+    the thing it was approximating.
+
+    A name bound only inside ``if __name__ == "__main__":`` earns provenance
+    because an ``if`` is not a scope, but excluding it is **sound rather than a
+    compromise**: the guard is false on import, so the name is never bound in
+    an imported module and no other module can write to it. Measured: 72
+    trusted names, 70 outside a guard, **zero of those lowercase**, and **no
+    executed statement inside any guard**, so nothing the lattice must judge
+    depends on one.
+    """
+    sources = _shipped_sources()
+    envs = sqlprov.package_envs(sources)
+    trees = {module: ast.parse(text) for module, text in sources.items()}
+    guarded = {module: sqlprov._main_guard_bound(tree) for module, tree in trees.items()}
+
+    trusted = {name for env in envs.values() for name, kind in env.items() if kind != sqlprov.OTHER}
+    protected = {
+        name
+        for module, env in envs.items()
+        for name, kind in env.items()
+        if kind != sqlprov.OTHER and name not in guarded[module]
+    }
+    assert protected, "the protected set is empty, so the rule watches nothing"
+    assert len(protected) >= 60, f"only {len(protected)} protected names"
+
+    # The predicate must not be doing nothing, and must not be doing too much.
+    assert trusted - protected, (
+        "no trusted name is guard-bound any more, so this exclusion has stopped "
+        "being load-bearing — either a demo block moved or the lattice changed"
+    )
+    lowercase = sorted(name for name in protected if not (name.startswith("_") or name.isupper()))
+    assert not lowercase, (
+        f"the protected set has picked up ordinary lowercase names {lowercase}. The "
+        "base-independent write rule would then refuse `anything.<name> = x` across the "
+        "repository. Either they are §4 naming-convention breaches, or the guard "
+        "predicate is no longer the right one."
+    )
+
+    # And the exclusion is only safe while no statement lives inside a guard.
+    inside = [
+        f"{module}:{node.lineno}"
+        for module, tree in trees.items()
+        for guard in tree.body
+        if isinstance(guard, ast.If)
+        for node in ast.walk(guard)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in sqlprov.EXECUTORS
+        and sqlprov._main_guard_bound(ast.Module(body=[guard], type_ignores=[]))
+    ]
+    assert not inside, (
+        f'a statement is executed inside an `if __name__ == "__main__":` block '
+        f"({inside}), whose bindings this rule excludes — so a constant it depends on is "
+        "no longer a protected destination"
+    )
+
+
+# --------------------------------------------------------------------------
+# Pinned: the two lexical boundaries, and global
+# --------------------------------------------------------------------------
+#
+# Round three, all three findings against the per-scope resolution added in
+# round two, and all three measured accepted. Every one was exploitable ONLY
+# through a lowercase trusted name, which is to say through the shape filter
+# the round-two rule used — so the root fix is the guard predicate above and
+# these three are the correctness fix underneath it. The matrix is what made
+# that legible: each route was measured against a constant-shaped name and a
+# lowercase one, and A/B/C were refused for the first and accepted for the
+# second.
+
+_REJECTED_SCOPE_BOUNDARY = (
+    (
+        "a class body shadows the import; a METHOD writes through it",
+        "from sample import events\n\n\nclass C:\n"
+        "    def events(self):\n        return None\n\n"
+        "    def plant(self, clause):\n"
+        '        events._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "the module escapes through an argument DEFAULT",
+        "from sample import events\n\n\n"
+        "def plant(clause, events=events):\n"
+        '    events._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "the module escapes through a DECORATOR argument",
+        "from sample import events\n\n\ndef deco(mod):\n    return lambda f: f\n\n\n"
+        "@deco(events)\ndef plant(clause):\n    return clause\n",
+    ),
+    (
+        "`global events` treated as a shadow instead of a reference",
+        "from sample import events\n\n\ndef plant(clause):\n    global events\n"
+        '    events._SQL = "SELECT x WHERE " + clause\n',
+    ),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "source"), _REJECTED_SCOPE_BOUNDARY)
+def test_a_scope_boundary_cannot_hide_a_module_binding(label: str, source: str) -> None:
+    """Three language facts the per-scope resolution had wrong.
+
+    1. **Class scope is not a closure scope.** A method cannot read a class-body
+       local, so passing a class body's active set into its methods was wrong in
+       both directions — it inherited the class's shadowing of a module-level
+       import, while the method's own load still resolves from module globals.
+    2. **Decorators and argument defaults evaluate in the enclosing scope.**
+       ``_scope_nodes`` stops at a nested scope, so those expressions were only
+       reached on the recursive pass, with the inner parameters already applied
+       as shadows — and a parameter named after the module hid its own default.
+    3. **``global`` is the opposite of a shadow.** ``rebinding_names`` counts it
+       as a binding, correctly for provenance, and that made it subtract the
+       very module-level binding it explicitly refers to.
+
+    All four measured accepted beforehand with a lowercase trusted name; the
+    first, second and fourth were refused for a constant-shaped one, which is
+    what identified the shape filter as the common cause.
+    """
+    sources = {"sample.events": _DECLARING, "sample.helper": source}
+    assert sqlprov.namespace_findings(sources), f"{label} was accepted"
+
+
+@pytest.mark.security
+def test_an_import_only_in_a_class_body_does_not_fault_its_methods() -> None:
+    """The other half of the class-scope finding, **refuted** by measurement.
+
+    The report also said an import existing only in the class namespace could
+    generate a false method finding. Measured both before and after the fix: it
+    does not — a method's parameter of that name is not reported, because the
+    class body's bindings are not inherited by its methods in either direction.
+    Pinned so the fix for the real half cannot introduce the half that was not
+    real.
+    """
+    helper = """\
+class C:
+    from sample import events
+
+    def use(self, events):
+        return events
+"""
+    sources = {"sample.events": _DECLARING, "sample.helper": helper}
+    assert not sqlprov.namespace_findings(sources)
+
+
+# --------------------------------------------------------------------------
+# Pinned: how a relative import resolves, which was an open review question
+# --------------------------------------------------------------------------
+#
+# `_module_bases` turns `from <dots><mod> import <name>` into the dotted module
+# it names, so it can tell a module binding from an ordinary value. The
+# arithmetic on `node.level` was flagged as unverified in two pull request
+# bodies — "the kind of thing that is wrong for exactly one case" — and nothing
+# asserted it. This is that assertion.
+#
+# Python's rule: for a module whose ``__package__`` has components ``parts``,
+# level L resolves against ``".".join(parts[:len(parts) - (L - 1)])``. The case
+# worth naming is a package's ``__init__``: its ``__package__`` is the package
+# itself, not the parent — and the swept set is keyed by FILE, so
+# ``p/sub/__init__.py`` is the key ``p.sub.__init__``. Stripping the last
+# component of that key yields ``p.sub``, which is exactly ``__package__``, and
+# stripping it from ``p.sub.m`` yields the same. One rule covers both file
+# kinds, which is why there is no off-by-one here; it is a property rather than
+# a coincidence, so it is asserted.
+
+#: ``(module under analysis, source, what Python resolves it to, is it a base)``
+_RELATIVE_IMPORTS = (
+    ("p.m", "from . import a", "p.a", True),
+    ("p.m", "from .sub import b", "p.sub.b", True),
+    ("p.sub.m", "from . import b", "p.sub.b", True),
+    ("p.sub.m", "from .. import a", "p.a", True),
+    ("p.sub.deep.m", "from ... import a", "p.a", True),
+    ("p.sub.deep.m", "from .. import b", "p.sub.b", True),
+    ("p.sub.m", "from ..sub.deep import c", "p.sub.deep.c", True),
+    ("p.sub.m", "from .deep import c", "p.sub.deep.c", True),
+    ("p.m", "from . import a as aliased", "p.a", True),
+    ("p.m", "from q import d", "q.d, absolute", True),
+    # A package's __init__: __package__ is the package, not its parent.
+    ("p.__init__", "from . import a", "p.a", True),
+    ("p.sub.__init__", "from . import b", "p.sub.b", True),
+    ("p.sub.__init__", "from .. import a", "p.a", True),
+    # Not module bindings.
+    ("p.m", "from .. import a", "beyond the top: ImportError at runtime", False),
+    ("p.m", "from . import nothere", "p.nothere, which does not exist", False),
+    ("p.m", "from .a import something", "p.a.something, a value not a module", False),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("module", "source", "resolves", "is_base"),
+    _RELATIVE_IMPORTS,
+    ids=[f"{module}::{source}" for module, source, _r, _b in _RELATIVE_IMPORTS],
+)
+def test_a_relative_import_resolves_to_the_module_python_would_import(
+    module: str, source: str, resolves: str, is_base: bool
+) -> None:
+    """Sixteen spellings, each stating Python's answer independently of the code.
+
+    Measured 16 of 16 correct, including both ``__init__`` spellings and the
+    two-and-three-dot forms. The two negative cases matter as much: a level
+    that walks past the top of the tree cannot run at all, and ``from .a import
+    something`` names a *value* inside a module rather than a module, so
+    neither may be treated as a namespace binding.
+    """
+    swept = frozenset({"p.a", "p.sub.b", "p.sub.deep.c", "q.d", "p.__init__", "p.sub.__init__"})
+    _imported, bases = sqlprov._module_bases(ast.walk(ast.parse(source)), module, swept)
+    assert bool(bases) is is_base, (
+        f"{source!r} in {module} resolves to {resolves}; "
+        f"expected {'a module binding' if is_base else 'no module binding'}, got {sorted(bases)}"
+    )
 
 
 # --------------------------------------------------------------------------
