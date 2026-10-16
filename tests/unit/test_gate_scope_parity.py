@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.security import _sql_provenance as sqlprov
+
 _REPO = Path(__file__).resolve().parents[2]
 
 # The canonical scopes. A new package updates THIS list plus every config the
@@ -465,4 +467,38 @@ def test_every_python_directory_is_accounted_for() -> None:
         f"{sorted(unaccounted)} hold Python but are in no gate scope. Add each to "
         "PACKAGES (and every config the assertions above check), or to UNGATED "
         "with the reason."
+    )
+
+
+@pytest.mark.unit
+def test_sql_provenance_sweep_covers_every_accounted_directory() -> None:
+    """The SQL-provenance sweep has no config of its own, so pin its walk.
+
+    ``tests/security/_sql_provenance.py`` derives its scope by walking the
+    repository rather than reading a list, which is what makes a new package
+    swept the day it lands. That removes one drift and introduces another: a
+    walk answers only for the directories that happen to exist, so it cannot
+    fail for a directory nobody decided about. The canonical set in this file
+    can, which is why the two are tied together here.
+
+    The sweep's scope is therefore asserted to be exactly
+    ``PACKAGES | UNGATED`` minus its own stated exclusion, and that exclusion
+    is asserted to be a directory this file has already accounted for — so
+    "excluded from the sweep" can never become a way of being in no scope at
+    all. ``tests/security/test_sql_provenance.py`` separately asserts that the
+    one excluded directory still *earns* its exclusion by measurement.
+
+    Unlike the gates above, this one needs no entry in ``pyproject.toml``,
+    ``ci.yml``, ``release.yml``, ``.pre-commit-config.yaml`` or ``AGENTS.md``:
+    it runs inside ``pytest``, which every one of those already invokes.
+    """
+    swept = {path.name for path in sqlprov.shipped_package_roots(_REPO)}
+    assert swept == (PACKAGES | UNGATED) - set(sqlprov.UNSWEPT), (
+        f"the SQL-provenance sweep covers {sorted(swept)}, which is not "
+        f"{sorted((PACKAGES | UNGATED) - set(sqlprov.UNSWEPT))}"
+    )
+    unaccounted = set(sqlprov.UNSWEPT) - PACKAGES - UNGATED
+    assert unaccounted == set(), (
+        f"{sorted(unaccounted)} is excluded from the SQL sweep but is in no scope in this "
+        "file either, so nothing accounts for it"
     )

@@ -62,8 +62,16 @@ _BANNED_CALLS = {"eval", "exec", "compile", "__import__", "system", "popen", "sp
 _BANNED_ATTR_CALLS = {"eval", "exec", "system", "popen", "spawn"}
 
 #: Names that would indicate an executor had been introduced.
+#:
+#: ``def perform`` joined this list when ``ContainmentExecutor.execute`` was
+#: renamed to ``perform`` (so that ``execute`` means sqlite3 everywhere in the
+#: shipped packages — see ``tests/security/test_sql_provenance.py``). That
+#: rename made ``perform`` this repository's word for "an executor's action
+#: method", and a marker list that banned only the old spelling would have
+#: been one rename away from accepting the thing it exists to refuse.
 _EXECUTOR_MARKERS = (
     "def execute",
+    "def perform",
     "def run_action",
     "def apply_plan",
     "def arm",
