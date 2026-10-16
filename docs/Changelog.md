@@ -16,6 +16,24 @@ All notable changes to this project. Versions correspond to git tags.
   and one paging on `rc == 1` stops paging for contention. `run_collector`
   reports `4` only when *every* failure in the pass was contention: one damaged
   source alongside a busy one still returns `1`.
+- **A `flock` that fails for any reason other than contention is now a refusal,
+  not a benign skip.** `single_instance` caught bare `OSError` and yielded
+  "another pass holds the lock" for all of it, so on a lab-data root whose
+  filesystem cannot `flock` — or whose kernel lock table is exhausted — every
+  scheduled pass of all four CLIs printed its skip line and exited `0`, forever,
+  with no contention anywhere and no work ever done. The catch is now an
+  allow-list of one, `BlockingIOError`; everything else raises
+  `LockUnavailableError` and exits `2`.
+- **Exit `2` now documents the condition it can be returned for.** A broken lock
+  reaches `2`, and all nine statements of the exit-code contract said "bad
+  arguments" — the four CLI docstrings, `scripts/_exit_codes.py`,
+  `docs/RETENTION.md`, `docs/RESTORE.md` and `docs/PRODUCTION_SOC_PLAN.md`
+  twice — so an operator who got a `2` from a failing `flock` was told to check
+  their argv. Every operator-facing site now carries the literal message the
+  code emits, asserted against it rather than paraphrased. `ENOLCK` was weighed
+  for `4` and refused: the one errno covers both a transient kernel shortage and
+  a filesystem that cannot lock at all, and retrying the second forever while
+  nothing pages is the defect above with a non-zero code.
 
 ## v2.2.0 — Release Automation & Control Integrity — 2026-10-13
 

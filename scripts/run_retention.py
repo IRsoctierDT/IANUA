@@ -46,9 +46,9 @@ optimization.
 
 **Exit codes**, which are the whole interface a scheduler sees: ``0`` a pass
 ran (including a dry run, and including a skip because another pass held the
-lock), ``1`` the store or the audit write failed, ``2`` bad arguments, ``3``
-blocked by policy — which is what an ungranted ``--apply`` returns — and ``4``
-retryable contention.
+lock), ``1`` the store or the audit write failed, ``2`` bad arguments or
+the single-instance lock could not be taken, ``3`` blocked by policy — which
+is what an ungranted ``--apply`` returns — and ``4`` retryable contention.
 
 ``4`` exists because ``1`` used to mean both "the evidence store is damaged"
 and "another writer held the lock for five seconds", which an operator must
@@ -193,7 +193,7 @@ from pipeline import (  # noqa: E402
     load_cursor,
 )
 from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
-from scripts._locking import prepare_lock, single_instance  # noqa: E402
+from scripts._locking import LockUnavailableError, prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -714,11 +714,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with single_instance(lock) as acquired:
-        if not acquired:
-            print("skipped: another retention pass holds the lock; this invocation did nothing.")
-            return 0
-        return _run(args, principal=principal, engine=engine, started_at=started_at)
+    # Wrapped because the startup `try` has already closed by here, and a
+    # lock that fails for a reason that is NOT contention must still be a
+    # message and exit 2 rather than a traceback in cron mail. The caught
+    # type is deliberately specific: a bare `except OSError` around this
+    # block would relabel any failure inside the pass as a lock problem.
+    try:
+        with single_instance(lock) as acquired:
+            if not acquired:
+                print(
+                    "skipped: another retention pass holds the lock; this invocation did nothing."
+                )
+                return 0
+            return _run(args, principal=principal, engine=engine, started_at=started_at)
+
+    except LockUnavailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 def _run(

@@ -95,8 +95,10 @@ Exit codes:
   cycle held the lock. The output distinguishes the three.
 * ``1`` — the cycle, the audit write, or the cursor save failed. The window was
   not consumed; the next invocation re-reads it.
-* ``2`` — bad arguments, an unreadable or unsafe ``--root``, or an unusable
-  policy bundle. Nothing ran and nothing was recorded.
+* ``2`` — refused before doing anything: bad arguments, an unreadable or
+  unsafe ``--root``, an unusable policy bundle, or the single-instance lock
+  could not be taken — a ``flock`` that failed for any reason *other* than
+  another cycle holding it. Nothing ran and nothing was recorded.
 * ``3`` — blocked by policy. The gate decision *is* recorded.
 * ``4`` — retryable contention: another writer held the store's write lock
   past the busy timeout. Nothing is broken, the window was not consumed, and
@@ -145,7 +147,7 @@ from pipeline import (  # noqa: E402
     save_cursor,
 )
 from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
-from scripts._locking import prepare_lock, single_instance  # noqa: E402
+from scripts._locking import LockUnavailableError, prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import validated_root  # noqa: E402
 
@@ -411,18 +413,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with single_instance(lock) as acquired:
-        if not acquired:
-            print("skipped: another cycle holds the lock; this invocation did nothing.")
-            return 0
-        return _run(
-            args,
-            principal=principal,
-            thresholds=thresholds,
-            path=path,
-            engine=engine,
-            started_at=started_at,
-        )
+    # Wrapped because the startup `try` has already closed by here, and a
+    # lock that fails for a reason that is NOT contention must still be a
+    # message and exit 2 rather than a traceback in cron mail. The caught
+    # type is deliberately specific: a bare `except OSError` around this
+    # block would relabel any failure inside the pass as a lock problem.
+    try:
+        with single_instance(lock) as acquired:
+            if not acquired:
+                print("skipped: another cycle holds the lock; this invocation did nothing.")
+                return 0
+            return _run(
+                args,
+                principal=principal,
+                thresholds=thresholds,
+                path=path,
+                engine=engine,
+                started_at=started_at,
+            )
+
+    except LockUnavailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 def _run(

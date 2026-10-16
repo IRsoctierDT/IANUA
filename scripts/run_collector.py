@@ -85,8 +85,10 @@ Exit codes:
 * ``1`` — a source could not be read, the store refused the write, the audit
   write failed, or offsets could not be persisted. Nothing was consumed; the
   next invocation re-reads.
-* ``2`` — bad arguments: an undeclarable source, an unusable ``--root``, or a
-  malformed policy bundle. Nothing ran and nothing was recorded.
+* ``2`` — refused before doing anything: bad arguments (an undeclarable
+  source, an unusable ``--root``, a malformed policy bundle), or the
+  single-instance lock could not be taken — a ``flock`` that failed for any
+  reason *other* than another pass holding it. Nothing ran, nothing recorded.
 * ``3`` — blocked by policy. The gate decision *is* recorded.
 * ``4`` — retryable contention: every failure in the pass was another writer
   holding the store's write lock. Sources that succeeded kept their events and
@@ -141,7 +143,7 @@ from collect import (  # noqa: E402
 )
 from ingest import normalize_many  # noqa: E402
 from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
-from scripts._locking import prepare_lock, single_instance  # noqa: E402
+from scripts._locking import LockUnavailableError, prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import validated_root  # noqa: E402
 
@@ -304,18 +306,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with single_instance(lock) as acquired:
-        if not acquired:
-            print("skipped: another pass holds the lock; this invocation did nothing.")
-            return 0
-        return _run(
-            args,
-            principal=principal,
-            sources=sources,
-            path=path,
-            engine=engine,
-            started_at=started_at,
-        )
+    # Wrapped because the startup `try` has already closed by here, and a
+    # lock that fails for a reason that is NOT contention must still be a
+    # message and exit 2 rather than a traceback in cron mail. The caught
+    # type is deliberately specific: a bare `except OSError` around this
+    # block would relabel any failure inside the pass as a lock problem.
+    try:
+        with single_instance(lock) as acquired:
+            if not acquired:
+                print("skipped: another pass holds the lock; this invocation did nothing.")
+                return 0
+            return _run(
+                args,
+                principal=principal,
+                sources=sources,
+                path=path,
+                engine=engine,
+                started_at=started_at,
+            )
+
+    except LockUnavailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 def _run(

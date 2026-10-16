@@ -80,8 +80,9 @@ connection.)
 
 **Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
 or verified (including a skip because another pass held the lock), ``1`` the
-backup, the verification or the audit write failed, ``2`` bad arguments, ``3``
-blocked by policy, ``4`` retryable contention — another writer held the
+backup, the verification or the audit write failed, ``2`` bad arguments or the
+single-instance lock could not be taken, ``3`` blocked by policy, ``4``
+retryable contention — another writer held the
 store's write lock, so no backup was taken and nothing was left behind. Retry
 rather than page; see ``scripts/_exit_codes.py``.
 """
@@ -118,7 +119,13 @@ from agents.policies.bundle import (  # noqa: E402
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
 from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
-from scripts._locking import DIR_MODE, FILE_MODE, prepare_lock, single_instance  # noqa: E402
+from scripts._locking import (  # noqa: E402
+    DIR_MODE,
+    FILE_MODE,
+    LockUnavailableError,
+    prepare_lock,
+    single_instance,
+)
 from store import DEFAULT_FILENAME, EVENTS_SUBDIR, EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -587,18 +594,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with single_instance(lock) as acquired:
-        if not acquired:
-            print("skipped: another backup pass holds the lock; this invocation did nothing.")
-            return 0
-        return _run(
-            args,
-            root=root,
-            destination=destination,
-            principal=principal,
-            engine=engine,
-            started_at=started_at,
-        )
+    # Wrapped because the startup `try` has already closed by here, and a
+    # lock that fails for a reason that is NOT contention must still be a
+    # message and exit 2 rather than a traceback in cron mail. The caught
+    # type is deliberately specific: a bare `except OSError` around this
+    # block would relabel any failure inside the pass as a lock problem.
+    try:
+        with single_instance(lock) as acquired:
+            if not acquired:
+                print("skipped: another backup pass holds the lock; this invocation did nothing.")
+                return 0
+            return _run(
+                args,
+                root=root,
+                destination=destination,
+                principal=principal,
+                engine=engine,
+                started_at=started_at,
+            )
+
+    except LockUnavailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 def _run(

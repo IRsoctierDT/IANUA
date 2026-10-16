@@ -275,7 +275,8 @@ which also fails if a fifth scheduled CLI is added without a row in it.
 **Exit codes**, which are the whole interface a scheduler sees: `0` the cycle
 ran (including the common idle case — a non-zero exit for "nothing new" would
 page someone nightly), `1` the cycle or a persisted cursor failed, `2` bad
-arguments, `3` blocked by policy, `4` retryable contention — another writer
+arguments or the single-instance lock could not be taken,
+`3` blocked by policy, `4` retryable contention — another writer
 held the store's write lock, so the window was not consumed. Retry rather than
 page; see `scripts/_exit_codes.py` for why `1` no longer carries both meanings.
 
@@ -385,7 +386,8 @@ missing entry makes the unit fail to start rather than creating it.
 **Exit codes**, which are the whole interface a scheduler sees: `0` a pass ran (including
 nothing-new, and including a skip because another pass held the lock — the output
 distinguishes them), `1` a source was unreadable or the store/audit/offsets write failed
-(nothing consumed; the next pass re-reads), `2` bad arguments, `3` blocked by policy, `4`
+(nothing consumed; the next pass re-reads), `2` bad arguments or the single-instance lock
+could not be taken, `3` blocked by policy, `4`
 retryable contention — every failure in the pass was another writer holding the store's
 write lock, and the sources that succeeded kept their events and their advanced offsets, so
 a retry re-reads only what was busy. One damaged source alongside a busy one reports `1`,
