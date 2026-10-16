@@ -227,18 +227,33 @@ def test_an_existing_lock_directory_is_narrowed_not_left_as_found(cli: Cli, tmp_
     directory at ``0o755``. The lock *file* was ``0o600`` in all four — it was
     the directory that was left alone.
 
-    **Deployed, the exposure was two CLIs rather than three, and this test
-    found that out.** Written against the four copies it fails for
-    ``run_collector``, ``run_pipeline`` and ``run_backup`` but *passes* for
-    ``run_retention`` — because retention's lock directory is
-    ``data/events/``, and ``EventStore.open`` narrows that itself
-    (``store/events.py``'s ``_narrow(path.parent, _DIR_MODE)``, measured
-    ``0o755 → 0o700``). Retention was therefore covered incidentally, by
-    something else, and only on a pass that got as far as opening the store —
-    a pass that *declines* the lock exits before that, so the directory stayed
-    wide on every declined pass. Incidental and conditional is not a control,
-    which is the reason to make it unconditional here rather than to call
-    retention already fine.
+    **Deployed, the exposure was two CLIs, and two separate measurements say
+    so.** Run against the four pre-extraction copies — ``main``'s
+    ``scripts/run_*.py`` with this test file — it fails for exactly
+    ``run_collector`` and ``run_pipeline``:
+
+        2 failed, 2 passed
+
+    ``run_backup`` passes on its own ``directory.chmod``. ``run_retention``
+    passes for a *different* reason, which is the one worth recording: its
+    lock directory is ``data/events/``, and ``EventStore.open`` narrows that
+    itself (``store/events.py``'s ``_narrow(path.parent, _DIR_MODE)``,
+    measured ``0o755 → 0o700``). So retention was covered incidentally, by
+    another component, and only on a pass that got as far as opening the
+    store — a pass that *declines* the lock exits before that, so the
+    directory stayed wide on every declined pass. Incidental and conditional
+    is not a control, which is the reason to make it unconditional here rather
+    than to call retention already fine.
+
+    The second measurement is this assertion's **non-vacuity**, and it is a
+    different experiment that must not be confused with the first: removing
+    ``directory.chmod(DIR_MODE)`` from the extracted ``scripts/_locking.py``
+    fails it for ``run_collector``, ``run_pipeline`` **and** ``run_backup``
+    (retention still passing, for the reason above). Backup fails there
+    because the *shared helper* would lack the chmod its own copy had — not
+    because its copy ever lacked it. Conflating the two is how an earlier
+    version of this docstring came to claim three pre-extraction failures;
+    review caught it.
 
     What was genuinely exposed is ``data/collect/`` and ``data/pipeline/``
     under the gitignored lab-data root, which AGENTS.md §5 treats as sensitive
