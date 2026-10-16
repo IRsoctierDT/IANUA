@@ -240,18 +240,19 @@ def test_two_cycles_cannot_run_at_once(tmp_path: Path) -> None:
     attempt must decline, rather than racing real processes and hoping the
     interleaving shows up.
     """
-    from scripts.run_pipeline import _prepare_lock, _single_instance
+    from scripts._locking import prepare_lock, single_instance
+    from scripts.run_pipeline import LOCK_FILE
 
     directory = cursor_path(tmp_path).parent
-    # One ``_prepare_lock`` per attempt rather than one handle reused:
+    # One ``prepare_lock`` per attempt rather than one handle reused:
     # ``flock`` is held by the open file *description*, so re-locking a
     # single handle succeeds and would make this test vacuous.
-    with _single_instance(_prepare_lock(directory)) as first:
+    with single_instance(prepare_lock(directory, LOCK_FILE)) as first:
         assert first is True, "the first caller must get the lock"
-        with _single_instance(_prepare_lock(directory)) as second:
+        with single_instance(prepare_lock(directory, LOCK_FILE)) as second:
             assert second is False, "a second cycle acquired the lock concurrently"
     # Released on exit, so the next scheduled run is not locked out forever.
-    with _single_instance(_prepare_lock(directory)) as third:
+    with single_instance(prepare_lock(directory, LOCK_FILE)) as third:
         assert third is True, "the lock was not released"
 
 
@@ -263,12 +264,13 @@ def test_a_declined_lock_does_not_exit_nonzero_or_touch_state(tmp_path: Path) ->
     schedule, which trains them to ignore it. It must still be visible, and it
     must leave no audit record and no cursor — nothing happened.
     """
-    from scripts.run_pipeline import _prepare_lock, _single_instance, main
+    from scripts._locking import prepare_lock, single_instance
+    from scripts.run_pipeline import LOCK_FILE, main
 
     with EventStore.open(tmp_path) as store:
         store.append_many((normalize(_CLOUD), normalize(_ENDPOINT)), ingested_at=1000.0)
     directory = cursor_path(tmp_path).parent
-    with _single_instance(_prepare_lock(directory)) as held:
+    with single_instance(prepare_lock(directory, LOCK_FILE)) as held:
         assert held is True
         assert main(["--root", str(tmp_path)]) == 0
     assert not cursor_path(tmp_path).exists(), "a skipped invocation advanced the cursor"

@@ -152,16 +152,12 @@ equality.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import fcntl
 import json
 import math
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator
 from pathlib import Path
-from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -187,6 +183,7 @@ from pipeline import (  # noqa: E402
     cursor_path,
     load_cursor,
 )
+from scripts._locking import prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -219,8 +216,6 @@ LOCK_SUBDIR = Path("data") / "events"
 LOCK_FILE = "retention.lock"
 AUDIT_FILE = "audit.log"
 
-_DIR_MODE = 0o700
-_FILE_MODE = 0o600
 
 ACTION_NAME = "retain_events"
 #: Reporting changes nothing; applying deletes. Different actions, so
@@ -236,44 +231,6 @@ APPLY_CLASS: ActionClass = "destructive"
 #: the two together would let the existing grant self-authorize the wider
 #: action, so a security test pins this exact string.
 APPLY_UNPROCESSED_LABEL = f"{ACTION_NAME}:apply-unprocessed"
-
-
-def _prepare_lock(directory: Path) -> TextIO:
-    """Create the lock file before any lock is attempted.
-
-    Separated from :func:`_single_instance` so its ``mkdir``/``touch``/``chmod``
-    run inside the caller's startup ``try`` and an unwritable directory becomes
-    a message and exit 2 rather than a traceback — the same lesson
-    ``scripts/run_collector.py`` records.
-    """
-    directory.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-    path = directory / LOCK_FILE
-    path.touch(mode=_FILE_MODE, exist_ok=True)
-    path.chmod(_FILE_MODE)
-    # The ``open`` belongs here too. Moving only ``mkdir``/``touch``/``chmod``
-    # left a lock path that is a *directory* tracebacking with
-    # ``IsADirectoryError`` and exit 1, in all three CLIs that had this fix.
-    return path.open("a", encoding="utf-8")
-
-
-@contextlib.contextmanager
-def _single_instance(handle: TextIO) -> Iterator[bool]:
-    """Hold an exclusive lock for one pass; yield False if another holds it.
-
-    A declined lock is not an error and must not exit non-zero: a scheduled
-    retention pass overlapping a slow one is expected, and failing would mail
-    the operator until they learned to ignore it.
-    """
-    with handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -742,12 +699,12 @@ def main(argv: list[str] | None = None) -> int:
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
-        lock = _prepare_lock(lock_path.parent)
+        lock = prepare_lock(lock_path.parent, LOCK_FILE)
     except (PrincipalError, PolicyBundleError, StoreError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with _single_instance(lock) as acquired:
+    with single_instance(lock) as acquired:
         if not acquired:
             print("skipped: another retention pass holds the lock; this invocation did nothing.")
             return 0

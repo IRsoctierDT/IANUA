@@ -270,17 +270,18 @@ def test_a_bad_window_is_a_bad_argument(tmp_path: Path, value: str) -> None:
 @pytest.mark.unit
 def test_a_declined_lock_exits_zero_and_changes_nothing(tmp_path: Path, capsys: Any) -> None:
     """Overlap is expected on a schedule; failing would train the operator to ignore it."""
-    from scripts.run_retention import LOCK_FILE, LOCK_SUBDIR, _prepare_lock, _single_instance
+    from scripts._locking import prepare_lock, single_instance
+    from scripts.run_retention import LOCK_FILE, LOCK_SUBDIR
 
     root = _root(tmp_path)
     _seed(root, old=3, recent=1)
-    lock = _prepare_lock(root / LOCK_SUBDIR)
-    # ``_prepare_lock`` returns the open handle now, not the path, so the
+    lock = prepare_lock(root / LOCK_SUBDIR, LOCK_FILE)
+    # ``prepare_lock`` returns the open handle now, not the path, so the
     # ``open`` sits inside the caller's startup ``try`` with the rest of it.
     # The file it holds is still the declared lock.
     assert Path(lock.name).name == LOCK_FILE
 
-    with _single_instance(lock) as held:
+    with single_instance(lock) as held:
         assert held is True
         assert _cli_main()(["--root", str(root), "--caller", "test"]) == 0
     assert "skipped" in capsys.readouterr().out

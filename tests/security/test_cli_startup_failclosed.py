@@ -40,6 +40,7 @@ two, so its own refusals are asserted directly as well.
 
 from __future__ import annotations
 
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -214,6 +215,68 @@ def test_a_startup_refused_after_the_root_leaves_no_lock_behind(
 
 
 @pytest.mark.security
+@pytest.mark.parametrize("cli", CLIS, ids=_IDS)
+def test_an_existing_lock_directory_is_narrowed_not_left_as_found(cli: Cli, tmp_path: Path) -> None:
+    """A lock directory that already exists must end owner-only, for all four.
+
+    ``Path.mkdir``'s ``mode`` is masked by the umask on creation and does
+    **nothing at all** to a directory that is already there, so the mode a
+    lock directory was created with is the mode it keeps. Only ``run_backup``
+    followed its ``mkdir`` with an explicit ``chmod``; calling the other three
+    copies of ``_prepare_lock`` in isolation left an existing ``0o755``
+    directory at ``0o755``. The lock *file* was ``0o600`` in all four — it was
+    the directory that was left alone.
+
+    **Deployed, the exposure was two CLIs rather than three, and this test
+    found that out.** Written against the four copies it fails for
+    ``run_collector``, ``run_pipeline`` and ``run_backup`` but *passes* for
+    ``run_retention`` — because retention's lock directory is
+    ``data/events/``, and ``EventStore.open`` narrows that itself
+    (``store/events.py``'s ``_narrow(path.parent, _DIR_MODE)``, measured
+    ``0o755 → 0o700``). Retention was therefore covered incidentally, by
+    something else, and only on a pass that got as far as opening the store —
+    a pass that *declines* the lock exits before that, so the directory stayed
+    wide on every declined pass. Incidental and conditional is not a control,
+    which is the reason to make it unconditional here rather than to call
+    retention already fine.
+
+    What was genuinely exposed is ``data/collect/`` and ``data/pipeline/``
+    under the gitignored lab-data root, which AGENTS.md §5 treats as sensitive
+    by default. ``data/collect/`` is the serious one: it holds copies of
+    collected log files, which are stored evidence. ``store/events.py``
+    already records this exact asymmetry running the wrong way — "bookkeeping
+    protected, evidence readable by every local account".
+
+    Reached without an adversary: ``docs/PRODUCTION_SOC_PLAN.md`` has an
+    operator run a manual pass as themselves after the documented root cron
+    entry has already created the directory as root — the same scenario
+    ``run_collector``'s own docstring records for a different defect in this
+    same function.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    directory = root / cli.lock.parent
+    directory.mkdir(mode=0o755, parents=True)
+    directory.chmod(0o755)  # defeat the umask, so the precondition is real
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o755, "precondition not set up"
+
+    cli.main(_argv(cli, root, tmp_path))
+
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700, (
+        f"{cli.name} left its lock directory at {oct(stat.S_IMODE(directory.stat().st_mode))}"
+    )
+    assert stat.S_IMODE((root / cli.lock).stat().st_mode) == 0o600, (
+        f"{cli.name} left its lock file group- or world-readable"
+    )
+
+
+#: How a scheduled CLI declares that it takes the single-instance lock.
+#: Keyed on the import rather than on a ``def``, because the two functions
+#: now live in one module instead of four copies.
+_LOCKING_IMPORT = "from scripts._locking import"
+
+
+@pytest.mark.security
 def test_every_single_instance_cli_has_a_row_here() -> None:
     """A fifth scheduled CLI cannot quietly skip this contract.
 
@@ -225,9 +288,17 @@ def test_every_single_instance_cli_has_a_row_here() -> None:
     locked = {
         path.stem
         for path in scripts.glob("*.py")
-        if "def _single_instance(" in path.read_text(encoding="utf-8")
+        if _LOCKING_IMPORT in path.read_text(encoding="utf-8")
     }
     assert locked == {cli.name for cli in CLIS}
+    # Non-vacuity, spelled out because the predicate changed once already:
+    # it used to scan for ``def _single_instance(``, and when that function
+    # moved into ``scripts/_locking.py`` the set went empty. The equality
+    # above caught it — ``set() == {four names}`` fails — which is why the
+    # discovery is keyed on an equality and not a subset. This keeps the
+    # floor explicit anyway, so a future predicate that matches nothing says
+    # so in its own words.
+    assert len(locked) == 4, f"expected four locked CLIs, discovered {sorted(locked)}"
 
 
 # --------------------------------------------------------- validated_root

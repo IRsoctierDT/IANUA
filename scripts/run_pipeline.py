@@ -104,14 +104,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import json
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator
 from pathlib import Path
-from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -143,6 +140,7 @@ from pipeline import (  # noqa: E402
     run_cycle,
     save_cursor,
 )
+from scripts._locking import prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import validated_root  # noqa: E402
 
@@ -164,79 +162,6 @@ ACTION_NAME = "pipeline_cycle"
 LOCK_FILE = "cycle.lock"
 
 #: Owner-only, matching the cursor and the audit log.
-_FILE_MODE = 0o600
-
-
-def _prepare_lock(directory: Path) -> TextIO:
-    """Create and open the lock file, before any lock is attempted.
-
-    This CLI never received the fix its two siblings have, and the gap was
-    measured: with ``data/pipeline`` unusable — a full disk, a read-only
-    volume, or the path occupied by a regular file — the ``mkdir`` ran at
-    ``__enter__``, outside every ``try``, and the cycle on the five-minute
-    timer emitted a raw traceback and **exit 1 where the documented contract
-    says 2**. Worse, it died before the :class:`AuditLogger` existed, so the
-    chain recorded nothing at all — not even the "permitted attempt with no
-    outcome" that the runbook names as the signal worth alerting on.
-
-    The ``open`` belongs here too, not in the context manager: the sibling
-    CLIs had moved ``mkdir``/``touch``/``chmod`` and left the ``open`` behind,
-    so a lock path that is a *directory* still tracebacked with
-    ``IsADirectoryError`` in all three. ``pipeline/cursor.py`` warns about
-    exactly this "fixed one copy, not the other" shape in its own docstring.
-    """
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / LOCK_FILE
-    path.touch(mode=_FILE_MODE, exist_ok=True)
-    path.chmod(_FILE_MODE)
-    # Appended to, never truncated: the open handle carries the lock, not the
-    # contents.
-    return path.open("a", encoding="utf-8")
-
-
-@contextlib.contextmanager
-def _single_instance(handle: TextIO) -> Iterator[bool]:
-    """Hold an exclusive lock for the duration of one cycle.
-
-    **A correctness control, not a performance one.** Two cycles running at
-    once corrupt the audit log *permanently*: :class:`AuditLogger` derives each
-    record's ``seq`` and ``prev_hash`` by reading the last line of the file and
-    then appending — a read-modify-write with no locking. Two appenders
-    interleave, produce a duplicate ``seq`` and a forked chain, and
-    ``verify()`` returns ``False`` from then on, for every future reader. That
-    is worse than losing records: it puts a false positive into a tamper
-    detector, so an operator can no longer tell overlapping timer firings from
-    someone editing the log. Reproduced with six concurrent invocations before
-    this lock existed: twelve records, a duplicate ``seq``, ``verify()``
-    ``False``, and every process exiting ``0``.
-
-    Overlap is not hypothetical. ``docs/PRODUCTION_SOC_PLAN.md`` documents a
-    ``*/5 * * * *`` schedule, so it happens the first time a cycle takes more
-    than five minutes — a backlog, a slow disk, a large batch.
-
-    It also removes a milder race: two cycles reading the same window and the
-    slower one writing its older cursor last, losing the newer one.
-    At-least-once makes that safe rather than wrong, but there is no reason to
-    keep it.
-
-    Yields ``True`` when the lock was taken, ``False`` when another cycle holds
-    it. A declined lock is **not an error** — it is the timer outrunning the
-    cycle, which a tight schedule is expected to do occasionally — so it must
-    not exit non-zero and mail the operator every five minutes. It is still
-    printed, because a cycle that silently did nothing is the failure mode this
-    whole stage exists to avoid.
-    """
-    with handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            # BlockingIOError on Linux; OSError covers the platform variants.
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -465,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
-        lock = _prepare_lock(path.parent)
+        lock = prepare_lock(path.parent, LOCK_FILE)
     except (
         PrincipalError,
         ThresholdError,
@@ -481,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    with _single_instance(lock) as acquired:
+    with single_instance(lock) as acquired:
         if not acquired:
             print("skipped: another cycle holds the lock; this invocation did nothing.")
             return 0
