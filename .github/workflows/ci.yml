@@ -53,6 +53,23 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
       - run: pip install -e ".[dev]"
+      - name: Pre-commit config is valid
+        # The one gate CI did not check was the gate CI claims to mirror. This
+        # file's own header says "Local pre-commit == this CI", and nothing
+        # verified that .pre-commit-config.yaml could even be loaded: measured,
+        # the only mention of pre-commit anywhere under .github/workflows/ was
+        # that comment. So #232 merged green after appending three misindented
+        # lines to it, and on the merge commit `pre-commit run --all-files`
+        # died with InvalidConfigError *before any hook ran* — ruff, mypy,
+        # bandit, detect-secrets and the drift gates all silently skipped for
+        # every developer, with a green pipeline above it.
+        #
+        # `validate-config` and not a YAML parse: it checks the schema too, so
+        # a well-indented but wrong entry (`uses:` is GitHub Actions syntax,
+        # not a pre-commit repository mapping) fails here as well. No install
+        # step of its own — `pip install -e ".[dev]"` above already provides
+        # pre-commit, which pyproject declares at >=4.6.2.
+        run: pre-commit validate-config .pre-commit-config.yaml
       - name: Ruff lint
         run: ruff check .
       - name: Ruff format check
