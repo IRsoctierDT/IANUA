@@ -12,11 +12,19 @@ All notable changes to this project. Versions correspond to git tags.
   written authorization basis before a boundary is crossed, so the basis lands
   first. The licensed surface is deliberately smaller than either thing it
   permits: a read-only health/state listener on the **active** node, HMAC
-  authenticated with no-key meaning refuse-to-start, bound to an operator-declared
-  address with `0.0.0.0` refused outright, and egress only from the **passive**
-  node to one host in a committed allow-list that is empty by default. Aggregates
-  and digests cross; events, excerpts, observables and incidents never do. It does
-  not fence and cannot promote. `dependencies = []` is untouched.
+  authenticated **in both directions** (the response MAC bound to a fresh request
+  nonce, because the response is what informs a promotion decision), bound to an
+  address that is refused if it **parses** as unspecified in either family — a
+  literal `0.0.0.0` rule caught one spelling of six — and egress only from the
+  **passive** node to one host in a committed allow-list that is empty by default.
+  What may cross is a **versioned, committed allow-list of named fields**, not a
+  category: the distinction is entropy, not aggregation. A request may reach the
+  audit chain and nothing else, and must, since a failed authentication is a
+  security-relevant action §3 requires recording. It does not fence and cannot
+  promote. `dependencies = []` is untouched.
+
+  Review found four defects in the first draft and all four were confirmed — the
+  argument for amending before building rather than after.
 
 ### Added
 - **`run_backup --verify-restore BACKUP`, the promotion gate.** `--verify` checked
