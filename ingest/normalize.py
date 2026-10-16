@@ -459,6 +459,11 @@ class _Excerpt:
 
     text: str
     values: tuple[Any, ...]
+    #: True when ``text`` IS the record — nothing decoded, so nothing was
+    #: projected and nothing withheld. Set by :func:`_carried` and by no one
+    #: else, so the ``parse_status`` derived from it cannot be mis-declared by
+    #: a caller: it follows from how the evidence was built.
+    verbatim: bool = False
 
 
 def _leaf_values(value: Any) -> Iterator[Any]:
@@ -662,7 +667,7 @@ def _carried(raw: str) -> _Excerpt:
     carried verbatim, so there is no projection to decompose and nothing to
     withhold from the scan.
     """
-    return _Excerpt(raw, (raw,))
+    return _Excerpt(raw, (raw,), verbatim=True)
 
 
 def _serialize(value: Mapping[str, Any]) -> str:
@@ -881,7 +886,17 @@ def _unrecognized(*, evidence: _Excerpt, notes: tuple[str, ...] = ()) -> Normali
         timestamp=None,
         message=retained[:MAX_FIELD_LEN],
         activity=None,
-        parse_status="partial" if notes else "text",
+        # Derived from the evidence, not from whether a note happened to be
+        # attached. It used to be `"partial" if notes else "text"`, which made
+        # three of the four verbatim regimes (a JSON record with a trailing
+        # comma, a JSON array, a record over MAX_RAW_BYTES) read "partial" —
+        # the status the schema documents as "recognized, but required fields
+        # were missing" — while bare prose read "text". Measured; so nothing
+        # downstream could tell verbatim retention from projection with
+        # withholding. "text" is the documented meaning ("no parser claimed it;
+        # carried as opaque text") and is now uniform across every verbatim
+        # regime; the notes still say WHY the record was carried.
+        parse_status="text" if evidence.verbatim else "partial",
         observables=observables(*evidence.values),
         raw_excerpt=retained[:MAX_RAW_EXCERPT],
         notes=notes,

@@ -20,6 +20,7 @@ about the estate — placeholders, built-in principals, and connection endpoints
 from __future__ import annotations
 
 import ast
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ from typing import Any
 import pytest
 
 from correlation import Thresholds, assemble, references, resolve
-from ingest import normalize
+from ingest import MAX_RAW_BYTES, normalize
 from ingest.schema import MAX_FIELD_LEN
 from store.events import StoredEvent
 
@@ -348,3 +349,104 @@ def test_the_placeholder_set_still_lets_a_real_host_link() -> None:
     assert len(incidents) == 1
     keys = {entity.key for entity in incidents[0].entities}
     assert "web-01" in keys, "a real hostname stopped linking"
+
+
+#: ``AGENTS.md`` §5's own worked example of the verbatim-retention residual: five
+#: prose fragments ``_DOMAIN`` matches, extracted whenever a record never decodes
+#: to a mapping. Duplicated from ``test_ingest_hardening.py`` on purpose — a test
+#: module importing from another is a coupling that breaks on collection order.
+_PROSE_BODY = (
+    "Dear Mr.Jones, please urgently.Reply about invoice 44.Smith "
+    "at acct-7781.Watson, cc Ms.Delacroix"
+)
+_PROSE_NAMES = frozenset(
+    {"Mr.Jones", "urgently.Reply", "44.Smith", "acct-7781.Watson", "Ms.Delacroix"}
+)
+
+#: The four regimes in which a record is retained verbatim.
+_VERBATIM_REGIMES = [
+    pytest.param(f'{{"Subject": "hi", "Body": "{_PROSE_BODY}",}}', id="json-with-a-trailing-comma"),
+    pytest.param(
+        f'[{{"Subject": "hi", "Body": "{_PROSE_BODY}"}}]', id="json-array-rather-than-an-object"
+    ),
+    pytest.param(_PROSE_BODY, id="never-json-at-all"),
+    pytest.param(
+        json.dumps({"Subject": "hi", "Body": _PROSE_BODY, "pad": "x" * (MAX_RAW_BYTES + 100)}),
+        id="past-the-MAX_RAW_BYTES-ceiling",
+    ),
+]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("raw", _VERBATIM_REGIMES)
+def test_prose_fragments_from_verbatim_retention_never_become_join_keys(raw: str) -> None:
+    """The guard: observables do not reach entity resolution, by construction.
+
+    ``AGENTS.md`` §5 and two test docstrings called the fragments a verbatim
+    record yields "false correlation join keys". Measured, they are not:
+    :func:`references` builds entity references from typed fields only
+    (``actor.*``, ``device.*``, the endpoint addresses) and never reads
+    ``observables``, so two unrelated verbatim events sharing every one of the
+    five names resolve to **no** entity at all. The fragments' real reach is
+    the store's indexed ``observables`` table — a pivot key for
+    ``query(observable=...)`` — and the backup attestation, not correlation.
+
+    This test turns that measurement into a guard in two layers. Behaviourally:
+    a verbatim event yields no reference and no entity, while a positive
+    control proves the resolver *can* join (two auditd events sharing a user
+    resolve to one ``user`` entity), so "no entities" is not a broken resolver.
+    Structurally (the test below): no module under ``correlation/`` names
+    ``observables`` at all. Wiring observables into entity resolution is a
+    legitimate future choice — but it makes every ``word.Word`` fragment a join
+    key, which is the plausibility question §5 refused to answer with a TLD
+    list, and these tests force that question to be answered in the open first.
+    """
+    event = normalize(raw)
+    # Premise, so the guard cannot be vacuous: the fragments really are there.
+    assert set(event.observables) >= _PROSE_NAMES, sorted(event.observables)
+
+    # Behavioural, one event: nothing to join on.
+    assert references(event) == (), [(r.kind, r.value) for r in references(event)]
+
+    # Behavioural, two events sharing all five fragments: no entity.
+    twin = normalize(f"alert from box-7 — {_PROSE_BODY}")
+    assert set(twin.observables) >= _PROSE_NAMES
+    assert resolve((event, twin)) == (), "verbatim events were joined on something"
+
+    # Positive control: the resolver joins when a TYPED field is shared.
+    first = normalize(
+        'type=USER_AUTH msg=audit(1760000000.1:1): acct="jones" addr=203.0.113.9 res=failed'
+    )
+    second = normalize(
+        'type=USER_AUTH msg=audit(1760000000.2:1): acct="jones" addr=203.0.113.10 res=failed'
+    )
+    users = [entity for entity in resolve((first, second)) if entity.kind == "user"]
+    assert len(users) == 1 and users[0].key == "jones", [
+        (e.kind, e.key) for e in resolve((first, second))
+    ]
+
+
+@pytest.mark.security
+def test_correlation_never_reads_observables() -> None:
+    """Structural half of the guard above: no name, no attribute, anywhere.
+
+    An AST walk rather than a grep, so a comment mentioning the word does not
+    trip it and an access spelled ``getattr(event, "observables")`` does — the
+    string constant is checked too. If this goes red, read the test above
+    before making it green.
+    """
+    offenders: list[str] = []
+    for path in sorted(Path("correlation").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "observables":
+                offenders.append(f"{path}:{node.lineno} attribute")
+            elif isinstance(node, ast.Name) and node.id == "observables":
+                offenders.append(f"{path}:{node.lineno} name")
+            elif isinstance(node, ast.Constant) and node.value == "observables":
+                offenders.append(f"{path}:{node.lineno} string constant")
+    assert not offenders, (
+        "correlation/ reaches for observables; every word.Word fragment a verbatim record "
+        f"yields would become a join key — answer AGENTS.md §5's plausibility question "
+        f"first: {offenders}"
+    )

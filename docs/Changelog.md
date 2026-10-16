@@ -35,6 +35,34 @@ All notable changes to this project. Versions correspond to git tags.
   substituted; a manifest that is `null`, or lacks `store`/`files`/`chains`, surfaced as a
   traceback; and the "both statements" prose survived in two more docstrings. The
   review's 16 confirmations included the same regression four times, once per lens.
+- **Audit of `AGENTS.md`'s measured claims — six were wrong, every one re-measured
+  on current code.** The charter is what other agents are told is binding, so a
+  claim in it that the code does not hold is a defect. Corrected: (1) §5 said
+  indicators come from modelled content "on every path" — measured, all four
+  regimes that never decode to a mapping extract the charter's own worked example
+  in full, five personal names into the append-only observables table, and the
+  security test was named `..._on_every_path` while exercising only the two
+  mapping paths; renamed, and
+  the residual is now labelled: every verbatim regime carries
+  `parse_status="text"` (three of four read `"partial"` before), and
+  `tests/security/test_correlation_hardening.py` guards that `correlation/` never reads
+  `observables` — measured, it never did, so "false correlation join keys" was an
+  unmeasured claim and is retracted. (2) §5 said "credential-shaped paths are refused" —
+  `credentials.json`, `secrets.yaml` and `api_token.txt` are accepted; the bullet
+  now points at `_DENIED` and says what it does not cover. (3) §5's stage 7
+  amendment said six security test files assert `dependencies = []` — it is five,
+  now named. (4) §5 said `grep -rni vacuum .` is zero matches — it returns five
+  files; scoped to code. (5) §5 said the store "is opened at `auto_vacuum=0`" —
+  that is SQLite's default and no pragma sets it, so nothing pins it. (6) §7.1
+  gave two wrong exit codes: the unstaged-baseline refusal exits 1 (not 3, and
+  the same code as a real finding, so the message is the only signal), the
+  line-number rewrite exits 3, and through `xargs` a finding surfaces as 123;
+  §7.1 also claimed the filter set is unchanged across a line-number rewrite,
+  which is false on the first one. Claims that were re-measured and **hold**:
+  the three verbatim-retention residuals, the 58 space-bearing tracked paths and
+  the `--` terminator hazard, `scan --baseline`'s silent absorption, the
+  read-only collector assertions, `MAX_FIELD_LEN = 2048`, and ~15 GB/month at
+  `DEFAULT_BATCH = 1_000` on a `*/5` schedule.
 - **`AGENTS.md` §5 gains a stage 7 amendment licensing the active/passive peer
   channel**, and `DESIGN.md` §5 boundary 4 and new boundary 15 record the
   crossing. **Documentation only — no network code ships in this change.** The
@@ -185,6 +213,67 @@ All notable changes to this project. Versions correspond to git tags.
   count equal, digest equal, **exit 0**. An indicator pivot (`query(observable=…)`) returns
   nothing on such a store — the pivot and the attestation are what lose; `correlation/`
   never reads `observables`, and an earlier version of this entry said it did. The number was
+  sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
+  it, with `ADDED` for the legitimate re-collection direction.
+
+  **Report entries were compared by prefix.** `_digest_prefix` hashes only the
+  first *n* bytes, which is right for an append-only stream and wrong for a
+  report. Measured: a 40-byte declared report, 94 bytes live with the prefix
+  intact — **exit 0**; and the same with 512 NUL bytes appended — also **exit 0**.
+  Reports are now compared by exact size *and* digest (`ALTERED`), while the hash
+  chains and the evidence stream keep prefix semantics. The allow-list is on the
+  **growing** side, so a tree added to `COPIED_TREES` later gets the strict
+  comparison without anyone remembering to ask: granting growth to something that
+  cannot grow hides a rewrite, while demanding equality of something that does
+  grow produces a loud finding an operator can read.
+
+  **The manifest was walked in one direction only.** `docs/RESTORE.md` step 4 is a
+  bare `cp -a`, which **merges** into a nonempty destination rather than replacing
+  it, so a file written after the backup survives the restore — and the loop
+  iterated `manifest["files"]`, so it could not see one. Measured: a backup at 20
+  events with one declared report, a live root grown to 35 events and a second
+  report describing them, store deleted and `cp -a` applied — **exit 0**, with
+  that report still claiming "Correlated 35 events" over a store holding 20, in
+  the tree `dashboard/app.py` reads. The live inventory of the copied trees is now
+  compared against the manifest (`UNDECLARED`), scoped to `COPIED_TREES` because
+  the rotation siblings beside the chains legitimately appear after a backup and a
+  blanket reverse walk would false-alarm.
+
+  Eight `tests/security` cases, each paired with a control direction, and the
+  append-only/strict classifier is pinned from **both** sides: forcing everything
+  strict reds `test_a_correct_restore_verifies` — this command's own gate decision
+  appends to `data/events/audit.log` before the check reads it — and forcing
+  everything prefix reds the two report cases.
+
+  **Review then found two fail-opens in the fix itself**, which is the part worth
+  recording. *A symlinked `data/reports` was skipped rather than reported*: the
+  reverse walk's `continue` was lifted from the backup side, where refusing to
+  descend a link is correct, and on the verify side the same line is how the link
+  survives — measured, a backup declaring no reports restored over a root whose
+  `data/reports` points outside it exited `0`, with a planted file readable as this
+  node's report. Two guards exist for exactly that and each declined it for a
+  different reason. *And the new observables comparison was guarded by
+  `isinstance(...) and isinstance(...)`*, so a manifest that omitted the field, or
+  carried `"20"`, silently skipped the check — measured, deleting the field **and**
+  every live observable row gave exit `0`. The manifest is untrusted input here, so
+  both now fail closed.
+
+### Fixed
+- **`--verify-restore` exited `0` on three restores it should have refused, and in
+  every case the manifest already carried the datum the check never read.** Found
+  by review on the merged gate; all three measured through the shipped CLI before
+  anything was changed, and fixed together because they share that shape and two of
+  them turn on one classifier. An earlier version of this entry said they "live in
+  one ~60-line loop", and that was never measured. Measured: `_verify_restore` is
+  258 lines; only the report comparison is inside the manifest loop, the reverse
+  walk is a separate loop after it, and the observables check is a separate block
+  before it. The observables fix could have shipped alone.
+
+  **Observables were never compared.** The completeness digest is a sha256 over
+  the `event_id` set only, so observables are not in the preimage. Measured: 20
+  observable rows destroyed of 20, events untouched — `quick_check` ok, event
+  count equal, digest equal, **exit 0**. Indicator pivots return nothing on such
+  a store, because `correlation/entities.py` joins on that table. The number was
   sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
   it, with `ADDED` for the legitimate re-collection direction.
 
