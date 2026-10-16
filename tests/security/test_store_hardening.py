@@ -224,6 +224,20 @@ _EXECUTORS = {"execute", "executemany", "executescript"}
 #: to be maintained against the standard library.
 _ACCUMULATORS = {"append": _LITERAL, "extend": _LITERAL_SEQ}
 
+#: Passes :func:`_module_env` allows itself. It ascends from ``{}`` — the
+#: bottom of the lattice — with every demotion applied inside the loop, so a
+#: truncated run leaves names at :data:`_OTHER`, which is refused rather than
+#: accepted. Two was enough only for "a constant declared below its first
+#: use"; a chain of module-level copies needs one pass per link.
+_MODULE_PASSES = 12
+
+#: Passes :func:`_scope_env` allows itself before giving up. The loop ascends
+#: from the bottom of the lattice and breaks as soon as it is stable, so a
+#: truncated run leaves names at :data:`_OTHER` — refused, not accepted. The
+#: bound therefore buys false-positive headroom on a long legitimate chain and
+#: nothing else; the real package's longest is two hops.
+_SCOPE_PASSES = 12
+
 #: Methods that change a container in place. A module-level constant one of
 #: these is called on is not a constant, so it is demoted wherever it is read:
 #: ``_EQUALITY`` earns its literal provenance from its declared values, and an
@@ -552,6 +566,18 @@ def _nonlocal_names(scope: ast.AST) -> set[str]:
     }
 
 
+def _assigned_names(scope: ast.AST) -> set[str]:
+    """Names this scope binds by plain assignment."""
+    names: set[str] = set()
+    for node in _scope_nodes(scope):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                names |= _target_names(target)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            names |= _target_names(node.target)
+    return names
+
+
 def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     """Provenance of every name visible in one scope.
 
@@ -562,7 +588,32 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     """
     env = dict(inherited)
     opaque = _opaque_names(scope) | _nonlocal_names(scope)
-    for name in opaque:
+    # EVERY name this scope binds starts at the bottom of the lattice, not at
+    # the value it happens to have in the enclosing scope. That is a soundness
+    # requirement and it is also what Python means: a function that assigns a
+    # name makes it local for the whole body, so the enclosing binding is not
+    # visible there at all — inheriting a module constant's literal provenance
+    # for a name the function rebinds was wrong on the language as well as on
+    # the lattice.
+    #
+    # The consequence is the point. Seeded from ``inherited``, this loop
+    # *descended*: it started ABOVE the fixed point for any shadowed name and
+    # walked down one assignment link per pass, while ``env[name] = kind``
+    # overwrites rather than meets, so nothing stopped it finishing above the
+    # fixed point. ``range(4)`` was measured **exactly one pass short**, and
+    # five routes exploited it — a 5-hop staged SQL build whose every line but
+    # one is the shape ``store/events.py`` already writes, a list/join
+    # oscillator, a 6-link chain, the same pulse inside a nested class body,
+    # and a cross-module form mirroring ``executescript(DDL)``. Raising the
+    # count would have been the wrong fix: a longer chain needs a higher count,
+    # with no bound.
+    #
+    # Seeded at the bottom the loop *ascends* instead, like
+    # :func:`_module_env` and :func:`_package_envs`, which both start from
+    # ``{}`` and were sound for exactly that reason. Truncating an ascent
+    # leaves names LOW, which is the fail-closed direction, so the bound below
+    # is only about avoiding false positives on a long legitimate chain.
+    for name in opaque | _assigned_names(scope):
         env[name] = _OTHER
     # Computed once — it is a property of the source, not of the iteration —
     # and applied INSIDE the loop below rather than after it. Applying it
@@ -585,7 +636,8 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
         # covered, by :func:`_module_env`'s whole-tree sweep.
         escaped |= _nested_scope_names(scope)
     _demote_escaped(env, escaped)
-    for _ in range(4):
+    for _ in range(_SCOPE_PASSES):
+        previous = dict(env)
         inferred: dict[str, str] = {}
         for node in _scope_nodes(scope):
             if isinstance(node, ast.Assign):
@@ -636,6 +688,8 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
             if name not in opaque:
                 env[name] = kind
         _demote_escaped(env, escaped)
+        if env == previous:
+            break  # a fixed point; further passes cannot change anything
     return env
 
 
@@ -691,7 +745,21 @@ def _module_env(name: str, tree: ast.Module, package: dict[str, dict[str, str]])
     ``execute`` call rather than passing quietly.
     """
     env: dict[str, str] = {}
-    for _ in range(2):  # a constant may be declared below its first use
+    # Computed once, and applied INSIDE the loop below. They used to be applied
+    # after it, which is the same defect :func:`_scope_env` carried one scope
+    # down: a copy taken from a demoted name was computed during the loop,
+    # while that name was still a literal, and the demotion then landed only on
+    # the original. Measured accepted — a module doing
+    # ``for _TEMPLATE in [_TEMPLATE + os.environ[...]]: break`` and then
+    # ``_STATEMENT = _TEMPLATE`` executed ``_STATEMENT``, and the list form
+    # (``_PARTS.append(os.environ[...])`` then ``"".join(_PARTS)``) did the
+    # same. The taint source at module scope is the environment rather than a
+    # caller, which is what this package's own ``_rebinding_names`` docstring
+    # already uses as the canonical module-scope taint.
+    suspect = _rebinding_names(tree) | _mutated_names(tree)
+    escaped = _escaping_names(ast.walk(tree))
+    for _ in range(_MODULE_PASSES):
+        previous = dict(env)
         inferred: dict[str, str] = {}
         # Not ``tree.body``: an assignment nested in a module-level ``if``,
         # ``try`` or ``for`` is still a module binding. Measured before this
@@ -728,18 +796,54 @@ def _module_env(name: str, tree: ast.Module, package: dict[str, dict[str, str]])
                 augmented = _provenance(node.value, env) if isinstance(node.op, ast.Add) else _OTHER
                 _note(inferred, node.target.id, augmented)
         env = inferred
-    for rebound in _rebinding_names(tree) | _mutated_names(tree):
-        if rebound in env:
-            env[rebound] = _OTHER
-    # Whole tree, not the module scope: a module container handed to a helper
-    # escapes wherever that helper is, and a mutation inside one function is
-    # invisible to another function's scope env. Measured accepted before
-    # this: ``_remember(_EQUALITY, column, clause)`` with a helper doing
-    # ``table[column] = clause``, then ``_EQUALITY[column]`` read back into
-    # the statement — and ``_EQUALITY[column]`` is a SANCTIONED pattern at
-    # store/events.py:1008, which is what made it worth closing.
-    _demote_escaped(env, _escaping_names(ast.walk(tree)))
+        for rebound in suspect:
+            if rebound in env:
+                env[rebound] = _OTHER
+        _demote_escaped(env, escaped)
+        if env == previous:
+            break  # a fixed point; further passes cannot change anything
     return env
+
+
+def _evaluated_in_enclosing_scope(child: ast.AST) -> list[ast.expr]:
+    """Parts of a nested scope that Python evaluates in the *enclosing* frame.
+
+    A decorator expression, an argument default and a class's bases all run
+    where the ``def``/``class`` statement is written, not inside the scope it
+    creates. Descending into the whole node with the inner env therefore
+    classified them against the wrong bindings. Measured accepted:
+
+        def query(conn, vendor):
+            statement = _SELECT + vendor          # not a literal
+
+            def _run(_rows=conn.execute(statement)):
+                statement = _SELECT               # a literal, INNER scope
+                return (_rows, statement)
+
+            return _run()
+
+    The default argument executes the *outer* ``statement``, which carries
+    ``vendor``; the checker read the inner rebinding and called it a literal.
+
+    Annotations are deliberately **not** included. Under
+    ``from __future__ import annotations`` — which every module in this
+    package uses — they are never evaluated at all, so classifying them would
+    refuse code that cannot run.
+    """
+    parts: list[ast.expr] = list(getattr(child, "decorator_list", []))
+    spec = getattr(child, "args", None)
+    if isinstance(spec, ast.arguments):
+        parts += [default for default in spec.defaults if default is not None]
+        parts += [default for default in spec.kw_defaults if default is not None]
+    if isinstance(child, ast.ClassDef):
+        parts += list(child.bases) + [keyword.value for keyword in child.keywords]
+    return parts
+
+
+def _scope_body(child: ast.AST) -> list[ast.AST]:
+    """A nested scope's own statements. ``Lambda.body`` is a bare expression."""
+    body = getattr(child, "body", [])
+    return list(body) if isinstance(body, list) else [body]
 
 
 def _executed_statements(
@@ -767,11 +871,33 @@ def _executed_statements(
         # half refused to look at. Measured accepted: a ``for clause in
         # columns:`` loop inside a ``class _Plan:`` nested in a function ran
         # ``SELECT * FROM events WHERE 1=1; DROP TABLE events; --``.
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
-            inner = "<lambda>" if isinstance(child, ast.Lambda) else child.name
-            yield from _executed_statements(child, _scope_env(child, env), f"{scope}.{inner}")
-        else:
-            yield from _executed_statements(child, env, scope)
+        yield from _walk_one(child, env, scope)
+
+
+def _walk_one(
+    node: ast.AST, env: dict[str, str], scope: str
+) -> Iterator[tuple[int, str, str, str]]:
+    """Dispatch one node: a nested scope is split, anything else inherits ``env``.
+
+    Mutually recursive with :func:`_executed_statements`, and separate from it
+    for a reason that cost a regression. The split used to live inline in that
+    function's child loop, so handing it a nested ``FunctionDef`` *as the node*
+    rather than as a child skipped the split entirely — a class's methods were
+    then walked with the class body's env and labelled with the class's scope
+    (``s.Store`` instead of ``s.Store.count_before``), which quietly re-opened
+    two pinned routes. The decision belongs to the node, not to the position it
+    was found in.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+        # What runs HERE keeps this env; only the body gets the nested one.
+        for outer in _evaluated_in_enclosing_scope(node):
+            yield from _executed_statements(outer, env, scope)
+        inner_env = _scope_env(node, env)
+        inner = "<lambda>" if isinstance(node, ast.Lambda) else node.name
+        for statement in _scope_body(node):
+            yield from _walk_one(statement, inner_env, f"{scope}.{inner}")
+    else:
+        yield from _executed_statements(node, env, scope)
 
 
 def _package_envs(sources: dict[str, str]) -> dict[str, dict[str, str]]:
@@ -1131,6 +1257,136 @@ _REJECTED_ESCAPES = (
     ),
 )
 
+#: Scope-boundary routes: a value computed where the analysis was not looking,
+#: then executed where it was. **Three of the four were measured accepted at**
+#: ``6b86450``; the module-join form was already refused there, and is kept
+#: beside its sibling rather than counted as a fix, because the two were
+#: reported together and the pair is what makes the module-scope defect legible.
+_REJECTED_SCOPE_BOUNDARY = (
+    (
+        "a nested function's default argument runs in the ENCLOSING frame",
+        "def query(conn, vendor):\n"
+        "    statement = _TEMPLATE + vendor\n"
+        "\n"
+        "    def _run(_rows=conn.execute(statement)):\n"
+        "        statement = _TEMPLATE\n"
+        "        return (_rows, statement)\n"
+        "\n"
+        "    return _run()\n",
+    ),
+    (
+        "a nested function's decorator expression runs in the ENCLOSING frame",
+        "def _tap(_cursor):\n"
+        "    def deco(fn):\n"
+        "        return fn\n"
+        "\n"
+        "    return deco\n"
+        "\n"
+        "\n"
+        "def query(conn, vendor):\n"
+        "    statement = _TEMPLATE + vendor\n"
+        "\n"
+        "    @_tap(conn.execute(statement))\n"
+        "    def _marker():\n"
+        "        statement = _TEMPLATE\n"
+        "        return statement\n"
+        "\n"
+        "    return _marker\n",
+    ),
+    (
+        "a module copy taken from a constant the checker demotes",
+        "import os\n"
+        "\n"
+        'for _TEMPLATE in [_TEMPLATE + os.environ.get("IANUA_VENDOR", "?")]:\n'
+        "    break\n"
+        "\n"
+        "_STATEMENT = _TEMPLATE\n"
+        "\n"
+        "\n"
+        "def query(conn):\n"
+        "    conn.execute(_STATEMENT)\n",
+    ),
+    (
+        "a module join taken from a list the checker demotes",
+        "import os\n"
+        "\n"
+        "_PARTS = [_TEMPLATE]\n"
+        '_PARTS.append(os.environ.get("IANUA_VENDOR", "?"))\n'
+        '_STATEMENT = "".join(_PARTS)\n'
+        "\n"
+        "\n"
+        "def query(conn):\n"
+        "    conn.execute(_STATEMENT)\n",
+    ),
+)
+
+#: The descent family. Each shadows a name the enclosing scope bound to a
+#: literal, then walks the statement through enough assignment hops that the
+#: old descending fixed point ran out of passes. Measured accepted at
+#: ``6b86450`` and refused once the loop seeded bound names at the bottom of
+#: the lattice. The first is the one that matters: **every line but one is the
+#: shape ``store/events.py`` already writes.**
+_REJECTED_DESCENT = (
+    (
+        "a 5-hop staged SQL build, with one module constant shadowed",
+        '_WHERE = " WHERE 1=1"\n'
+        "\n"
+        "\n"
+        "class Store:\n"
+        "    def query(self, conn, raw):\n"
+        "        _TEMPLATE = raw\n"
+        "        head = _TEMPLATE + _WHERE\n"
+        "        body = head + _WHERE\n"
+        "        tail = body + _WHERE\n"
+        "        statement = tail + _WHERE\n"
+        "        conn.execute(statement)\n",
+    ),
+    (
+        "a list/join oscillator over a shadowed constant",
+        "class Store:\n"
+        "    def count_before(self, conn, before):\n"
+        "        _TEMPLATE = before\n"
+        "        head = [_TEMPLATE]\n"
+        '        clause = "".join(head)\n'
+        "        parts = [clause]\n"
+        '        statement = "".join(parts)\n'
+        "        conn.execute(statement)\n",
+    ),
+    (
+        "a six-link shadowing chain",
+        '_B = "SELECT 1"\n'
+        '_C = "SELECT 2"\n'
+        '_D = "SELECT 3"\n'
+        '_E = "SELECT 4"\n'
+        "\n"
+        "\n"
+        "class Store:\n"
+        "    def count_before(self, conn, before):\n"
+        "        _TEMPLATE = before\n"
+        "        _B = _TEMPLATE\n"
+        "        _C = _B\n"
+        "        _D = _C\n"
+        "        _E = _D\n"
+        "        conn.execute(_E)\n",
+    ),
+    (
+        "the same pulse inside a nested class body, seeded from a parameter",
+        '_PAD = " -- pad"\n'
+        "\n"
+        "\n"
+        "def build(conn, raw):\n"
+        "    class _Plan:\n"
+        "        _TEMPLATE = raw\n"
+        "        h1 = _TEMPLATE + _PAD\n"
+        "        h2 = h1 + _PAD\n"
+        "        h3 = h2 + _PAD\n"
+        "        script = h3 + _PAD\n"
+        "        conn.execute(script)\n"
+        "\n"
+        "    del _Plan\n",
+    ),
+)
+
 #: A third round from the same pass, against the version that closed the
 #: previous two. All four share a theme: a container reached under a name the
 #: analysis was not watching, or sanctioned on the strength of a method's
@@ -1336,6 +1592,8 @@ _REJECTED_MODULE_SCOPE = (
         *_REJECTED_MODULE_SCOPE,
         *_REJECTED_SCOPE_SHAPES,
         *_REJECTED_ALIASING,
+        *_REJECTED_DESCENT,
+        *_REJECTED_SCOPE_BOUNDARY,
     ),
 )
 def test_a_pattern_capture_or_unmodelled_mutation_demotes_the_name(label: str, body: str) -> None:
@@ -1599,6 +1857,39 @@ def test_a_chained_module_binding_does_not_survive_the_import_boundary() -> None
     )
     findings = _non_literal_statements({"sample.schema": schema, "sample.events": events})
     assert findings, "a chained module binding survived the import boundary"
+
+
+@pytest.mark.security
+def test_a_shadowed_imported_constant_cannot_outrun_the_fixed_point() -> None:
+    """The descent family's cross-module form, mirroring ``executescript(DDL)``.
+
+    ``EventStore.migrate`` runs ``executescript(DDL)`` on a literal imported
+    from :mod:`store.schema`. This is that method's shape with one line added,
+    ``DDL = extra_ddl``, and then four concatenation hops. Measured accepted
+    while :func:`_scope_env` descended from the inherited env: the import
+    resolution that makes the real call work is what carried the stale literal
+    provenance into a scope that had rebound the name.
+    """
+    schema = (
+        'DDL = "CREATE TABLE events (event_id TEXT PRIMARY KEY)"\n'
+        '_PRAGMAS = " PRAGMA foreign_keys=ON;"\n'
+        '_ANALYZE = " ANALYZE;"\n'
+    )
+    events = (
+        "from sample.schema import DDL, _ANALYZE, _PRAGMAS\n"
+        "\n"
+        "\n"
+        "class EventStore:\n"
+        "    def migrate(self, conn, extra_ddl):\n"
+        "        DDL = extra_ddl\n"
+        "        step1 = DDL + _PRAGMAS\n"
+        "        step2 = step1 + _ANALYZE\n"
+        "        step3 = step2 + _ANALYZE\n"
+        "        script = step3 + _ANALYZE\n"
+        "        conn.executescript(script)\n"
+    )
+    findings = _non_literal_statements({"sample.schema": schema, "sample.events": events})
+    assert findings, "a shadowed imported constant outran the fixed point"
 
 
 @pytest.mark.security
