@@ -40,6 +40,7 @@ two, so its own refusals are asserted directly as well.
 
 from __future__ import annotations
 
+import errno
 import os
 import socket
 import stat
@@ -50,7 +51,14 @@ from pathlib import Path
 import pytest
 
 from scripts import run_backup, run_collector, run_pipeline, run_retention
-from scripts._locking import _DESCRIBED_TYPES, DIR_MODE, FILE_MODE, _describe
+from scripts._locking import (
+    _DESCRIBED_TYPES,
+    DIR_MODE,
+    FILE_MODE,
+    _describe,
+    prepare_lock,
+    single_instance,
+)
 from store.paths import validated_root
 
 #: Roots that resolve to the working directory, or to somewhere else the
@@ -407,6 +415,87 @@ def test_a_lock_path_that_is_not_a_regular_file_is_refused_by_type(
     finally:
         if isinstance(held, socket.socket):
             held.close()
+
+
+#: ``(label, the mode the lock file already carries, is it recoverable)``.
+#:
+#: The open is ``O_RDONLY``, which is what makes ``0o400`` recoverable and what
+#: makes ``0o200`` refuse. Both rows are pinned deliberately: the second is the
+#: *price* of the first, and a silent change in either direction is a behaviour
+#: change four scheduled CLIs depend on. ``prepare_lock``'s docstring carries
+#: the measured table.
+_PREEXISTING_MODES = (
+    ("owner-read-only", 0o400, True),
+    ("owner-write-only", 0o200, False),
+    ("no-permissions", 0o000, False),
+    ("group-and-world-readable", 0o644, True),
+)
+
+
+@pytest.mark.security
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root bypasses the DAC checks this asserts, so the result would be vacuous",
+)
+@pytest.mark.parametrize(
+    ("label", "mode", "recoverable"), _PREEXISTING_MODES, ids=[c[0] for c in _PREEXISTING_MODES]
+)
+def test_a_pre_existing_lock_file_is_recovered_or_refused_by_its_mode(
+    label: str, mode: int, recoverable: bool, tmp_path: Path
+) -> None:
+    """A lock file an operator left read-only must not stop every scheduled pass.
+
+    Reported in review against the first version of this change, which opened
+    ``O_WRONLY``: a pre-existing ``0o400`` lock made ``os.open`` fail ``EACCES``
+    *before* the ``os.fchmod`` that would have widened it, so all four CLIs
+    refused to start until a human intervened — where the ``touch``/``chmod``/
+    ``open`` sequence this replaced had recovered the same file, because
+    ``chmod`` needs ownership rather than write permission.
+
+    ``0o400`` is not an exotic mode here: ``agents/tools/containment.py`` chmods
+    a quarantined payload to it for forensic preservation, and it is what any
+    "harden the data directory" script produces. Nothing in this repository puts
+    one at a *lock* path, so the trigger is an operator or an external script —
+    weaker than a code path, which is why this is pinned rather than argued.
+
+    **Why skipping as root is legitimate here and was not for the device node.**
+    The `mknod` case was gated out of *CI*, which is the one environment where a
+    security assertion has to hold. This skips the inverse way round: CI runs
+    unprivileged, so this assertion runs exactly where it matters, and it steps
+    aside only for a developer running as root — where the kernel ignores the
+    mode bits and the assertion would pass without testing anything.
+    """
+    directory = tmp_path / "data" / "pipeline"
+    directory.mkdir(parents=True)
+    lock_path = directory / "cycle.lock"
+    lock_path.touch()
+    lock_path.chmod(mode)
+    assert stat.S_IMODE(lock_path.stat().st_mode) == mode, "precondition not set up"
+
+    if not recoverable:
+        with pytest.raises(OSError) as caught:
+            prepare_lock(directory, "cycle.lock")
+        assert caught.value.errno == errno.EACCES, (
+            f"{label}: expected EACCES, got errno {caught.value.errno}"
+        )
+        # And the refusal left the operator's mode alone rather than half-fixing it.
+        assert stat.S_IMODE(lock_path.stat().st_mode) == mode
+        return
+
+    handle = prepare_lock(directory, "cycle.lock")
+    # Recovered to the owner-only mode the rest of the lab root uses...
+    assert stat.S_IMODE(lock_path.stat().st_mode) == FILE_MODE, (
+        f"{label}: lock left at {oct(stat.S_IMODE(lock_path.stat().st_mode))}"
+    )
+    # ...and the handle is a working lock, not merely an open file. This is the
+    # assertion that would catch O_RDONLY having broken exclusion: flock keys on
+    # the open file description, not on access mode, but that is a measured fact
+    # rather than an obvious one.
+    with single_instance(handle) as acquired:
+        assert acquired is True
+        second = prepare_lock(directory, "cycle.lock")
+        with single_instance(second) as overlapping:
+            assert overlapping is False, f"{label}: a read-only open stopped excluding"
 
 
 @pytest.mark.security

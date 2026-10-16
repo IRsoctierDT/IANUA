@@ -80,13 +80,28 @@ FILE_MODE = 0o600
 #: How the lock file is opened. Every flag is load-bearing; see
 #: :func:`prepare_lock` for what each one refuses and what it costs.
 #:
-#: * ``O_WRONLY | O_CREAT | O_APPEND`` — what ``Path.open("a")`` did.
-#: * ``O_NONBLOCK`` — a FIFO with no reader fails ``ENXIO`` instead of blocking
-#:   forever. It is what makes the type guard *reachable*: without it the
-#:   process never returns from ``os.open`` to run any guard at all.
+#: * ``O_RDONLY`` — the least this can ask for, and all a lock needs: ``flock``
+#:   keys on the open file description and not on access mode. Measured,
+#:   unprivileged — ``LOCK_EX`` acquires on a read-only descriptor and a second
+#:   holder is still refused ``EAGAIN``, so exclusion is untouched. It was
+#:   ``O_WRONLY | O_APPEND``, mirroring the ``Path.open("a")`` it replaced, and
+#:   that asked for a capability nothing exercises: no code in this repository
+#:   writes a byte to the handle. Asking anyway was not free — see the ``0o400``
+#:   finding in :func:`prepare_lock`.
+#: * ``O_CREAT`` — creates the lock at :data:`FILE_MODE` when absent. Legal with
+#:   ``O_RDONLY``, and measured: the created file is ``0o600``.
+#: * ``O_NONBLOCK`` — what makes the type guard *reachable*, and it keeps that
+#:   job under ``O_RDONLY`` with the direction reversed. Measured on a
+#:   reader-less FIFO: without it the open blocks indefinitely either way —
+#:   ``O_RDONLY`` waiting for a writer, ``O_WRONLY`` waiting for a reader — so
+#:   the process never returns to run any guard. With it the open returns and
+#:   ``os.fstat`` refuses. What changes is only *which* step refuses: under
+#:   ``O_WRONLY`` the open itself failed ``ENXIO``; under ``O_RDONLY`` the open
+#:   succeeds and the descriptor's type is the sole guard. It is **not** cleared
+#:   afterwards any more — see :func:`prepare_lock`.
 #: * ``O_NOFOLLOW`` — a symlink at the final component fails ``ELOOP``, before
 #:   anything follows it and chmods whatever it points at.
-_OPEN_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK | os.O_NOFOLLOW
+_OPEN_FLAGS = os.O_RDONLY | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW
 
 #: What a path actually is, for an error message only — never for a decision.
 #:
@@ -145,7 +160,8 @@ def prepare_lock(directory: Path, filename: str) -> TextIO:
     lock path that is a *directory* raises ``IsADirectoryError``, and the
     caller has to be the one to translate that.
 
-    Appends, never truncates: the handle carries the lock, not the contents.
+    Opens read-only and never truncates: the handle carries the lock, not the
+    contents, and ``flock`` needs no write access to do it.
 
     **The lock path must be a regular file, and the old code never checked.**
     It did ``touch`` then ``chmod`` then ``Path.open("a")``, and all three
@@ -193,6 +209,40 @@ def prepare_lock(directory: Path, filename: str) -> TextIO:
     deny-list would also leave ``close()``'s flush able to raise
     ``BlockingIOError`` from ``__exit__`` — outside the caller's startup
     ``try``, so a traceback at exit 1.
+
+    **The open asks for the least it can, and that is a fix and not a nicety.**
+    The first version of this used ``O_WRONLY | O_APPEND``, mirroring the
+    ``Path.open("a")`` it replaced. Review found the cost and measurement
+    confirmed it: a pre-existing lock file at mode ``0o400`` — owner-readable,
+    not writable — made ``os.open`` fail ``EACCES`` *before* the ``os.fchmod``
+    that would have widened it, so all four scheduled CLIs refused to start
+    until a human intervened. The sequence this replaced recovered that file,
+    because ``chmod`` needs ownership rather than write permission. Measured as
+    the file's owner, unprivileged::
+
+        lock mode   O_WRONLY (before)   O_RDONLY (now)
+        0o600       ok                  ok
+        0o400       EACCES              ok, narrowed to 0o600
+        0o200       ok                  EACCES
+        0o000       EACCES              EACCES
+        0o666       ok, narrowed        ok, narrowed
+
+    So it is a trade, and the ``0o200`` row is its price: a write-only lock file
+    now refuses where it used to work. It is the right side of the trade because
+    ``0o400`` is a mode this platform uses *deliberately* —
+    ``agents/tools/containment.py`` chmods a quarantined payload to ``0o400``
+    for forensic preservation — and the mode any "harden the data directory"
+    script produces, while nothing produces ``0o200``. Neither is put at a lock
+    path by this repository: both need an operator or an external script, and
+    both refuse loudly at exit 2 naming the path, which is the fail-closed side.
+
+    **``O_NONBLOCK`` is no longer cleared afterwards**, which is a consequence of
+    ``O_RDONLY`` and not a separate decision. It was cleared because the
+    descriptor outlives this function and a future writer would inherit a latent
+    partial-write bug — but a read-only descriptor has no future writer, and
+    ``O_NONBLOCK`` is a no-op on a regular file regardless (measured: ``read()``
+    returns ``b''``, never ``EAGAIN``). Two ``fcntl`` calls leave the
+    error-handling critical section with it.
 
     **What this costs, named.** ``O_NOFOLLOW`` applies to the final component
     only (an ancestor symlink still opens, measured), which is exactly
@@ -245,14 +295,9 @@ def prepare_lock(directory: Path, filename: str) -> TextIO:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise _refuse(path, errno.EINVAL)
         # Narrows a pre-existing lock file, as ``path.chmod`` did before it.
+        # ``fchmod`` needs ownership and *not* write permission, which is what
+        # lets a ``0o400`` lock file be recovered through a read-only descriptor.
         os.fchmod(descriptor, FILE_MODE)
-        # ``O_NONBLOCK`` was wanted for the duration of the open and no longer.
-        # The descriptor outlives this function — ``single_instance`` holds it
-        # for the whole pass — so leaving it set hands the next writer a latent
-        # partial-write bug that would never reproduce on a local filesystem.
-        # Mask-preserving, because clobbering ``O_APPEND`` here would be silent.
-        flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
-        fcntl.fcntl(descriptor, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
     except BaseException:
         os.close(descriptor)
         raise
@@ -262,7 +307,11 @@ def prepare_lock(directory: Path, filename: str) -> TextIO:
     # *before* that leaks the descriptor while one *after* it closes it — and
     # wrapping this in the ``except`` above would double-close the second case.
     # Anyone parameterising either argument must revisit this.
-    return os.fdopen(descriptor, "a", encoding="utf-8")
+    #
+    # ``"r"`` and not ``"a"``: the descriptor is ``O_RDONLY``, and ``fdopen``
+    # must agree with it. Nothing reads the handle either — ``single_instance``
+    # takes only ``fileno()`` and the ``with`` that closes it.
+    return os.fdopen(descriptor, "r", encoding="utf-8")
 
 
 @contextlib.contextmanager
