@@ -213,10 +213,72 @@ command line. The exception is deliberately narrow, and the narrowness is the co
   `journalctl`.
 
 This amendment covers **inbound reads of this node's own files only**. It does not license
-outbound network egress, which remains default-deny (and has been refused twice on the
-grounds that `guarded.enforce()` cannot express per-invocation human approval), and it does
-not license an inbound listener, which adds an unauthenticated network surface this charter
-does not yet describe. See `DESIGN.md` §5 boundary 14.
+outbound network egress and it does not license an inbound listener. Both are licensed
+separately and much more narrowly by the stage 7 amendment below, which supersedes this
+sentence and nothing else in this bullet list. See `DESIGN.md` §5 boundary 14 and
+boundary 15.
+
+**The network — amended for the active/passive peer channel (stage 7).** The owner approved
+an inbound listener and egress to a declared peer. Both were previously refused, and the
+refusals are not being waved away: this amendment is narrower than either thing it permits,
+and the narrowness is again the control.
+
+**What the prior refusals actually said, because the answer has to meet it.** Egress was
+refused twice — the ATT&CK bundle and the threat-intel feed — on the ground that
+`guarded.enforce()` cannot express *per-invocation* human approval, so the only ways to make
+a fetch pass were an allow-list label or `report_only`, both permanent and unscoped. That
+objection stands and is not answered by an approval. It is answered the way
+`run_retention.py --apply` answered the same shape: a **standing grant for one named label
+in a committed, reviewable file**, scoped to this one action, which a reviewer can see in a
+diff. Paired with a committed host allow-list that is **empty by default and therefore
+denies**, the grant names the action and the allow-list names the destination, and neither
+alone is sufficient. The listener was refused for a different reason — that it "adds an
+**unauthenticated** network surface" — and that word is the whole of it: the surface
+licensed here authenticates every request before it does anything.
+
+- **Read-only, and health/state only.** The listener serves a projection of state the node
+  has already computed: the `attest()` digest, the event count, the high-water mark, each
+  chain's verdict, and when the last backup and last promotion verification ran. It accepts
+  **no** mutation, **no** file upload, and **no** command. There is no code path from a
+  request to a write, and a security test asserts it rather than a docstring claiming it.
+- **Aggregates and digests, never event content.** This is §5's exfiltration prohibition
+  applied to a socket, and it is the bullet most likely to be eroded later by someone adding
+  "just the latest incident" to a health response. A count is metadata; a sha256 over
+  `event_id`s is a fingerprint and not a preimage; an event, a `raw_excerpt`, an observable
+  or an incident is **evidence**, and evidence does not leave the node over this channel.
+  The stage 6 amendment's reasoning carries over unchanged: what a parser modelled is what
+  the store holds, and none of it is what this serves.
+- **Authenticated before anything else happens.** Every request carries an HMAC over its
+  body, keyed from the environment and verified with `hmac.compare_digest`. **No key
+  configured means the listener refuses to start**, never that it serves openly — the same
+  fail-closed shape as the rest of the platform, and the opposite of the default that made
+  an unsigned audit chain verify as intact. The key is never committed, never logged and
+  never in an error message, exactly as `AUDIT_HMAC_KEY` already is.
+- **Bound to a declared address, never discovered.** The operator names the interface and
+  port on the command line; there is no default that listens everywhere. `0.0.0.0` is
+  refused outright rather than warned about, for the same reason `collect/` refuses a glob:
+  a surface that binds to whatever it finds eventually binds to something nobody meant to
+  expose.
+- **The active node listens; the passive node reaches out.** So the node that will be
+  *promoted* — the one whose integrity matters most at the moment it matters — has no
+  inbound surface at all. Egress is therefore from the passive node only, to a single host
+  that appears in its committed allow-list.
+- **Still no automatic promotion, and this changes nothing about the fence.** The channel
+  tells an operator what the other node holds. It cannot promote, and the puller cannot
+  promote. Promotion stays procedural because nothing here can verify that the former
+  active's timers were stopped, which `DESIGN.md`'s active/passive row establishes and
+  `scripts/run_backup.py --verify-restore` says on every success. A health response that
+  reads "peer is dead" is an input to a human decision, never a trigger.
+- **No subprocess, no shell, and stdlib only.** `http.server`, `ssl`, `hmac`, `hashlib`,
+  `socket` — `dependencies = []` stands, and six security test files assert it. A consensus
+  system would have been the one candidate needing a package, and it is not what was
+  approved.
+
+**What this still does not license**, stated because an amendment is read by whoever wants
+the next thing: shipping the store over this channel (an operator's existing transport moves
+the file, which `DESIGN.md`'s active/passive row already decided); any egress to a host not
+in the committed allow-list; any third-party fetch, which the two prior refusals still
+govern; automatic failover; and a listener on the passive node.
 
 **What is retained — amended for real telemetry (stage 6).** Real logs describe people:
 a sign-in record *is* a username, a mail record *is* two addresses, a process record *is*
