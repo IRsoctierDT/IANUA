@@ -37,6 +37,15 @@ import pytest
 from agents.policies.audit import AuditLogger
 from scripts._locking import prepare_lock, single_instance
 
+_REPO = Path(__file__).resolve().parents[2]
+
+#: The minimum fencing action the §11 record names, as a literal. Review found
+#: that the row originally offered a load balancer as a fence, which cannot stop
+#: a local timer, and "the operator decides" as another, which is not an action.
+#: The corrected row points at this command instead — so this is the citation
+#: that must not dangle.
+_FENCING_COMMAND = "systemctl --user stop ianua-pipeline.timer ianua-collector.timer"
+
 
 def _take(root: Path) -> contextlib.AbstractContextManager[bool]:
     """Open and lock one node's pipeline lock, as the shipped CLIs do."""
@@ -134,4 +143,43 @@ def test_the_lock_the_clis_take_is_an_flock_on_a_file_under_the_lab_root(
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     assert (locked.st_dev, locked.st_ino) == (expected.st_dev, expected.st_ino), (
         "the locked descriptor is not the lock file under the lab root"
+    )
+
+
+@pytest.mark.security
+def test_the_fencing_command_the_decision_row_cites_actually_exists() -> None:
+    """``DESIGN.md`` §11 names one concrete action as the operator's fence.
+
+    The row was corrected after review: it had listed a load balancer among the
+    candidate fences, which steers *inbound clients* and so cannot stop this
+    platform's writers — every one of them is a local scheduled one-shot, which
+    is why the corrected row points at a ``systemctl --user stop`` of the two
+    timers instead. A record whose fence is a command is only as good as the
+    command existing, and "a docstring citing an assertion that does not exist"
+    is a defect this repository has already had to fix once.
+
+    So this asserts the citation both ways: the command is in the runbook, and
+    the decision row still points at it. Either half alone would let the two
+    drift apart silently.
+    """
+    runbook = (_REPO / "docs" / "RETENTION.md").read_text(encoding="utf-8")
+    assert _FENCING_COMMAND in runbook, (
+        f"docs/RETENTION.md no longer contains {_FENCING_COMMAND!r} — DESIGN.md §11's "
+        "HA row cites it as the operator's fencing action, so that citation now dangles"
+    )
+    design = (_REPO / "DESIGN.md").read_text(encoding="utf-8")
+    assert "systemctl --user stop" in design, (
+        "DESIGN.md §11's HA row no longer names a concrete fencing action; if the fence "
+        "changed, this test and the runbook reference need changing with it"
+    )
+    # And the thing the correction was about: a load balancer must not be
+    # offered as a fence again, in a repository whose writers are local timers.
+    row = next(
+        line
+        for line in design.splitlines()
+        if line.startswith("| 2026-10-16 | The approved active/passive HA decision")
+    )
+    assert "load balancer does not" in row, (
+        "the HA row no longer says a load balancer does not fence — it was listed as a "
+        "candidate fence once, and nothing in front of a node stops that node's own timers"
     )
