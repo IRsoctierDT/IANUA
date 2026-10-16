@@ -4,6 +4,18 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **`run_backup --verify-restore BACKUP`, the promotion gate.** `--verify` checked
+  a backup against its own manifest *before* a restore; `docs/RESTORE.md` step 4
+  then copied it into place with `cp -a` and nothing looked at the result. A
+  store missing most of its pages opens cleanly and reports a plausible count
+  (353 of 400, measured), so a half-finished copy left a working SOC quietly
+  short of evidence. The new mode re-attests the **live** root and requires the
+  manifest's digest and event count, reports `LOSS`/`SUBSTITUTED`/`ADDED`/
+  `TRUNCATED`/`REWRITTEN`/`POSITION PRESENT` so the direction is never
+  ambiguous, and states on success that it verifies the *copy* and says nothing
+  about whether exactly one node is active. Run it between steps 4 and 5.
+
 ### Changed
 - **The four scheduled CLIs now exit `4` for retryable SQLite contention**, where
   they returned `1`. `1` had meant both "the evidence store is damaged, page
