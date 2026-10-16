@@ -349,19 +349,21 @@ def _pattern_bound_names(node: ast.AST) -> set[str]:
     }
 
 
-def _opaque_names(scope: ast.AST) -> set[str]:
-    """Names a scope binds by anything other than plain assignment.
+def _rebinding_names(scope: ast.AST) -> set[str]:
+    """Names a scope binds by a construct that carries no provenance.
 
-    A parameter is a caller's value by definition, and a ``for``, ``with``,
-    ``except`` or ``match`` target is whatever the subject happened to be —
-    none of them carry provenance, and each shadows a module constant of the
-    same name.
+    A ``for``, ``with``, ``except``, walrus or ``match`` target is whatever
+    the subject happened to be, a plain ``import`` binds a module object, and
+    ``global``/``nonlocal`` hands the binding to someone else.
+
+    Shared by :func:`_opaque_names` (function scope) and :func:`_module_env`
+    (module scope) **because the two had drifted**. Measured: module scope
+    modelled only ``ImportFrom``, ``Assign`` and ``AnnAssign``, so
+    ``for _TEMPLATE in [_TEMPLATE + os.environ["X"]]: pass`` at module level
+    kept its literal provenance and was accepted, while the identical
+    construct inside a function was refused. One loop, two callers.
     """
     names: set[str] = set()
-    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        spec = scope.args
-        names.update(arg.arg for arg in (*spec.posonlyargs, *spec.args, *spec.kwonlyargs))
-        names.update(arg.arg for arg in (spec.vararg, spec.kwarg) if arg is not None)
     for node in _scope_nodes(scope):
         if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
             names |= _target_names(node.target)
@@ -371,13 +373,129 @@ def _opaque_names(scope: ast.AST) -> set[str]:
             names.add(node.name)
         elif isinstance(node, ast.NamedExpr):
             names |= _target_names(node.target)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+        elif isinstance(node, ast.Import):
             names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             names.update(node.names)
         else:
             names |= _pattern_bound_names(node)
     return names
+
+
+def _opaque_names(scope: ast.AST) -> set[str]:
+    """Names a scope binds by anything other than plain assignment.
+
+    A parameter is a caller's value by definition. ``from x import y`` is
+    opaque *here* but resolved at module scope, which is the one difference
+    between this and :func:`_rebinding_names`.
+    """
+    names = _rebinding_names(scope)
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        spec = scope.args
+        names.update(arg.arg for arg in (*spec.posonlyargs, *spec.args, *spec.kwonlyargs))
+        names.update(arg.arg for arg in (spec.vararg, spec.kwarg) if arg is not None)
+    for node in _scope_nodes(scope):
+        if isinstance(node, ast.ImportFrom):
+            names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+    return names
+
+
+def _escaping_names(nodes: typing.Iterable[ast.AST]) -> set[str]:
+    """Names whose use hides a possible later mutation from this checker.
+
+    **This is the second inversion, and it is the load-bearing one.** The
+    first version of this checker chased *mutations*: it demoted a container
+    when it saw ``name.insert(...)`` or ``name[i] = ...``. That is a
+    deny-list over a mutable object reached through one name, and a review
+    pass measured eleven ways past it on merged code, every one with a
+    runtime proof of real injection. The root cause was named exactly:
+    a name-keyed lattice over mutable objects. A few of the eleven:
+
+    * ``sink = parts; sink.append(before); " ".join(parts)`` — the demotion
+      landed on ``sink``, and ``parts`` is the same list object.
+    * ``_add_clause(clauses, f"e.tag = '{tag}'")`` where the helper appends.
+      ``store/events.py::query`` writes ``clauses.append(...)`` fourteen
+      times; factoring that into a helper is the refactor a reviewer would
+      *ask for*, and it removes the list from this checker's view entirely.
+    * ``def add_vendor(): parts.append(before)`` — mutating a list needs no
+      ``nonlocal``, so :func:`_nonlocal_names` covered the rare half of that
+      gap and missed the common one.
+    * ``holder = (parts,); holder[0].append(before)`` — the method branch
+      requires a bare ``Name`` receiver, so any other receiver passed through.
+
+    So this does not look for mutations. It whitelists the **uses that keep a
+    container provable** and treats every other appearance of the name as an
+    escape. The four sanctioned uses are exactly what ``store/events.py``
+    does: ``name.append(x)``/``name.extend(xs)``, ``<literal>.join(name)``,
+    ``name[key]`` read, and a bare truthiness test (``if clauses:``). Being a
+    whitelist, a route nobody has imagined escapes by default — which is the
+    same reason the statement-level check is a provenance requirement rather
+    than a list of forbidden constructs.
+    """
+    population = list(nodes)
+    sanctioned: set[int] = set()
+    for node in population:
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if func.attr in _ACCUMULATORS and isinstance(func.value, ast.Name):
+                    sanctioned.add(id(func.value))  # clauses.append(<literal>)
+                elif (
+                    func.attr == "join"
+                    and len(node.args) == 1
+                    and isinstance(node.args[0], ast.Name)
+                ):
+                    sanctioned.add(id(node.args[0]))  # " AND ".join(clauses)
+        elif isinstance(node, (ast.If, ast.While, ast.IfExp)) and isinstance(node.test, ast.Name):
+            sanctioned.add(id(node.test))  # if clauses:
+        elif (
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.Not)
+            and isinstance(node.operand, ast.Name)
+        ):
+            sanctioned.add(id(node.operand))  # if not clauses:
+        elif (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+        ):
+            sanctioned.add(id(node.value))  # _EQUALITY[column], a READ
+    return {
+        node.id
+        for node in population
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and id(node) not in sanctioned
+    }
+
+
+def _nested_scope_names(scope: ast.AST) -> set[str]:
+    """Every name a nested scope mentions, read or written.
+
+    :func:`_scope_nodes` stops at a nested function by design, so anything it
+    does to an enclosing container is invisible. :func:`_nonlocal_names`
+    closed the *rebinding* half of that; this closes the mutation half, which
+    is the common one — ``parts.append(before)`` inside a closure needs no
+    ``nonlocal`` declaration at all, and was measured accepted.
+    """
+    names: set[str] = set()
+    for node in ast.walk(scope):
+        if node is scope:
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            names |= {inner.id for inner in ast.walk(node) if isinstance(inner, ast.Name)}
+    return names
+
+
+def _demote_escaped(env: dict[str, str], escaped: set[str]) -> None:
+    """Demote every tracked container in ``escaped``, in place.
+
+    Only containers: a string is immutable, so handing it to a function
+    cannot change what it holds.
+    """
+    for name, kind in list(env.items()):
+        if kind in (_LITERAL_SEQ, _LITERAL_MAP) and name in escaped:
+            env[name] = _OTHER
 
 
 def _nonlocal_names(scope: ast.AST) -> set[str]:
@@ -408,6 +526,13 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     opaque = _opaque_names(scope) | _nonlocal_names(scope)
     for name in opaque:
         env[name] = _OTHER
+    # Computed once — it is a property of the source, not of the iteration —
+    # and applied INSIDE the loop below rather than after it. Applying it
+    # after would leave ``statement = "".join(parts)`` classified as a
+    # literal from an earlier pass, which is the only value that reaches an
+    # ``execute`` call.
+    escaped = _escaping_names(_scope_nodes(scope)) | _nested_scope_names(scope)
+    _demote_escaped(env, escaped)
     for _ in range(4):
         inferred: dict[str, str] = {}
         for node in _scope_nodes(scope):
@@ -451,6 +576,7 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
         for name, kind in inferred.items():
             if name not in opaque:
                 env[name] = kind
+        _demote_escaped(env, escaped)
     return env
 
 
@@ -525,10 +651,26 @@ def _module_env(name: str, tree: ast.Module, package: dict[str, dict[str, str]])
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 if node.value is not None:
                     _note(inferred, node.target.id, _provenance(node.value, env))
+            elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+                # Measured accepted before this branch existed: a module-level
+                # ``_TEMPLATE += os.environ.get("IANUA_VENDOR", "'?'")``. The
+                # same construct inside a function was already refused, so one
+                # scope agreed with the other only by accident of which node
+                # types each modelled.
+                augmented = _provenance(node.value, env) if isinstance(node.op, ast.Add) else _OTHER
+                _note(inferred, node.target.id, augmented)
         env = inferred
-    for mutated in _mutated_names(tree):
-        if mutated in env:
-            env[mutated] = _OTHER
+    for rebound in _rebinding_names(tree) | _mutated_names(tree):
+        if rebound in env:
+            env[rebound] = _OTHER
+    # Whole tree, not the module scope: a module container handed to a helper
+    # escapes wherever that helper is, and a mutation inside one function is
+    # invisible to another function's scope env. Measured accepted before
+    # this: ``_remember(_EQUALITY, column, clause)`` with a helper doing
+    # ``table[column] = clause``, then ``_EQUALITY[column]`` read back into
+    # the statement — and ``_EQUALITY[column]`` is a SANCTIONED pattern at
+    # store/events.py:1008, which is what made it worth closing.
+    _demote_escaped(env, _escaping_names(ast.walk(tree)))
     return env
 
 
@@ -798,6 +940,13 @@ _REJECTED_PATTERN_AND_MUTATION = (
         '    equality.update({"vendor": before})\n'
         "    conn.execute(_TEMPLATE + equality[column])\n",
     ),
+    (
+        "an empty list plus insert, so the WHOLE statement is the caller's",
+        "def run(conn, before):\n"
+        "    parts = []\n"
+        "    parts.insert(0, before)\n"
+        '    conn.execute(" ".join(parts))\n',
+    ),
 )
 
 #: Routes that were ALREADY refused before those fixes. Kept separate so the
@@ -835,8 +984,140 @@ def test_the_provenance_check_rejects_each_multi_statement_route(label: str, sou
     assert _non_literal_statements({"sample": source}), f"{label} was accepted"
 
 
+#: An adversarial review pass against the version that closed the two P1
+#: findings above measured **eleven further routes**, each with a runtime
+#: proof of real injection, and named the root cause: a name-keyed lattice
+#: over mutable objects. Ten are closed by the two structural changes those
+#: findings forced — :func:`_escaping_names`' use-whitelist, and module scope
+#: reusing :func:`_rebinding_names` instead of modelling three node types —
+#: and are pinned as whole modules because each needs several statements. The
+#: eleventh, ``globals()[name] = ...``, is closed by shape in
+#: :func:`test_no_module_constant_is_rebound_through_the_module_dict`.
+_REJECTED_ESCAPES = (
+    (
+        "an alias name appends to the same list object",
+        "def run(conn, before):\n"
+        "    parts = [_TEMPLATE]\n"
+        "    sink = parts\n"
+        "    sink.append(before)\n"
+        '    conn.execute(" ".join(parts))\n',
+    ),
+    (
+        "mutation through a subscript receiver, not a bare name",
+        "def run(conn, before):\n"
+        "    parts = [_TEMPLATE]\n"
+        "    holder = (parts,)\n"
+        "    holder[0].append(before)\n"
+        '    conn.execute(" ".join(parts))\n',
+    ),
+    (
+        "the clause list handed to a helper that appends to it",
+        "def _add_clause(bucket, clause):\n"
+        "    bucket.append(clause)\n"
+        "\n"
+        "\n"
+        "def run(conn, tag):\n"
+        "    clauses = []\n"
+        "    _add_clause(clauses, f\"e.tag = '{tag}'\")\n"
+        "    parts = [_TEMPLATE]\n"
+        "    if clauses:\n"
+        '        parts.append(" WHERE ")\n'
+        '        parts.append(" AND ".join(clauses))\n'
+        '    conn.execute("".join(parts))\n',
+    ),
+    (
+        "a nested closure appends, needing no nonlocal",
+        "def run(conn, before):\n"
+        "    parts = [_TEMPLATE]\n"
+        "\n"
+        "    def add_vendor():\n"
+        "        parts.append(before)\n"
+        "\n"
+        "    add_vendor()\n"
+        '    conn.execute(" ".join(parts))\n',
+    ),
+)
+
+#: The same family on the mapping lattice and at module scope. ``_EQUALITY``
+#: is not hypothetical — a literal-valued mapping keyed at runtime is one of
+#: the sanctioned patterns, and it is what ``store/events.py:1008`` actually
+#: does, which is what made these worth closing rather than dismissing as
+#: contrived.
+_REJECTED_MODULE_SCOPE = (
+    (
+        "a module mapping aliased to a second module name, then written",
+        '_EQUALITY = {"vendor": "e.vendor = ?"}\n'
+        "_REGISTRY = _EQUALITY\n"
+        "\n"
+        "\n"
+        "def register(column, clause):\n"
+        "    _REGISTRY[column] = clause\n"
+        "\n"
+        "\n"
+        "def run(conn, column, clause):\n"
+        "    register(column, clause)\n"
+        "    conn.execute(_TEMPLATE + _EQUALITY[column])\n",
+    ),
+    (
+        "a module mapping passed to a helper as a parameter",
+        '_EQUALITY = {"vendor": "e.vendor = ?"}\n'
+        "\n"
+        "\n"
+        "def _remember(table, column, clause):\n"
+        "    table[column] = clause\n"
+        "\n"
+        "\n"
+        "def run(conn, column, clause):\n"
+        "    _remember(_EQUALITY, column, clause)\n"
+        "    conn.execute(_TEMPLATE + _EQUALITY[column])\n",
+    ),
+    (
+        "module-level += onto a string constant",
+        "import os\n"
+        "\n"
+        '_STATEMENT = "SELECT COUNT(*) AS n FROM events WHERE vendor = "\n'
+        '_STATEMENT += os.environ.get("IANUA_VENDOR", "?")\n'
+        "\n"
+        "\n"
+        "def run(conn):\n"
+        "    conn.execute(_STATEMENT)\n",
+    ),
+    (
+        "module-level |= widens a literal-valued mapping in place",
+        "import os\n"
+        "\n"
+        '_EQUALITY = {"vendor": "e.vendor = ?"}\n'
+        '_EQUALITY |= {"hostname": "hostname = " + os.environ.get("IANUA_HOST", "?")}\n'
+        "\n"
+        "\n"
+        "def run(conn, column):\n"
+        "    conn.execute(_TEMPLATE + _EQUALITY[column])\n",
+    ),
+    (
+        "a module-level for target rebinds a string constant",
+        "import os\n"
+        "\n"
+        '_STATEMENT = "SELECT COUNT(*) AS n FROM events"\n'
+        'for _STATEMENT in [_STATEMENT + os.environ.get("IANUA_VENDOR", "?")]:\n'
+        "    pass\n"
+        "\n"
+        "\n"
+        "def run(conn):\n"
+        "    conn.execute(_STATEMENT)\n",
+    ),
+)
+
+
 @pytest.mark.security
-@pytest.mark.parametrize(("label", "body"), (*_REJECTED_PATTERN_AND_MUTATION, *_REJECTED_ALREADY))
+@pytest.mark.parametrize(
+    ("label", "body"),
+    (
+        *_REJECTED_PATTERN_AND_MUTATION,
+        *_REJECTED_ALREADY,
+        *_REJECTED_ESCAPES,
+        *_REJECTED_MODULE_SCOPE,
+    ),
+)
 def test_a_pattern_capture_or_unmodelled_mutation_demotes_the_name(label: str, body: str) -> None:
     """Structural-pattern captures and container mutations this checker cannot model.
 
@@ -879,6 +1160,41 @@ def test_the_provenance_check_accepts_what_the_store_actually_does(
     """The permissive half, so a tightening that breaks the store says why."""
     findings = _non_literal_statements({"sample": _harness(expression)})
     assert not findings, f"{label} was refused: {expression}\n  " + "\n  ".join(findings)
+
+
+#: Builtins that hand out a namespace as a mutable mapping. Rebinding a
+#: module constant through one is invisible to any name-keyed analysis.
+_NAMESPACE_BUILTINS = frozenset({"globals", "vars", "locals"})
+
+
+@pytest.mark.security
+def test_no_module_constant_is_rebound_through_the_module_dict() -> None:
+    """``globals()["_TEMPLATE"] = ...`` is closed by shape, not by analysis.
+
+    Measured on merged code: a helper doing
+    ``globals()["_TEMPLATE"] = "SELECT ... WHERE " + clause`` left
+    ``_TEMPLATE`` classified as a literal and executed
+    ``SELECT COUNT(*) AS n FROM events WHERE vendor = 'sshd' OR 1=1 --``.
+    :func:`_target_names` walks the target, finds the ``Name`` ``globals``,
+    and dutifully demotes *that*.
+
+    Analysis cannot close this one. A constant key could be read off the
+    subscript, but ``globals()[key] = value`` with a computed key names a
+    module constant that is not knowable statically, so the lattice would
+    have to demote every name in the module to stay sound. Forbidding the
+    construct is both stronger and simpler, and measured at **zero**
+    occurrences across ``store/`` it costs nothing — the same reasoning as
+    the dynamic-dispatch rule below.
+    """
+    for path in _store_modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                assert node.func.id not in _NAMESPACE_BUILTINS, (
+                    f"{path}:{node.lineno}: {node.func.id}() hands out a namespace as a "
+                    f"mutable mapping, through which a module constant can be rebound "
+                    f"past the provenance check: {ast.unparse(node)[:120]}"
+                )
 
 
 @pytest.mark.security
