@@ -128,6 +128,23 @@ _DESCRIBED_TYPES = (
 )
 
 
+class LockUnavailableError(OSError):
+    """``flock`` failed for a reason that is **not** another pass holding it.
+
+    A separate type because the two outcomes need opposite handling and the
+    errno is the only thing that tells them apart. Contention is the
+    documented, correct, exit-0 ``skipped`` path; everything else means the
+    lock is not working, and a platform whose single-instance control is not
+    working must say so rather than report a benign skip.
+
+    An ``OSError`` subclass, so ``errno`` survives for a caller that wants it
+    and a handler written against ``OSError`` still catches this. The callers
+    catch *this* type specifically, because their ``with`` block wraps the
+    whole pass and a bare ``except OSError`` there would relabel any failure
+    inside the pass as a lock problem.
+    """
+
+
 def _describe(path: Path) -> str | None:
     """Name what is at ``path``, or ``None`` if it is nothing worth naming."""
     try:
@@ -323,15 +340,54 @@ def single_instance(handle: TextIO) -> Iterator[bool]:
     operator until they learned to ignore it. The caller decides what to do
     with ``False``; this function only reports it.
 
-    Takes a handle already opened by :func:`prepare_lock`, so nothing here can
-    fail for a reason the caller would have to translate.
+    **Only contention yields ``False``, and the previous version of this
+    docstring claimed the opposite was impossible.** It said "nothing here can
+    fail for a reason the caller would have to translate", and on that basis
+    caught bare ``OSError`` and reported every failure as a benign skip. That
+    was wrong, and measurably so: ``flock`` fails with ``EBADF`` on a closed
+    descriptor (measured, errno 9), and with ``ENOLCK`` when the kernel's lock
+    table is exhausted or ``EOPNOTSUPP`` on a filesystem that does not
+    implement it. On such a filesystem **every** scheduled pass of all four
+    CLIs printed "skipped: another pass holds the lock; this invocation did
+    nothing." and exited 0 — forever, with no contention anywhere and no work
+    ever done. That is worse than a hang: a hang shows up as a timeout, while
+    this reports success on the documented contract, so a scheduler, a log
+    shipper and the SLI layer all read healthy. It is the failure class
+    ``AGENTS.md`` names — every signal healthy while the SOC sees nothing.
+
+    So the catch is an **allow-list of one**: ``BlockingIOError``, which is
+    exactly how Python surfaces ``EAGAIN``/``EWOULDBLOCK``. Measured on this
+    build, a second holder of a held lock raises
+    ``BlockingIOError(11, 'Resource temporarily unavailable')``, and *not*
+    ``EACCES`` — that caveat belongs to ``fcntl``-style ``F_SETLK`` locks,
+    which this is not.
+
+    **Catching the class rather than comparing errnos is right here for the
+    opposite reason it was wrong in** ``scripts/_exit_codes.py``. There, the
+    ``sqlite3`` hierarchy does *not* carry the distinction, so the predicate
+    had to read the result code. Here Python's ``OSError`` hierarchy carries it
+    precisely: ``BlockingIOError`` is ``EAGAIN``/``EWOULDBLOCK`` (plus two
+    socket errnos ``flock`` cannot raise), while ``EBADF``, ``ENOLCK`` and
+    ``EOPNOTSUPP`` arrive as plain ``OSError`` and ``EACCES`` as
+    ``PermissionError`` — all measured. The lesson from the other module is to
+    test the thing that actually carries the distinction, not to prefer errnos.
+
+    Anything else becomes :class:`LockUnavailableError`, which each caller
+    turns into a message and exit 2 — the same contract an unusable lock
+    *path* already has.
     """
     with handle:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
+            # The one benign case: another pass holds it.
             yield False
             return
+        except OSError as exc:
+            raise LockUnavailableError(
+                exc.errno,
+                f"the single-instance lock could not be taken: {exc.strerror}",
+            ) from exc
         try:
             yield True
         finally:

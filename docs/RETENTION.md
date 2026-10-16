@@ -423,6 +423,17 @@ Two things a scheduler must handle that the taxonomy above hides:
   measured, including under `--json` (so a JSON log shipper must tolerate that line) and
   including for an **ungranted `--apply`**, which returns 0 instead of 3 because the skip
   precedes the gate. No audit record is written for a skip.
+
+  **That message now means only what it says.** It used to be printed for a `flock` that
+  failed for *any* reason, because the catch was `except OSError`: measured with `ENOLCK`
+  at the flock, all four CLIs printed their skip line and exited 0. On a filesystem that
+  does not implement `flock`, or a kernel whose lock table is exhausted, that was every
+  pass forever — no contention anywhere, no work ever done, and every signal reading
+  healthy. Only `EAGAIN`/`EWOULDBLOCK` (which is what the kernel was measured to raise for
+  a genuinely held lock) now yields the skip; `EBADF`, `ENOLCK`, `EOPNOTSUPP`, `EACCES`,
+  `EINTR` and `EDEADLK` exit **2** with "the single-instance lock could not be taken"
+  naming the errno. So a persistent skip is now evidence of a real overlapping pass, and
+  worth investigating as one.
 - **A `retention.lock` that is not a regular file now exits 2 with a message.** It used to
   hang forever: measured, `timeout 10` returned 124 with no message, no audit record and no
   flock taken, so every subsequent scheduled pass blocked identically and retention stalled
