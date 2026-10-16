@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Ivan Rozenblad
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Scorecard action belongs in a workflow, and its egress stays off.
+"""The Scorecard action belongs in a workflow, not in the pre-commit config.
 
 #232 appended three lines to ``.pre-commit-config.yaml``::
 
@@ -21,13 +21,20 @@ have run a Scorecard scan even indented correctly.
 ``ci.yml`` now runs ``pre-commit validate-config``, which is the gate that
 would have caught it. This file is the second layer, and the two are not
 redundant: ``validate-config`` proves the file *loads*, while the assertions
-below say the Scorecard action is in the one place that can actually execute it
-and that the choices made about its egress still hold.
+below say the Scorecard action is in the one place that can execute it and that
+nothing Actions-shaped has been pasted back.
+
+**Boundary assertions are deliberately not here.** The workflow's egress
+decision, its single write permission, its SHA pinning and its credential
+handling live in ``tests/security/test_scorecard_boundary.py``, because §6.2
+requires a ``tests/security`` case where a boundary is involved and §6 scopes
+the independent Security pass to ``tests/security``. Review caught that: the
+first version of this change put them here, where that pass would not see
+them.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -38,15 +45,9 @@ _REPO = Path(__file__).resolve().parents[2]
 _WORKFLOW = _REPO / ".github" / "workflows" / "scorecard.yml"
 _PRE_COMMIT = _REPO / ".pre-commit-config.yaml"
 
-#: A full 40-character commit SHA. This repository pins every action to one
-#: with a trailing ``# vN`` comment, and Scorecard's own Pinned-Dependencies
-#: check grades exactly that — so a tag-pinned action here would be a finding
-#: raised by the workflow against itself.
-_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-
-#: Keys that only ever appear in a GitHub Actions workflow. None of them is a
-#: valid key anywhere in a pre-commit configuration, so finding one there means
-#: workflow YAML has been pasted into the wrong file — which is #232 exactly.
+#: Keys that only ever appear in a GitHub Actions workflow. None is a valid key
+#: anywhere in a pre-commit configuration, so finding one there means workflow
+#: YAML has been pasted into the wrong file — which is #232 exactly.
 _WORKFLOW_ONLY_KEYS = ("uses", "runs-on", "steps", "jobs", "permissions")
 
 
@@ -124,94 +125,4 @@ def test_the_scorecard_workflow_exists_and_runs_the_action() -> None:
     actions = [step["uses"].split("@")[0] for step in steps if "uses" in step]
     assert "ossf/scorecard-action" in actions, (
         f"the workflow does not run the Scorecard action — it runs {actions}"
-    )
-
-
-@pytest.mark.unit
-def test_publishing_results_is_off_and_no_oidc_token_is_granted() -> None:
-    """The egress decision, pinned so it cannot be flipped quietly.
-
-    ``publish_results: true`` POSTs repository metadata to the OpenSSF REST API
-    and is therefore an external-network action under AGENTS.md §5.1, which
-    requires human approval with the URL shown in full. The owner chose to keep
-    results inside the repository.
-
-    ``id-token: write`` is asserted absent as the *corroborating* half, and it
-    is not decoration: that permission exists only to sign published results,
-    so a workflow holding it while claiming not to publish would be telling two
-    different stories. Granting it is also the first thing anyone enabling
-    publishing would have to do, which makes its absence the tripwire.
-    """
-    workflow = _load(_WORKFLOW)
-    steps = workflow["jobs"]["analysis"]["steps"]
-    scorecard = next(
-        step for step in steps if step.get("uses", "").startswith("ossf/scorecard-action@")
-    )
-    assert scorecard["with"]["publish_results"] is False, (
-        "publish_results is not False: this workflow would send repository metadata to "
-        "https://api.securityscorecards.dev, which AGENTS.md §5.1 gates on human approval"
-    )
-    granted = {
-        *(workflow.get("permissions") or {}),
-        *(workflow["jobs"]["analysis"].get("permissions") or {}),
-    }
-    assert "id-token" not in granted, (
-        "id-token is granted but nothing publishes: it signs published results only, so "
-        "either publishing was turned on without revisiting the §5.1 decision or the "
-        "permission is granted for nothing"
-    )
-
-
-@pytest.mark.unit
-def test_the_workflow_holds_exactly_one_write_permission() -> None:
-    """Least privilege (AGENTS.md §3), asserted rather than intended.
-
-    The upstream starter workflow declares ``permissions: read-all`` at the top
-    level; this repository's convention is an explicit ``contents: read``, and
-    the job adds the single write it needs to put SARIF in the Code scanning
-    tab. Anything further is a finding here.
-    """
-    workflow = _load(_WORKFLOW)
-    assert workflow["permissions"] == {"contents": "read"}, (
-        f"top-level permissions are {workflow['permissions']}, not a least-privilege "
-        "`contents: read`"
-    )
-    job = workflow["jobs"]["analysis"]["permissions"]
-    writes = {name for name, level in job.items() if level == "write"}
-    assert writes == {"security-events"}, (
-        f"the job holds writes {sorted(writes)}; only security-events is needed, to upload "
-        "the SARIF to code scanning"
-    )
-
-
-@pytest.mark.unit
-def test_every_action_is_pinned_to_a_full_commit_sha() -> None:
-    """The convention, and a check Scorecard itself would otherwise flag.
-
-    Pinned-Dependencies is one of the checks this very workflow runs, so a
-    tag-pinned ``uses:`` here would have the workflow report a finding against
-    itself. Every SHA below was taken from OpenSSF's own
-    ``scorecard-analysis.yml`` rather than from memory, and two of the four
-    resolve to pins this repository already uses elsewhere.
-    """
-    unpinned: list[str] = []
-    for step in _load(_WORKFLOW)["jobs"]["analysis"]["steps"]:
-        if "uses" not in step:
-            continue
-        action, _, reference = step["uses"].partition("@")
-        if not _FULL_SHA.match(reference):
-            unpinned.append(f"{action}@{reference}")
-    assert not unpinned, f"these actions are not pinned to a full commit SHA: {unpinned}"
-
-
-@pytest.mark.unit
-def test_the_checkout_does_not_persist_credentials() -> None:
-    """Scorecard grades this, and leaving a token on disk is the thing it means."""
-    checkout = next(
-        step
-        for step in _load(_WORKFLOW)["jobs"]["analysis"]["steps"]
-        if step.get("uses", "").startswith("actions/checkout@")
-    )
-    assert checkout["with"]["persist-credentials"] is False, (
-        "the checkout persists credentials; nothing here needs the token on disk"
     )
