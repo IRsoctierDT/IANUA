@@ -688,38 +688,157 @@ def identity(events):
 
 
 @pytest.mark.security
-def test_the_trusted_set_is_constants_and_nothing_wider() -> None:
-    """The base-independent rule is only cheap while the trusted set is narrow.
+def test_the_trusted_destination_set_excludes_only_main_guard_locals() -> None:
+    """What the trusted-write rule protects, and why the predicate is the guard.
 
-    It forbids writing *any* attribute spelled like a name the lattice trusts,
-    whatever the base. That is sound, and it would be ruinous if the trusted set
-    held ordinary words: ``obj.name = x`` would fail everywhere. Measured at 72
-    names, every one UPPER_SNAKE or underscore-prefixed, and zero attribute
-    writes to any of them across the shipped packages — so this asserts the
-    *shape* of the set rather than its contents, which may legitimately grow.
+    The rule forbids writing *any* attribute spelled like a name the lattice
+    trusts, whatever the base. That is only cheap while the trusted set holds
+    constants: if it held ordinary words, ``obj.name = x`` would fail
+    everywhere. The first draft filtered on shape — UPPER or underscore — and
+    review then found **three scope routes exploitable only through the
+    lowercase names that filter let through**. The filter was a proxy; this is
+    the thing it was approximating.
+
+    A name bound only inside ``if __name__ == "__main__":`` earns provenance
+    because an ``if`` is not a scope, but excluding it is **sound rather than a
+    compromise**: the guard is false on import, so the name is never bound in
+    an imported module and no other module can write to it. Measured: 72
+    trusted names, 70 outside a guard, **zero of those lowercase**, and **no
+    executed statement inside any guard**, so nothing the lattice must judge
+    depends on one.
     """
     sources = _shipped_sources()
-    trusted = {
-        name
-        for env in sqlprov.package_envs(sources).values()
-        for name, kind in env.items()
-        if kind != sqlprov.OTHER
-    }
-    assert trusted, "the trusted set is empty, so the rule below watches nothing"
-    shaped = {name for name in trusted if name.startswith("_") or name.isupper()}
-    assert len(shaped) >= 60, f"only {len(shaped)} constant-shaped trusted names"
+    envs = sqlprov.package_envs(sources)
+    trees = {module: ast.parse(text) for module, text in sources.items()}
+    guarded = {module: sqlprov._main_guard_bound(tree) for module, tree in trees.items()}
 
-    # The ones the rule deliberately does NOT protect, pinned by name. Both are
-    # assigned inside an ``if __name__ == "__main__":`` demo block, which is
-    # module scope because an ``if`` is not a scope. A third would mean either a
-    # new demo local or a §4 naming-convention breach, and either deserves a
-    # look rather than being absorbed silently.
-    assert sorted(trusted - shaped) == ["log", "sample"], (
-        f"the lowercase trusted names changed to {sorted(trusted - shaped)}. The "
-        "base-independent write rule skips these deliberately — protecting them would "
-        "refuse `anything.log = x` repository-wide — so each one is a name the other "
-        "rules must carry. Confirm that before updating this list."
+    trusted = {name for env in envs.values() for name, kind in env.items() if kind != sqlprov.OTHER}
+    protected = {
+        name
+        for module, env in envs.items()
+        for name, kind in env.items()
+        if kind != sqlprov.OTHER and name not in guarded[module]
+    }
+    assert protected, "the protected set is empty, so the rule watches nothing"
+    assert len(protected) >= 60, f"only {len(protected)} protected names"
+
+    # The predicate must not be doing nothing, and must not be doing too much.
+    assert trusted - protected, (
+        "no trusted name is guard-bound any more, so this exclusion has stopped "
+        "being load-bearing — either a demo block moved or the lattice changed"
     )
+    lowercase = sorted(name for name in protected if not (name.startswith("_") or name.isupper()))
+    assert not lowercase, (
+        f"the protected set has picked up ordinary lowercase names {lowercase}. The "
+        "base-independent write rule would then refuse `anything.<name> = x` across the "
+        "repository. Either they are §4 naming-convention breaches, or the guard "
+        "predicate is no longer the right one."
+    )
+
+    # And the exclusion is only safe while no statement lives inside a guard.
+    inside = [
+        f"{module}:{node.lineno}"
+        for module, tree in trees.items()
+        for guard in tree.body
+        if isinstance(guard, ast.If)
+        for node in ast.walk(guard)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in sqlprov.EXECUTORS
+        and sqlprov._main_guard_bound(ast.Module(body=[guard], type_ignores=[]))
+    ]
+    assert not inside, (
+        f'a statement is executed inside an `if __name__ == "__main__":` block '
+        f"({inside}), whose bindings this rule excludes — so a constant it depends on is "
+        "no longer a protected destination"
+    )
+
+
+# --------------------------------------------------------------------------
+# Pinned: the two lexical boundaries, and global
+# --------------------------------------------------------------------------
+#
+# Round three, all three findings against the per-scope resolution added in
+# round two, and all three measured accepted. Every one was exploitable ONLY
+# through a lowercase trusted name, which is to say through the shape filter
+# the round-two rule used — so the root fix is the guard predicate above and
+# these three are the correctness fix underneath it. The matrix is what made
+# that legible: each route was measured against a constant-shaped name and a
+# lowercase one, and A/B/C were refused for the first and accepted for the
+# second.
+
+_REJECTED_SCOPE_BOUNDARY = (
+    (
+        "a class body shadows the import; a METHOD writes through it",
+        "from sample import events\n\n\nclass C:\n"
+        "    def events(self):\n        return None\n\n"
+        "    def plant(self, clause):\n"
+        '        events._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "the module escapes through an argument DEFAULT",
+        "from sample import events\n\n\n"
+        "def plant(clause, events=events):\n"
+        '    events._SQL = "SELECT x WHERE " + clause\n',
+    ),
+    (
+        "the module escapes through a DECORATOR argument",
+        "from sample import events\n\n\ndef deco(mod):\n    return lambda f: f\n\n\n"
+        "@deco(events)\ndef plant(clause):\n    return clause\n",
+    ),
+    (
+        "`global events` treated as a shadow instead of a reference",
+        "from sample import events\n\n\ndef plant(clause):\n    global events\n"
+        '    events._SQL = "SELECT x WHERE " + clause\n',
+    ),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "source"), _REJECTED_SCOPE_BOUNDARY)
+def test_a_scope_boundary_cannot_hide_a_module_binding(label: str, source: str) -> None:
+    """Three language facts the per-scope resolution had wrong.
+
+    1. **Class scope is not a closure scope.** A method cannot read a class-body
+       local, so passing a class body's active set into its methods was wrong in
+       both directions — it inherited the class's shadowing of a module-level
+       import, while the method's own load still resolves from module globals.
+    2. **Decorators and argument defaults evaluate in the enclosing scope.**
+       ``_scope_nodes`` stops at a nested scope, so those expressions were only
+       reached on the recursive pass, with the inner parameters already applied
+       as shadows — and a parameter named after the module hid its own default.
+    3. **``global`` is the opposite of a shadow.** ``rebinding_names`` counts it
+       as a binding, correctly for provenance, and that made it subtract the
+       very module-level binding it explicitly refers to.
+
+    All four measured accepted beforehand with a lowercase trusted name; the
+    first, second and fourth were refused for a constant-shaped one, which is
+    what identified the shape filter as the common cause.
+    """
+    sources = {"sample.events": _DECLARING, "sample.helper": source}
+    assert sqlprov.namespace_findings(sources), f"{label} was accepted"
+
+
+@pytest.mark.security
+def test_an_import_only_in_a_class_body_does_not_fault_its_methods() -> None:
+    """The other half of the class-scope finding, **refuted** by measurement.
+
+    The report also said an import existing only in the class namespace could
+    generate a false method finding. Measured both before and after the fix: it
+    does not — a method's parameter of that name is not reported, because the
+    class body's bindings are not inherited by its methods in either direction.
+    Pinned so the fix for the real half cannot introduce the half that was not
+    real.
+    """
+    helper = """\
+class C:
+    from sample import events
+
+    def use(self, events):
+        return events
+"""
+    sources = {"sample.events": _DECLARING, "sample.helper": helper}
+    assert not sqlprov.namespace_findings(sources)
 
 
 # --------------------------------------------------------------------------

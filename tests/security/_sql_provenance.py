@@ -1027,44 +1027,60 @@ def _swept_imports_in(scope: ast.AST, module: str, swept: frozenset[str]) -> set
     return _module_bases(_scope_nodes(scope), module, swept)[1]
 
 
+def _declared_global(scope: ast.AST) -> set[str]:
+    """Names a scope declares ``global`` or ``nonlocal``.
+
+    :func:`rebinding_names` counts these as bindings, correctly for provenance:
+    a ``global`` hands the binding to someone else, so this scope cannot vouch
+    for its value. For module *identity* the opposite holds — ``global events``
+    is an explicit statement that ``events`` IS the module-level binding — so
+    they must not be subtracted as shadows. Review filed that as a P1 and it
+    was right: measured, ``global events`` followed by ``events.sample =
+    clause`` produced no finding.
+    """
+    names: set[str] = set()
+    for node in _scope_nodes(scope):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+    return names
+
+
 def _scoped_swept_bases(
     scope: ast.AST, module: str, swept: frozenset[str], inherited: frozenset[str]
 ) -> frozenset[str]:
     """Which names name a swept module *in this scope*, honouring shadowing.
 
-    Review filed this as a P2 and it was right. The bases were collected with
-    one module-wide ``ast.walk``, so a ``from ingest import identity`` anywhere
-    in a file made **every** ``identity`` load in that file a swept-module
-    binding — and an unrelated ``def f(identity): return identity`` was then
-    refused for a load that is a parameter and cannot be the module. That is
-    not hypothetical: the swept bindings measured in ``ingest/normalize.py``
-    are ``cloud``, ``email``, ``endpoint``, ``identity``, ``keyvalue`` and
-    ``network``, every one of them a plausible parameter name.
+    Review filed the module-wide version as a P2 and it was right. The bases
+    were collected with one module-wide ``ast.walk``, so a ``from ingest import
+    identity`` anywhere in a file made **every** ``identity`` load in that file
+    a swept-module binding — and an unrelated ``def f(identity): return
+    identity`` was then refused for a load that is a parameter and cannot be
+    the module. Not hypothetical: the swept bindings measured in
+    ``ingest/normalize.py`` are ``cloud``, ``email``, ``endpoint``,
+    ``identity``, ``keyvalue`` and ``network``, every one a plausible parameter
+    name, against a merge-blocking gate.
 
     A scope's own imports bind; everything :func:`_opaque_names` reports
-    shadows, which is parameters, ``for``/``with``/``except`` targets, a
-    walrus, a plain ``import``, a ``def``/``class`` name, pattern captures and
-    other ``from`` imports. A plain ``Assign`` deliberately does **not**
-    shadow: AST order is not flow order, so a single per-scope set cannot tell
+    shadows, except the names :func:`_declared_global` reports, which are the
+    opposite of a shadow. A plain ``Assign`` deliberately does **not** shadow:
+    AST order is not flow order, so a single per-scope set cannot tell
     ``events = 3`` before a write from one after it, and keeping the name a
     module binding is the fail-closed reading.
     """
     bound_here = _swept_imports_in(scope, module, swept)
-    shadowed = _opaque_names(scope) - bound_here
+    shadowed = _opaque_names(scope) - bound_here - _declared_global(scope)
     return frozenset((inherited - shadowed) | bound_here)
 
 
-def _scoped_module_findings(
-    scope: ast.AST,
+def _swept_module_checks(
+    nodes: typing.Iterable[ast.AST],
     module: str,
-    swept: frozenset[str],
+    active: frozenset[str],
     attribute_bases: set[int],
-    inherited: frozenset[str],
 ) -> list[str]:
-    """The three swept-module rules, applied per lexical scope."""
-    active = _scoped_swept_bases(scope, module, swept, inherited)
+    """The three swept-module rules over a set of nodes with one active set."""
     findings: list[str] = []
-    for node in _scope_nodes(scope):
+    for node in nodes:
         if (
             isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
@@ -1100,8 +1116,52 @@ def _scoped_module_findings(
                 f"skips every demotion pass, which needs a bare name receiver: "
                 f"{ast.unparse(node)[:120]}"
             )
+    return findings
+
+
+def _scoped_module_findings(
+    scope: ast.AST,
+    module: str,
+    swept: frozenset[str],
+    attribute_bases: set[int],
+    inherited: frozenset[str],
+    skip: frozenset[int] = frozenset(),
+) -> list[str]:
+    """The swept-module rules per lexical scope, with two boundaries review found.
+
+    **A class body's locals are not visible to its methods.** Python's class
+    scope is not a closure scope, which this analysis states elsewhere and this
+    function did not honour: passing a class body's ``active`` into its methods
+    meant a ``class C`` whose body shadowed a module-level import had that
+    removal inherited by every method, while the method's own ``events`` still
+    resolves from module globals at runtime. Measured accepted. A ClassDef's
+    children therefore inherit what the *class* inherited.
+
+    **Decorators and argument defaults evaluate in the ENCLOSING scope.**
+    ``_scope_nodes`` stops at a nested scope, so those expressions were only
+    ever reached on the recursive pass — with the inner parameters already
+    applied as shadows. Measured accepted: ``def plant(clause, events=events):
+    events.sample = clause`` escapes the module through its own default, and
+    the parameter named ``events`` hid it. They are checked here, against this
+    scope's bindings, and skipped on the way down so a finding is not reported
+    twice.
+    """
+    active = _scoped_swept_bases(scope, module, swept, inherited)
+    findings = _swept_module_checks(
+        (node for node in _scope_nodes(scope) if id(node) not in skip),
+        module,
+        active,
+        attribute_bases,
+    )
+    # A class body executes in the enclosing frame, but its locals are NOT a
+    # closure its methods can read. See the docstring.
+    for_children = inherited if isinstance(scope, ast.ClassDef) else active
     for child in _nested_scopes(scope):
-        findings += _scoped_module_findings(child, module, swept, attribute_bases, active)
+        outer = [node for expr in _evaluated_in_enclosing_scope(child) for node in ast.walk(expr)]
+        findings += _swept_module_checks(outer, module, active, attribute_bases)
+        findings += _scoped_module_findings(
+            child, module, swept, attribute_bases, for_children, frozenset(id(n) for n in outer)
+        )
     return findings
 
 
@@ -1116,6 +1176,40 @@ def _nested_scopes(scope: ast.AST) -> list[ast.AST]:
             continue
         stack.extend(ast.iter_child_nodes(node))
     return found
+
+
+def _main_guard_bound(tree: ast.Module) -> set[str]:
+    """Names bound only inside an ``if __name__ == "__main__":`` block.
+
+    These earn provenance because an ``if`` is not a scope, and they are the
+    reason the trusted-write rule needed narrowing — measured, `log` and
+    `sample` are demo locals in two agent modules. Excluding them is **sound,
+    not a compromise**: the guard is false on import, so the name is never
+    bound in an imported module and no other module can write to it. Measured:
+    six names across the shipped packages, and **no executed statement inside
+    any guard**, so nothing the lattice must judge depends on one.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "__name__"
+            and any(
+                isinstance(other, ast.Constant) and other.value == "__main__"
+                for other in test.comparators
+            )
+        ):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = inner.targets if isinstance(inner, ast.Assign) else [inner.target]
+                for target in targets:
+                    names |= target_names(target)
+    return names
 
 
 def namespace_findings(sources: dict[str, str]) -> list[str]:
@@ -1192,25 +1286,23 @@ def namespace_findings(sources: dict[str, str]) -> list[str]:
     # the lattice trusts?" — a closed, computable set. Measured at 72 names
     # across the shipped packages, every one an UPPER_SNAKE or
     # underscore-prefixed constant, with zero attribute writes to any of them.
+    envs = package_envs(sources)
+    guarded = {name: _main_guard_bound(ast.parse(text)) for name, text in sources.items()}
+    # The destination set for the base-independent rule below: a name is a
+    # protected destination if SOME module trusts it outside any
+    # ``if __name__ == "__main__":`` block. The guard matters and is not a
+    # shape heuristic — the first draft filtered on UPPER/underscore instead,
+    # and review then found three scope routes that were exploitable only
+    # through the lowercase names that filter let through. The guard is the
+    # real predicate: it is false on import, so a guard-bound name is never
+    # bound in an imported module and no other module can write to it.
+    # Measured: 72 trusted names, 70 outside a guard, zero of those lowercase,
+    # and no executed statement inside any guard.
     trusted = {
         name
-        for env in package_envs(sources).values()
+        for module, env in envs.items()
         for name, kind in env.items()
-        if kind != OTHER
-        # Constant-shaped only, and the shape test is load-bearing. Measured on
-        # the full set: `log` and `sample` earn provenance, both assigned inside
-        # an ``if __name__ == "__main__":`` block (an ``if`` is not a scope, so
-        # they are module-level bindings). Without this filter the rule below
-        # would refuse ``anything.log = x`` across the repository, which is a
-        # gate nobody would keep. The residual — a trusted name in ordinary
-        # lowercase is not protected by THIS rule — is covered by the others:
-        # a swept-module base by the scoped write clause, a factory call by
-        # :data:`MODULE_FACTORY_ATTRIBUTES` (which refuses the call itself, not
-        # the write), and a dunder by :data:`ATTRIBUTE_ACCESS_DUNDERS`. The two
-        # belts each cover the other's hole, and
-        # ``test_the_trusted_set_is_constants_and_nothing_wider`` pins the list
-        # of lowercase names so a third one is looked at rather than absorbed.
-        and (name.startswith("_") or name.isupper())
+        if kind != OTHER and name not in guarded[module]
     }
     findings: list[str] = []
     for module, text in sorted(sources.items()):
