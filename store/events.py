@@ -36,7 +36,12 @@ Security considerations (AGENTS.md §3, §5):
   normalized (:class:`store.errors.StorePathError`).
 * **Parameterized SQL only.** Every value reaches SQLite as a bound
   parameter; no statement is assembled from caller input. Asserted over this
-  module's AST in ``tests/security/test_store_hardening.py``.
+  module's AST in ``tests/security/test_store_hardening.py``, at each
+  ``execute`` call rather than by matching constructs: the statement must be
+  traceable to string literals declared in this package, and any expression
+  the check cannot account for fails. It resolves the module constants at the
+  foot of this file, ``_EQUALITY``'s values, the clause list ``query``
+  accumulates, and ``DDL`` across the import from :mod:`store.schema`.
 * **No network, no subprocess, no dynamic execution.** Also asserted over the
   AST, the same way ``ingest/`` and ``intel/`` are.
 * **Single-threaded connections.** Each thread opens its own store. The
@@ -950,11 +955,13 @@ class EventStore:
 
         Security consideration: the statement is concatenated from the module
         literals at the foot of this file and nothing else, and ``after``'s
-        values travel as bound parameters. Note what that does *not* rest on:
-        ``tests/security/test_store_hardening.py``'s AST check inspects only
-        the literal parts of an f-string, so it would not catch a caller value
-        concatenated in as text (measured — see the task tracking that gap).
-        The guarantee here is the literals, not the test.
+        values travel as bound parameters. That is now asserted and not only
+        written down. This docstring used to disclaim the test — the AST check
+        of the day matched three interpolation constructs at the site where
+        the SQL literal was written, so a caller value concatenated on with
+        ``+`` passed it, measured on exactly this method. The check asserts
+        provenance at the ``execute`` call instead, so the ``+`` above is
+        verified to join two module constants rather than merely intended to.
         """
         if not math.isfinite(before):
             raise ValueError(f"retention threshold must be finite, got {before!r}")
@@ -1027,8 +1034,12 @@ class EventStore:
         # module: _SELECT, the _PREDICATE fragments, and one of two _ORDER
         # constants. No caller value is ever concatenated into SQL text — the
         # values travel as bound parameters, and the AST check in
-        # tests/security/test_store_hardening.py proves no interpolation
-        # (f-string, %, or .format) reaches an execute call.
+        # tests/security/test_store_hardening.py requires the text handed to
+        # execute() to be traceable to those literals. It follows this exact
+        # shape: the clause list, _EQUALITY keyed at runtime, the _ORDER
+        # choice, and the two joins. A fragment appended here that is not a
+        # literal of this module fails that check, whatever construct puts it
+        # there.
         parts = [_SELECT]
         if clauses:
             parts.append(" WHERE ")
