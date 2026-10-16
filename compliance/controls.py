@@ -485,7 +485,15 @@ def registry() -> tuple[Control, ...]:
                 "code, which is non-zero for any objective breached *or* "
                 "unmeasurable; this expiring attestation is what stops a node "
                 "nobody has looked at from silently claiming currency, which "
-                "is the same argument MAN-03 makes for corpus freshness."
+                "is the same argument MAN-03 makes for corpus freshness. What "
+                "that exit code is *not* is a census of the evidence behind "
+                "those objectives: an emptied store meets every one of them, "
+                "measured, so the hint carries a withholding rule rather than "
+                "resting on the code. Nothing enforces that rule — the note is "
+                "free text and a current attestation is ATTESTED whatever it "
+                "says — so the control is review of the committed "
+                "attestations.json, and the rule is what a reviewer checks "
+                "against."
             ),
             category=Category.AUDIT,
             severity=Severity.HIGH,
@@ -496,9 +504,20 @@ def registry() -> tuple[Control, ...]:
             ),
             attestation_hint=(
                 "On the deployed node: python scripts/report_sli.py --root "
-                "<lab root> --json. Exit 0 means every objective is met; 1 "
-                "means at least one is breached or could not be measured, and "
-                "the JSON names which. Attest with that output as evidence."
+                "<lab root> --json. Attest to the per-indicator verdicts, NOT "
+                "to the exit code: every objective is met on a store pruned to "
+                "zero rows, so the code cannot witness the evidence behind "
+                "them. Read store-readable's detail and record its row counts "
+                "in the note — it is the only reading that moves when the "
+                "evidence does; detection-backlog does not move on a caught-up "
+                "node. THEN DECIDE: if those counts are zero, or lower than "
+                "the last attestation, DO NOT ATTEST until a retention pass in "
+                "the audit chain and a backup manifest together account for "
+                "the drop; record which accounted for it. Zero rows with every "
+                "objective met is the state this control exists to catch. The "
+                "grading itself is correct and deliberate — sli/indicators.py "
+                "says why — so do not treat a quiet report as a broken "
+                "indicator set."
             ),
         ),
         Control(

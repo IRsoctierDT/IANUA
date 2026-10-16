@@ -41,9 +41,16 @@ monitoring is defined, derived and fail-closed. ``AUD-03`` is an expiring
 *attestation* over the live verdict, and manual by necessity rather than by
 preference: these objectives measure a running platform, a repository checkout
 is not one, and an automated check would have been permanently red everywhere
-the control suite runs. The gate on a deployed node is
-``scripts/report_sli.py``'s exit code, which is non-zero for any objective
-breached **or** unmeasurable.
+the control suite runs.
+
+``scripts/report_sli.py``'s exit code is non-zero for any objective breached
+**or** unmeasurable, which makes it a useful alarm and **not** the gate it was
+once described as here. An emptied store meets every objective — deliberately,
+see :func:`sli.indicators.measure_detection_backlog` — so the code cannot
+witness the evidence behind the verdicts it summarises. ``AUD-03``'s
+attestation therefore rests on the per-indicator verdicts plus a withholding
+rule on ``store-readable``'s row counts, which is the one reading that moves
+when the evidence does.
 """
 
 from __future__ import annotations

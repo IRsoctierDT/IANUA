@@ -484,10 +484,21 @@ pip-audit
 # as an accepted entry — and it exits 0 either way. So the command this block
 # used to give could not fail the build on a detected credential, which is the
 # one thing the line above claims it does, and it dirtied a tracked file as a
-# side effect. `detect-secrets-hook` exits 1 on a secret not in the baseline,
-# exits 0 when clean, and leaves the baseline untouched in both cases
-# (measured, both directions). It is also what `.pre-commit-config.yaml`
-# already runs, so the charter was the only place disagreeing with the repo.
+# side effect. `detect-secrets-hook` exits 1 on a secret not in the baseline
+# and 0 when clean. It is also what `.pre-commit-config.yaml` already runs,
+# so the charter was the only place disagreeing with the repo.
+#
+# It does NOT always leave the baseline alone, and an earlier version of this
+# block claimed it did ("untouched in both cases, measured, both directions").
+# Measured since, in a third case that version did not test: when an accepted
+# finding's LINE NUMBER has shifted — any edit above it in the same file — the
+# hook rewrites the baseline to refresh it, prints "The baseline file was
+# updated. Probably to keep line numbers of secrets up-to-date. Please `git
+# add .secrets.baseline`", and exits non-zero. That is not a finding and not
+# the `scan --baseline` hazard above: the entry count, the digests, the plugin
+# set and the filter set are unchanged (verify that, then stage it). The
+# difference that matters is that `scan` can absorb a NEW finding silently
+# while this only ever moves a line number of one already reviewed.
 #
 # NUL-delimited, and that is not style. An unquoted `$(git ls-files)` here —
 # which is what this block gave until measured — word-splits the 58 tracked
