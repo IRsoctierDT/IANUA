@@ -14,7 +14,11 @@ matter, and each gets assertions rather than a comment:
   the package reaches no network or subprocess, and it reads no clock.
 * **Injection** — no caller value becomes SQL text. Asserted over the AST,
   because "we used parameters" is a property of today's code and this test is
-  what keeps it a property of tomorrow's.
+  what keeps it a property of tomorrow's. Asserted at the ``execute`` call as
+  a *provenance* requirement, not as a list of forbidden constructs: the
+  earlier form matched three syntactic shapes and five routes were measured
+  past it, three of them the same three shapes with the literal bound to a
+  name first.
 
 The store also inherits ``ingest/``'s no-message-body invariant, and that is
 checked here on the *read* path: an email body smuggled into a stored row
@@ -28,6 +32,7 @@ import dataclasses
 import json
 import sqlite3
 import typing
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -114,12 +119,17 @@ def _is_sql(text: str) -> bool:
 
 @pytest.mark.security
 def test_no_sql_statement_is_built_by_interpolation() -> None:
-    """No f-string, ``%``, or ``.format()`` may produce SQL text.
+    """No f-string, ``%``, or ``.format()`` may produce SQL text *in place*.
 
-    The three real injection vectors, each checked separately so a failure
-    names which one appeared. A fragment assembled from module literals is
-    fine — what must never happen is a caller's value reaching the statement
-    as text instead of as a bound parameter.
+    Three syntactic shapes, each checked separately so a failure names which
+    one appeared, and each matched only where the SQL is the literal operand
+    written at the site. That is narrower than the invariant and was once
+    mistaken for it: binding the literal to a module name first walks past
+    all three, measured. This is kept because an in-place interpolation is
+    worth naming precisely when it appears, and because it also catches one
+    that is built but never executed. What carries the invariant is
+    :func:`test_every_statement_reaching_sqlite_is_built_only_from_literals`,
+    which starts at the ``execute`` call instead.
     """
     for path in _store_modules():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -167,6 +177,579 @@ def test_a_quote_in_a_filter_value_cannot_alter_the_query(tmp_path: Path) -> Non
             assert store.query(Query(observable=payload)) == ()
         # The table is still there, which a successful DROP would have ended.
         assert store.count() == 2
+
+
+# --------------------------------------------------------------------------
+# Injection, at the boundary: literal provenance of every executed statement
+# --------------------------------------------------------------------------
+#
+# The check above pattern-matches three constructs, and that is not the
+# invariant. The invariant is that no caller value becomes SQL text, and
+# measured on this package five routes reached an ``execute`` call while
+# that check reported green:
+#
+#   1. ``statement + " -- " + str(before)``         (``+`` concatenation)
+#   2. ``_TEMPLATE % repr(before)``                 (``%`` behind a name)
+#   3. ``_TEMPLATE.format(repr(before))``           (``.format`` behind a name)
+#   4. ``" ".join([_TEMPLATE, repr(before)])``      (``str.join``)
+#   5. ``"".join([_TEMPLATE, f"{before!r}"])``      (f-string as an element)
+#
+# Three of those are the very constructs that check names: binding the
+# literal to a module name first walks past all three, because the check
+# only looks at a ``Constant`` in the operator position. Route 5 is worse
+# than that — the f-string *is* inspected, but ``f"{before!r}"`` has no
+# literal part of its own, so the SQL sitting in the sibling list element
+# is never compared against it.
+#
+# So the assertion below works the other way round. It starts at the
+# ``execute`` call and demands that the statement be traceable to string
+# literals written in this package, refusing whatever it cannot account
+# for. The default for an unrecognized expression is "not a literal",
+# which is what makes a sixth route nobody has thought of fail too.
+
+#: The provenance lattice. ``_OTHER`` is the default, and the only safe
+#: default: an expression this checker cannot account for may be a caller's.
+_LITERAL = "a string literal of this package"
+_LITERAL_SEQ = "a sequence whose every element is a literal"
+_LITERAL_MAP = "a mapping whose every value is a literal"
+_OTHER = "NOT traceable to a literal"
+
+#: The sqlite3 methods that take SQL text as their first argument.
+_EXECUTORS = {"execute", "executemany", "executescript"}
+
+#: ``name.append(x)`` keeps ``name`` literal-only when ``x`` is a literal, and
+#: ``name.extend(xs)`` when ``xs`` is a literal-only sequence. Any *other*
+#: method call on a bare name demotes it, which covers ``insert``, ``update``,
+#: slice assignment and whatever arrives later without an allow-list that has
+#: to be maintained against the standard library.
+_ACCUMULATORS = {"append": _LITERAL, "extend": _LITERAL_SEQ}
+
+#: Methods that change a container in place. A module-level constant one of
+#: these is called on is not a constant, so it is demoted wherever it is read:
+#: ``_EQUALITY`` earns its literal provenance from its declared values, and an
+#: ``_EQUALITY.update(...)`` anywhere in the module would end that.
+_MUTATORS = frozenset(
+    {
+        "append",
+        "clear",
+        "extend",
+        "insert",
+        "pop",
+        "popitem",
+        "remove",
+        "reverse",
+        "setdefault",
+        "sort",
+        "update",
+        "__setitem__",
+        "__delitem__",
+    }
+)
+
+
+def _meet(left: str, right: str) -> str:
+    """The conservative join: two different provenances are no provenance."""
+    return left if left == right else _OTHER
+
+
+def _note(accumulated: dict[str, str], name: str, kind: str) -> None:
+    """Record ``name``'s provenance as the meet over every binding seen."""
+    accumulated[name] = _meet(accumulated[name], kind) if name in accumulated else kind
+
+
+def _target_names(target: ast.expr) -> set[str]:
+    return {node.id for node in ast.walk(target) if isinstance(node, ast.Name)}
+
+
+def _scope_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Every node of one scope, without entering a nested scope."""
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _provenance(node: ast.expr, env: dict[str, str]) -> str:
+    """Classify one expression. Every unrecognized shape is :data:`_OTHER`."""
+    if isinstance(node, ast.Constant):
+        return _LITERAL if isinstance(node.value, str) else _OTHER
+    if isinstance(node, ast.Name):
+        return env.get(node.id, _OTHER)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        if all(_provenance(element, env) == _LITERAL for element in node.elts):
+            return _LITERAL_SEQ
+        return _OTHER
+    if isinstance(node, ast.Dict):
+        # The keys may be anything; it is the values that become SQL text.
+        if node.values and all(_provenance(value, env) == _LITERAL for value in node.values):
+            return _LITERAL_MAP
+        return _OTHER
+    if isinstance(node, ast.Subscript):
+        # ``_EQUALITY[column]`` — whatever the key is, the value is a literal.
+        return _LITERAL if _provenance(node.value, env) == _LITERAL_MAP else _OTHER
+    if isinstance(node, ast.BinOp):
+        if isinstance(node.op, ast.Add):
+            pair = (_provenance(node.left, env), _provenance(node.right, env))
+            if pair == (_LITERAL, _LITERAL):
+                return _LITERAL
+            if pair == (_LITERAL_SEQ, _LITERAL_SEQ):
+                return _LITERAL_SEQ
+        return _OTHER  # ``%`` is interpolation; the rest is not string building
+    if isinstance(node, ast.JoinedStr):
+        # An f-string with nothing substituted is a literal; one with any
+        # substitution is the textbook vector, whatever its literal parts say.
+        if any(isinstance(part, ast.FormattedValue) for part in node.values):
+            return _OTHER
+        return _LITERAL
+    if isinstance(node, ast.IfExp):
+        return _meet(_provenance(node.body, env), _provenance(node.orelse, env))
+    if isinstance(node, ast.BoolOp):
+        kinds = {_provenance(value, env) for value in node.values}
+        return kinds.pop() if len(kinds) == 1 else _OTHER
+    if isinstance(node, ast.Call):
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "join"
+            and len(node.args) == 1
+            and _provenance(func.value, env) == _LITERAL
+        ):
+            return _LITERAL if _provenance(node.args[0], env) == _LITERAL_SEQ else _OTHER
+        # Every other call returns a value this checker cannot see into,
+        # ``.format()`` and a helper that returns a statement included.
+        return _OTHER
+    return _OTHER
+
+
+def _opaque_names(scope: ast.AST) -> set[str]:
+    """Names a scope binds by anything other than plain assignment.
+
+    A parameter is a caller's value by definition, and a ``for``, ``with`` or
+    ``except`` target is whatever the iterable yielded — none of them carry
+    provenance, and each shadows a module constant of the same name.
+    """
+    names: set[str] = set()
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        spec = scope.args
+        names.update(arg.arg for arg in (*spec.posonlyargs, *spec.args, *spec.kwonlyargs))
+        names.update(arg.arg for arg in (spec.vararg, spec.kwarg) if arg is not None)
+    for node in _scope_nodes(scope):
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            names |= _target_names(node.target)
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            names |= _target_names(node.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.NamedExpr):
+            names |= _target_names(node.target)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+    return names
+
+
+def _nonlocal_names(scope: ast.AST) -> set[str]:
+    """Names a *nested* scope rebinds through ``nonlocal``.
+
+    :func:`_scope_nodes` deliberately stops at a nested function, so a
+    rebinding inside one is invisible to the fixed point below. Measured
+    before this was added: a nested ``inner()`` doing
+    ``nonlocal statement; statement = statement + before`` was **accepted**.
+    Walking the whole subtree for the declaration and demoting the name is
+    enough — it does not matter what the nested scope assigns, only that it
+    can.
+    """
+    return {
+        name for node in ast.walk(scope) if isinstance(node, ast.Nonlocal) for name in node.names
+    }
+
+
+def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
+    """Provenance of every name visible in one scope.
+
+    A name's provenance is the *meet* over every binding of it in the scope,
+    so a variable that is a literal on one branch and a parameter on another
+    is not a literal. Iterated to a fixed point, because ``store.events``
+    appends to its clause list after binding it.
+    """
+    env = dict(inherited)
+    opaque = _opaque_names(scope) | _nonlocal_names(scope)
+    for name in opaque:
+        env[name] = _OTHER
+    for _ in range(4):
+        inferred: dict[str, str] = {}
+        for node in _scope_nodes(scope):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        _note(inferred, target.id, _provenance(node.value, env))
+                    else:
+                        # ``x[i] = v`` and ``x.a = v`` say nothing about ``x``.
+                        for name in _target_names(target):
+                            _note(inferred, name, _OTHER)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                # ``clauses: list[str] = []`` and its annotated-only form.
+                kind = _LITERAL_SEQ if node.value is None else _provenance(node.value, env)
+                _note(inferred, node.target.id, kind)
+            elif isinstance(node, ast.AugAssign):
+                if isinstance(node.target, ast.Name) and isinstance(node.op, ast.Add):
+                    _note(inferred, node.target.id, _provenance(node.value, env))
+                else:
+                    for name in _target_names(node.target):
+                        _note(inferred, name, _OTHER)
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    want = _ACCUMULATORS.get(func.attr)
+                    if want is None:
+                        continue
+                    kept = len(node.args) == 1 and _provenance(node.args[0], env) == want
+                    _note(inferred, func.value.id, _LITERAL_SEQ if kept else _OTHER)
+        for name, kind in inferred.items():
+            if name not in opaque:
+                env[name] = kind
+    return env
+
+
+def _mutated_names(tree: ast.Module) -> set[str]:
+    """Module-level names something in the module changes in place or rebinds."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, (ast.Subscript, ast.Attribute)):
+                    names |= _target_names(target)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                names |= _target_names(target)
+        elif isinstance(node, ast.Global):
+            names.update(node.names)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in _MUTATORS
+                and isinstance(func.value, ast.Name)
+            ):
+                names.add(func.value.id)
+    return names
+
+
+def _import_source(module: str, level: int, within: str) -> str:
+    """Resolve an ``ImportFrom`` to a dotted module name, relative form included."""
+    if not level:
+        return module
+    base = within.rsplit(".", level)[0]
+    return f"{base}.{module}" if module else base
+
+
+def _module_env(name: str, tree: ast.Module, package: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Module-level provenance, resolving ``from <module> import NAME``.
+
+    This has to cross files or the real package fails its own check:
+    ``store.events`` runs ``executescript(DDL)`` on a literal declared in
+    ``store.schema``. An import that cannot be resolved stays
+    :data:`_OTHER`, so an unmodelled import shape fails loudly at the
+    ``execute`` call rather than passing quietly.
+    """
+    env: dict[str, str] = {}
+    for _ in range(2):  # a constant may be declared below its first use
+        inferred: dict[str, str] = {}
+        # Not ``tree.body``: an assignment nested in a module-level ``if``,
+        # ``try`` or ``for`` is still a module binding. Measured before this
+        # walked the scope — a top-level ``_TEMPLATE = "SELECT ..."`` followed
+        # by a conditional ``_TEMPLATE = "SELECT ... " + os.environ["X"]`` kept
+        # its literal provenance and was **accepted**.
+        for node in _scope_nodes(tree):
+            if isinstance(node, ast.ImportFrom):
+                source = package.get(_import_source(node.module or "", node.level, name), {})
+                for alias in node.names:
+                    _note(inferred, alias.asname or alias.name, source.get(alias.name, _OTHER))
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        _note(inferred, target.id, _provenance(node.value, env))
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.value is not None:
+                    _note(inferred, node.target.id, _provenance(node.value, env))
+        env = inferred
+    for mutated in _mutated_names(tree):
+        if mutated in env:
+            env[mutated] = _OTHER
+    return env
+
+
+def _executed_statements(
+    node: ast.AST, env: dict[str, str], scope: str
+) -> Iterator[tuple[int, str, str, str]]:
+    """Yield ``(line, provenance, scope, source)`` per executed statement."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _EXECUTORS:
+            # Positional is the sqlite3 spelling, and the second positional is
+            # the parameter sequence, which is legitimately not a literal — so
+            # only the first is taken. With no positional argument at all,
+            # every keyword is taken instead, ``**kwargs`` included: measured
+            # before this, ``conn.execute(sql=_TEMPLATE + before)`` was
+            # **accepted** because the check looked only at ``node.args``.
+            carried = list(node.args[:1]) or [keyword.value for keyword in node.keywords]
+            for argument in carried:
+                yield node.lineno, _provenance(argument, env), scope, ast.unparse(argument)
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            inner = child.name if not isinstance(child, ast.Lambda) else "<lambda>"
+            yield from _executed_statements(child, _scope_env(child, env), f"{scope}.{inner}")
+        else:
+            yield from _executed_statements(child, env, scope)
+
+
+def _package_envs(sources: dict[str, str]) -> dict[str, dict[str, str]]:
+    trees = {name: ast.parse(text) for name, text in sources.items()}
+    package: dict[str, dict[str, str]] = {}
+    for _ in range(3):  # resolve imports between the package's own modules
+        package = {name: _module_env(name, tree, package) for name, tree in trees.items()}
+    return package
+
+
+def _statement_sites(sources: dict[str, str]) -> list[tuple[str, int, str, str]]:
+    """Every statement handed to sqlite3 in ``sources``, with its provenance."""
+    package = _package_envs(sources)
+    sites: list[tuple[str, int, str, str]] = []
+    for name, text in sorted(sources.items()):
+        for line, kind, scope, source in _executed_statements(ast.parse(text), package[name], name):
+            sites.append((f"{name}:{line} in {scope}", line, kind, source[:160]))
+    return sites
+
+
+def _non_literal_statements(sources: dict[str, str]) -> list[str]:
+    return [
+        f"{where}: {kind}: {source}"
+        for where, _line, kind, source in _statement_sites(sources)
+        if kind != _LITERAL
+    ]
+
+
+def _store_sources() -> dict[str, str]:
+    return {
+        ".".join(path.relative_to(_REPO_ROOT).with_suffix("").parts): path.read_text(
+            encoding="utf-8"
+        )
+        for path in _store_modules()
+    }
+
+
+@pytest.mark.security
+def test_every_statement_reaching_sqlite_is_built_only_from_literals() -> None:
+    """No caller value becomes SQL text — asserted at the ``execute`` call.
+
+    This is the assertion that carries the invariant, and it is stated as a
+    provenance requirement rather than a list of forbidden constructs: the
+    statement handed to sqlite3 must be traceable to string literals written
+    in this package. A parameter, a call's return value, or a name whose
+    bindings do not all resolve to literals fails.
+    """
+    findings = _non_literal_statements(_store_sources())
+    assert not findings, "statement text not traceable to a literal:\n  " + "\n  ".join(findings)
+
+
+@pytest.mark.security
+def test_the_provenance_check_reaches_every_executed_statement() -> None:
+    """Non-vacuity: a checker that found no call sites would pass silently.
+
+    The floor is the count at the time of writing (19, every one of them in
+    ``store/events.py``). It is a floor and not an equality so that adding a
+    statement does not fail here, but a refactor that moves statements out of
+    this package should fail and be looked at rather than quietly reduce what
+    the assertion above covers.
+    """
+    sites = _statement_sites(_store_sources())
+    assert len(sites) >= 19, f"expected at least 19 statements reached, found {len(sites)}"
+    assert all(kind == _LITERAL for _where, _line, kind, _source in sites)
+
+
+#: Routes into an ``execute`` call that must be refused. The first five are
+#: measured: each one passed ``test_no_sql_statement_is_built_by_interpolation``
+#: when planted into :meth:`store.events.EventStore.count_before`.
+_REJECTED = (
+    ("+ concatenation", 'statement + " -- " + str(before)'),
+    ("% behind a name", "_TEMPLATE % repr(before)"),
+    (".format behind a name", "_TEMPLATE.format(repr(before))"),
+    ("str.join with a value", '" ".join([_TEMPLATE, repr(before)])'),
+    ("f-string as a join element", '"".join([_TEMPLATE, f"{before!r}"])'),
+    ("the parameter itself", "before"),
+    ("f-string, the classic", 'f"SELECT * FROM events WHERE vendor = {before}"'),
+    ("a helper that returns SQL", "_build(before)"),
+    ("a literal with a value substituted in", '_TEMPLATE.replace("?", before)'),
+    ("a mapping something updates", "_MUTATED[column]"),
+    ("one branch of a choice", "_TEMPLATE if column else before"),
+)
+
+#: What ``store/events.py`` actually does. Pinned so that a future tightening
+#: which breaks the real package fails *here*, naming the pattern and why it
+#: is sanctioned, rather than in the whole-package assertion with a line
+#: number and no explanation.
+_SANCTIONED = (
+    ("a bare literal", '"SELECT COUNT(*) AS n FROM events"'),
+    ("module constants concatenated", "_TEMPLATE + _AND + _TEMPLATE"),
+    ("a literal-valued mapping, keyed at runtime", "_EQUALITY[column]"),
+    ("a runtime choice between two constants", "_TEMPLATE if column else _AND"),
+    ("a joined list of constants", '" AND ".join([_TEMPLATE, _AND])'),
+    ("an f-string with nothing substituted", 'f"SELECT 1"'),
+)
+
+#: One module, with the shapes the store declares, so each case above differs
+#: from the next by exactly the expression under test.
+_HARNESS = """
+_TEMPLATE = "SELECT COUNT(*) AS n FROM events WHERE vendor = ?"
+_AND = " AND "
+_EQUALITY = {{"vendor": "e.vendor = ?", "hostname": "e.hostname = ?"}}
+_MUTATED = {{"vendor": "e.vendor = ?"}}
+_MUTATED.update({{"hostname": "e.hostname = ?"}})
+
+
+def _build(value):
+    return _TEMPLATE + value
+
+
+def run(conn, before, column):
+    {body}
+    conn.execute(statement)
+"""
+
+
+def _harness(expression: str) -> str:
+    return _HARNESS.format(body="statement = " + expression)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "expression"), _REJECTED)
+def test_the_provenance_check_rejects_each_measured_evasion(label: str, expression: str) -> None:
+    """Every known route by which a value becomes SQL text must be refused."""
+    assert _non_literal_statements({"sample": _harness(expression)}), (
+        f"{label} was accepted: {expression}"
+    )
+
+
+#: Routes that need more than one statement, so they cannot go in
+#: :data:`_REJECTED`. The last three were holes in this checker's own first
+#: version, found by attacking it rather than by review, and each was measured
+#: accepted before the fix named in the function it broke.
+_REJECTED_MODULES = (
+    (
+        "+= of a value",
+        _HARNESS.format(body="statement = _TEMPLATE\n    statement += str(before)"),
+    ),
+    (
+        "nonlocal rebinding in a nested function",
+        """
+_TEMPLATE = "SELECT COUNT(*) AS n FROM events WHERE vendor = ?"
+
+
+def outer(conn, before):
+    statement = _TEMPLATE
+
+    def inner():
+        nonlocal statement
+        statement = statement + before
+
+    inner()
+    conn.execute(statement)
+""",
+    ),
+    (
+        "a module constant reassigned inside a module-level if",
+        """
+import os
+
+_TEMPLATE = "SELECT COUNT(*) AS n FROM events"
+if os.environ.get("X"):
+    _TEMPLATE = "SELECT COUNT(*) FROM events WHERE vendor = " + os.environ["X"]
+
+
+def run(conn):
+    conn.execute(_TEMPLATE)
+""",
+    ),
+    (
+        "the statement passed as a keyword argument",
+        """
+_TEMPLATE = "SELECT COUNT(*) AS n FROM events"
+
+
+def run(conn, before):
+    conn.execute(sql=_TEMPLATE + before)
+""",
+    ),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "source"), _REJECTED_MODULES)
+def test_the_provenance_check_rejects_each_multi_statement_route(label: str, source: str) -> None:
+    """Routes that take more than one statement to express."""
+    assert _non_literal_statements({"sample": source}), f"{label} was accepted"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("label", "expression"), _SANCTIONED)
+def test_the_provenance_check_accepts_what_the_store_actually_does(
+    label: str, expression: str
+) -> None:
+    """The permissive half, so a tightening that breaks the store says why."""
+    findings = _non_literal_statements({"sample": _harness(expression)})
+    assert not findings, f"{label} was refused: {expression}\n  " + "\n  ".join(findings)
+
+
+@pytest.mark.security
+def test_no_statement_is_dispatched_through_a_dynamic_attribute() -> None:
+    """The provenance check finds its sinks by name, so close the indirection.
+
+    ``_executed_statements`` looks for an ``Attribute`` call named ``execute``,
+    ``executemany`` or ``executescript``. Measured: ``getattr(conn, "execute")
+    (_TEMPLATE + before)`` is **not detected**, because the sink is a call's
+    result rather than a named attribute. Rather than chase attribute names
+    through a dataflow, forbid the shape: nothing in this package calls the
+    result of a call. Measured at **zero** such nodes across ``store/``, so
+    this costs nothing today and makes the one route that hides a sink from
+    the check above fail here instead.
+
+    This does **not** close the other residual, which is stated and not fixed:
+    a statement handed to a differently *named* method —
+    ``conn.run_sql(_TEMPLATE + before)`` — is not detected either, and closing
+    that means deciding statically whether an arbitrary expression is SQL.
+    What stands against it is that such a wrapper would have to be added to
+    this package, where it is a reviewable change to the only module holding a
+    connection, not a configuration.
+    """
+    for path in _store_modules():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                assert not isinstance(node.func, ast.Call), (
+                    f"{path}:{node.lineno}: a call's result is called, which can "
+                    f"dispatch a statement past the provenance check: "
+                    f"{ast.unparse(node)[:120]}"
+                )
+
+
+@pytest.mark.security
+def test_the_provenance_check_resolves_a_literal_imported_from_a_sibling() -> None:
+    """``executescript(DDL)`` crosses files, in both import spellings.
+
+    If this broke, the real package would fail its own check rather than pass
+    — the fail-closed direction — but it would fail for the wrong reason, so
+    the resolution is pinned here where the failure names itself.
+    """
+    schema = 'DDL = "CREATE TABLE events (event_id TEXT PRIMARY KEY)"\n'
+    for spelling in ("from sample.schema import DDL", "from .schema import DDL"):
+        events = f"{spelling}\n\n\ndef init(conn):\n    conn.executescript(DDL)\n"
+        sources = {"sample.schema": schema, "sample.events": events}
+        assert not _non_literal_statements(sources), f"{spelling} did not resolve"
 
 
 # --------------------------------------------------------------------------
