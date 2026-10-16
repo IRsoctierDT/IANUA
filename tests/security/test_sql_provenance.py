@@ -842,6 +842,74 @@ class C:
 
 
 # --------------------------------------------------------------------------
+# Pinned: how a relative import resolves, which was an open review question
+# --------------------------------------------------------------------------
+#
+# `_module_bases` turns `from <dots><mod> import <name>` into the dotted module
+# it names, so it can tell a module binding from an ordinary value. The
+# arithmetic on `node.level` was flagged as unverified in two pull request
+# bodies — "the kind of thing that is wrong for exactly one case" — and nothing
+# asserted it. This is that assertion.
+#
+# Python's rule: for a module whose ``__package__`` has components ``parts``,
+# level L resolves against ``".".join(parts[:len(parts) - (L - 1)])``. The case
+# worth naming is a package's ``__init__``: its ``__package__`` is the package
+# itself, not the parent — and the swept set is keyed by FILE, so
+# ``p/sub/__init__.py`` is the key ``p.sub.__init__``. Stripping the last
+# component of that key yields ``p.sub``, which is exactly ``__package__``, and
+# stripping it from ``p.sub.m`` yields the same. One rule covers both file
+# kinds, which is why there is no off-by-one here; it is a property rather than
+# a coincidence, so it is asserted.
+
+#: ``(module under analysis, source, what Python resolves it to, is it a base)``
+_RELATIVE_IMPORTS = (
+    ("p.m", "from . import a", "p.a", True),
+    ("p.m", "from .sub import b", "p.sub.b", True),
+    ("p.sub.m", "from . import b", "p.sub.b", True),
+    ("p.sub.m", "from .. import a", "p.a", True),
+    ("p.sub.deep.m", "from ... import a", "p.a", True),
+    ("p.sub.deep.m", "from .. import b", "p.sub.b", True),
+    ("p.sub.m", "from ..sub.deep import c", "p.sub.deep.c", True),
+    ("p.sub.m", "from .deep import c", "p.sub.deep.c", True),
+    ("p.m", "from . import a as aliased", "p.a", True),
+    ("p.m", "from q import d", "q.d, absolute", True),
+    # A package's __init__: __package__ is the package, not its parent.
+    ("p.__init__", "from . import a", "p.a", True),
+    ("p.sub.__init__", "from . import b", "p.sub.b", True),
+    ("p.sub.__init__", "from .. import a", "p.a", True),
+    # Not module bindings.
+    ("p.m", "from .. import a", "beyond the top: ImportError at runtime", False),
+    ("p.m", "from . import nothere", "p.nothere, which does not exist", False),
+    ("p.m", "from .a import something", "p.a.something, a value not a module", False),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("module", "source", "resolves", "is_base"),
+    _RELATIVE_IMPORTS,
+    ids=[f"{module}::{source}" for module, source, _r, _b in _RELATIVE_IMPORTS],
+)
+def test_a_relative_import_resolves_to_the_module_python_would_import(
+    module: str, source: str, resolves: str, is_base: bool
+) -> None:
+    """Sixteen spellings, each stating Python's answer independently of the code.
+
+    Measured 16 of 16 correct, including both ``__init__`` spellings and the
+    two-and-three-dot forms. The two negative cases matter as much: a level
+    that walks past the top of the tree cannot run at all, and ``from .a import
+    something`` names a *value* inside a module rather than a module, so
+    neither may be treated as a namespace binding.
+    """
+    swept = frozenset({"p.a", "p.sub.b", "p.sub.deep.c", "q.d", "p.__init__", "p.sub.__init__"})
+    _imported, bases = sqlprov._module_bases(ast.walk(ast.parse(source)), module, swept)
+    assert bool(bases) is is_base, (
+        f"{source!r} in {module} resolves to {resolves}; "
+        f"expected {'a module binding' if is_base else 'no module binding'}, got {sorted(bases)}"
+    )
+
+
+# --------------------------------------------------------------------------
 # The pair: neither SQL assertion may disappear without the other noticing
 # --------------------------------------------------------------------------
 
