@@ -375,6 +375,19 @@ def _rebinding_names(scope: ast.AST) -> set[str]:
             names |= _target_names(node.target)
         elif isinstance(node, ast.Import):
             names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # ``def NAME`` and ``class NAME`` bind NAME, and a decorator makes
+            # that binding any value at all. Measured accepted before this
+            # arm existed: ``statement = _COUNT`` followed by
+            # ``@_rendered(before)`` / ``def statement(): ...`` executed
+            # ``SELECT COUNT(*) AS n FROM events WHERE ingested_at <
+            # 1760000000``, and the module-level spelling of the same thing
+            # ran ``... FROM events; DROP TABLE events``. Neither env builder
+            # had a ``FunctionDef`` arm, so these were not bindings at all as
+            # far as the checker was concerned. Covering the *name* rather
+            # than the decorator expression also catches the undecorated
+            # rebinding, which is the same defect with no decorator.
+            names.add(node.name)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             names.update(node.names)
         else:
@@ -531,7 +544,21 @@ def _scope_env(scope: ast.AST, inherited: dict[str, str]) -> dict[str, str]:
     # after would leave ``statement = "".join(parts)`` classified as a
     # literal from an earlier pass, which is the only value that reaches an
     # ``execute`` call.
-    escaped = _escaping_names(_scope_nodes(scope)) | _nested_scope_names(scope)
+    escaped = _escaping_names(_scope_nodes(scope))
+    if not isinstance(scope, ast.ClassDef):
+        # The nested-scope penalty is about FUNCTION locals: a closure can
+        # mutate the local of the function enclosing it. A class body is
+        # different, and the difference is a language rule rather than a
+        # judgement call — **class scope is not a closure scope**, so a
+        # method cannot read a class-body local as a closure variable at all
+        # (``class C: x = 1`` then ``def f(self): return x`` is a NameError).
+        # A method mentioning a name therefore says nothing about the class
+        # body's binding of it. Applying the penalty here anyway demoted
+        # every container any method mentions — measured: it put
+        # ``EventStore.query``'s own ``statement`` out of reach of the real
+        # package's check. A method that mutates a MODULE container is
+        # covered, by :func:`_module_env`'s whole-tree sweep.
+        escaped |= _nested_scope_names(scope)
     _demote_escaped(env, escaped)
     for _ in range(4):
         inferred: dict[str, str] = {}
@@ -691,8 +718,16 @@ def _executed_statements(
             for argument in carried:
                 yield node.lineno, _provenance(argument, env), scope, ast.unparse(argument)
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            inner = child.name if not isinstance(child, ast.Lambda) else "<lambda>"
+        # ``ClassDef`` belongs here, with the functions. It used to fall into
+        # the generic branch below, so a class body was walked with the
+        # ENCLOSING scope's env — while :func:`_scope_nodes` stops at a
+        # ``ClassDef`` and never collected its bindings. The two halves
+        # disagreed, and the gap was exactly the construct whose bindings one
+        # half refused to look at. Measured accepted: a ``for clause in
+        # columns:`` loop inside a ``class _Plan:`` nested in a function ran
+        # ``SELECT * FROM events WHERE 1=1; DROP TABLE events; --``.
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            inner = "<lambda>" if isinstance(child, ast.Lambda) else child.name
             yield from _executed_statements(child, _scope_env(child, env), f"{scope}.{inner}")
         else:
             yield from _executed_statements(child, env, scope)
@@ -1038,6 +1073,83 @@ _REJECTED_ESCAPES = (
     ),
 )
 
+#: Two further routes the same adversarial pass found against the restructure
+#: above, each with a runtime proof that executed ``DROP TABLE events``. Both
+#: have a structural cause rather than a missing construct: a ``def``/``class``
+#: name was not treated as a binding at all, and a class body was analysed by
+#: one half of the checker and not the other.
+_REJECTED_SCOPE_SHAPES = (
+    (
+        "a class body inside a function, checked against the enclosing env",
+        '_SELECT = "SELECT * FROM events WHERE "\n'
+        "\n"
+        "\n"
+        "def query(conn, columns):\n"
+        '    clause = "e.vendor = ?"\n'
+        "\n"
+        "    class _Plan:\n"
+        "        for clause in columns:\n"
+        "            conn.execute(_SELECT + clause)\n"
+        "\n"
+        "    return _Plan\n",
+    ),
+    (
+        "a decorated def rebinding a name bound to a literal",
+        '_COUNT = "SELECT COUNT(*) AS n FROM events"\n'
+        '_WHERE = " WHERE ingested_at < "\n'
+        "\n"
+        "\n"
+        "def _rendered(before):\n"
+        "    def decorate(_func):\n"
+        "        return _COUNT + _WHERE + str(before)\n"
+        "\n"
+        "    return decorate\n"
+        "\n"
+        "\n"
+        "def count_before(conn, before):\n"
+        "    statement = _COUNT\n"
+        "\n"
+        "    @_rendered(before)\n"
+        "    def statement():\n"
+        '        """The statement for this call."""\n'
+        "\n"
+        "    conn.execute(statement)\n",
+    ),
+    (
+        "a decorated def rebinding a module constant",
+        "import os\n"
+        "\n"
+        "\n"
+        "def _rendered(_func):\n"
+        '    return "SELECT COUNT(*) AS n FROM events" + os.environ.get("IANUA_SUFFIX", "")\n'
+        "\n"
+        "\n"
+        '_COUNT = "SELECT COUNT(*) AS n FROM events"\n'
+        "\n"
+        "\n"
+        "@_rendered\n"
+        "def _COUNT():\n"
+        '    """The statement for this deployment."""\n'
+        "\n"
+        "\n"
+        "def count(conn):\n"
+        "    conn.execute(_COUNT)\n",
+    ),
+    (
+        "an undecorated def rebinding a name bound to a literal",
+        '_COUNT = "SELECT COUNT(*) AS n FROM events"\n'
+        "\n"
+        "\n"
+        "def run(conn):\n"
+        "    statement = _COUNT\n"
+        "\n"
+        "    def statement():\n"
+        '        """Shadows the literal above."""\n'
+        "\n"
+        "    conn.execute(statement)\n",
+    ),
+)
+
 #: The same family on the mapping lattice and at module scope. ``_EQUALITY``
 #: is not hypothetical — a literal-valued mapping keyed at runtime is one of
 #: the sanctioned patterns, and it is what ``store/events.py:1008`` actually
@@ -1116,6 +1228,7 @@ _REJECTED_MODULE_SCOPE = (
         *_REJECTED_ALREADY,
         *_REJECTED_ESCAPES,
         *_REJECTED_MODULE_SCOPE,
+        *_REJECTED_SCOPE_SHAPES,
     ),
 )
 def test_a_pattern_capture_or_unmodelled_mutation_demotes_the_name(label: str, body: str) -> None:
