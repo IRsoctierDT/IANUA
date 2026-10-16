@@ -50,7 +50,7 @@ from pathlib import Path
 import pytest
 
 from scripts import run_backup, run_collector, run_pipeline, run_retention
-from scripts._locking import DIR_MODE, FILE_MODE
+from scripts._locking import _DESCRIBED_TYPES, DIR_MODE, FILE_MODE, _describe
 from store.paths import validated_root
 
 #: Roots that resolve to the working directory, or to somewhere else the
@@ -331,14 +331,41 @@ def _bind_socket(target: Path) -> socket.socket:
 
 #: ``(label, make the object, the word the message must contain)``. Each one
 #: opens happily, or blocks, without a type guard on the descriptor.
+#:
+#: **Only the two types an unprivileged process can create.** The first version
+#: of this table included a character device built with
+#: ``os.mknod(..., S_IFCHR, makedev(1, 3))``, which needs ``CAP_MKNOD``. It
+#: passed locally as root and failed all four CLIs on the CI runner with
+#: ``PermissionError: [Errno 1] Operation not permitted`` — measured, and the
+#: reason this comment exists. Gating it on ``geteuid() == 0`` was the wrong
+#: repair: a security assertion that skips in the environment that matters
+#: proves nothing there, which is the objection this repository already records
+#: against a ``dbstat``-conditional test in ``test_store_hardening.py``. The
+#: device branches are pinned instead by
+#: :func:`test_describe_names_every_non_regular_type_it_claims_to`, which
+#: *reads* an existing device node rather than creating one.
 _NOT_REGULAR = (
     ("fifo-no-reader", lambda p: os.mkfifo(p, 0o600), "a FIFO"),
     ("socket", _bind_socket, "a socket"),
-    (
-        "character-device",
-        lambda p: os.mknod(p, 0o600 | stat.S_IFCHR, os.makedev(1, 3)),
-        "a character device",
-    ),
+)
+
+
+#: Device nodes present on any Linux or macOS host, read rather than created.
+_CHARACTER_DEVICE = Path("/dev/null")
+
+#: ``_DESCRIBED_TYPES`` entries no assertion below exercises, each with the
+#: reason. Kept as an explicit accounting rather than left implicit so that
+#: adding a sixth type to the table fails this file instead of shipping unpinned.
+_UNEXERCISED_DESCRIPTIONS = frozenset(
+    {
+        # A block device cannot be created without CAP_MKNOD either, and unlike
+        # a character device there is no path guaranteed to exist on both CI
+        # runners and a developer's machine (/dev/loop0 and /dev/sda are both
+        # absent in containers). The predicate is the same ``stat.S_IS*``
+        # dispatch as the four that are exercised; faking an ``lstat`` to reach
+        # it would be mocking the function under test.
+        "a block device",
+    }
 )
 
 
@@ -380,6 +407,64 @@ def test_a_lock_path_that_is_not_a_regular_file_is_refused_by_type(
     finally:
         if isinstance(held, socket.socket):
             held.close()
+
+
+@pytest.mark.security
+def test_describe_names_every_non_regular_type_it_claims_to(tmp_path: Path) -> None:
+    """``_describe`` is what puts the object's name in the refusal message.
+
+    Pinned directly, and at this level deliberately: the end-to-end matrix
+    above can only plant the two types an unprivileged process can create, so
+    without this the character-device branch would be exercised nowhere that
+    CI runs. The device node is **read**, never created — see
+    ``_NOT_REGULAR``'s comment for the measured reason.
+
+    The last assertion is the one that matters for the future: it fails if a
+    type is added to ``_DESCRIBED_TYPES`` without a pin here, rather than
+    letting a new branch ship unexercised.
+    """
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo, 0o600)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "absent")
+    sock = _bind_socket(tmp_path / "sock")
+    try:
+        seen = {
+            "a FIFO": _describe(fifo),
+            "a symlink": _describe(link),
+            "a socket": _describe(tmp_path / "sock"),
+        }
+    finally:
+        sock.close()
+    assert seen["a FIFO"] == "a FIFO"
+    assert seen["a socket"] == "a socket"
+    # The symlink's description carries its own clause, so match the prefix.
+    assert (seen["a symlink"] or "").startswith("a symlink"), seen["a symlink"]
+
+    assert _CHARACTER_DEVICE.is_char_device(), (
+        f"{_CHARACTER_DEVICE} is not a character device on this host; the "
+        "character-device branch would go unexercised"
+    )
+    assert _describe(_CHARACTER_DEVICE) == "a character device"
+
+    # A regular file and a directory are not "worth naming" — _describe returns
+    # None so the caller keeps the kernel's own errno text (EISDIR's "Is a
+    # directory" is already exact, and a test asserts it elsewhere).
+    regular = tmp_path / "regular"
+    regular.write_text("", encoding="utf-8")
+    assert _describe(regular) is None
+    assert _describe(tmp_path) is None
+    assert _describe(tmp_path / "does-not-exist") is None
+
+    described = {description for _, description in _DESCRIBED_TYPES}
+    exercised = {"a FIFO", "a socket", "a character device"} | {
+        d for d in described if d.startswith("a symlink")
+    }
+    unaccounted = described - exercised - _UNEXERCISED_DESCRIPTIONS
+    assert not unaccounted, (
+        f"_DESCRIBED_TYPES gained {sorted(unaccounted)} with no assertion here — "
+        "pin it, or add it to _UNEXERCISED_DESCRIPTIONS with the reason"
+    )
 
 
 @pytest.mark.security
