@@ -1,0 +1,102 @@
+# OpenSSF Scorecard analysis of this repository's own supply-chain posture,
+# reported into the Code scanning dashboard.
+#
+# Why this exists, and why it is a workflow: Scorecard is a GitHub Action. It
+# arrived in #232 as three lines appended to `.pre-commit-config.yaml` — a
+# `- name:`/`uses:` pair, which is Actions syntax and not a pre-commit
+# repository mapping (those need `repo`, `rev`, `hooks`). The indentation also
+# made that file unparseable, so `pre-commit run --all-files` died with
+# `InvalidConfigError` before any hook ran and the required local gate was a
+# no-op for every developer until it was reverted. Scorecard's own installation
+# instructions put it here, under `.github/workflows/`, and this is that move.
+#
+# What it measures is the posture this repository already cares about: whether
+# actions are pinned by SHA, whether workflow tokens are least-privilege,
+# whether dangerous workflow patterns are present, whether dependency updates
+# are automated, whether a SAST tool runs. Those are AGENTS.md §3 and §8
+# claims, graded by a third party instead of by us.
+#
+# `publish_results: false`, deliberately. Setting it true would POST results to
+# the OpenSSF REST API at https://api.securityscorecards.dev and enable a public
+# badge — outbound egress of repository metadata, which AGENTS.md §5.1 classes
+# as an external-network action requiring human approval with the URL shown in
+# full. The owner chose to keep results private, so nothing leaves this
+# repository: findings land only in this repo's own Code scanning tab and as a
+# run artifact. The trade is real and is the choice: no badge, and no entry in
+# the public OpenSSF dataset.
+#
+# That choice is also why `id-token: write` is absent below. It exists solely to
+# sign published results, so with publishing off it would be a permission
+# granted for nothing — and `tests/unit/test_scorecard_workflow.py` asserts it
+# stays absent, so turning publishing on is a deliberate edit that fails a test
+# until the decision above is revisited.
+#
+# Pins are full commit SHAs per this repository's convention, and all four are
+# taken from OpenSSF's own `scorecard-analysis.yml` rather than from memory;
+# `actions/checkout` and `actions/upload-artifact` resolve to the exact SHAs
+# this repo already pins elsewhere. Dependabot's `actions-all` group keeps them
+# current.
+#
+# v2.5.0 is both the version #232 asked for and the newest tag upstream,
+# measured with `git ls-remote --tags` rather than assumed: the version-sorted
+# list ends v2.4.3, v2.4.4, v2.5.0, with no v2.5.x or v3 above it.
+#
+# One trap if anyone re-resolves that pin by hand: `ls-remote` returns two rows
+# for the tag, and only one of them belongs in `uses:`. `refs/tags/v2.5.0` is
+# `46dc3187a971a9febf3aeb7f94ccde489f7bb46a`, the **annotated tag object**;
+# `refs/tags/v2.5.0^{}` is `fa7117db83c52d787ae5a89f350999701505d78e`, the
+# peeled **commit**, which is what is pinned below. Two independent resolutions
+# agree on it — OpenSSF's own committed workflow and the peeled ref.
+name: Scorecard supply-chain analysis
+
+on:
+  # Keeps the Branch-Protection check fresh. Default branch only.
+  branch_protection_rule:
+  schedule:
+    - cron: "47 5 * * 6" # weekly Saturday 05:47 UTC (off the hour to avoid load spikes)
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Cancel superseded runs on the same ref: a posture scan only needs to describe
+# the current tree, and `push` fires on every merge to main.
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege by default (AGENTS.md §3). The job opts into exactly one more.
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis (SARIF to code scanning)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Upload the SARIF to the Code scanning dashboard. This is the only
+      # write this workflow holds, and the only reason it holds one.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Scorecard reads the tree; it never needs the token on disk, and a
+          # persisted credential is one of the things it grades against.
+          persist-credentials: false
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # See the header: false keeps every finding inside this repository.
+          publish_results: false
+      - name: Upload the SARIF as a run artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: results.sarif
