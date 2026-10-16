@@ -13,8 +13,11 @@ All notable changes to this project. Versions correspond to git tags.
   in full, five personal names into the append-only observables table, and the
   security test was named `..._on_every_path` while exercising only the two
   mapping paths; renamed, and
-  `test_prose_indicators_survive_where_no_mapping_was_decoded` now pins the
-  residual across all four. (2) §5 said "credential-shaped paths are refused" —
+  the residual is now labelled: every verbatim regime carries
+  `parse_status="text"` (three of four read `"partial"` before), and
+  `tests/security/test_correlation_hardening.py` guards that `correlation/` never reads
+  `observables` — measured, it never did, so "false correlation join keys" was an
+  unmeasured claim and is retracted. (2) §5 said "credential-shaped paths are refused" —
   `credentials.json`, `secrets.yaml` and `api_token.txt` are accepted; the bullet
   now points at `_DENIED` and says what it does not cover. (3) §5's stage 7
   amendment said six security test files assert `dependencies = []` — it is five,
