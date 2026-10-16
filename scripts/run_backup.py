@@ -309,6 +309,84 @@ def _copy_database(source: Path, target: Path) -> None:
         live.backup(copy)
 
 
+def _is_append_only(relative: Path) -> bool:
+    """Does this manifest entry name a stream that may legitimately GROW?
+
+    Prefix comparison is right for an append-only artifact and wrong for
+    everything else, and review found the two conflated: a report whose live
+    copy held the backed-up bytes **followed by anything at all** passed
+    ``_digest_prefix`` and produced a green promotion verdict. Measured on
+    merged code — a 40-byte declared report, 94 bytes live with 54 appended,
+    exit 0; and the same with 512 NUL bytes appended instead of prose, also
+    exit 0.
+
+    **The allow-list is for the prefix-compared side, not the strict side**, so
+    the default is exact equality. A tree added to :data:`COPIED_TREES` later
+    gets the strict comparison without anyone remembering to ask for it, which
+    is the fail-closed direction: granting growth to something that cannot
+    legitimately grow hides a rewrite, while demanding equality of something
+    that does grow produces a loud, obvious finding an operator can read.
+
+    Append-only means the four hash chains in :data:`COPIED_FILES`, the
+    evidence stream beside them, and their rotation siblings — ``audit.log.1``,
+    a checkpoint, a head signature — which is the same rule
+    :func:`_copied_paths` uses to pick them up, expressed once so the backup
+    side and the verify side cannot disagree about what may grow.
+
+    ``data/reports/`` is not append-only: a report is rewritten whole, and
+    within the step-4-to-step-5 window of :func:`_verify_restore` nothing
+    writes one at all.
+    """
+    if relative in COPIED_FILES:
+        return True
+    return any(
+        relative.parent == declared.parent and relative.name.startswith(declared.name)
+        for declared in COPIED_FILES
+    )
+
+
+def _live_tree_inventory(root: Path) -> tuple[list[Path], list[str]]:
+    """Every file presently in the copied trees, plus any tree root that is unsafe.
+
+    The reverse of :func:`_copied_paths`' tree walk, and it exists because
+    verification used to read the manifest in one direction only. See
+    :func:`_verify_restore`'s ``UNDECLARED`` finding.
+
+    **A symlinked tree root is reported, never skipped**, and review found the
+    first version skipping it. That ``continue`` was lifted from
+    :func:`_copied_paths`, where skipping is correct — a backup must not copy
+    *through* a link and pull content from outside the lab root in. Here the
+    direction is reversed and so is the right behaviour: the link is already in
+    the live root, and ignoring it is how it survives a restore.
+
+    Measured on the first version: a backup that declared **no** reports,
+    restored over a root whose ``data/reports`` is a symlink to a directory
+    outside the root, exited ``0``. No manifest report entries meant
+    :func:`_unsafe_path` never ran; the symlinked root meant this walk skipped
+    it; and ``dashboard/app.py`` reads that path, so a planted file claiming
+    "Correlated 9000 events" would have been presented as this node's report.
+    Two guards exist for exactly this and each declined it for a different
+    reason, which is why the gap was invisible.
+    """
+    found: list[Path] = []
+    unsafe: list[str] = []
+    for tree in COPIED_TREES:
+        base = root / tree
+        if base.is_symlink():
+            unsafe.append(
+                f"UNDECLARED: {tree} in the live root is a symlink to "
+                f"{str(base.readlink())!r}. No backup carries one, and "
+                "`dashboard/app.py` reads this path — so whatever it points at would be "
+                "presented as this node's reports. Remove the link and restore the real "
+                "directory"
+            )
+            continue
+        if not base.is_dir():
+            continue
+        found.extend(sorted(child.relative_to(root) for child in base.iterdir() if child.is_file()))
+    return found, unsafe
+
+
 def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
     """Declared files that exist and are safe to read, plus what was refused.
 
@@ -579,6 +657,21 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     steps 4 and 5 — re-collection in step 5 legitimately adds events. Run late,
     an operator gets a mismatch; the findings below name the *direction*, so
     "you already re-collected" never reads the same as "evidence is missing".
+
+    **Three things review found this gate was not checking, all of which the
+    manifest already carried.** Each was measured on the merged code, each
+    exited ``0``, and the fix in every case reads a field that was sitting in
+    the file this function had just parsed:
+
+    * ``observables`` was never compared. The digest covers the
+      ``event_id`` set only, so losing every observable row left the count, the digest and
+      ``quick_check`` all satisfied — 20 of 20 destroyed, exit ``0``.
+    * Report entries were compared by *prefix*, so a report holding the
+      backed-up bytes followed by anything at all passed. See
+      :func:`_is_append_only`; reports are now exact, streams still prefix.
+    * The manifest was walked in one direction only, so a report written after
+      the backup — which step 4's ``cp -a`` *merges* rather than replaces —
+      survived unseen. See :func:`_live_tree_inventory`.
     """
     manifest_path = backup / MANIFEST_FILE
     if not manifest_path.is_file():
@@ -629,27 +722,123 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 "backed up"
             )
 
-    # Declared files. Prefix rather than equality: see _digest_prefix.
+        # Observables are checked SEPARATELY and not in the chain above, because
+        # the whole point is that they can be short while every event-shaped
+        # check passes. `attest()`'s digest is a sha256 over the sorted
+        # `event_id` set only — observables are not in the preimage — so a
+        # restore that loses observable rows and no event rows satisfies
+        # `quick_check`, the count and the digest together. Measured on merged
+        # code: 20 observables deleted of 20, events untouched, digest equal,
+        # exit 0. Indicator pivots return nothing on a store this gate had just
+        # called verified, because `correlation/entities.py` joins on this table.
+        #
+        # The manifest already carried the number: `attestation.to_dict()` is
+        # stored whole, so this reads a field that was sitting in the file.
+        live_observables = attested.get("observables")
+        want_observables = expected.get("observables")
+        # Fail CLOSED on a manifest that cannot answer. The first version of this
+        # block guarded with `isinstance(...) and isinstance(...)` and silently
+        # SKIPPED the check otherwise — measured, deleting `observables` from a
+        # v1 manifest and then deleting every live observable row gave exit 0, and
+        # so did a string `"20"`. `_verify_backup` compares only the keys it
+        # finds, so nothing else caught it either. The manifest is untrusted input
+        # here (`_unsafe_path` already treats its paths that way), and a guard that
+        # skips on malformed input is a fail-open inside a fix for a family of
+        # fail-opens. `bool` is excluded explicitly, being an `int` subclass.
+        counts_usable = True
+        for whose, value in (
+            ("the backup's manifest", want_observables),
+            ("the live store", live_observables),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                counts_usable = False
+                problems.append(
+                    f"{whose} does not state a usable observable count ({value!r}, type "
+                    f"{type(value).__name__}). An `ianua.backup.v1` attestation always "
+                    "carries one, so this is a damaged or edited manifest and the "
+                    "completeness check cannot run — refused rather than skipped"
+                )
+        if counts_usable:
+            if live_observables < want_observables:
+                problems.append(
+                    f"LOSS: the live store holds {live_observables} observable(s); the "
+                    f"backup attested {want_observables}. "
+                    f"{want_observables - live_observables} are missing. Every event-level "
+                    "check can pass while this is short — the completeness digest covers "
+                    "event_ids only — and indicator pivots will silently return nothing"
+                )
+            elif live_observables > want_observables:
+                problems.append(
+                    f"ADDED: the live store holds {live_observables} observable(s); the "
+                    f"backup attested {want_observables}. Re-collection (docs/RESTORE.md "
+                    "step 5) does this, so it is expected if you have already run it. It "
+                    "is NOT evidence loss"
+                )
+
+    # Declared files. Prefix comparison for the append-only streams only; exact
+    # equality for everything else. See _is_append_only for why the allow-list
+    # is on the growing side.
+    declared: set[Path] = set()
     for entry in manifest["files"]:
-        unsafe = _unsafe_path(root, Path(str(entry["path"])), what="manifest path")
+        entry_path = Path(str(entry["path"]))
+        unsafe = _unsafe_path(root, entry_path, what="manifest path")
         if unsafe is not None:
             problems.append(unsafe)
             continue
-        path = root / str(entry["path"])
+        declared.add(entry_path)
+        path = root / entry_path
         backed_up = int(entry["size"])
         if not path.is_file():
             problems.append(f"{entry['path']} is missing from the live root")
             continue
         live_size = path.stat().st_size
-        if live_size < backed_up:
+        if _is_append_only(entry_path):
+            if live_size < backed_up:
+                problems.append(
+                    f"TRUNCATED: {entry['path']} is {live_size} bytes; the backup holds "
+                    f"{backed_up}. An append-only artifact cannot legitimately shrink"
+                )
+            elif _digest_prefix(path, backed_up) != entry["sha256"]:
+                problems.append(
+                    f"REWRITTEN: {entry['path']}'s first {backed_up} bytes do not match the "
+                    "backup, so its history was not appended to — it was replaced"
+                )
+        elif live_size != backed_up:
             problems.append(
-                f"TRUNCATED: {entry['path']} is {live_size} bytes; the backup holds "
-                f"{backed_up}. An append-only artifact cannot legitimately shrink"
+                f"ALTERED: {entry['path']} is {live_size} bytes; the backup holds "
+                f"{backed_up}. This is not an append-only stream — a report is rewritten "
+                "whole and nothing writes one during this window — so any size difference "
+                "means the live copy is not the backed-up one"
             )
-        elif _digest_prefix(path, backed_up) != entry["sha256"]:
+        elif _digest_file(path) != entry["sha256"]:
             problems.append(
-                f"REWRITTEN: {entry['path']}'s first {backed_up} bytes do not match the "
-                "backup, so its history was not appended to — it was replaced"
+                f"ALTERED: {entry['path']} is {backed_up} bytes as attested but hashes "
+                "differently, so its contents were changed without changing its length"
+            )
+
+    # The reverse direction, which nothing did: a live file the manifest never
+    # listed. docs/RESTORE.md step 4 is a bare `cp -a`, which MERGES into a
+    # nonempty destination rather than replacing it, so a report written after
+    # the backup was taken survives the restore. Measured on merged code: a
+    # backup at 20 events with one declared report, a live root grown to 35
+    # events and a second report describing them, store deleted and `cp -a`
+    # applied — exit 0, with the later report still present claiming
+    # "Correlated 35 events" over a store holding 20. The dashboard reads this
+    # tree, so it would present that report against the restored store.
+    #
+    # Scoped to COPIED_TREES deliberately. A blanket reverse walk would flag
+    # the rotation siblings beside the chains, which legitimately appear after
+    # a backup, so it would false-alarm and get the gate switched off.
+    live_files, unsafe_trees = _live_tree_inventory(root)
+    problems.extend(unsafe_trees)
+    for live_only in live_files:
+        if live_only not in declared:
+            problems.append(
+                f"UNDECLARED: {live_only} is in the live root but not in the backup "
+                "manifest. docs/RESTORE.md step 4 is a `cp -a`, which merges rather than "
+                "replaces, so this is a file from before the restore that outlived it — "
+                "it describes evidence the restored store may no longer hold. This is NOT "
+                "store evidence loss; the store itself is checked above"
             )
 
     # Positions must be ABSENT. Step 3 deletes them and no backup carries one;

@@ -112,12 +112,35 @@ What it refuses, each with the direction named rather than a bare mismatch:
 
 | Finding | Meaning |
 |---|---|
-| `LOSS` | fewer events than attested — **the dangerous one**; the copy is incomplete |
+| `LOSS` | fewer events **or fewer observables** than attested — **the dangerous one**; the copy is incomplete |
 | `SUBSTITUTED` | the attested count exactly, but a different set of events — not this backup |
-| `ADDED` | more events than attested. **Not loss** — this is what step 5 does, so you ran the gate after re-collecting |
-| `TRUNCATED` / `REWRITTEN` | a declared append-only file shrank, or its history was replaced rather than appended to |
+| `ADDED` | more events or observables than attested. **Not loss** — this is what step 5 does, so you ran the gate after re-collecting |
+| `TRUNCATED` / `REWRITTEN` | a declared **append-only** file shrank, or its history was replaced rather than appended to |
+| `ALTERED` | a declared file that is **not** append-only — a report — differs in size or digest. A report is rewritten whole and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
+| `UNDECLARED` | a file is in the live root that the manifest never listed, **or `data/reports` is itself a symlink**. Step 4's `cp -a` **merges**, so this is a file from before the restore that outlived it. **Not** store evidence loss — remove it, then re-run |
+| *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
 | `POSITION PRESENT` | step 3 was skipped; see "The ordering rule" |
 | `no store at …` | the restore put none there. The check will **not** create one to measure — a read-only pass must not write the thing it was asked to inspect |
+
+**Why `LOSS` covers observables separately.** The completeness digest is a sha256 over the
+`event_id` set only, so a restore that loses rows from `observables` and none from `events`
+passes `quick_check`, the event count *and* the digest — measured, 20 observables destroyed
+of 20 and the gate exited 0 before this was added. Indicator pivots return nothing on such a
+store, because `correlation/entities.py` joins on that table.
+
+**A symlinked `data/reports` is also `UNDECLARED`, and it needed saying separately.**
+No backup carries a symlink there, `dashboard/app.py` reads that path, and two existing
+guards each declined the case for a different reason — the manifest had no report entries
+so the path validator never ran, and the reverse walk skipped the link. Measured: a backup
+declaring no reports, restored over a root whose `data/reports` points outside it, exited
+`0` with a planted file readable as this node's report. Remove the link and restore the
+real directory.
+
+**Why `UNDECLARED` exists, and why step 4 is the cause.** `cp -a` into a *nonempty*
+destination merges rather than replaces. Measured: a backup at 20 events with one report, a
+live root grown to 35 events and a second report describing them, store deleted and `cp -a`
+applied — the later report survived and the gate exited 0, so `dashboard/app.py` would have
+presented a report claiming "Correlated 35 events" against a store holding 20.
 
 **Run it between steps 4 and 5.** It is an exact comparison, and step 5 legitimately grows
 the store, so afterwards you get `ADDED` rather than a clean verdict. That is why the
