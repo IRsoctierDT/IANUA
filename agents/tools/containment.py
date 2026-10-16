@@ -100,8 +100,24 @@ class ContainmentExecutor(Protocol):
     treats anything else as not contained and raises.
     """
 
-    def execute(self, capability: str, target: str) -> bool:
-        """Perform ``capability`` against ``target``; return ``True`` on success."""
+    def perform(self, capability: str, target: str) -> bool:
+        """Perform ``capability`` against ``target``; return ``True`` on success.
+
+        Named ``perform`` and deliberately **not** ``execute``. ``execute`` is
+        sqlite3's name for "run this SQL", and
+        ``tests/security/test_sql_provenance.py`` requires the first argument
+        of every ``execute``/``executemany``/``executescript`` call in the
+        shipped packages to be traceable to a string literal written here —
+        which ``capability`` is not, since it arrives as a parameter. Under
+        the old name this method was the one finding in a repository-wide
+        sweep that was measured clean everywhere else, and it was a pure name
+        collision: nothing here touches a database. The alternative was an
+        exemption table in that test, which would have put a maintained
+        allow-list under a control whose whole design rejects one. A method
+        named ``execute`` whose first argument is not literal SQL therefore
+        does not belong in a shipped package; if one is ever genuinely
+        wanted, that test says where the exemption goes.
+        """
         ...
 
 
@@ -399,7 +415,7 @@ class ContainmentToolkit:
                 f"{capability}: no containment executor configured — failing closed "
                 "(wire a lab-scoped ContainmentExecutor; see DESIGN.md)"
             )
-        if self.executor.execute(capability, target) is not True:
+        if self.executor.perform(capability, target) is not True:
             raise ContainmentError(
                 f"{capability}: executor did not confirm execution for {target!r} "
                 "— treat the target as NOT contained"

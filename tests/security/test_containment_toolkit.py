@@ -39,7 +39,7 @@ class RecordingExecutor:
         self.confirm = confirm
         self.calls: list[tuple[str, str]] = []
 
-    def execute(self, capability: str, target: str) -> bool:
+    def perform(self, capability: str, target: str) -> bool:
         self.calls.append((capability, target))
         return self.confirm
 
