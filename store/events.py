@@ -78,6 +78,7 @@ from store.schema import (
     HIGH_WATER_KEY,
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
+    OBSERVABLES_DIGEST_PREFIX,
     SCHEMA_VERSION,
     VERSION_KEY,
     canonical_json,
@@ -88,6 +89,28 @@ from store.schema import (
 #: caller knob: an event store is lab data by definition (AGENTS.md §5), and
 #: letting a caller choose the directory is how evidence ends up committed.
 EVENTS_SUBDIR = Path("data") / "events"
+
+#: The statements :meth:`EventStore.attest` runs, named so the test that pins
+#: their query plans (``tests/unit/test_event_store.py``) reads the same text
+#: the method executes. Every one is a covering-index scan — that is a
+#: property the completeness control depends on, and a constant a test
+#: imports cannot drift from the code the way a docstring can.
+ATTEST_IDS_SQL = "SELECT event_id FROM events ORDER BY event_id"
+ATTEST_COUNTS_SQL = (
+    "SELECT (SELECT COUNT(*) FROM events) AS events, "
+    "(SELECT COUNT(*) FROM observables) AS observables"
+)
+# typeof() and CAST(... AS BLOB), not the columns themselves: SQLite is
+# dynamically typed, so a damaged or hostile copy can hold a BLOB in a TEXT
+# column, and str() of the bytes b"x" is the four-character text "b'x'" — two
+# different rows with one digest. Framing the storage class and the raw bytes
+# is injective over both. The aliases must not shadow the ORDER BY columns:
+# measured, `CAST(value AS BLOB) AS value` adds USE TEMP B-TREE to the plan.
+ATTEST_OBSERVABLES_SQL = (
+    "SELECT typeof(event_id) AS kind_id, CAST(event_id AS BLOB) AS raw_id, "
+    "typeof(value) AS kind_value, CAST(value AS BLOB) AS raw_value "
+    "FROM observables ORDER BY event_id, value"
+)
 
 DEFAULT_FILENAME = "events.sqlite3"
 
@@ -229,7 +252,18 @@ class Attestation:
     in. ``events`` and ``observables`` are carried alongside it because a
     digest that happens to match tells you less than a count that also does.
 
-    Both of those are read from covering indexes, which is why
+    ``digest`` does **not** cover the ``observables`` table, and a count is
+    not a commitment to contents: review of the promotion gate showed that
+    replacing observable rows one-for-one leaves the count, the event digest
+    and ``quick_check`` all satisfied while every indicator pivot joins on
+    substituted keys. ``observables_digest`` closes that — a sha256 over every
+    ``(event_id, value)`` row, sorted, each field framed as its SQLite storage
+    class, byte length and raw bytes, so neither a value nor a storage class
+    can be confused with a row boundary or with each other. ``digest``'s
+    definition is unchanged on purpose; this is a second field, not a
+    redefinition.
+
+    All of those are read from covering indexes, which is why
     :meth:`EventStore.attest` gates on ``PRAGMA quick_check`` before it
     computes them: ids and a count that agree prove the *indexes* are intact
     and, on their own, say nothing about whether a single row body is
@@ -243,6 +277,9 @@ class Attestation:
     observables: int
     #: sha256 over the sorted ``event_id`` sequence. See :meth:`EventStore.attest`.
     digest: str
+    #: sha256 over the sorted ``(event_id, value)`` rows of ``observables``.
+    #: Commits to contents, not only to the count above.
+    observables_digest: str
     #: The mark at the moment of attestation, or ``None`` for an empty store.
     high_water: float | None
     #: The schema the attestation was taken under. A copy restored onto a
@@ -255,6 +292,7 @@ class Attestation:
             "events": self.events,
             "observables": self.observables,
             "digest": self.digest,
+            "observables_digest": self.observables_digest,
             "high_water": self.high_water,
             "schema_version": self.schema_version,
         }
@@ -841,10 +879,16 @@ class EventStore:
         holds whether or not the corrupt case is reachable.
 
         **It reads a table page before it attests, and it did not used to.**
-        Both statements below are covering-index scans — measured, with
-        ``EXPLAIN QUERY PLAN``: the id stream is ``SCAN events USING COVERING
-        INDEX sqlite_autoindex_events_1`` and the count is ``SCAN events USING
-        COVERING INDEX events_ingested_at``. Neither touches a row. Zeroing
+        All three statements below are covering-index scans — measured, with
+        ``EXPLAIN QUERY PLAN`` on SQLite 3.45.1: the id stream is ``SCAN events
+        USING COVERING INDEX sqlite_autoindex_events_1``, the counts are ``SCAN
+        events USING COVERING INDEX events_ingested_at`` and ``SCAN observables
+        USING COVERING INDEX observables_value``, and the observables stream
+        added for ``observables_digest`` is ``SCAN observables USING COVERING
+        INDEX sqlite_autoindex_observables_1`` (the primary key is
+        ``(event_id, value)``, so the index holds both columns). None touches
+        a row, and ``tests/unit/test_event_store.py`` pins all four plans
+        rather than leaving them as prose here. Zeroing
         all 134 table leaf pages of a 400-event store while leaving every
         index page intact produced a **bit-identical digest and count** while
         ``query()`` raised ``database disk image is malformed``: the only
@@ -877,17 +921,14 @@ class EventStore:
             StoreIntegrityError: if the count and the id stream disagree.
         """
         self.verify_integrity()
-        counts = self._conn.execute(
-            "SELECT (SELECT COUNT(*) FROM events) AS events, "
-            "(SELECT COUNT(*) FROM observables) AS observables"
-        ).fetchone()
+        counts = self._conn.execute(ATTEST_COUNTS_SQL).fetchone()
         events = int(counts["events"])
         running = hashlib.sha256()
         # The count goes into the preimage first, so a prefix of one store's
         # ids cannot digest the same as another store's whole set.
         running.update(f"{DIGEST_PREFIX}{events}\n".encode())
         streamed = 0
-        for row in self._conn.execute("SELECT event_id FROM events ORDER BY event_id"):
+        for row in self._conn.execute(ATTEST_IDS_SQL):
             running.update(str(row["event_id"]).encode("ascii"))
             running.update(b"\n")
             streamed += 1
@@ -897,10 +938,45 @@ class EventStore:
                 f"but {streamed} id(s) were read. The count and the id scan are separate "
                 "statements and disagreed, so this store cannot be attested."
             )
+
+        # The observables, committed to by content and not only by count. Each
+        # field is framed as storage class, byte length and raw bytes: `value`
+        # is free text an indicator regex matched, so a separator could appear
+        # inside one; and the column is only TEXT by affinity, so a hostile or
+        # damaged copy can hold a BLOB there whose str() collides with a real
+        # value (found by independent review before this shipped). A digest
+        # whose row boundaries or storage classes a value can forge is not a
+        # commitment to the rows. Never decoded as text, so bytes that are not
+        # UTF-8 attest rather than abort. Sorted by the primary key so a copy
+        # that differs in layout attests identically.
+        observables = int(counts["observables"])
+        running_observables = hashlib.sha256()
+        running_observables.update(f"{OBSERVABLES_DIGEST_PREFIX}{observables}\n".encode())
+        streamed_observables = 0
+        for row in self._conn.execute(ATTEST_OBSERVABLES_SQL):
+            for kind, raw in (
+                (row["kind_id"], row["raw_id"]),
+                (row["kind_value"], row["raw_value"]),
+            ):
+                # kind is one of SQLite's five storage-class names, so it
+                # carries no digit or colon and cannot run into the length.
+                payload = b"" if raw is None else bytes(raw)
+                running_observables.update(f"{kind}:{len(payload)}:".encode("ascii"))
+                running_observables.update(payload)
+            running_observables.update(b"\n")
+            streamed_observables += 1
+        if streamed_observables != observables:
+            raise StoreIntegrityError(
+                f"attestation is inconsistent: the observables digest commits to "
+                f"{observables} row(s) but {streamed_observables} were read. The count and "
+                "the row scan are separate statements and disagreed, so this store cannot "
+                "be attested."
+            )
         return Attestation(
             events=events,
-            observables=int(counts["observables"]),
+            observables=observables,
             digest=running.hexdigest(),
+            observables_digest=running_observables.hexdigest(),
             high_water=self.high_water_mark(),
             schema_version=SCHEMA_VERSION,
         )

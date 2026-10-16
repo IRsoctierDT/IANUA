@@ -5,6 +5,36 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Changed
+- **Backup manifest format is `ianua.backup.v2`, and the attestation commits to observable
+  *contents*.** `EventStore.attest()` gains `observables_digest` — a sha256 over every sorted
+  `(event_id, value)` row, each field length-prefixed — beside the unchanged event digest.
+  Review of the promotion gate showed why: replacing observable rows one-for-one left the
+  count, the event count, the event digest and `quick_check` all satisfied, exit 0, while
+  every indicator pivot joined on values the backup never held. Every attestation field is
+  now mandatory in both `--verify` and `--verify-restore` (read from the dataclass, so the
+  list cannot lag it), a `SUBSTITUTED` finding names the observables case, and **a v1
+  manifest is refused outright** — exit 1, on stderr, stating that this is not a verdict
+  on the copy and that the revision which wrote it can still verify it. Route (a) over (b),
+  the owner's call; `docs/RESTORE.md` carries the recourse. Two fail-opens were caught by
+  the new tests while building it: `_verify_backup` compared only the attestation keys it
+  found, and the first fix still indexed a missing field after reporting it, turning the
+  finding into a bare `KeyError` on stderr. The covering-index property of `attest()`'s
+  statements moved from prose ("both") into a test that imports the SQL the method runs.
+  **An independent four-lens review before push then found eleven more**, all confirmed by
+  reproduction, among them: a **regression** this change introduced — `--verify` on a backup
+  whose store file is missing, or whose manifest `store.path` escapes, raised an
+  `UnboundLocalError` traceback where the base branch named the finding (the return dict
+  read a variable only one branch bound); `events` was *coerced* with `int()` in
+  `--verify-restore`, so a manifest saying `"40"` or `40.9` verified green and `null`
+  raised a `TypeError` traceback — every attestation field is now type-checked in one
+  place for both verifiers; the digest framed `str()` of each field, which is not injective
+  across SQLite storage classes (a `BLOB` `b"x"` and the text `b'x'` digested identically)
+  — it now frames storage class, length and raw bytes and never decodes; `--verify-restore`
+  never compared `high_water` or `schema_version`; the `ADDED` findings asserted "NOT
+  evidence loss", which a count plus whole-set digest cannot establish when rows were also
+  substituted; a manifest that is `null`, or lacks `store`/`files`/`chains`, surfaced as a
+  traceback; and the "both statements" prose survived in two more docstrings. The
+  review's 16 confirmations included the same regression four times, once per lens.
 - **Audit of `AGENTS.md`'s measured claims — six were wrong, every one re-measured
   on current code.** The charter is what other agents are told is binding, so a
   claim in it that the code does not hold is a defect. Corrected: (1) §5 said
@@ -180,8 +210,9 @@ All notable changes to this project. Versions correspond to git tags.
   **Observables were never compared.** The completeness digest is a sha256 over
   the `event_id` set only, so observables are not in the preimage. Measured: 20
   observable rows destroyed of 20, events untouched — `quick_check` ok, event
-  count equal, digest equal, **exit 0**. Indicator pivots return nothing on such
-  a store, because `correlation/entities.py` joins on that table. The number was
+  count equal, digest equal, **exit 0**. An indicator pivot (`query(observable=…)`) returns
+  nothing on such a store — the pivot and the attestation are what lose; `correlation/`
+  never reads `observables`, and an earlier version of this entry said it did. The number was
   sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
   it, with `ADDED` for the legitimate re-collection direction.
 
