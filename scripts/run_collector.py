@@ -88,6 +88,11 @@ Exit codes:
 * ``2`` — bad arguments: an undeclarable source, an unusable ``--root``, or a
   malformed policy bundle. Nothing ran and nothing was recorded.
 * ``3`` — blocked by policy. The gate decision *is* recorded.
+* ``4`` — retryable contention: every failure in the pass was another writer
+  holding the store's write lock. Sources that succeeded kept their events and
+  their advanced offsets, so a retry re-reads only what was busy. One damaged
+  source alongside a busy one reports ``1``, not this — damage wins. See
+  ``scripts/_exit_codes.py``.
 """
 
 from __future__ import annotations
@@ -135,6 +140,7 @@ from collect import (  # noqa: E402
     save_offsets,
 )
 from ingest import normalize_many  # noqa: E402
+from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
 from scripts._locking import prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import validated_root  # noqa: E402
@@ -350,6 +356,12 @@ def _run(
     advanced: dict[str, Position] = {}
     stored = 0
     failure: str | None = None
+    #: ``True`` only while *every* per-source failure so far has been retryable
+    #: contention. It starts ``True`` and can only be cleared, so one damaged
+    #: source cannot be reported as "retry" because a later source was merely
+    #: busy — damage wins, which is the fail-closed direction. ``failure``
+    #: itself keeps only the last message, which this does not change.
+    only_contention = True
     try:
         positions = load_offsets(path)
     except (CollectError, OSError, ValueError) as exc:
@@ -399,7 +411,13 @@ def _run(
                     # traceback in cron mail.
                     print(f"error: {source.key}: {exc}", file=sys.stderr)
                     failure = f"{source.name}: {exc}"
+                    only_contention = only_contention and is_retryable_contention(exc)
     except (StoreError, sqlite3.Error, ValueError, OSError) as exc:
+        # Contention first: it is also a `sqlite3.Error`, so the order is what
+        # keeps "another writer holds the store" from reading as damage.
+        if is_retryable_contention(exc):
+            print(f"error: the store is busy, nothing was collected: {exc}", file=sys.stderr)
+            return EXIT_RETRYABLE
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -464,9 +482,18 @@ def _run(
                 )
             return 1
     # A source failed, but every source that succeeded has had its events
-    # stored and its offset saved above. Reporting 1 tells the scheduler
+    # stored and its offset saved above. Reporting non-zero tells the scheduler
     # something needs attention without discarding the progress that was made.
-    return 1 if failure else 0
+    #
+    # Which non-zero matters here more than at the outer handlers, because this
+    # is the partial-progress path: when the only thing that went wrong was
+    # contention, the successful sources have already advanced their offsets,
+    # so a retry re-reads just the busy one — and collection is idempotent by
+    # content hash besides. `EXIT_RETRYABLE` therefore says "retry" about a
+    # pass that genuinely did most of its work.
+    if failure:
+        return EXIT_RETRYABLE if only_contention else 1
+    return 0
 
 
 if __name__ == "__main__":

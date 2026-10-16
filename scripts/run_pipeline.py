@@ -98,6 +98,10 @@ Exit codes:
 * ``2`` — bad arguments, an unreadable or unsafe ``--root``, or an unusable
   policy bundle. Nothing ran and nothing was recorded.
 * ``3`` — blocked by policy. The gate decision *is* recorded.
+* ``4`` — retryable contention: another writer held the store's write lock
+  past the busy timeout. Nothing is broken, the window was not consumed, and
+  the next invocation re-reads it. Retry rather than page; see
+  ``scripts/_exit_codes.py``.
 """
 
 from __future__ import annotations
@@ -140,6 +144,7 @@ from pipeline import (  # noqa: E402
     run_cycle,
     save_cursor,
 )
+from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
 from scripts._locking import prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
 from store.paths import validated_root  # noqa: E402
@@ -467,6 +472,11 @@ def _run(
     except (CursorError, StoreError, sqlite3.Error, ValueError, OSError) as exc:
         # sqlite3.Error is neither an OSError nor a StoreError, so a corrupt or
         # externally-locked database would otherwise escape as a traceback.
+        # Contention is tested first: it is also a `sqlite3.Error`, so the
+        # order is what keeps "busy" from being reported as "corrupt".
+        if is_retryable_contention(exc):
+            print(f"error: the store is busy, the window was not consumed: {exc}", file=sys.stderr)
+            return EXIT_RETRYABLE
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

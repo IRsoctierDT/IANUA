@@ -81,7 +81,9 @@ connection.)
 **Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
 or verified (including a skip because another pass held the lock), ``1`` the
 backup, the verification or the audit write failed, ``2`` bad arguments, ``3``
-blocked by policy.
+blocked by policy, ``4`` retryable contention — another writer held the
+store's write lock, so no backup was taken and nothing was left behind. Retry
+rather than page; see ``scripts/_exit_codes.py``.
 """
 
 from __future__ import annotations
@@ -115,6 +117,7 @@ from agents.policies.bundle import (  # noqa: E402
     load_bundle,
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
+from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
 from scripts._locking import DIR_MODE, FILE_MODE, prepare_lock, single_instance  # noqa: E402
 from store import DEFAULT_FILENAME, EVENTS_SUBDIR, EventStore, StoreError  # noqa: E402
 from store.paths import confine, validated_root  # noqa: E402
@@ -656,6 +659,12 @@ def _run(
     except (StoreError, sqlite3.Error, ValueError, OSError, KeyError) as exc:
         # sqlite3.Error is neither OSError nor StoreError, so a corrupt or
         # locked database would otherwise escape as a traceback in cron mail.
+        # Contention first, since it is also a `sqlite3.Error`: a backup that
+        # could not get a read snapshot has taken nothing and left nothing,
+        # which is the retryable case and not the damaged one.
+        if is_retryable_contention(exc):
+            print(f"error: the store is busy, no backup was taken: {exc}", file=sys.stderr)
+            return EXIT_RETRYABLE
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
