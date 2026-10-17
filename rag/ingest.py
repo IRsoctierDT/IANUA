@@ -44,23 +44,57 @@ class Embedder(Protocol):
     def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
 
 
+def _corpus_relative(root: Path, entry: object) -> str:
+    """Name ``entry`` relative to ``root`` for a message, bounded; never absolutely."""
+    if not isinstance(entry, str | Path):
+        return "<unnamed corpus entry>"
+    try:
+        name = Path(entry).relative_to(root).as_posix()
+    except ValueError:
+        return "<outside the corpus root>"
+    return name if len(name) <= 200 else name[:200] + "..."
+
+
 def discover_documents(corpus_root: Path) -> list[Path]:
     """List allow-listed files under a trusted corpus root.
 
     Symlinks and any path escaping the root are rejected (defense in depth).
+
+    Any ``OSError`` met while walking -- a subdirectory without its search bit
+    (``chmod -R 644``), a file removed between ``is_file()`` and ``stat()``, a
+    path past ``PATH_MAX`` -- and a symlink loop (``RuntimeError`` from
+    ``resolve``) raise :class:`ValidationError` naming the corpus-relative
+    entry, the taxonomy :func:`_read_document` gives a read. Measured before:
+    each escaped every caller as a raw exception carrying the absolute path.
+    The whole corpus fails, not just the entry, as one undecodable file does.
+    A failure at the root itself names the root as the caller passed it.
+
+    Not refused: a subdirectory that cannot be *listed* (mode ``000`` or
+    ``311``) is skipped silently, because ``Path.rglob`` swallows the
+    ``PermissionError`` from listing it before this function sees it.
     """
-    root = corpus_root.resolve()
-    if not root.is_dir():
+    try:
+        root = corpus_root.resolve()
+        is_dir = root.is_dir()
+    except (OSError, RuntimeError) as exc:
+        raise ValidationError(f"corpus root cannot be resolved: {corpus_root!r}") from exc
+    if not is_dir:
         raise ValidationError(f"corpus root is not a directory: {corpus_root!r}")
     found: list[Path] = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            continue  # do not follow symlinks out of the corpus
-        if path.is_file() and path.suffix.lower() in ALLOWED_SUFFIXES:
-            # confirm the resolved path is still inside root
-            resolve_within(root, str(path.relative_to(root)))
-            if path.stat().st_size <= MAX_FILE_BYTES:
-                found.append(path)
+    path = root
+    try:
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink():
+                continue  # do not follow symlinks out of the corpus
+            if path.is_file() and path.suffix.lower() in ALLOWED_SUFFIXES:
+                # confirm the resolved path is still inside root
+                resolve_within(root, str(path.relative_to(root)))
+                if path.stat().st_size <= MAX_FILE_BYTES:
+                    found.append(path)
+    except (OSError, RuntimeError) as exc:
+        where = _corpus_relative(root, getattr(exc, "filename", None) or path)
+        reason = (exc.strerror or type(exc).__name__) if isinstance(exc, OSError) else "loop"
+        raise ValidationError(f"cannot walk corpus entry {where!r}: {reason}") from exc
     return found
 
 
