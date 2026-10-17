@@ -164,13 +164,18 @@ def test_every_data_file_loads_as_a_diff_shows_it(relative: str, tmp_path: Path)
     # Measured before: a UTF-16 file (git diffs it as "Binary files differ"),
     # a repeated key (json keeps the last) and a symlink (its content is never
     # in the diff) each loaded.
+    # A bare CR (JSON whitespace) loaded too; a terminal draws what follows it
+    # over the line, so a seed record or never_flag entry before it vanished.
     work = _workdir(tmp_path)
     path = work / relative
     original = path.read_bytes()
-    for hostile in (original.decode("utf-8").encode("utf-16"), b'{"k": 1, "k": 2}'):
+    bare_cr = original.replace(b"\n", b"\r", 1)
+    for hostile in (original.decode("utf-8").encode("utf-16"), b'{"k": 1, "k": 2}', bare_cr):
         path.write_bytes(hostile)
-        with pytest.raises(IntelStoreError, match=r"not valid JSON|plain ASCII"):
+        with pytest.raises(IntelStoreError, match=r"not valid JSON|plain ASCII|carriage return"):
             load_store(work)
+    path.write_bytes(original.replace(b"\n", b"\r\n"))  # control: a CRLF checkout loads
+    assert load_store(work).never_flag
     (tmp_path / "outside.json").write_bytes(original)
     path.unlink()
     path.symlink_to(tmp_path / "outside.json")
@@ -202,6 +207,19 @@ def test_a_never_flag_entry_has_one_readable_spelling(spelling: str, tmp_path: P
         assert spelling in load_store(work).never_flag
         return
     with pytest.raises(IntelStoreError, match=r"not canonical|plain ASCII"):
+        load_store(work)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("gap", [b"\r", b"\t"], ids=("cr", "tab"))
+def test_a_never_flag_entry_cannot_hide_behind_a_control_byte(gap: bytes, tmp_path: Path) -> None:
+    # Measured before: this loaded, suppressed 198.18.7.7 and passed the drift
+    # gate, and tmux drew `git --no-pager diff` with the CR's entry gone.
+    work = _workdir(tmp_path)
+    path = work / "never_flag.json"
+    line = b'    "fe80::/10",\n'
+    path.write_bytes(path.read_bytes().replace(line, b'"198.18.0.0/15",' + gap + line))
+    with pytest.raises(IntelStoreError, match=r"carriage return|control byte"):
         load_store(work)
 
 

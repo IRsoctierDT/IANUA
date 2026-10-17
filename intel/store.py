@@ -109,14 +109,20 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _read_json(path: Path, *, literal: bool = False) -> object:
-    """Parse one data file so that what a diff shows is what loads.
+    """Parse one data file, refusing these ways for a diff to omit what loads.
 
-    Strict UTF-8 (``json.loads`` on bytes also auto-detects UTF-16/32, which
-    git diffs as "Binary files differ"), a repeated key refused rather than
-    last-wins, and no symlink at the file itself, whose content a diff never
-    shows (a symlinked ``seed/`` or ``behaviors/`` directory is not checked).
-    ``literal`` (never_flag.json only) also refuses non-ASCII and every
-    backslash, so no ``\\u`` escape spells an entry the diff does not.
+    Refused: anything but strict UTF-8 (``json.loads`` on bytes also reads
+    UTF-16/32, which git diffs as "Binary files differ"), a repeated key
+    (json keeps the last), a CR that does not end a CRLF line (JSON reads it
+    as whitespace, and a terminal draws what follows it over the line), and
+    a symlink at the file itself, whose content a diff never shows (a
+    symlinked ``seed/`` or ``behaviors/`` directory is not checked).
+    ``literal`` (never_flag.json only) also refuses a backslash and any byte
+    but printable ASCII, LF and CRLF, so no ``\\u`` escape or tab spells an
+    entry the diff does not. Not refused in the other files: inside a
+    string, a ``\\u`` escape, or a non-ASCII character that renders otherwise
+    than it loads (invisible, a homoglyph or a bidi control). Not visible
+    here: a ``.gitattributes`` entry that diffs a data file as binary.
     """
     if path.is_symlink() or not path.is_file():
         raise _reject(f"missing file (or a symlink): {path.name}")
@@ -124,8 +130,10 @@ def _read_json(path: Path, *, literal: bool = False) -> object:
         raw = handle.read(MAX_FILE_BYTES + 1)
     if len(raw) > MAX_FILE_BYTES:
         raise _reject(f"{path.name} exceeds {MAX_FILE_BYTES} bytes")
-    if literal and (not raw.isascii() or b"\\" in raw):
-        raise _reject(f"{path.name} must be plain ASCII with no escapes")
+    if re.search(rb"\r(?!\n)", raw):
+        raise _reject(f"{path.name} has a carriage return that does not end a line")
+    if literal and (not re.fullmatch(rb"[\x20-\x7e\r\n]*", raw) or b"\\" in raw):
+        raise _reject(f"{path.name} must be plain ASCII with no control byte or escape")
     try:
         return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_keys)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
