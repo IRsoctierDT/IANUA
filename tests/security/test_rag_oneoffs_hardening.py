@@ -29,6 +29,17 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS = _REPO_ROOT / "scripts"
 _INGEST_SCRIPTS = ("ingest_cyber_kb.py", "ingest_cyber_kb_chunked.py")
 _ASK_SCRIPTS = ("ask_cyber_kb_ollama.py", "ask_cyber_kb_chunked_ollama.py")
+#: Every script in the block: no host literal anywhere, Qdrant only via the factory.
+_BLOCK_SCRIPTS = (
+    *_INGEST_SCRIPTS,
+    *_ASK_SCRIPTS,
+    "ask_cyber_kb.py",
+    "search_cyber_kb.py",
+    "search_cyber_kb_chunked.py",
+    "create_cyber_collection.py",
+    "test_embeddings_qdrant.py",
+    "rag_cli.py",
+)
 #: Any of these inside a string literal is a hard-coded host/port (AGENTS.md section 4).
 _HOST_LITERAL_FRAGMENTS = ("11434", "localhost", "127.0.0.1", "http://", "https://")
 #: Discovery primitives that would bypass ``discover_documents``'s controls.
@@ -68,6 +79,9 @@ class _Encoded:
 
     def tolist(self) -> list[float]:
         return self._vector
+
+    def __len__(self) -> int:
+        return len(self._vector)
 
 
 class _StubModel:
@@ -265,3 +279,48 @@ def test_ask_scripts_refuse_a_non_loopback_host_before_asking_or_sending(
         runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
     assert "not in egress allow-list" in str(info.value)
     assert calls == [], "no request may leave before the host is validated"
+
+
+# ------------------------------------------------------------ whole block
+@pytest.mark.security
+@pytest.mark.parametrize("script", _BLOCK_SCRIPTS)
+def test_block_scripts_carry_no_host_literal_and_use_the_qdrant_factory(script: str) -> None:
+    """No hard-coded host/port (AGENTS.md section 4); Qdrant only via ``make_client``.
+
+    Measured before the fix, ``test_embeddings_qdrant.py`` built
+    ``QdrantClient(url="http://localhost:6333")`` directly -- the one script
+    that forced server mode regardless of ``QDRANT_URL``/``QDRANT_PATH``.
+    """
+    tree = ast.parse((_SCRIPTS / script).read_text(encoding="utf-8"))
+    offenders = [
+        n.value
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Constant)
+        and isinstance(n.value, str)
+        and any(fragment in n.value for fragment in _HOST_LITERAL_FRAGMENTS)
+    ]
+    assert not offenders, f"{script} hard-codes a host/port: {offenders}"
+    direct = [
+        alias.name
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ImportFrom) and n.module == "qdrant_client"
+        for alias in n.names
+        if alias.name == "QdrantClient"
+    ] + [
+        n.func.id
+        for n in _calls(tree)
+        if isinstance(n.func, ast.Name) and n.func.id == "QdrantClient"
+    ]
+    assert not direct, f"{script} builds a QdrantClient outside rag.qdrant.make_client"
+
+
+@pytest.mark.security
+def test_embeddings_smoke_script_is_embedded_unless_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_stubs(monkeypatch, tmp_path)
+    runpy.run_path(str(_SCRIPTS / "test_embeddings_qdrant.py"), run_name="__main__")
+    (client,) = _StubClient.instances
+    assert "url" not in client.kwargs, client.kwargs
+    assert client.kwargs["path"] == str(tmp_path / "qdrant")
+    assert "Embedding dimensions: 2" in capsys.readouterr().out
