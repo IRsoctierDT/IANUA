@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,6 +110,17 @@ def load(path: Path) -> Cursor | None:
     at, identifier = payload.get("ingested_at"), payload.get("event_id")
     if isinstance(at, bool) or not isinstance(at, int | float):
         raise CursorError(f"{path}: ingested_at must be a number, got {at!r}")
+    if not math.isfinite(at):
+        # ``json.loads`` accepts ``NaN`` and ``Infinity``, which RFC 8259 does
+        # not, and the store binds the keyset straight into SQL — where NaN
+        # is stored as NULL, so ``ingested_at > NULL`` matches nothing.
+        # Measured: a NaN cursor loaded, the cycle read zero events and
+        # reported idle, and because an idle cycle returns no cursor the file
+        # was never rewritten, so every later cycle did the same while
+        # ``detection-backlog`` graded it ``met``. The store never stamps a
+        # non-finite value (``store/events.py`` refuses one at the write), so
+        # a cursor holding one is damage, and damage fails closed here.
+        raise CursorError(f"{path}: ingested_at must be a finite number, got {at!r}")
     if not isinstance(identifier, str) or not identifier:
         raise CursorError(f"{path}: event_id must be a non-empty string")
     return Cursor(ingested_at=float(at), event_id=identifier)
