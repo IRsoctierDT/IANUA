@@ -141,3 +141,19 @@ def test_determinism_same_input_same_output() -> None:
         RiskContribution("h2", "ids alert", 90),
     ]
     assert engine.score_as_dicts(contribs) == engine.score_as_dicts(contribs)
+
+
+@pytest.mark.unit
+def test_non_finite_scores_and_timestamps_are_rejected() -> None:
+    """``nan`` and ``inf`` pass ``score < 0``; measured, each yielded a finding
+    whose ``total_score`` was ``nan`` / ``inf``. The boundary now refuses them."""
+    engine = RiskEngine(threshold=90)
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite"):
+            engine.score([RiskContribution("10.0.0.5", "ids alert", bad)])
+        with pytest.raises(ValueError, match="finite"):
+            engine.score([RiskContribution("10.0.0.5", "ids alert", 45, timestamp=bad)])
+    # A string that parses as NaN reaches the engine through the convenience builder.
+    contribs = contributions_from_analyses([{"severity_score": "nan", "indicators": ["10.0.0.5"]}])
+    with pytest.raises(ValueError, match="finite"):
+        engine.score(contribs)

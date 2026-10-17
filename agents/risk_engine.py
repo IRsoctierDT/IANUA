@@ -16,7 +16,10 @@ Design (DESIGN.md §5; AGENTS.md §3):
   are supplied by the caller (or fall back to arrival order), so runs are
   reproducible and testable.
 - **Fail-closed input validation.** Malformed contributions raise
-  ``ValueError`` at the boundary rather than silently scoring zero.
+  ``ValueError`` at the boundary rather than silently scoring zero. That
+  includes non-finite numbers: ``nan`` and ``inf`` both pass a ``< 0`` check,
+  and measured without this, each produced a finding whose ``total_score``
+  was ``nan`` / ``inf`` — a threshold crossing no analyst can read.
 - **Explainable.** Every finding carries the exact contributing events and
   their weighted scores — an analyst can see *why* an entity crossed the line,
   never an opaque number.
@@ -24,6 +27,7 @@ Design (DESIGN.md §5; AGENTS.md §3):
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -129,8 +133,14 @@ class RiskEngine:
             entity = contribution.entity
             if not isinstance(entity, str) or not entity.strip():
                 raise ValueError("contribution.entity must be a non-empty string.")
-            if not isinstance(contribution.score, (int, float)) or contribution.score < 0:
-                raise ValueError("contribution.score must be a non-negative number.")
+            score = contribution.score
+            if not isinstance(score, (int, float)) or not math.isfinite(score) or score < 0:
+                raise ValueError("contribution.score must be a finite, non-negative number.")
+            stamp = contribution.timestamp
+            if stamp is not None and (
+                not isinstance(stamp, (int, float)) or not math.isfinite(stamp)
+            ):
+                raise ValueError("contribution.timestamp must be a finite number or None.")
             by_entity.setdefault(entity, []).append((arrival, contribution))
 
         findings: list[RiskFinding] = []
