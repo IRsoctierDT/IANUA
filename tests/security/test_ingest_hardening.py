@@ -2886,3 +2886,51 @@ def test_a_byte_order_mark_does_not_hide_a_key_value_line_either() -> None:
     assert control.vendor == "auditd"
     assert normalize("\ufeff" + line).to_dict() == control.to_dict()
     assert normalize(b"\xef\xbb\xbf" + line.encode("utf-8")).to_dict() == control.to_dict()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param({"type": "SERVICE_START", "msg": "starting worker pool"}, id="type-and-msg"),
+        pytest.param({"type": "CONFIG_CHANGE", "msg": "reloaded", "user": "svc"}, id="with-a-user"),
+        pytest.param({"type": "path", "key": "x"}, id="type-and-key"),
+    ],
+)
+def test_a_generic_type_and_msg_record_is_not_claimed_as_auditd(record: dict[str, str]) -> None:
+    """``type`` + ``msg`` is every structured logger's shape, not auditd's.
+
+    Measured before the fix: all three were claimed by auditd, parsed as
+    ``structured``, labelled ``source_type="endpoint"`` and given the record
+    type as their ``activity`` — rule 1's "confident, wrong analysis", from a
+    recognizer whose own comment promised "a corroborating auditd-specific
+    field". ``msg`` and ``key`` were on that list, and neither is one.
+    """
+    assert not any(signature.recognizes(record) for signature in SIGNATURES)
+    assert detect_source(record) is None
+    event = normalize(record)
+    assert event.vendor == "unrecognized"
+    assert event.source_type == "unknown"
+    assert event.activity is None
+
+
+@pytest.mark.security
+def test_auditd_still_claims_on_its_own_clock_when_nothing_else_corroborates() -> None:
+    """The narrowing must not un-claim a real ``PATH`` or ``EXECVE`` record.
+
+    Those two types carry no ``auid``, ``exe`` or ``comm``: beside ``type``
+    the only auditd-shaped thing on them is ``msg=audit(<epoch>.<ms>:<serial>)``,
+    which is what ``msg`` now has to look like to count. Both the text form
+    ``collect/`` reads and the JSON form a shipper emits are covered.
+    """
+    lines = (
+        'type=PATH msg=audit(1760000000.123:42): item=0 name="/usr/bin/x" inode=1',
+        'type=EXECVE msg=audit(1760000002.300:3): argc=2 a0="curl" a1="-s"',
+    )
+    for line in lines:
+        event = normalize(line)
+        assert event.vendor == "auditd", (line, event.vendor, event.notes)
+        assert event.timestamp is not None, line
+    shipped = {"type": "PATH", "msg": "audit(1760000000.123:42): item=0 name=/usr/bin/x"}
+    signature = detect_source(shipped)
+    assert signature is not None and signature.vendor == "auditd"

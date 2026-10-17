@@ -240,15 +240,30 @@ _AUDIT_MSG_CLOCK = re.compile(r"audit\((\d+\.\d+):(\d+)\)")
 _EXECVE_ARG = re.compile(r"^a(\d+)$")
 
 
+#: Fields that corroborate ``type`` because only auditd writes them beside
+#: it. ``msg`` and ``key`` used to be on this list and neither is
+#: auditd-specific: ``{"type": "SERVICE_START", "msg": "starting worker
+#: pool"}`` is the shape of any structured application logger, and measured
+#: it was claimed as auditd, parsed as ``structured`` and labelled
+#: ``activity="service_start"`` — the confident, wrong analysis rule 1 exists
+#: to prevent, from a recognizer whose own comment promised "a corroborating
+#: auditd-specific field". ``msg`` still corroborates, below, but only in
+#: auditd's own spelling. ``key`` is gone outright: it appears on records
+#: that already carry ``syscall``, ``auid``, ``exe`` and ``comm``.
+_AUDITD_CORROBORATORS = ("exe", "comm", "syscall", "auid", "ses", "acct", "proctitle")
+
+
 def _recognizes_auditd(payload: Mapping[str, Any]) -> bool:
     record_type = text(payload.get("type"))
     if record_type is None or record_type.upper() not in _AUDITD_TYPES:
         return False
-    # A corroborating auditd-specific field. ``type`` alone is too generic.
-    return any(
-        payload.get(key) is not None
-        for key in ("exe", "comm", "syscall", "auid", "ses", "acct", "key", "proctitle", "msg")
-    )
+    if any(payload.get(key) is not None for key in _AUDITD_CORROBORATORS):
+        return True
+    # A ``PATH`` or ``EXECVE`` record carries none of those: beside ``type``
+    # the only auditd-shaped thing on it is ``msg=audit(<epoch>.<ms>:<serial>)``,
+    # the daemon's own clock stamp. So ``msg`` counts when it reads like that,
+    # and a logger's prose in the same field does not.
+    return _AUDIT_MSG_CLOCK.search(text(payload.get("msg")) or "") is not None
 
 
 def _execve_command(payload: Mapping[str, Any]) -> str | None:
