@@ -161,14 +161,15 @@ def _read_pin_document(pin_path: Path) -> object:
     """One bounded read and parse of the pin file; validation is the caller's."""
     if not pin_path.is_file():
         raise AttackUnavailableError(f"ATT&CK pin not found: {pin_path}")
-    raw = pin_path.read_bytes()
+    with pin_path.open("rb") as handle:  # the read is bounded, not the whole file
+        raw = handle.read(_MAX_PIN_BYTES + 1)
     if len(raw) > _MAX_PIN_BYTES:
         raise _reject(f"pin exceeds {_MAX_PIN_BYTES} bytes")
     try:
         return json.loads(raw)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
         raise _reject("pin nesting depth exceeds parser limits") from exc
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, int-digit limit
         raise _reject(f"pin is not valid JSON ({exc})") from exc
 
 

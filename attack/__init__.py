@@ -40,7 +40,8 @@ from attack.store import load_corpus
 
 COLLECTION_INDEX_PATH = Path(__file__).resolve().parent / "collection-index.json"
 
-#: Size ceiling for the collection-index snapshot, read before the bytes are.
+#: Size ceiling for the collection-index snapshot, held on one bounded read —
+#: never on ``st_size``, which procfs reports as 0 and a concurrent swap outruns.
 #: The snapshot is one small row per known ATT&CK release (3.4 KB today); it
 #: is the one committed input ``attack/`` reads that the pin does not hash,
 #: so the bound and the depth guard below are its only pre-parse checks.
@@ -86,20 +87,21 @@ def freshness(*, today: date, pin: Pin | None = None) -> Freshness:
     resolved_pin = load_pin() if pin is None else pin
     if not COLLECTION_INDEX_PATH.is_file():
         raise AttackUnavailableError(f"collection index snapshot missing: {COLLECTION_INDEX_PATH}")
-    size = COLLECTION_INDEX_PATH.stat().st_size
-    if size > _MAX_COLLECTION_INDEX_BYTES:
+    with COLLECTION_INDEX_PATH.open("rb") as handle:
+        raw = handle.read(_MAX_COLLECTION_INDEX_BYTES + 1)
+    if len(raw) > _MAX_COLLECTION_INDEX_BYTES:
         raise AttackIntegrityError(
-            f"collection index snapshot: {size} bytes exceeds ceiling {_MAX_COLLECTION_INDEX_BYTES}"
+            f"collection index snapshot exceeds ceiling {_MAX_COLLECTION_INDEX_BYTES} bytes"
         )
     try:
-        snapshot = json.loads(COLLECTION_INDEX_PATH.read_bytes())
+        snapshot = json.loads(raw)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
         raise AttackIntegrityError(
             "collection index snapshot: nesting depth exceeds parser limits"
         ) from exc
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, int-digit limit
         raise AttackIntegrityError(f"collection index snapshot invalid: {exc}") from exc
-    versions = snapshot.get("versions")
+    versions = snapshot.get("versions") if isinstance(snapshot, dict) else None
     if not isinstance(versions, list) or not versions:
         raise AttackIntegrityError("collection index snapshot has no versions list")
 
@@ -108,7 +110,11 @@ def freshness(*, today: date, pin: Pin | None = None) -> Freshness:
     for row in versions:
         if not isinstance(row, dict) or not isinstance(row.get("version"), str):
             raise AttackIntegrityError("collection index snapshot row malformed")
-        known.append((_parse_version(row["version"]), row["version"], str(row.get("modified", ""))))
+        try:
+            parsed = _parse_version(row["version"])
+        except ValueError as exc:  # int() on "1.x" — not an AttackError
+            raise AttackIntegrityError("collection index snapshot version malformed") from exc
+        known.append((parsed, row["version"], str(row.get("modified", ""))))
     known.sort()
     latest = known[-1]
     distance = sum(1 for parsed, _, _ in known if parsed > pinned)

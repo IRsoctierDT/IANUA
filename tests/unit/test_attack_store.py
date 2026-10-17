@@ -97,13 +97,13 @@ def test_load_pin_document_reads_the_validated_bytes_once(
     pin_copy = tmp_path / "pin.json"
     pin_copy.write_bytes(DEFAULT_PIN_PATH.read_bytes())
     reads: list[Path] = []
-    original = Path.read_bytes
+    original = Path.open
 
-    def counting(self: Path) -> bytes:
+    def counting(self: Path, mode: str = "r") -> object:
         reads.append(self)
-        return original(self)
+        return original(self, mode)
 
-    monkeypatch.setattr(Path, "read_bytes", counting)
+    monkeypatch.setattr(Path, "open", counting)
     document = load_pin_document(pin_copy)
     assert reads.count(pin_copy) == 1
     assert document["attack_version"] == load_pin(pin_copy).attack_version

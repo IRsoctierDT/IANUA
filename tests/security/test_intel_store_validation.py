@@ -37,6 +37,7 @@ def _mutate(work: Path, relative: str, mutate: Callable[[dict], None]) -> None:
 
 
 _SEED = "seed/indicators.json"
+_HOSTILE = (b"[" * 500_000, b'{"x": "\xff"}', b"[" + b"1" * 5000 + b"]")
 
 _CASES: list[tuple[str, str, Callable[[dict], None]]] = [
     ("unknown seed field", _SEED, lambda d: d["indicators"][0].update(surprise=1)),
@@ -132,16 +133,18 @@ def test_malformed_store_rejects_wholly(
 
 
 @pytest.mark.security
+@pytest.mark.parametrize("payload", _HOSTILE, ids=("bomb", "utf8", "int"))
 @pytest.mark.parametrize(
     "relative", ["never_flag.json", "sources.json", _SEED, "behaviors/core.json"]
 )
-def test_nesting_bomb_is_a_store_error_not_a_recursion_error(relative: str, tmp_path: Path) -> None:
-    # Measured before the guard: 500000 brackets (under the 512 KiB ceiling)
-    # escaped as RecursionError, which the threat-intel agent's fail-soft
-    # `except (IntelStoreError, AttackError, OSError)` does not catch.
+def test_hostile_bytes_are_a_store_error(relative: str, payload: bytes, tmp_path: Path) -> None:
+    # Measured before each guard: 500000 brackets (under the 512 KiB ceiling)
+    # escaped as RecursionError, invalid UTF-8 as UnicodeDecodeError and a
+    # 5000-digit integer as a bare ValueError — none of which the threat-intel
+    # agent's fail-soft `except (IntelStoreError, AttackError, OSError)` catches.
     work = _workdir(tmp_path)
-    (work / relative).write_bytes(b"[" * 500_000)
-    with pytest.raises(IntelStoreError, match="nesting"):
+    (work / relative).write_bytes(payload)
+    with pytest.raises(IntelStoreError, match=r"nesting|not valid JSON"):
         load_store(work)
 
 

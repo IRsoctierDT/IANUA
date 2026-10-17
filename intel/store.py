@@ -103,14 +103,15 @@ def _reject(reason: str) -> IntelStoreError:
 def _read_json(path: Path) -> object:
     if not path.is_file():
         raise _reject(f"missing file: {path.name}")
-    raw = path.read_bytes()
+    with path.open("rb") as handle:  # the read is bounded, not the whole file
+        raw = handle.read(MAX_FILE_BYTES + 1)
     if len(raw) > MAX_FILE_BYTES:
         raise _reject(f"{path.name} exceeds {MAX_FILE_BYTES} bytes")
     try:
         return json.loads(raw)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
         raise _reject(f"{path.name}: nesting depth exceeds parser limits") from exc
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, int-digit limit
         raise _reject(f"{path.name} is not valid JSON ({exc})") from exc
 
 

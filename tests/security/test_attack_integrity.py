@@ -10,19 +10,24 @@ fail-closed guarantees the whole vocabulary layer rests on.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import sys
+import tracemalloc
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PosixPath
 
 import pytest
 
+import attack
 from attack.errors import AttackError, AttackIntegrityError, AttackUnavailableError
 from attack.pin import Pin, load_pin, parse_pin
-from attack.store import DATA_DIR, load_corpus, read_shard
+from attack.store import DATA_DIR, _safe_load_json, load_corpus, read_shard
+from intel.store import _read_json
 
 _REPO = Path(__file__).resolve().parents[2]
 _SPEC = importlib.util.spec_from_file_location(
@@ -124,6 +129,61 @@ def test_collection_index_is_bounded_and_depth_guarded(
     monkeypatch.setattr(attack, "COLLECTION_INDEX_PATH", big)
     with pytest.raises(AttackIntegrityError, match="exceeds ceiling"):
         attack.freshness(today=date(2026, 8, 21))
+
+
+#: json.loads failures that are not JSONDecodeError: UnicodeDecodeError, and a
+#: bare ValueError past the 4300-digit integer limit.
+_SIBLINGS = {"utf8": b'{"x": "\xff"}', "int": b"[" + b"1" * 5000 + b"]"}
+
+
+class _StatBlind(PosixPath):  # st_size reads 0, as /proc/kallsyms or a mid-swap file does
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        real = super().stat(follow_symlinks=follow_symlinks)
+        return os.stat_result((*real[:6], 0, *real[7:10]))
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("payload", _SIBLINGS.values(), ids=list(_SIBLINGS))
+def test_hostile_bytes_raise_the_loaders_own_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
+    # Measured before: each escaped as a non-AttackError (ThreatIntelAgent()
+    # crashed on the pin), as did an index of the wrong shape (no .get, int("x")).
+    hostile = tmp_path / "hostile.json"
+    hostile.write_bytes(payload)
+    with pytest.raises(AttackError, match="not valid JSON"):
+        load_pin(hostile)
+    with pytest.raises(AttackIntegrityError, match="invalid JSON"):
+        _safe_load_json(payload, hostile.name)
+    monkeypatch.setattr(attack, "COLLECTION_INDEX_PATH", hostile)
+    for document in (payload, b"[]", b'"x"', b'{"versions": [{"version": "1.x"}]}'):
+        hostile.write_bytes(document)
+        with pytest.raises(AttackIntegrityError):
+            attack.freshness(today=date(2026, 8, 21))
+
+
+@pytest.mark.security
+def test_every_ceiling_bounds_the_read_not_st_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Measured before: a symlink to /proc/kallsyms stats as 0 bytes and every
+    # loader read all 5 MB; a swap after freshness()'s stat() got 4 MB parsed.
+    blind = _StatBlind(tmp_path / "stat-blind.json")
+    blind.write_bytes(b" " * (4 * 1024 * 1024))
+    monkeypatch.setattr(attack, "COLLECTION_INDEX_PATH", blind)
+    pin = dataclasses.replace(load_pin(), shards={blind.name: "0" * 64})
+    for call in (
+        lambda: load_pin(blind),
+        lambda: read_shard(blind.name, pin=pin, data_dir=_StatBlind(tmp_path)),
+        lambda: _read_json(blind),
+        lambda: attack.freshness(today=date(2026, 8, 21), pin=pin),
+    ):
+        tracemalloc.start()
+        with pytest.raises(ValueError, match="exceeds"):  # every loader error is one
+            call()
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        assert peak < 2 * 1024 * 1024, f"read {peak} bytes past a ceiling"
 
 
 @pytest.mark.security

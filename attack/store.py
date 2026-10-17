@@ -35,7 +35,7 @@ from attack.pin import Pin, load_pin
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
 #: Per-shard size ceiling (bytes). Mirrors the repo's large-file discipline and
-#: bounds memory before any read; the committed shards sit well under it.
+#: is enforced on one bounded read; the committed shards sit well under it.
 MAX_SHARD_BYTES = 1024 * 1024
 
 _STATUSES = {"active", "deprecated", "revoked"}
@@ -47,7 +47,7 @@ def _safe_load_json(raw: bytes, name: str) -> Any:
         return json.loads(raw)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
         raise AttackIntegrityError(f"shard {name}: nesting depth exceeds parser limits") from exc
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, int-digit limit
         raise AttackIntegrityError(f"shard {name}: invalid JSON ({exc})") from exc
 
 
@@ -60,10 +60,10 @@ def read_shard(name: str, *, pin: Pin, data_dir: Path | None = None) -> Any:
     path = directory / name
     if not path.is_file():
         raise AttackUnavailableError(f"shard missing on disk: {path}")
-    size = path.stat().st_size
-    if size > MAX_SHARD_BYTES:
-        raise AttackIntegrityError(f"shard {name}: {size} bytes exceeds ceiling {MAX_SHARD_BYTES}")
-    raw = path.read_bytes()
+    with path.open("rb") as handle:  # bounded read: st_size is 0 in procfs and races
+        raw = handle.read(MAX_SHARD_BYTES + 1)
+    if len(raw) > MAX_SHARD_BYTES:
+        raise AttackIntegrityError(f"shard {name}: exceeds ceiling {MAX_SHARD_BYTES} bytes")
     digest = hashlib.sha256(raw).hexdigest()
     if digest != expected:
         raise AttackIntegrityError(
