@@ -18,7 +18,8 @@ from typing import Any
 
 import pytest
 
-from rag.qdrant import make_client
+import rag.qdrant
+from rag.qdrant import QdrantPathError, embedded_path, make_client
 
 
 class _StubClient:
@@ -46,29 +47,47 @@ def test_default_is_embedded_with_no_listening_service(
     assert (tmp_path / "embedded").is_dir()  # created eagerly for the store
 
 
-def test_empty_path_variable_falls_back_to_default_not_cwd(
+def test_empty_path_variable_falls_back_to_anchored_default_not_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``QDRANT_PATH=`` (set but empty) must not plant the store in the CWD.
 
-    ``Path("") == Path(".")``, so the pre-fix ``environ.get(key, default)`` made
-    an empty variable select the working directory (measured:
-    ``QdrantClient(path=".")``). Same class as the ``--root ""`` hole closed
-    in ``store/paths.py``.
+    The real anchor, unpatched: an earlier version of this test monkeypatched
+    the default to an absolute path, which hid that ``"./data/qdrant"`` was
+    itself CWD-relative. Resolution only -- nothing is created in the checkout.
     """
+    monkeypatch.chdir(tmp_path)
+    checkout = Path(rag.qdrant.__file__).resolve().parent.parent
+    assert (checkout / "pyproject.toml").is_file()
+
+    resolved = embedded_path("")
+
+    assert resolved == checkout / "data" / "qdrant" == rag.qdrant.DEFAULT_EMBEDDED_PATH
+    assert not resolved.is_relative_to(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_factory_creates_the_anchored_store_and_refuses_before_creating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _install_stub(monkeypatch)
     monkeypatch.delenv("QDRANT_URL", raising=False)
+    checkout = (tmp_path / "checkout").resolve()
+    (checkout / "data").mkdir(parents=True)
+    monkeypatch.setattr("rag.qdrant._REPO_ROOT", checkout)
+    (tmp_path / "cwd").mkdir()
+    monkeypatch.chdir(tmp_path / "cwd")
+
     monkeypatch.setenv("QDRANT_PATH", "")
-    default = tmp_path / "default-embedded"
-    monkeypatch.setattr("rag.qdrant.DEFAULT_EMBEDDED_PATH", str(default))
-    monkeypatch.chdir(tmp_path)
-
     client = make_client()
+    assert client.kwargs == {"path": str(checkout / "data" / "qdrant")}
+    assert (checkout / "data" / "qdrant").is_dir()
 
-    assert isinstance(client, _StubClient)
-    assert client.kwargs == {"path": str(default)}
-    assert client.kwargs["path"] not in {"", "."}
-    assert default.is_dir()
+    monkeypatch.setenv("QDRANT_PATH", " ")
+    with pytest.raises(QdrantPathError):
+        make_client()
+    assert not (checkout / " ").exists()
+    assert list((tmp_path / "cwd").iterdir()) == []
 
 
 def test_url_opts_in_to_server_mode(monkeypatch: pytest.MonkeyPatch) -> None:
