@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Ivan Rozenblad
 # SPDX-License-Identifier: Apache-2.0
 
-"""The audit chain lock is opened by descriptor and refuses anything but a file (#69).
+"""The audit chain lock is opened by descriptor and refuses anything but a file (#69) —
+and, since review of that fix, so is every other artifact of the chain.
 
 ``AuditLogger._exclusive`` used to open the lock with ``open(path, "a")`` and then
 take a *blocking* ``LOCK_EX``. Measured before the fix: a FIFO at
@@ -10,7 +11,13 @@ action records, every guarded action hung with it; a symlink at the lock path wa
 followed and its target created ``0o600`` wherever it pointed. The CLI locks got
 the descriptor-based open in #58; this is the same shape on the chain's own lock.
 
-The FIFO case runs in a subprocess with a timeout, because the failure mode under
+Review then found the same hang one filename over: a FIFO at ``audit.log`` hung
+``record()`` in the chain-head read — under ``LOCK_EX``, so every later writer
+queued behind it even after the FIFO was replaced — and a FIFO at
+``audit.log.sig`` hung ``verify_report()`` under ``LOCK_SH`` with every writer
+behind the scheduled verifier. Every open in ``audit.py`` now carries the guard.
+
+The FIFO cases run in a subprocess with a timeout, because the failure mode under
 test is a hang, and a hung test process reports nothing.
 """
 
@@ -18,6 +25,8 @@ from __future__ import annotations
 
 import fcntl
 import os
+import secrets
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -36,24 +45,29 @@ _RECORD = {
 }
 
 
-def _record_in_subprocess(
-    log_path: Path, timeout: float = 15.0
+def _run_in_subprocess(
+    code: str, *, env: dict[str, str] | None = None, timeout: float = 15.0
 ) -> subprocess.CompletedProcess[str]:
-    code = (
-        "from agents.policies.audit import AuditLogger\n"
-        f"AuditLogger({str(log_path)!r}).record(**{_RECORD!r})\n"
-    )
+    """Run ``code`` from the repo root; a hang is a test failure, not a hung test."""
     try:
         return subprocess.run(  # noqa: S603 - fixed interpreter, literal code, no user input
             [sys.executable, "-c", code],
             cwd=_REPO_ROOT,
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        pytest.fail(f"record() hung for {timeout}s on a hostile lock path instead of refusing")
+        pytest.fail(f"the call hung for {timeout}s on a hostile path instead of returning")
+
+
+def _record_in_subprocess(log_path: Path) -> subprocess.CompletedProcess[str]:
+    return _run_in_subprocess(
+        "from agents.policies.audit import AuditLogger\n"
+        f"AuditLogger({str(log_path)!r}).record(**{_RECORD!r})\n"
+    )
 
 
 @pytest.mark.security
@@ -115,3 +129,67 @@ def test_a_regular_lock_still_serialises_and_is_created_owner_only(tmp_path: Pat
         pytest.raises(BlockingIOError),
     ):
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+# ------------------------------------------------ the hazard one filename over
+@pytest.mark.security
+def test_a_fifo_at_the_log_path_is_refused_not_blocked_on(tmp_path: Path) -> None:
+    log = tmp_path / "audit.log"
+    os.mkfifo(log)
+    result = _record_in_subprocess(log)
+    assert result.returncode != 0, result.stdout
+    assert "not a regular file" in result.stderr, result.stderr[-400:]
+    assert stat.S_ISFIFO(os.lstat(log).st_mode), "the planted object was replaced"
+    # The hang was contagious: a writer arriving after the FIFO was repaired
+    # still queued behind the first one's LOCK_EX. With no hang, none queues.
+    log.unlink()
+    log.write_text("", encoding="utf-8")
+    assert _record_in_subprocess(log).returncode == 0
+
+
+@pytest.mark.security
+def test_a_fifo_at_the_signature_sidecar_is_a_verdict_not_a_hang(tmp_path: Path) -> None:
+    key = secrets.token_hex(16)  # generated here, carried in the environment
+    log = AuditLogger(tmp_path / "audit.log", signing_key=key.encode())
+    log.record(**_RECORD)
+    assert log.verify_report().signature == "valid"
+    sig = tmp_path / "audit.log.sig"
+    sig.unlink()
+    os.mkfifo(sig)
+    code = (
+        "from agents.policies.audit import AuditLogger, signing_key_from_env\n"
+        f"r = AuditLogger({str(log.path)!r}, signing_key=signing_key_from_env())"
+        ".verify_report()\n"
+        "print(r.intact, r.signature)\n"
+    )
+    result = _run_in_subprocess(code, env={**os.environ, "AUDIT_HMAC_KEY": key})
+    assert result.returncode == 0, result.stderr[-400:]
+    assert result.stdout.split() == ["False", "malformed"]
+    assert stat.S_ISFIFO(os.lstat(sig).st_mode), "the reader replaced the planted object"
+
+
+@pytest.mark.security
+def test_a_directory_at_the_signature_sidecar_is_a_verdict_not_an_exception(
+    tmp_path: Path,
+) -> None:
+    log = AuditLogger(tmp_path / "audit.log", signing_key=os.urandom(16))
+    log.record(**_RECORD)
+    sig = tmp_path / "audit.log.sig"
+    sig.unlink()
+    sig.mkdir()
+    report = log.verify_report()  # raised IsADirectoryError out of verification before
+    assert report.intact is False and report.signature == "malformed"
+    assert report.failure == "head signature malformed"
+
+
+@pytest.mark.security
+def test_a_symlink_at_the_log_path_is_refused_and_its_target_untouched(tmp_path: Path) -> None:
+    """The append followed a symlink at ``audit.log`` into a file no verifier
+    reads (``_is_segment`` excludes links): evidence written where nobody looks."""
+    target = tmp_path / "elsewhere" / "victim.log"
+    target.parent.mkdir()
+    (tmp_path / "audit.log").symlink_to(target)
+    with pytest.raises(OSError):
+        AuditLogger(tmp_path / "audit.log").record(**_RECORD)
+    assert not target.exists(), "the symlink was followed and its target created"
+    assert (tmp_path / "audit.log").is_symlink()
