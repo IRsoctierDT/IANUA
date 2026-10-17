@@ -36,11 +36,13 @@ Security notes:
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -149,10 +151,77 @@ class VerificationReport:
 _FILE_MODE = 0o600
 _DIR_MODE = 0o700
 
+#: The pair that makes the regular-file guard below *reachable*, on every open
+#: this module performs and not only the lock's: the shape ``scripts/_locking.py``
+#: landed for the CLI locks (#58), ported to the chain lock (#69) and then — once
+#: review showed the hazard had only moved one filename over — to the chain
+#: itself and its sidecars. ``O_NONBLOCK`` makes the ``fstat`` guard reachable:
+#: measured, a FIFO at ``audit.log.lock`` hung ``record()`` indefinitely, and so
+#: did a FIFO at ``audit.log`` (read for the chain head under ``LOCK_EX``, so
+#: every later writer queued behind the hang, even after the FIFO was removed)
+#: and a FIFO at ``audit.log.sig`` (read by ``verify_report`` under ``LOCK_SH``,
+#: blocking every writer behind the scheduled verifier). ``O_NOFOLLOW`` fails a
+#: symlink ``ELOOP`` instead of following it: measured, a symlink at the lock
+#: path was followed and its target created ``0o600`` wherever it pointed, and
+#: the append followed one at ``audit.log`` into a file outside the directory.
+#: ``O_NONBLOCK`` has no effect on a regular file once open, so it is left set.
+_NO_BLOCK_NO_FOLLOW = os.O_NONBLOCK | os.O_NOFOLLOW
+#: ``O_RDONLY`` is all ``flock`` needs (it keys on the open file description,
+#: not the access mode) and the least the open can ask for.
+_LOCK_OPEN_FLAGS = os.O_RDONLY | os.O_CREAT | _NO_BLOCK_NO_FOLLOW
+_READ_OPEN_FLAGS = os.O_RDONLY | _NO_BLOCK_NO_FOLLOW
+
+
+def _open_regular_descriptor(path: Path, flags: int) -> int:
+    """Open ``path`` and require the *descriptor* to be a regular file.
+
+    ``os.fstat`` asks about the open file description ``os.open`` returned, so
+    the thing inspected and the thing then locked, read or written are one
+    inode by construction; a path predicate before the open would not be, since
+    a rename between the two hands back a descriptor on a different inode.
+    ``S_ISREG`` is an allow-list rather than ``not S_ISFIFO``: a socket or a
+    device opens without blocking too. Raises ``OSError`` for every refusal,
+    which is what callers already handle for a disk that is full or a path that
+    is not there. Callers pass :data:`_NO_BLOCK_NO_FOLLOW` in ``flags``; without
+    it the open of a FIFO never returns to reach this check.
+    """
+    descriptor = os.open(path, flags, _FILE_MODE)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(
+                errno.EINVAL,
+                f"audit path {path} is not a regular file; refusing to open it",
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
 
 def _opener_owner_only(path: str, flags: int) -> int:
-    """``open()`` opener creating files 0o600 (no-op for existing files)."""
-    return os.open(path, flags, _FILE_MODE)
+    """``open()`` opener: create files 0o600, and open nothing but a regular file.
+
+    Every ``open()`` in this module goes through here or
+    :func:`_read_regular_text`, so the guard the lock has holds at the chain
+    and its sidecars too — a FIFO, directory, device, socket or symlink at any
+    of those names is refused instead of blocked on or followed.
+    """
+    return _open_regular_descriptor(Path(path), flags | _NO_BLOCK_NO_FOLLOW)
+
+
+def _read_regular_text(path: Path) -> str:
+    """Read ``path`` whole, refusing anything that is not a regular file.
+
+    ``Path.read_text`` opens with neither ``O_NONBLOCK`` nor ``O_NOFOLLOW``, so
+    a FIFO where a chain artifact should be blocked its reader for ever —
+    measured, at ``audit.log`` (under the writer's ``LOCK_EX``) and at
+    ``audit.log.sig`` (under the verifier's ``LOCK_SH``); see
+    :data:`_NO_BLOCK_NO_FOLLOW`. Raises ``OSError`` — ``FileNotFoundError``
+    included — for every refusal; callers map it to the fallback or the verdict
+    they already have for an absent or unreadable file.
+    """
+    with open(_open_regular_descriptor(path, _READ_OPEN_FLAGS), encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _write_text_owner_only(path: Path, text: str) -> None:
@@ -172,12 +241,49 @@ def _write_text_owner_only(path: Path, text: str) -> None:
     the fix, and ``Path.replace`` is atomic within a filesystem — the temporary
     file is created beside the target for exactly that reason.
     """
+    _commit_staged(_stage_text_owner_only(path, text), path)
+
+
+def _stage_text_owner_only(path: Path, text: str) -> Path:
+    """Write ``text`` to ``path``'s scratch file, owner-only; return it for the commit.
+
+    Split from :func:`_commit_staged` so :meth:`AuditLogger._record_locked` can
+    take every step that can fail for want of disk, inodes or a writable name
+    *before* the one write it cannot undo — the chain append — and leave only a
+    same-directory rename after it. Review measured the two steps the other
+    way round: a full 64 KiB tmpfs appended records 178, 179 and 180 and then
+    raised ``ENOSPC`` from the sidecar, so three failed calls left three
+    unsigned entries; a directory planted at either sidecar name did the same.
+
+    The scratch name is unlinked and then opened ``"x"`` (``O_CREAT | O_EXCL``),
+    so the descriptor written is on an inode this call created: a symlink or a
+    hard link planted there no longer has its target overwritten with the
+    sidecar JSON (measured by review). Unlinking a directory raises, so one at
+    the scratch name is refused here. ``path`` is checked not to be a
+    directory — the one object ``os.replace`` cannot replace with a file —
+    which is a check and not a guarantee: one planted between here and the
+    commit still fails the rename, after the append.
+    """
     directory = path.parent
     directory.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+    if path.is_dir() and not path.is_symlink():
+        raise IsADirectoryError(errno.EISDIR, f"{path} is a directory; a sidecar cannot replace it")
     temporary = directory / f".{path.name}.tmp"
+    with contextlib.suppress(FileNotFoundError):
+        temporary.unlink()  # removes a planted link itself, never what it points at
     try:
-        with open(temporary, "w", encoding="utf-8", opener=_opener_owner_only) as fh:
+        with open(temporary, "x", encoding="utf-8", opener=_opener_owner_only) as fh:
             fh.write(text)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
+    return temporary
+
+
+def _commit_staged(temporary: Path, path: Path) -> None:
+    """Move a staged scratch file over ``path`` atomically; unlink it on failure."""
+    try:
         temporary.replace(path)  # atomic within a filesystem
     except BaseException:
         with contextlib.suppress(OSError):
@@ -356,14 +462,24 @@ class AuditLogger:
         Not reentrant: ``flock`` is scoped to the open file description, so a
         second ``open()`` of this path in the same process blocks forever. No
         method holding this may call another that takes it.
+
+        **A pre-existing lock file wider than 0o600 is not narrowed** — this
+        module's stated posture on pre-existing modes, above — and review
+        measured the cost: with the lock at ``0o644`` another local user holds
+        ``LOCK_EX`` through a read-only open and this blocks for as long as they
+        like. ``scripts/_locking.py`` narrows on every open; whether this module
+        should too is one decision with the directory mode (#65), not taken here.
         """
         self._lock_path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-        with open(self._lock_path, "a", encoding="utf-8", opener=_opener_owner_only) as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        descriptor = _open_regular_descriptor(self._lock_path, _LOCK_OPEN_FLAGS)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
     @contextlib.contextmanager
     def _shared(self) -> Iterator[None]:
@@ -389,15 +505,22 @@ class AuditLogger:
         ``audit-chains-intact`` grades these against a target of 1.0 every five
         minutes.
         """
-        if not self._lock_path.is_file():
+        # ``_is_segment`` rather than ``is_file()``: the latter follows a
+        # symlink, and the writer now refuses one, so no writer can be holding
+        # a lock through it. The same open flags as the writer, minus
+        # ``O_CREAT`` (this must never materialise the file).
+        if not self._is_segment(self._lock_path):
             yield
             return
-        with self._lock_path.open(encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        descriptor = _open_regular_descriptor(self._lock_path, _LOCK_OPEN_FLAGS & ~os.O_CREAT)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
     # ---------------------------------------------------------------- segments
     @staticmethod
@@ -419,10 +542,10 @@ class AuditLogger:
 
         ``is_symlink()`` is excluded as well, which is the discipline §5 of the
         charter already states for the log files ``collect/`` reads: a link at
-        the chain means the chain is not where it is believed to be. It does
-        **not** close :meth:`record`'s append-through-a-symlink path, which
-        never consults this predicate — a separate concern, recorded rather
-        than implied.
+        the chain means the chain is not where it is believed to be. The
+        append never consults this predicate; it is guarded on its own
+        descriptor instead (:func:`_opener_owner_only`), so a symlink or a
+        non-file at the chain path is refused there the way the lock refuses one.
         """
         return path.is_file() and not path.is_symlink()
 
@@ -458,9 +581,28 @@ class AuditLogger:
         return bool(self._segments_in_order()) or self._is_segment(self._checkpoint_path)
 
     def _last_event(self, segment: Path) -> AuditEvent | None:
-        if not segment.exists():
+        """The last entry of ``segment``; ``None`` if it is absent or empty.
+
+        Raises ``ValueError`` for an unterminated final line, before parsing it.
+        The writer ends every entry with ``\\n``, so a non-empty segment ending
+        in anything else holds a write that did not finish. Parsing the line
+        instead refused only a cut that broke the JSON: measured on a 64 KiB
+        tmpfs, a ``write(2)`` cut landing exactly on the newline left a
+        *complete* entry, the head read accepted it, and the first ``record()``
+        after space was freed returned success while gluing its line onto it —
+        ``malformed entry`` at that line, and every record after it refused.
+        Nothing is rewritten; an operator truncates the segment.
+        """
+        try:
+            text = _read_regular_text(segment)
+        except FileNotFoundError:
             return None
-        line = _last_nonempty_line(segment.read_text(encoding="utf-8"))
+        if text and not text.endswith("\n"):
+            raise ValueError(
+                f"unterminated final line at {segment.name}:{len(text.splitlines())}; "
+                "refusing to append after a write that did not finish"
+            )
+        line = _last_nonempty_line(text)
         if not line:
             return None
         return AuditEvent(**json.loads(line))
@@ -481,7 +623,7 @@ class AuditLogger:
     def _read_checkpoint(self) -> tuple[int, str] | None:
         if not self._is_segment(self._checkpoint_path):
             return None
-        data = json.loads(self._checkpoint_path.read_text(encoding="utf-8"))
+        data = json.loads(_read_regular_text(self._checkpoint_path))
         return int(data["pruned_through_seq"]), str(data["pruned_through_hash"])
 
     def _write_checkpoint(self, seq: int, entry_hash: str) -> None:
@@ -624,10 +766,34 @@ class AuditLogger:
             prev_hash=prev_hash,
             entry_hash=entry_hash,
         )
-        with open(self.path, "a", encoding="utf-8", opener=_opener_owner_only) as fh:
-            fh.write(json.dumps(asdict(event)) + "\n")
+        # Sign and *stage the sidecar* before appending; commit it after. The
+        # signature covers only ``(seq, entry_hash)``, both known here, so
+        # signing first changes no byte of what is signed. Measured before the
+        # reorder: a verify-only signer appended the entry and THEN raised from
+        # ``sign()``; with only the signing moved, a full disk or a directory at
+        # a sidecar name still appended and THEN raised from the sidecar write —
+        # the same half-written chain one step later, and every retry appended
+        # one more entry. Now every other step that can fail for want of space
+        # or a writable name fails first; what follows the append is one rename.
+        staged: Path | None = None
         if self._signer is not None:
-            self._sign_head(seq, entry_hash)
+            signature = self._signer.sign(self._head_message(seq, entry_hash))
+            if not isinstance(signature, str) or not signature:
+                # ``None`` is not "no signer": a signer that returns nothing has
+                # failed, and the first fix's ``if signature is not None`` let it
+                # append and silently skip the sidecar (measured by review).
+                raise TypeError(f"{type(self._signer).__name__}.sign returned no signature")
+            staged = self._stage_head_signature(seq, entry_hash, signature)
+        try:
+            with open(self.path, "a", encoding="utf-8", opener=_opener_owner_only) as fh:
+                fh.write(json.dumps(asdict(event)) + "\n")
+        except BaseException:
+            if staged is not None:
+                with contextlib.suppress(OSError):
+                    staged.unlink()
+            raise
+        if staged is not None:
+            _commit_staged(staged, self._sig_path)
         return event
 
     # ---------------------------------------------------------------- signing
@@ -636,25 +802,56 @@ class AuditLogger:
         """The bytes signed over the chain head: ``seq|hash``."""
         return f"{seq}|{head_hash}".encode()
 
-    def _sign_head(self, seq: int, head_hash: str) -> None:
-        """Write a detached signature over the current chain head.
+    def _stage_head_signature(self, seq: int, head_hash: str, signature: str) -> Path:
+        """Stage a detached, already-computed signature over the chain head.
 
         The head hash chains over every prior entry, so one signature attests the
         whole log. An attacker without the signing key can recompute a
         self-consistent chain but cannot forge this signature, so tampering is
         detectable by any holder of the (public) key — offline, without trusting
         the file. The scheme (HMAC or Ed25519) is recorded in ``algo``.
+
+        Staged, not written: :meth:`_record_locked` computes the signature and
+        calls this *before* the entry is appended, then commits the staged file
+        with :func:`_commit_staged` after it, so every step but the append itself
+        that can fail for want of disk, inodes or a writable scratch name fails
+        before any byte of the chain is written. **What that does not make true
+        is "never half-written."** Two things remain.
+
+        The commit is a same-directory ``rename`` after the append. If it fails
+        the chain holds the entry and the head is unsigned until the next
+        successful record re-signs it. A keyed verifier reports ``stale`` when
+        the old sidecar is still in place (a filesystem error on the rename),
+        and ``malformed`` — ``missing`` once removed — for a directory planted
+        at ``audit.log.sig`` after the staging check, since planting one meant
+        removing the old sidecar. An unkeyed reader reports intact, as it does
+        for any unsigned head.
+
+        And the append is one ``write(2)``, which a full disk cuts short,
+        leaving any prefix of the line: measured on a 64 KiB tmpfs, a cut
+        mid-JSON, and a cut landing exactly on the newline — a complete entry
+        from a failing call, which the head read used to accept. Both are
+        an unterminated final line, which :meth:`_last_event` refuses and
+        ``verify_report`` names ``malformed entry … (unterminated line)``, keyed
+        or not; every later ``record()`` raises ``ValueError`` and writes 0 bytes
+        until an operator truncates the segment to its last newline. Not
+        covered, and not measured: an error reported only after the newline
+        landed (``close(2)`` on a network filesystem can report one), which
+        leaves the commit case's shape — a complete entry, the old sidecar
+        ``stale``. Making the append atomic (``posix_fallocate`` first, or
+        truncating a torn tail under the lock) decides against the module's
+        "never rewrites a segment" posture and is left to the owner.
         """
         if self._signer is None:
             raise ValueError("no signer configured")
-        _write_text_owner_only(
+        return _stage_text_owner_only(
             self._sig_path,
             json.dumps(
                 {
                     "seq": seq,
                     "head_hash": head_hash,
                     "algo": self._signer.algo,
-                    "signature": self._signer.sign(self._head_message(seq, head_hash)),
+                    "signature": signature,
                 }
             ),
         )
@@ -676,21 +873,24 @@ class AuditLogger:
         """Granular status of the detached head signature against a known head.
 
         Returns ``unsigned`` (no signer configured), ``empty`` (nothing to
-        sign), ``missing``, ``malformed``, ``invalid`` (does not verify),
-        ``stale`` (verifies but covers an older head), or ``valid``.
+        sign), ``missing``, ``malformed`` (garbled — or not a regular file at
+        all: a directory, FIFO or symlink where the sidecar should be, which is
+        a verdict here rather than an exception or, for the FIFO, a hang),
+        ``invalid`` (does not verify), ``stale`` (verifies but covers an older
+        head), or ``valid``.
         """
         if self._signer is None:
             return "unsigned"
         if head_seq < 0:
             return "empty"
-        if not self._sig_path.exists():
-            return "missing"
         try:
-            sig = json.loads(self._sig_path.read_text(encoding="utf-8"))
+            sig = json.loads(_read_regular_text(self._sig_path))
             stored_seq = int(sig["seq"])
             stored_hash = str(sig["head_hash"])
             stored_signature = str(sig["signature"])
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        except FileNotFoundError:
+            return "missing"
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
             return "malformed"
         # The signature must verify AND cover the *current* head.
         message = self._head_message(stored_seq, stored_hash)
@@ -778,7 +978,7 @@ class AuditLogger:
 
         for segment in segments:
             try:
-                text = segment.read_text(encoding="utf-8")
+                text = _read_regular_text(segment)
             except (UnicodeDecodeError, OSError):
                 # Non-UTF-8 corruption (or an unreadable file) is a located
                 # fail-closed verdict, not an exception out of verification.
@@ -786,10 +986,17 @@ class AuditLogger:
                     f"unreadable segment {segment.name} (undecodable or inaccessible)",
                     "unchecked",
                 )
-            for line_no, line in enumerate(text.splitlines(), start=1):
+            lines = text.splitlines()
+            # Every entry is written with its "\n", so an unterminated final
+            # line is a write that did not finish, whatever it holds — a complete
+            # entry included. Checked first, as the head read checks it.
+            torn_at = len(lines) if text and not text.endswith("\n") else 0
+            for line_no, line in enumerate(lines, start=1):
+                where = f"{segment.name}:{line_no}"
+                if line_no == torn_at:
+                    return _report(f"malformed entry at {where} (unterminated line)", "unchecked")
                 if not line.strip():
                     continue
-                where = f"{segment.name}:{line_no}"
                 try:
                     record = json.loads(line)
                     seq = int(record["seq"])

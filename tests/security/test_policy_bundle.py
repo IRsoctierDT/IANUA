@@ -90,3 +90,80 @@ def test_allow_must_be_list_of_strings(tmp_path: Path) -> None:
     bundle.write_text('{"allow": "deploy"}', encoding="utf-8")
     with pytest.raises(PolicyBundleError):
         load_bundle(bundle)
+
+
+# ------------------------------------------------- the file must mean what it reads
+@pytest.mark.security
+def test_duplicate_allow_key_is_refused_not_last_wins(tmp_path: Path) -> None:
+    """``json.loads`` keeps the last duplicate silently. Measured before the hook:
+    this file *enforced* the grant while its first ``allow`` — the one a reviewer
+    reads — is empty. The bundle is the standing-grant mechanism, so a file that
+    reads one way and enforces another defeats the review that is the control."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text(
+        '{"version": 1, "allow": [], "allow": ["retain_events:apply"]}', encoding="utf-8"
+    )
+    with pytest.raises(PolicyBundleError, match="duplicate key 'allow'"):
+        load_bundle(bundle)
+
+
+@pytest.mark.security
+def test_duplicate_deny_key_is_refused(tmp_path: Path) -> None:
+    """The mirror case: a visible deny-list silently replaced by an empty one."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text('{"deny": ["analyze the log"], "deny": []}', encoding="utf-8")
+    with pytest.raises(PolicyBundleError, match="duplicate key 'deny'"):
+        load_bundle(bundle)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("key", ["deni", "polcy", "alow", "extra"])
+def test_unknown_top_level_key_is_refused(tmp_path: Path, key: str) -> None:
+    """Measured before the check: ``{"deni": ["analyze the log"]}`` loaded and the
+    label stayed allowed — a deny-list the operator believes is in force and is not."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text(f'{{"{key}": ["analyze the log"]}}', encoding="utf-8")
+    with pytest.raises(PolicyBundleError, match="unknown keys"):
+        load_bundle(bundle)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("version", ["2", "0", "true", '"1"', "1.0", "null"])
+def test_unsupported_or_mistyped_version_is_refused(tmp_path: Path, version: str) -> None:
+    """Every one of these loaded before the check (measured). ``true`` is the
+    sharp one: ``bool`` is an ``int`` subclass, so ``true == 1`` without a guard."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text(f'{{"version": {version}}}', encoding="utf-8")
+    with pytest.raises(PolicyBundleError, match="version"):
+        load_bundle(bundle)
+
+
+@pytest.mark.security
+def test_version_one_and_absent_version_both_load(tmp_path: Path) -> None:
+    """``version`` is optional because every field has a fail-closed default."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text('{"version": 1}', encoding="utf-8")
+    assert load_bundle(bundle).decide(action_class="destructive").decision == "require_approval"
+    bundle.write_text("{}", encoding="utf-8")
+    assert load_bundle(bundle).decide(action_class="destructive").decision == "require_approval"
+
+
+# -------------------------------------------- a stored value enforcement never reads
+@pytest.mark.security
+@pytest.mark.parametrize("decision", ["allow", "require_approval"])
+def test_boundary_crossing_override_is_refused_not_stored(tmp_path: Path, decision: str) -> None:
+    """Measured before this check: the bundle loaded, ``engine.policy["boundary_crossing"]``
+    read ``"allow"``, and ``decide`` still denied. A table entry that enforcement
+    never consults is permission on paper only, and refusing it is the honest shape."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text(f'{{"policy": {{"boundary_crossing": "{decision}"}}}}', encoding="utf-8")
+    with pytest.raises(PolicyBundleError, match="boundary_crossing"):
+        load_bundle(bundle)
+
+
+@pytest.mark.security
+def test_boundary_crossing_deny_is_still_accepted(tmp_path: Path) -> None:
+    """The shipped ``policy.json`` spells the prohibition out, and must keep loading."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text('{"policy": {"boundary_crossing": "deny"}}', encoding="utf-8")
+    assert load_bundle(bundle).decide(action_class="boundary_crossing").decision == "deny"

@@ -274,6 +274,18 @@ class PolicyEngine:
     ) -> None:
         self.policy = dict(_DEFAULT_POLICY)
         if policy:
+            # `decide` returns deny for boundary_crossing before it ever reads
+            # this table, so a different value here would be stored, never
+            # consulted, and misread by anyone inspecting the policy as
+            # permission that enforcement does not grant. Refused rather than
+            # stored (measured: `policy["boundary_crossing"] == "allow"` while
+            # `decide` still denied). The prohibition is §5's, not the table's.
+            if policy.get("boundary_crossing", "deny") != "deny":
+                raise ValueError(
+                    "boundary_crossing is an AGENTS.md §5 prohibition and is always "
+                    f"'deny'; refusing to store {policy['boundary_crossing']!r}, which "
+                    "enforcement would never read"
+                )
             self.policy.update(policy)
         # Exact-match operator overrides (case-insensitive). deny wins over allow.
         self._allow = frozenset(a.strip().lower() for a in allow)
