@@ -15,11 +15,12 @@ import importlib.util
 import json
 import shutil
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
 
-from attack.errors import AttackIntegrityError, AttackUnavailableError
+from attack.errors import AttackError, AttackIntegrityError, AttackUnavailableError
 from attack.pin import Pin, load_pin, parse_pin
 from attack.store import DATA_DIR, load_corpus, read_shard
 
@@ -92,6 +93,37 @@ def test_nesting_bomb_rejected_before_parse(tmp_path: Path) -> None:
     ok = tmp_path / "ok.json"
     ok.write_bytes(json.dumps({"text": "[[[[[" * 100}).encode())
     _upd._scan_depth(ok, 10)  # must not raise
+
+
+@pytest.mark.security
+def test_pin_nesting_bomb_is_an_attack_error_not_a_recursion_error(tmp_path: Path) -> None:
+    # Measured before the guard: 60000 brackets (under the 64 KiB ceiling)
+    # escaped load_pin as RecursionError, which no `except AttackError` or
+    # `except ValueError` caller catches — the agent's fail-soft path crashed.
+    bomb = tmp_path / "bomb.pin.json"
+    bomb.write_bytes(b"[" * 60_000)
+    with pytest.raises(AttackError, match="nesting"):
+        load_pin(bomb)
+
+
+@pytest.mark.security
+def test_collection_index_is_bounded_and_depth_guarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The collection index is the one committed input attack/ reads that the
+    # pin does not hash, and freshness() read it unbounded and unguarded.
+    import attack
+
+    bomb = tmp_path / "bomb.index.json"
+    bomb.write_bytes(b"[" * 200_000)
+    monkeypatch.setattr(attack, "COLLECTION_INDEX_PATH", bomb)
+    with pytest.raises(AttackIntegrityError, match="nesting"):
+        attack.freshness(today=date(2026, 8, 21))
+    big = tmp_path / "big.index.json"
+    big.write_bytes(b"[" + b"1," * 200_000 + b"1]")  # valid JSON past the byte ceiling
+    monkeypatch.setattr(attack, "COLLECTION_INDEX_PATH", big)
+    with pytest.raises(AttackIntegrityError, match="exceeds ceiling"):
+        attack.freshness(today=date(2026, 8, 21))
 
 
 @pytest.mark.security

@@ -94,6 +94,8 @@ def _read_json(path: Path) -> object:
         raise _reject(f"{path.name} exceeds {MAX_FILE_BYTES} bytes")
     try:
         return json.loads(raw)
+    except RecursionError as exc:  # depth bomb — not a ValueError subclass
+        raise _reject(f"{path.name}: nesting depth exceeds parser limits") from exc
     except json.JSONDecodeError as exc:
         raise _reject(f"{path.name} is not valid JSON ({exc})") from exc
 

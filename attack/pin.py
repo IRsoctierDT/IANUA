@@ -159,6 +159,8 @@ def load_pin(path: Path | None = None) -> Pin:
         raise _reject(f"pin exceeds {_MAX_PIN_BYTES} bytes")
     try:
         document = json.loads(raw)
+    except RecursionError as exc:  # depth bomb — not a ValueError subclass
+        raise _reject("pin nesting depth exceeds parser limits") from exc
     except json.JSONDecodeError as exc:
         raise _reject(f"pin is not valid JSON ({exc})") from exc
     return parse_pin(document)

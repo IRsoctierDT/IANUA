@@ -102,6 +102,20 @@ def test_malformed_store_rejects_wholly(
 
 
 @pytest.mark.security
+@pytest.mark.parametrize(
+    "relative", ["never_flag.json", "sources.json", _SEED, "behaviors/core.json"]
+)
+def test_nesting_bomb_is_a_store_error_not_a_recursion_error(relative: str, tmp_path: Path) -> None:
+    # Measured before the guard: 500000 brackets (under the 512 KiB ceiling)
+    # escaped as RecursionError, which the threat-intel agent's fail-soft
+    # `except (IntelStoreError, AttackError, OSError)` does not catch.
+    work = _workdir(tmp_path)
+    (work / relative).write_bytes(b"[" * 500_000)
+    with pytest.raises(IntelStoreError, match="nesting"):
+        load_store(work)
+
+
+@pytest.mark.security
 def test_committed_store_is_valid() -> None:
     store = load_store()
     assert store.sources and store.atomic and store.behaviors

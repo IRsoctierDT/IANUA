@@ -40,6 +40,12 @@ from attack.store import load_corpus
 
 COLLECTION_INDEX_PATH = Path(__file__).resolve().parent / "collection-index.json"
 
+#: Size ceiling for the collection-index snapshot, read before the bytes are.
+#: The snapshot is one small row per known ATT&CK release (3.4 KB today); it
+#: is the one committed input ``attack/`` reads that the pin does not hash,
+#: so the bound and the depth guard below are its only pre-parse checks.
+_MAX_COLLECTION_INDEX_BYTES = 256 * 1024
+
 __all__ = [
     "Analytic",
     "AttackError",
@@ -80,8 +86,17 @@ def freshness(*, today: date, pin: Pin | None = None) -> Freshness:
     resolved_pin = load_pin() if pin is None else pin
     if not COLLECTION_INDEX_PATH.is_file():
         raise AttackUnavailableError(f"collection index snapshot missing: {COLLECTION_INDEX_PATH}")
+    size = COLLECTION_INDEX_PATH.stat().st_size
+    if size > _MAX_COLLECTION_INDEX_BYTES:
+        raise AttackIntegrityError(
+            f"collection index snapshot: {size} bytes exceeds ceiling {_MAX_COLLECTION_INDEX_BYTES}"
+        )
     try:
         snapshot = json.loads(COLLECTION_INDEX_PATH.read_bytes())
+    except RecursionError as exc:  # depth bomb — not a ValueError subclass
+        raise AttackIntegrityError(
+            "collection index snapshot: nesting depth exceeds parser limits"
+        ) from exc
     except json.JSONDecodeError as exc:
         raise AttackIntegrityError(f"collection index snapshot invalid: {exc}") from exc
     versions = snapshot.get("versions")
