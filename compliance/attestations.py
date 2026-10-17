@@ -26,6 +26,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from compliance.controls import registry
@@ -37,6 +38,24 @@ _FIELDS = {"control_id", "attested_by", "date", "expires", "note"}
 
 class AttestationError(ValueError):
     """The attestation store is malformed or an entry is invalid (fail closed)."""
+
+
+def _check_date(value: str, context: str) -> None:
+    """Refuse anything that is not a real ``YYYY-MM-DD`` calendar day.
+
+    The regex alone accepted ``2026-99-99``, ``2026-13-01`` and ``2026-02-30``
+    — measured — and the validity window compares these strings
+    lexicographically, so an ``expires`` of ``2026-99-99`` outlived every
+    real day of its year. The shape check stays (``date.fromisoformat``
+    accepts other spellings, and lexicographic comparison needs this one);
+    the calendar check is what was missing.
+    """
+    if not _DATE_RE.match(value):
+        raise AttestationError(f"{context}: expected ISO date, got {value!r}")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise AttestationError(f"{context}: not a calendar date: {value!r}") from exc
 
 
 @dataclass(frozen=True)
@@ -51,8 +70,7 @@ class Attestation:
 
     def valid_on(self, day: str) -> bool:
         """True when ``day`` (ISO date) falls inside the attested window."""
-        if not _DATE_RE.match(day):
-            raise AttestationError(f"invalid date for validity check: {day!r}")
+        _check_date(day, "validity check")
         return self.date <= day <= self.expires
 
 
@@ -73,8 +91,7 @@ def _parse_entry(raw: object, context: str) -> Attestation:
         if not isinstance(value, str) or not value.strip():
             raise AttestationError(f"{context}.{key}: expected a non-empty string")
     for key in ("date", "expires"):
-        if not _DATE_RE.match(values[key]):
-            raise AttestationError(f"{context}.{key}: expected ISO date, got {values[key]!r}")
+        _check_date(values[key], f"{context}.{key}")
     att = Attestation(**{k: str(v) for k, v in values.items()})
     if att.expires < att.date:
         raise AttestationError(f"{context}: expires ({att.expires}) precedes date ({att.date})")
