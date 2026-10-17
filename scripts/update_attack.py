@@ -46,7 +46,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import io
 import json
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -71,6 +73,13 @@ _MAX_NESTING_DEPTH = 100
 # Ceiling for the staged collection index: the upstream file is tens of
 # kilobytes, so anything near this is not it.
 _MAX_INDEX_BYTES = 1_000_000
+# What attack.freshness parses (dotted integers) and prints (`modified`), as
+# ASCII-only shapes: `[0-9]` is ASCII in a `re` class where `str.isdigit` and
+# `\d` are not, and a bounded width keeps every component under int()'s limit.
+_INDEX_VERSION = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}")
+_INDEX_MODIFIED = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9:.]{1,24}(?:Z|[+-][0-9]{2}:[0-9]{2})?)?"
+)
 # Target payload per shard part, under the hard MAX_SHARD_BYTES ceiling.
 _PART_BUDGET = 850_000
 
@@ -91,12 +100,20 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _scan_depth(path: Path, limit: int) -> None:
-    """Single streaming pass rejecting pathological nesting before json.loads."""
+def _scan_depth(source: Path | bytes, limit: int) -> None:
+    """Single streaming pass rejecting pathological nesting before json.loads.
+
+    Byte-level, so it measures the text the parser reads only when that text
+    is UTF-8 (no UTF-8 sequence for a non-ASCII character has a byte below
+    0x80). ``json.loads(bytes)`` also accepts UTF-16 and UTF-32, which
+    desynchronises the string tracking here; a caller that needs the bound to
+    hold decodes strict UTF-8 and parses that text, as ``_collection_snapshot``
+    does. The bundle path does not, and relies on the RecursionError backstop.
+    """
     depth = 0
     in_string = False
     escaped = False
-    with path.open("rb") as handle:
+    with source.open("rb") if isinstance(source, Path) else io.BytesIO(source) as handle:
         while chunk := handle.read(1024 * 1024):
             for byte in chunk:
                 if in_string:
@@ -112,7 +129,7 @@ def _scan_depth(path: Path, limit: int) -> None:
                 elif byte in (0x7B, 0x5B):  # { [
                     depth += 1
                     if depth > limit:
-                        raise AttackError(f"bundle nesting exceeds depth {limit} (rejected)")
+                        raise AttackError(f"nesting exceeds depth {limit} (rejected)")
                 elif byte in (0x7D, 0x5D):  # } ]
                     depth -= 1
 
@@ -389,27 +406,52 @@ def _merge_tombstones(new_entries: dict[str, Any], previous_path: Path) -> dict[
     }
 
 
-def _collection_snapshot(staged_index: Path) -> dict[str, Any] | None:
-    """Distil the staged collection index, or ``None`` when none is staged.
+def _collection_snapshot(staged_index: Path) -> bytes | None:
+    """Render the staged collection index's snapshot, or ``None`` if none is staged.
+
+    Returns the exact canonical bytes ``build()`` commits, so the last step
+    that can fail on this input runs before any shard or the pin is written.
 
     Same source and the same trust as the bundle (DESIGN.md §5 boundary 5),
-    so the same fail-closed order: size ceiling -> nesting-depth scan ->
-    parse -> shape check. The first version read this file last, with a bare
-    ``json.loads`` and bare subscripts, after every shard and the pin were
-    already on disk. Measured: a 400 KB index of nested arrays crashed
-    ``--build`` with an uncaught ``RecursionError``, leaving five new shards
-    and a new pin written and no ``.REJECTED`` marker; a well-formed index
-    whose version row lacked ``version`` crashed with ``KeyError``.
+    so the same fail-closed order: size ceiling -> strict UTF-8 decode ->
+    nesting-depth scan -> parse -> shape check -> render. The first version
+    read this file last, with a bare ``json.loads`` and bare subscripts,
+    after every shard and the pin were already on disk. Measured: a 400 KB
+    index of nested arrays crashed ``--build`` with an uncaught
+    ``RecursionError``, leaving five new shards and a new pin written and no
+    ``.REJECTED`` marker; a well-formed index whose version row lacked
+    ``version`` crashed with ``KeyError``.
+
+    Review of that fix measured three more routes, each refused before a
+    write now. A ``modified`` of ``"\\ud800"`` (an escape, or raw bytes
+    ``ED A0 80``) validated and then raised ``UnicodeEncodeError`` at the
+    write, after five shards and the pin, with no marker. ``str.isdigit``
+    passed a superscript digit and a 5000-digit component, which
+    ``attack.freshness`` then failed on. A plain ``ValueError`` (invalid
+    UTF-8, an over-long integer literal) escaped the ``JSONDecodeError``
+    catch with no marker. So the file is read once, bounded by bytes read and
+    not by ``st_size``; it is decoded as strict UTF-8 (a leading BOM
+    tolerated) and parsed as that text, so the depth scan and the parser read
+    the same text, where ``json.loads(bytes)`` would guess UTF-16; and
+    ``version`` and ``modified`` must match the ASCII shapes above
+    (``modified`` absent renders as ``""``). Not validated: any collection
+    after the first Enterprise ATT&CK entry. An index with no such entry
+    keeps the committed snapshot unchanged.
     """
     if not staged_index.is_file():
         return None
-    size = staged_index.stat().st_size
-    if size > _MAX_INDEX_BYTES:
-        raise AttackError(f"index size {size} exceeds ceiling {_MAX_INDEX_BYTES}")
-    _scan_depth(staged_index, _MAX_NESTING_DEPTH)
+    with staged_index.open("rb") as handle:
+        raw = handle.read(_MAX_INDEX_BYTES + 1)
+    if len(raw) > _MAX_INDEX_BYTES:
+        raise AttackError(f"index exceeds ceiling {_MAX_INDEX_BYTES} bytes")
     try:
-        index = json.loads(staged_index.read_bytes())
-    except (json.JSONDecodeError, RecursionError) as exc:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise AttackError(f"index is not UTF-8: {exc}") from exc
+    _scan_depth(raw, _MAX_NESTING_DEPTH)
+    try:
+        index = json.loads(text)
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError is a ValueError
         raise AttackError(f"index parse failure: {exc}") from exc
     collections = index.get("collections") if isinstance(index, dict) else None
     if not isinstance(collections, list):
@@ -423,11 +465,16 @@ def _collection_snapshot(staged_index: Path) -> dict[str, Any] | None:
         rows: list[dict[str, str]] = []
         for row in versions:
             version = row.get("version") if isinstance(row, dict) else None
-            # attack.freshness parses this as dotted integers; refuse what it cannot.
-            if not isinstance(version, str) or not all(p.isdigit() for p in version.split(".")):
+            modified = row.get("modified", "") if isinstance(row, dict) else None
+            if not (
+                isinstance(version, str)
+                and _INDEX_VERSION.fullmatch(version)
+                and isinstance(modified, str)
+                and (modified == "" or _INDEX_MODIFIED.fullmatch(modified))
+            ):
                 raise AttackError(f"index: malformed collection version row {row!r}"[:200])
-            rows.append({"version": version, "modified": str(row.get("modified", ""))})
-        return {"name": "Enterprise ATT&CK", "versions": rows}
+            rows.append({"version": version, "modified": modified})
+        return _canonical({"name": "Enterprise ATT&CK", "versions": rows})
     return None
 
 
@@ -519,7 +566,7 @@ def build(bundle_name: str, retrieved: str) -> int:
     DEFAULT_PIN_PATH.write_bytes(_canonical(pin_document))
 
     if snapshot is not None:
-        COLLECTION_INDEX.write_bytes(_canonical(snapshot))
+        COLLECTION_INDEX.write_bytes(snapshot)
 
     load_corpus()  # prove the committed result loads fail-closed
     print(
