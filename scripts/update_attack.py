@@ -28,7 +28,9 @@ Security considerations (AGENTS.md §5, DESIGN.md §5 boundary 5):
     * **Fail-closed integrity order** on build: size ceiling -> nesting-depth
       scan -> streaming SHA-256 -> parse. A rejected bundle gets a
       ``.REJECTED`` forensic marker and the previously committed shards stay
-      authoritative.
+      authoritative. The staged collection index (``index.json``) comes from
+      the same untrusted source and gets the same order, and **both** inputs
+      are validated before any shard or pin is written.
     * **--check verifies, never regenerates** — CI does not hold the 54 MB
       bundle and must not. It checks the pin schema, the Ed25519 pin
       signature (when present), per-shard hashes and ceilings, canonical
@@ -66,6 +68,9 @@ COLLECTION_INDEX = REPO_ROOT / "attack" / "collection-index.json"
 # triple). Both bound memory before any parse.
 _FIRST_BUILD_MAX_BYTES = 120_000_000
 _MAX_NESTING_DEPTH = 100
+# Ceiling for the staged collection index: the upstream file is tens of
+# kilobytes, so anything near this is not it.
+_MAX_INDEX_BYTES = 1_000_000
 # Target payload per shard part, under the hard MAX_SHARD_BYTES ceiling.
 _PART_BUDGET = 850_000
 
@@ -384,6 +389,48 @@ def _merge_tombstones(new_entries: dict[str, Any], previous_path: Path) -> dict[
     }
 
 
+def _collection_snapshot(staged_index: Path) -> dict[str, Any] | None:
+    """Distil the staged collection index, or ``None`` when none is staged.
+
+    Same source and the same trust as the bundle (DESIGN.md §5 boundary 5),
+    so the same fail-closed order: size ceiling -> nesting-depth scan ->
+    parse -> shape check. The first version read this file last, with a bare
+    ``json.loads`` and bare subscripts, after every shard and the pin were
+    already on disk. Measured: a 400 KB index of nested arrays crashed
+    ``--build`` with an uncaught ``RecursionError``, leaving five new shards
+    and a new pin written and no ``.REJECTED`` marker; a well-formed index
+    whose version row lacked ``version`` crashed with ``KeyError``.
+    """
+    if not staged_index.is_file():
+        return None
+    size = staged_index.stat().st_size
+    if size > _MAX_INDEX_BYTES:
+        raise AttackError(f"index size {size} exceeds ceiling {_MAX_INDEX_BYTES}")
+    _scan_depth(staged_index, _MAX_NESTING_DEPTH)
+    try:
+        index = json.loads(staged_index.read_bytes())
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise AttackError(f"index parse failure: {exc}") from exc
+    collections = index.get("collections") if isinstance(index, dict) else None
+    if not isinstance(collections, list):
+        raise AttackError("index has no collections list")
+    for collection in collections:
+        if not isinstance(collection, dict) or collection.get("name") != "Enterprise ATT&CK":
+            continue
+        versions = collection.get("versions")
+        if not isinstance(versions, list) or not versions:
+            raise AttackError("index: Enterprise ATT&CK collection has no versions list")
+        rows: list[dict[str, str]] = []
+        for row in versions:
+            version = row.get("version") if isinstance(row, dict) else None
+            # attack.freshness parses this as dotted integers; refuse what it cannot.
+            if not isinstance(version, str) or not all(p.isdigit() for p in version.split(".")):
+                raise AttackError(f"index: malformed collection version row {row!r}"[:200])
+            rows.append({"version": version, "modified": str(row.get("modified", ""))})
+        return {"name": "Enterprise ATT&CK", "versions": rows}
+    return None
+
+
 def build(bundle_name: str, retrieved: str) -> int:
     bundle_path = STAGING_DIR / Path(bundle_name).name
     if not bundle_path.is_file():
@@ -425,6 +472,13 @@ def build(bundle_name: str, retrieved: str) -> int:
         _reject_bundle(bundle_path, str(exc))
         return 1
 
+    staged_index = STAGING_DIR / "index.json"
+    try:
+        snapshot = _collection_snapshot(staged_index)
+    except AttackError as exc:
+        _reject_bundle(staged_index, str(exc), kind="collection index")
+        return 1
+
     shards: dict[str, Any] = {
         "catalog.json": {
             "attack_version": distilled["version"],
@@ -464,19 +518,8 @@ def build(bundle_name: str, retrieved: str) -> int:
     DEFAULT_PIN_PATH.parent.mkdir(parents=True, exist_ok=True)
     DEFAULT_PIN_PATH.write_bytes(_canonical(pin_document))
 
-    staged_index = STAGING_DIR / "index.json"
-    if staged_index.is_file():
-        index = json.loads(staged_index.read_bytes())
-        for collection in index.get("collections", []):
-            if collection.get("name") == "Enterprise ATT&CK":
-                snapshot = {
-                    "name": collection["name"],
-                    "versions": [
-                        {"version": row["version"], "modified": row.get("modified", "")}
-                        for row in collection.get("versions", [])
-                    ],
-                }
-                COLLECTION_INDEX.write_bytes(_canonical(snapshot))
+    if snapshot is not None:
+        COLLECTION_INDEX.write_bytes(_canonical(snapshot))
 
     load_corpus()  # prove the committed result loads fail-closed
     print(
@@ -488,8 +531,8 @@ def build(bundle_name: str, retrieved: str) -> int:
     return 0
 
 
-def _reject_bundle(bundle_path: Path, reason: str) -> None:
-    """Refuse the staged bundle, leaving a forensic marker; audit the denial."""
+def _reject_bundle(bundle_path: Path, reason: str, *, kind: str = "bundle") -> None:
+    """Refuse a staged input, leaving a forensic marker; audit the denial."""
     marker = bundle_path.with_suffix(bundle_path.suffix + ".REJECTED")
     marker.write_text(f"{reason}\n", encoding="utf-8")
     print(f"REJECTED: {reason} (marker: {marker})", file=sys.stderr)
@@ -500,7 +543,7 @@ def _reject_bundle(bundle_path: Path, reason: str) -> None:
         audit_dir.mkdir(parents=True, exist_ok=True)
         AuditLogger(audit_dir / "update_attack_audit.jsonl").record(
             actor="scripts/update_attack.py",
-            action=f"reject staged bundle {bundle_path.name}",
+            action=f"reject staged {kind} {bundle_path.name}",
             action_class="read_only",
             decision="deny",
             reason=reason,
