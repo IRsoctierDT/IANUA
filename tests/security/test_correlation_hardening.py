@@ -62,6 +62,19 @@ def _stored(records: tuple[str | Mapping[str, Any], ...]) -> tuple[StoredEvent, 
     )
 
 
+def _flow(orig: str, resp: str, index: int) -> dict[str, Any]:
+    """A Zeek conn record whose only content of interest is its two endpoints."""
+    return {
+        "ts": f"2026-10-14T01:{index:02d}:00Z",
+        "uid": f"C{index}",
+        "id.orig_h": orig,
+        "id.resp_h": resp,
+        "id.orig_p": 1000 + index,
+        "id.resp_p": 443,
+        "proto": "tcp",
+    }
+
+
 # --------------------------------------------------------------------------
 # Inertness
 # --------------------------------------------------------------------------
@@ -222,6 +235,41 @@ def test_a_display_name_collision_cannot_merge_two_people() -> None:
     assert keys == {"alice.smith@corp.example", "john.smith@corp.example"}, (
         f"a shared display name merged two principals: {users}"
     )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "127.0.0.1",
+        "::1",
+        "::",
+        "0:0:0:0:0:0:0:1",
+        "::ffff:127.0.0.1",
+        "127.0.0.2",
+        "0000::1",
+        "::0",
+        "0:0:0:0:0:0:0:0",
+    ],
+)
+def test_a_loopback_or_unspecified_address_is_refused_in_every_spelling(spelling: str) -> None:
+    """``NEVER_JOIN`` names four spellings; the refusal must be on the parsed value.
+
+    Measured before the fix, through the Zeek parser: the last six spellings
+    here each became a *joinable* address entity, and two flows that shared
+    nothing but that placeholder became a two-event incident. The same defect
+    class AGENTS.md §5 records for the listener's bind address — a rule written
+    as a string that the thing it means to stop can simply spell differently.
+    The first three are the string set still doing its job, as defence in depth.
+    """
+    window = _stored((_flow(spelling, "10.0.0.5", 1), _flow(spelling, "10.0.0.6", 2)))
+    assert assemble(window) == (), f"{spelling!r} linked two unrelated flows"
+    joinable = {
+        entity.key
+        for entity in resolve(tuple(item.event for item in window))
+        if entity.kind == "address" and entity.joinable
+    }
+    assert joinable == {"10.0.0.5", "10.0.0.6"}, f"{spelling!r} survived as a join key"
 
 
 # --------------------------------------------------------------------------

@@ -39,6 +39,7 @@ package's AST in ``tests/security/test_correlation_hardening.py``.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from typing import Literal
 
@@ -190,6 +191,36 @@ def _short_host(value: str) -> str:
     return value.split(".", 1)[0] if "." in value else value
 
 
+def _address_literal(value: str) -> str | None:
+    """Canonical spelling of an IP literal; ``""`` if it identifies nothing; ``None`` if not one.
+
+    :data:`NEVER_JOIN` names ``127.0.0.1``, ``::1``, ``0.0.0.0`` and ``::`` as
+    strings, and a string rule catches one spelling of each. Measured through
+    the Zeek parser: ``0:0:0:0:0:0:0:1``, ``::ffff:127.0.0.1``, ``127.0.0.2``,
+    ``0000::1``, ``::0`` and ``0:0:0:0:0:0:0:0`` each became a *joinable*
+    address entity, and two flows sharing nothing but that placeholder became
+    an incident. So the refusal is on the **parsed** value — AGENTS.md §5
+    records this defect class ("six spellings are unspecified and a literal
+    rule catches one of them") — and the value that survives is the canonical
+    spelling, so one address written two ways is one entity rather than two.
+    An IPv4-mapped literal is the IPv4 address it wraps: a dual-stack socket
+    reports an IPv4 peer as ``::ffff:a.b.c.d``.
+
+    Only loopback and unspecified are refused — the two kinds the committed
+    set already names. Link-local and multicast are not: widening the set is
+    a deny-list decision for review, not a spelling fix.
+    """
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    if parsed.is_loopback or parsed.is_unspecified:
+        return ""
+    return str(parsed)
+
+
 def _is_display_name(value: str) -> bool:
     """Whether a value is a human label rather than an identifier.
 
@@ -240,6 +271,14 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
             value = _short_host(value)
             if not value or value in NEVER_JOIN:
                 return
+        if kind == "address":
+            # Refused on the parsed value and carried in canonical form; the
+            # string set above still applies first, as defence in depth.
+            literal = _address_literal(value)
+            if literal is not None:
+                if not literal:
+                    return
+                value = literal
         if (kind, value) in seen:
             return
         seen.add((kind, value))

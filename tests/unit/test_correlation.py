@@ -231,6 +231,38 @@ def test_resolution_is_independent_of_event_order() -> None:
     assert forward == backward
 
 
+@pytest.mark.unit
+def test_an_address_written_two_ways_is_one_entity() -> None:
+    """Exact normalized equality, for addresses as it already is for hosts.
+
+    ``2001:db8:0:0:0:0:0:1`` and ``2001:db8::1`` are one address, and a
+    dual-stack socket reports the IPv4 peer ``203.0.113.9`` as
+    ``::ffff:203.0.113.9``. Compared as strings each pair was two entities
+    that never linked — an honest non-match, but one decided by the sender's
+    spelling rather than by the evidence.
+    """
+
+    def flow(orig: str, resp: str, index: int) -> dict[str, Any]:
+        return {
+            "ts": f"2026-10-14T01:{index:02d}:00Z",
+            "uid": f"C{index}",
+            "id.orig_h": orig,
+            "id.resp_h": resp,
+            "id.orig_p": 1000 + index,
+            "id.resp_p": 443,
+            "proto": "tcp",
+        }
+
+    addresses = _of_kind(
+        (
+            flow("2001:db8:0:0:0:0:0:1", "::ffff:203.0.113.9", 1),
+            flow("2001:DB8::1", "203.0.113.9", 2),
+        ),
+        "address",
+    )
+    assert sorted(key for key, _ in addresses) == ["2001:db8::1", "203.0.113.9"], addresses
+
+
 # --------------------------------------------------------------------------
 # Assembly
 # --------------------------------------------------------------------------

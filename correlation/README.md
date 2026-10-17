@@ -25,6 +25,7 @@ matching, no edit distance, no similarity threshold.
 |---|---|
 | **Intra-event co-occurrence** (co-referring kinds only) | One event carrying `auid=alice` and `uid=S-1-5-21-7-1105` links the two: the schema's `actor` group describes one actor. |
 | **Exact normalized equality** | `WEB-01.corp.example` and `web-01` are one host (casefolded, short form). |
+| **Exact normalized equality** (addresses) | `2001:db8:0:0:0:0:0:1` and `2001:db8::1` are one address; `::ffff:203.0.113.9` is `203.0.113.9`. Compared as parsed addresses, never as strings. |
 | **User principal ↔ bare username** | `svc-deploy@corp.example` joins `svc-deploy` — the local part must match *outright*. |
 
 ## What deliberately does not merge
@@ -57,6 +58,15 @@ not always a login name; a value containing whitespace is never a join key.
 is not enough on its own — it must also be excluded from the union. Two
 sign-ins for different principals sharing the display name "John Smith"
 merged into one entity *through* that shared value until this was enforced.
+
+**A placeholder is refused in every spelling.** `NEVER_JOIN` names `127.0.0.1`,
+`::1`, `0.0.0.0` and `::` as strings. Measured through the Zeek parser,
+`0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1`, `127.0.0.2`, `0000::1`, `::0` and
+`0:0:0:0:0:0:0:0` each linked two unrelated flows into an incident. An address
+is therefore judged loopback or unspecified on the *parsed* value; the string
+set stays as defence in depth. Link-local and multicast are deliberately not
+refused here — widening the deny set is a decision for review, not a spelling
+fix.
 
 ## Fan-out suppression
 
