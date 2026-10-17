@@ -23,4 +23,5 @@ for point in results.points:
     print("\n--- RESULT ---")
     print("Score:", point.score)
     print("Source:", point.payload.get("source"))
-    print(point.payload.get("text")[:1000])
+    # A point without a ``text`` payload is a result to show, not a TypeError.
+    print(point.payload.get("text", "")[:1000])

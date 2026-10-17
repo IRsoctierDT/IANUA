@@ -324,3 +324,21 @@ def test_embeddings_smoke_script_is_embedded_unless_opted_in(
     assert "url" not in client.kwargs, client.kwargs
     assert client.kwargs["path"] == str(tmp_path / "qdrant")
     assert "Embedding dimensions: 2" in capsys.readouterr().out
+
+
+@pytest.mark.security
+def test_search_script_tolerates_a_point_without_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A result whose payload lacks ``text`` is printed, not a ``TypeError``.
+
+    Measured before the fix, ``point.payload.get("text")[:1000]`` raised
+    ``TypeError: 'NoneType' object is not subscriptable`` on such a point.
+    """
+    _install_stubs(monkeypatch, tmp_path)
+    _StubClient.canned_points = [
+        types.SimpleNamespace(score=0.5, payload={"source": "knowledge-base/x.md"})
+    ]
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "anything")
+    runpy.run_path(str(_SCRIPTS / "search_cyber_kb.py"), run_name="__main__")
+    assert "knowledge-base/x.md" in capsys.readouterr().out
