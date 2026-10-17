@@ -86,12 +86,30 @@ def chunk_text(source: str, text: str, *, size: int = 800, overlap: int = 100) -
     return chunks
 
 
+def _read_document(doc: Path) -> str:
+    """Read one discovered document as strict UTF-8, in this module's own taxonomy.
+
+    A file that is not valid UTF-8, or that cannot be opened, raises
+    :class:`ValidationError` instead of the lower-level ``UnicodeDecodeError`` /
+    ``OSError``. Callers (``KnowledgeBaseAgent``, ``scripts/rag_cli.py``) catch
+    ``ValidationError`` to fail soft; measured, one undecodable file otherwise
+    escaped all three as a traceback. Strict decoding is kept deliberately: a
+    citation quotes its source verbatim, which a replacement character would
+    silently falsify. The message names the document, not its full path.
+    """
+    try:
+        return doc.read_text(encoding="utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(f"corpus document is not valid UTF-8: {doc.name!r}") from exc
+    except OSError as exc:
+        raise ValidationError(f"cannot read corpus document {doc.name!r}: {exc.strerror}") from exc
+
+
 def ingest(corpus_root: Path) -> list[Chunk]:
     """Discover, read, and chunk every allow-listed document in the corpus."""
     chunks: list[Chunk] = []
     for doc in discover_documents(corpus_root):
-        text = doc.read_text(encoding="utf-8", errors="strict")
-        chunks.extend(chunk_text(doc.name, text))
+        chunks.extend(chunk_text(doc.name, _read_document(doc)))
     return chunks
 
 
@@ -103,10 +121,7 @@ def read_documents(corpus_root: Path) -> dict[str, str]:
     two documents share a basename the last read wins — matching the ``source``
     naming used by :func:`ingest`.
     """
-    return {
-        doc.name: doc.read_text(encoding="utf-8", errors="strict")
-        for doc in discover_documents(corpus_root)
-    }
+    return {doc.name: _read_document(doc) for doc in discover_documents(corpus_root)}
 
 
 def embed_chunks(chunks: Iterable[Chunk], embedder: Embedder) -> list[tuple[Chunk, list[float]]]:

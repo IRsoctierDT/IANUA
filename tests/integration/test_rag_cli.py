@@ -43,6 +43,19 @@ def test_cli_missing_corpus_fails_cleanly(tmp_path: Path) -> None:
     assert code == 2  # ValidationError -> exit 2, no traceback
 
 
+@pytest.mark.security
+def test_cli_undecodable_document_exits_2_without_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A non-UTF-8 corpus file is a clean exit 2 naming the file, not a traceback."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "bad.md").write_bytes(b"\xff\xfe\x80")
+    code = main(["--corpus", str(corpus), "--query", "x", "--offline"])
+    assert code == 2
+    assert "bad.md" in capsys.readouterr().err
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(
     not _KNOWLEDGE_BASE.is_dir(), reason="shipped knowledge-base/ corpus not present"
