@@ -2826,3 +2826,63 @@ def test_the_excerpt_serializer_degrades_to_shape_when_it_cannot_render() -> Non
     # And the tier is a fallback, not the new behaviour: an ordinary mapping
     # still serializes with its values.
     assert _serialize({"a": "b"}) == '{"a": "b"}'
+
+
+# --------------------------------------------------------------------------
+# Encoding and recognition
+#
+# What stands between a line's bytes and the parser that should claim them.
+# A mark that is not content must not change which path a record takes, and
+# a recognizer must claim on fields only its own vendor writes.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("form", ["bytes", "str"])
+def test_a_byte_order_mark_does_not_turn_a_decodable_record_verbatim(form: str) -> None:
+    """A UTF-8 BOM in front of well-formed JSON must not defeat the projection.
+
+    The residual two tests up is for records that *cannot* decode to a
+    mapping. This one can: only the BOM stood between it and ``json.loads``.
+    ``str.strip()`` leaves U+FEFF in place (a format character, not
+    whitespace) and ``json.loads`` refuses a leading BOM outright, so a record
+    whose only defect was the three bytes a Windows editor writes at the head
+    of a UTF-8 file was carried verbatim. Measured before the fix:
+    ``vendor="unrecognized"``, ``parse_status="text"``, **no note at all**,
+    the mail ``Body`` in both ``message`` and ``raw_excerpt``, and
+    ``Mr.Jones`` — a personal name from that body — stored as an observable,
+    while the same bytes without the BOM were claimed by Defender and the body
+    withheld. ``collect/`` hands ``normalize`` each line's raw bytes and
+    strips no BOM, so the first line of every such file took this route.
+
+    The assertion is equality with the BOM-free control, not merely "the body
+    is absent": the mark is an encoding artifact, so the two inputs describe
+    one record and must yield one event.
+    """
+    whole = _undecodable("trailing-comma", _PROSE_BODY)[:-2] + "}"  # repair the comma
+    marked: str | bytes = (
+        "\ufeff" + whole if form == "str" else b"\xef\xbb\xbf" + whole.encode("utf-8")
+    )
+    control = normalize(whole)
+    assert control.vendor == "defender-o365", "the control is not even claimed; fix the fixture"
+    event = normalize(marked)
+    assert event.to_dict() == control.to_dict()
+    rendered = json.dumps(event.to_dict(), default=str)
+    assert _PROSE_BODY not in rendered
+    assert not set(_PROSE_NAMES) & set(event.observables)
+
+
+@pytest.mark.security
+def test_a_byte_order_mark_does_not_hide_a_key_value_line_either() -> None:
+    """The same mark in front of an auditd line: decoded, not carried as prose.
+
+    Measured to hold *before* the fix as well — ``keyvalue._PAIR`` is not
+    anchored, so the mark is one un-matched character ahead of the first pair
+    and costs a fraction of a percent of coverage. Pinned so the JSON path,
+    which did need the fix, and the key=value path cannot drift apart on it.
+    """
+    line = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
+    control = normalize(line)
+    assert control.vendor == "auditd"
+    assert normalize("\ufeff" + line).to_dict() == control.to_dict()
+    assert normalize(b"\xef\xbb\xbf" + line.encode("utf-8")).to_dict() == control.to_dict()

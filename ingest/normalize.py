@@ -149,7 +149,19 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
             ),
         )
 
-    stripped = raw.strip()
+    # A leading byte-order mark is an encoding artifact, not content, and it
+    # defeated recognition: ``str.strip()`` leaves U+FEFF in place (a format
+    # character, not whitespace) and ``json.loads`` refuses a leading BOM
+    # outright. Measured: a well-formed Defender record behind the three bytes
+    # a Windows editor writes at the head of a UTF-8 file was carried verbatim
+    # — ``vendor="unrecognized"``, ``parse_status="text"``, no note, and the
+    # mail ``Body`` in both ``message`` and ``raw_excerpt`` — while the same
+    # bytes without the BOM were claimed and the body withheld. That is not
+    # the stated residual (a record that *cannot* decode to a mapping); this
+    # one could, so the projection must see it. ``collect/`` hands over each
+    # line's raw bytes and strips nothing, so the first line of every such
+    # file took this route.
+    stripped = raw.lstrip("\ufeff").strip()
     if stripped.startswith(("{", "[")):
         try:
             decoded = json.loads(stripped)
