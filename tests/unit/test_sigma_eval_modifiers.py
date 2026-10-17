@@ -107,3 +107,11 @@ def test_list_under_a_bare_field_is_any_of() -> None:
     assert evaluate(rule, {"Image": "C:\\\\B.EXE"}) is True
     assert evaluate(rule, {"Image": "C:\\\\c.exe"}) is False
     assert evaluate(rule, {}) is False
+
+
+@pytest.mark.unit
+def test_unsupported_modifier_raises_even_when_an_earlier_clause_is_false() -> None:
+    """Validation must not depend on the event; measured before the fix it did."""
+    rule = _rule("sel", sel={"a": "x", "b|re": "y"})
+    with pytest.raises(ValueError, match="unsupported Sigma field modifier"):
+        evaluate(rule, {"a": "not-x", "b": "y"})

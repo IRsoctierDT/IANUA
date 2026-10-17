@@ -126,7 +126,14 @@ def _match_selection(event: dict[str, Any], selection: Any) -> bool:
     """A selection matches when ALL of its field clauses match (Sigma AND)."""
     if not isinstance(selection, dict):
         raise ValueError(f"selection must be a mapping, got {type(selection).__name__}")
-    return all(_match_field(event, key, spec) for key, spec in selection.items())
+    # Every clause is evaluated before combining, for the same reason
+    # _parse_condition does not short-circuit: a generator inside all() stops
+    # at the first False, so an unsupported modifier in a later clause went
+    # unvalidated on every non-matching event and the rule silently evaluated
+    # False instead of raising (measured: `{"a": "x", "b|regex": "y"}` raised
+    # only when `a` matched).
+    results = [_match_field(event, key, spec) for key, spec in selection.items()]
+    return all(results)
 
 
 def _resolve_quantifier(quantifier: str, pattern: str, matched: dict[str, bool]) -> bool:
