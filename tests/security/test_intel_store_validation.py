@@ -45,6 +45,16 @@ _CASES: list[tuple[str, str, Callable[[dict], None]]] = [
     ("unregistered source", _SEED, lambda d: d["indicators"][0].update(source_id="ghost-feed")),
     ("unknown risk", _SEED, lambda d: d["indicators"][0].update(risk="catastrophic")),
     ("bad date", _SEED, lambda d: d["indicators"][0].update(retrieved="21/08/2026")),
+    # fromisoformat accepts these; string ordering of mixed forms is wrong
+    # (measured: an August expiry in basic form passed against a September
+    # first_seen, and one basic-form retrieved moved default_as_of back).
+    ("basic-form ISO date", _SEED, lambda d: d["indicators"][0].update(retrieved="20260814")),
+    ("week-form ISO date", _SEED, lambda d: d["indicators"][0].update(expires="2026-W46-5")),
+    (
+        "expires before first_seen in mixed forms",
+        _SEED,
+        lambda d: d["indicators"][0].update(first_seen="2026-09-01", expires="20260801"),
+    ),
     (
         "expires before first_seen",
         _SEED,

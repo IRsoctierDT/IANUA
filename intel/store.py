@@ -113,9 +113,18 @@ def _iso(value: object, context: str) -> str:
     if not isinstance(value, str):
         raise _reject(f"{context} must be an ISO date string")
     try:
-        date.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise _reject(f"{context} is not a valid ISO date: {value!r}") from exc
+    # Extended form (YYYY-MM-DD) only. ``fromisoformat`` also accepts the
+    # basic ``20260821`` and week ``2026-W34-5`` forms, and dates are ordered
+    # as strings here (``expires < first_seen``) and in
+    # ``intel.match.default_as_of`` (``max``). Measured: ``"20260801" <
+    # "2026-09-01"`` is False, so an August expiry written in basic form
+    # passed the ordering check against a September first_seen, and one
+    # basic-form ``retrieved`` moved default_as_of back seven months.
+    if parsed.isoformat() != value:
+        raise _reject(f"{context} must be written YYYY-MM-DD, got {value!r}")
     return value
 
 
