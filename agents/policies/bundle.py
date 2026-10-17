@@ -134,6 +134,16 @@ def _parse_policy(value: Any) -> dict[ActionClass, Decision]:
             raise PolicyBundleError(f"unknown action_class in bundle: {key!r}")
         if decision not in _VALID_DECISIONS:
             raise PolicyBundleError(f"invalid decision for {key!r}: {decision!r}")
+        if key == "boundary_crossing" and decision != "deny":
+            # The engine refuses this too; raising here keeps the error type a
+            # bundle caller already handles, and names the file rather than
+            # the object. A reader of the JSON would otherwise see permission
+            # the engine never grants (AGENTS.md §5: non-negotiable).
+            raise PolicyBundleError(
+                f"'boundary_crossing' is an AGENTS.md §5 prohibition and must be "
+                f"'deny', not {decision!r}: the engine denies it before reading this "
+                "table, so any other value would be stored and never enforced"
+            )
         result[cast(ActionClass, key)] = cast(Decision, decision)
     return result
 

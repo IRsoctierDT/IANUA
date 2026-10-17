@@ -146,3 +146,24 @@ def test_version_one_and_absent_version_both_load(tmp_path: Path) -> None:
     assert load_bundle(bundle).decide(action_class="destructive").decision == "require_approval"
     bundle.write_text("{}", encoding="utf-8")
     assert load_bundle(bundle).decide(action_class="destructive").decision == "require_approval"
+
+
+# -------------------------------------------- a stored value enforcement never reads
+@pytest.mark.security
+@pytest.mark.parametrize("decision", ["allow", "require_approval"])
+def test_boundary_crossing_override_is_refused_not_stored(tmp_path: Path, decision: str) -> None:
+    """Measured before this check: the bundle loaded, ``engine.policy["boundary_crossing"]``
+    read ``"allow"``, and ``decide`` still denied. A table entry that enforcement
+    never consults is permission on paper only, and refusing it is the honest shape."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text(f'{{"policy": {{"boundary_crossing": "{decision}"}}}}', encoding="utf-8")
+    with pytest.raises(PolicyBundleError, match="boundary_crossing"):
+        load_bundle(bundle)
+
+
+@pytest.mark.security
+def test_boundary_crossing_deny_is_still_accepted(tmp_path: Path) -> None:
+    """The shipped ``policy.json`` spells the prohibition out, and must keep loading."""
+    bundle = tmp_path / "policy.json"
+    bundle.write_text('{"policy": {"boundary_crossing": "deny"}}', encoding="utf-8")
+    assert load_bundle(bundle).decide(action_class="boundary_crossing").decision == "deny"
