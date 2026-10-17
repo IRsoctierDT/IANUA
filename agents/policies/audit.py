@@ -241,12 +241,49 @@ def _write_text_owner_only(path: Path, text: str) -> None:
     the fix, and ``Path.replace`` is atomic within a filesystem — the temporary
     file is created beside the target for exactly that reason.
     """
+    _commit_staged(_stage_text_owner_only(path, text), path)
+
+
+def _stage_text_owner_only(path: Path, text: str) -> Path:
+    """Write ``text`` to ``path``'s scratch file, owner-only; return it for the commit.
+
+    Split from :func:`_commit_staged` so :meth:`AuditLogger._record_locked` can
+    take every step that can fail for want of disk, inodes or a writable name
+    *before* the one write it cannot undo — the chain append — and leave only a
+    same-directory rename after it. Review measured the two steps the other
+    way round: a full 64 KiB tmpfs appended records 178, 179 and 180 and then
+    raised ``ENOSPC`` from the sidecar, so three failed calls left three
+    unsigned entries; a directory planted at either sidecar name did the same.
+
+    The scratch name is unlinked and then opened ``"x"`` (``O_CREAT | O_EXCL``),
+    so the descriptor written is on an inode this call created: a symlink or a
+    hard link planted there no longer has its target overwritten with the
+    sidecar JSON (measured by review). Unlinking a directory raises, so one at
+    the scratch name is refused here. ``path`` is checked not to be a
+    directory — the one object ``os.replace`` cannot replace with a file —
+    which is a check and not a guarantee: one planted between here and the
+    commit still fails the rename, after the append.
+    """
     directory = path.parent
     directory.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
+    if path.is_dir() and not path.is_symlink():
+        raise IsADirectoryError(errno.EISDIR, f"{path} is a directory; a sidecar cannot replace it")
     temporary = directory / f".{path.name}.tmp"
+    with contextlib.suppress(FileNotFoundError):
+        temporary.unlink()  # removes a planted link itself, never what it points at
     try:
-        with open(temporary, "w", encoding="utf-8", opener=_opener_owner_only) as fh:
+        with open(temporary, "x", encoding="utf-8", opener=_opener_owner_only) as fh:
             fh.write(text)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
+    return temporary
+
+
+def _commit_staged(temporary: Path, path: Path) -> None:
+    """Move a staged scratch file over ``path`` atomically; unlink it on failure."""
+    try:
         temporary.replace(path)  # atomic within a filesystem
     except BaseException:
         with contextlib.suppress(OSError):
@@ -712,22 +749,34 @@ class AuditLogger:
             prev_hash=prev_hash,
             entry_hash=entry_hash,
         )
-        # Sign *before* appending. The signature covers only ``(seq, entry_hash)``,
-        # both known here, so computing it first changes no byte of what is
-        # signed — and a signer that cannot sign then leaves nothing behind.
-        # Measured before this: a writer built with a verify-only signer
-        # appended the entry and THEN raised from ``sign()``, leaving a chain
-        # whose head signature was missing and could never become valid, and
-        # every retry appended one more such entry.
-        signature = (
-            self._signer.sign(self._head_message(seq, entry_hash))
-            if self._signer is not None
-            else None
-        )
-        with open(self.path, "a", encoding="utf-8", opener=_opener_owner_only) as fh:
-            fh.write(json.dumps(asdict(event)) + "\n")
-        if signature is not None:
-            self._write_head_signature(seq, entry_hash, signature)
+        # Sign and *stage the sidecar* before appending; commit it after. The
+        # signature covers only ``(seq, entry_hash)``, both known here, so
+        # signing first changes no byte of what is signed. Measured before the
+        # reorder: a verify-only signer appended the entry and THEN raised from
+        # ``sign()``; with only the signing moved, a full disk or a directory at
+        # a sidecar name still appended and THEN raised from the sidecar write —
+        # the same half-written chain one step later, and every retry appended
+        # one more entry. Now everything that can fail for want of space or a
+        # writable name fails first; what follows the append is one rename.
+        staged: Path | None = None
+        if self._signer is not None:
+            signature = self._signer.sign(self._head_message(seq, entry_hash))
+            if not isinstance(signature, str) or not signature:
+                # ``None`` is not "no signer": a signer that returns nothing has
+                # failed, and the first fix's ``if signature is not None`` let it
+                # append and silently skip the sidecar (measured by review).
+                raise TypeError(f"{type(self._signer).__name__}.sign returned no signature")
+            staged = self._stage_head_signature(seq, entry_hash, signature)
+        try:
+            with open(self.path, "a", encoding="utf-8", opener=_opener_owner_only) as fh:
+                fh.write(json.dumps(asdict(event)) + "\n")
+        except BaseException:
+            if staged is not None:
+                with contextlib.suppress(OSError):
+                    staged.unlink()
+            raise
+        if staged is not None:
+            _commit_staged(staged, self._sig_path)
         return event
 
     # ---------------------------------------------------------------- signing
@@ -736,21 +785,39 @@ class AuditLogger:
         """The bytes signed over the chain head: ``seq|hash``."""
         return f"{seq}|{head_hash}".encode()
 
-    def _write_head_signature(self, seq: int, head_hash: str, signature: str) -> None:
-        """Persist a detached, already-computed signature over the chain head.
+    def _stage_head_signature(self, seq: int, head_hash: str, signature: str) -> Path:
+        """Stage a detached, already-computed signature over the chain head.
 
         The head hash chains over every prior entry, so one signature attests the
         whole log. An attacker without the signing key can recompute a
         self-consistent chain but cannot forge this signature, so tampering is
         detectable by any holder of the (public) key — offline, without trusting
-        the file. The scheme (HMAC or Ed25519) is recorded in ``algo``. The
-        signature itself is computed by :meth:`_record_locked` *before* the entry
-        is appended, so that an unsignable record is never half-written; this
-        method only writes it.
+        the file. The scheme (HMAC or Ed25519) is recorded in ``algo``.
+
+        Staged, not written: :meth:`_record_locked` computes the signature and
+        calls this *before* the entry is appended, then commits the staged file
+        with :func:`_commit_staged` after it, so everything that can fail for
+        want of disk, inodes or a writable scratch name fails before any byte of
+        the chain is written. **What that does not make true is "never
+        half-written."** Two things remain. The commit is a same-directory
+        ``rename`` after the append, and if it fails — a directory planted at
+        ``audit.log.sig`` after the staging check, or a filesystem error on the
+        rename — the chain holds the entry and the sidecar is one head behind,
+        which a keyed verifier reports as ``stale`` and the next successful
+        record repairs. And the append itself is one ``write(2)``, which a full
+        disk cuts short: measured on a 64 KiB tmpfs, the first failing call
+        left a 248-byte torn tail that ``verify_report`` names as a malformed
+        entry, no *complete* entry was written by any failing call (three were,
+        before), and every retry wrote 0 bytes — refusing with the
+        ``JSONDecodeError`` the head read raises on the torn line until an
+        operator truncates it. Making that write atomic (pre-allocating with
+        ``posix_fallocate``, or truncating a torn tail back under the lock) is a
+        decision against the module's "never rewrites a segment" posture and is
+        left to the owner rather than taken here.
         """
         if self._signer is None:
             raise ValueError("no signer configured")
-        _write_text_owner_only(
+        return _stage_text_owner_only(
             self._sig_path,
             json.dumps(
                 {
