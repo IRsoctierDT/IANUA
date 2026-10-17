@@ -13,20 +13,25 @@
 # the ruleset is a hard prerequisite — do not disable it while this workflow
 # exists.
 #
-# Token: the default GITHUB_TOKEN, scoped to this job via the permissions
-# block. Dependabot-triggered workflows get a read-only token unless elevated
-# here (docs: "Automating Dependabot with GitHub Actions").
+# Token: the default GITHUB_TOKEN, scoped to the ONE job via its own
+# permissions block. Dependabot-triggered workflows get a read-only token
+# unless elevated (docs: "Automating Dependabot with GitHub Actions"), and the
+# elevation lives on the job rather than the workflow so a job added later
+# starts read-only instead of inheriting two write scopes.
 name: Dependabot auto-merge
 
 on: pull_request
 
+# Least privilege by default (AGENTS.md §3); the job opts into its two writes.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   automerge:
     name: Enable auto-merge (low-risk groups, patch/minor)
+    permissions:
+      contents: write       # enable auto-merge: GitHub performs the squash merge
+      pull-requests: write  # gh pr merge --auto sets the PR's auto-merge flag
     # Three identities, all of which must be Dependabot. Each closes a
     # different hole, and the first one alone does NOT imply the others.
     #

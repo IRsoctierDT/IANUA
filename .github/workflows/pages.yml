@@ -24,7 +24,8 @@
 #   itself is unchanged.
 #
 # Security posture (AGENTS.md §3):
-#   - Minimal permissions: contents:read + pages:write + id-token:write only.
+#   - Minimal permissions: contents:read + pages:write + id-token:write only,
+#     and the two writes are granted on the one job, not the workflow.
 #   - No secrets needed — GITHUB_TOKEN is auto-provisioned.
 #   - The pre-deploy steps (checkout, drift check) run trusted, local repo files
 #     only — no untrusted or external input — so sharing the job's environment
@@ -53,10 +54,9 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+# Least privilege by default (AGENTS.md §3); the job opts into its two writes.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 jobs:
   # Single environment-gated job: approval holds the whole job, then build +
@@ -64,6 +64,10 @@ jobs:
   deploy:
     name: Build & deploy to GitHub Pages
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write     # actions/deploy-pages creates the Pages deployment
+      id-token: write  # OIDC token deploy-pages presents to the Pages service
     # workflow_run: only a green CI run for a PUSH to main in THIS repository.
     # `branches: [main]` above filters on the triggering run's *head* branch,
     # and a pull_request CI run from a fork whose head branch is named `main`
