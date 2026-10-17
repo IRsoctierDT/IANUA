@@ -149,6 +149,14 @@ _MUTATIONS: list[tuple[str, Callable[[dict], None]]] = [
     ("duplicate action_id", lambda d: d["actions"].append(copy.deepcopy(d["actions"][0]))),
     ("dangling prerequisite", lambda d: d["actions"][0].update(prerequisites=["ghost"])),
     ("non-bool reversible", lambda d: d["actions"][0].update(reversible="yes")),
+    # Type confusion (measured): ``False == 0`` and ``2.0 == 2`` passed the tier
+    # check, ``True == 1`` passed the schema check, and a list-typed verb or
+    # action_class raised TypeError instead of ResponseCatalogueError.
+    ("boolean tier", lambda d: d["actions"][0].update(tier=False)),
+    ("float tier", lambda d: d["actions"][0].update(tier=2.0)),
+    ("boolean schema", lambda d: d.update(schema=True)),
+    ("list verb", lambda d: d["actions"][0].update(verb=["collect"])),
+    ("list action_class", lambda d: d["actions"][0].update(action_class=["read_only"])),
 ]
 
 
