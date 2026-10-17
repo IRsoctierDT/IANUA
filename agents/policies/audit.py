@@ -151,46 +151,77 @@ class VerificationReport:
 _FILE_MODE = 0o600
 _DIR_MODE = 0o700
 
-#: How the chain lock is opened: the shape ``scripts/_locking.py`` landed for
-#: the CLI locks (#58), ported here (#69), where it matters more because the
-#: ``LOCK_EX`` that follows is deliberately blocking with no timeout — so there
-#: is no later step that would have returned. ``O_RDONLY`` is all ``flock``
-#: needs (it keys on the open file description, not the access mode) and the
-#: least the open can ask for. ``O_NONBLOCK`` is what makes the type guard
-#: reachable: measured, ``record()`` hung indefinitely on a FIFO at the lock
-#: path. ``O_NOFOLLOW`` fails a symlink ``ELOOP`` instead of following it:
-#: measured, a symlink at the lock path was followed and its target created
-#: ``0o600`` wherever it pointed. The type itself is checked on the descriptor.
-_LOCK_OPEN_FLAGS = os.O_RDONLY | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW
+#: The pair that makes the regular-file guard below *reachable*, on every open
+#: this module performs and not only the lock's: the shape ``scripts/_locking.py``
+#: landed for the CLI locks (#58), ported to the chain lock (#69) and then — once
+#: review showed the hazard had only moved one filename over — to the chain
+#: itself and its sidecars. ``O_NONBLOCK`` makes the ``fstat`` guard reachable:
+#: measured, a FIFO at ``audit.log.lock`` hung ``record()`` indefinitely, and so
+#: did a FIFO at ``audit.log`` (read for the chain head under ``LOCK_EX``, so
+#: every later writer queued behind the hang, even after the FIFO was removed)
+#: and a FIFO at ``audit.log.sig`` (read by ``verify_report`` under ``LOCK_SH``,
+#: blocking every writer behind the scheduled verifier). ``O_NOFOLLOW`` fails a
+#: symlink ``ELOOP`` instead of following it: measured, a symlink at the lock
+#: path was followed and its target created ``0o600`` wherever it pointed, and
+#: the append followed one at ``audit.log`` into a file outside the directory.
+#: ``O_NONBLOCK`` has no effect on a regular file once open, so it is left set.
+_NO_BLOCK_NO_FOLLOW = os.O_NONBLOCK | os.O_NOFOLLOW
+#: ``O_RDONLY`` is all ``flock`` needs (it keys on the open file description,
+#: not the access mode) and the least the open can ask for.
+_LOCK_OPEN_FLAGS = os.O_RDONLY | os.O_CREAT | _NO_BLOCK_NO_FOLLOW
+_READ_OPEN_FLAGS = os.O_RDONLY | _NO_BLOCK_NO_FOLLOW
 
 
-def _opener_owner_only(path: str, flags: int) -> int:
-    """``open()`` opener creating files 0o600 (no-op for existing files)."""
-    return os.open(path, flags, _FILE_MODE)
-
-
-def _open_lock_descriptor(path: Path, flags: int) -> int:
-    """Open ``path`` for ``flock`` and require the *descriptor* to be a regular file.
+def _open_regular_descriptor(path: Path, flags: int) -> int:
+    """Open ``path`` and require the *descriptor* to be a regular file.
 
     ``os.fstat`` asks about the open file description ``os.open`` returned, so
-    the thing inspected and the thing locked are one inode by construction; a
-    path predicate before the open would not be, since a rename between the two
-    hands back a descriptor on a different inode. ``S_ISREG`` is an allow-list
-    rather than ``not S_ISFIFO``: a socket or a device opens without blocking
-    too. Raises ``OSError`` for every refusal, which is what ``record``'s
-    callers already handle for a disk that is full or a path that is not there.
+    the thing inspected and the thing then locked, read or written are one
+    inode by construction; a path predicate before the open would not be, since
+    a rename between the two hands back a descriptor on a different inode.
+    ``S_ISREG`` is an allow-list rather than ``not S_ISFIFO``: a socket or a
+    device opens without blocking too. Raises ``OSError`` for every refusal,
+    which is what callers already handle for a disk that is full or a path that
+    is not there. Callers pass :data:`_NO_BLOCK_NO_FOLLOW` in ``flags``; without
+    it the open of a FIFO never returns to reach this check.
     """
     descriptor = os.open(path, flags, _FILE_MODE)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError(
                 errno.EINVAL,
-                f"audit lock {path} is not a regular file; refusing to lock through it",
+                f"audit path {path} is not a regular file; refusing to open it",
             )
     except BaseException:
         os.close(descriptor)
         raise
     return descriptor
+
+
+def _opener_owner_only(path: str, flags: int) -> int:
+    """``open()`` opener: create files 0o600, and open nothing but a regular file.
+
+    Every ``open()`` in this module goes through here or
+    :func:`_read_regular_text`, so the guard the lock has holds at the chain
+    and its sidecars too — a FIFO, directory, device, socket or symlink at any
+    of those names is refused instead of blocked on or followed.
+    """
+    return _open_regular_descriptor(Path(path), flags | _NO_BLOCK_NO_FOLLOW)
+
+
+def _read_regular_text(path: Path) -> str:
+    """Read ``path`` whole, refusing anything that is not a regular file.
+
+    ``Path.read_text`` opens with neither ``O_NONBLOCK`` nor ``O_NOFOLLOW``, so
+    a FIFO where a chain artifact should be blocked its reader for ever —
+    measured, at ``audit.log`` (under the writer's ``LOCK_EX``) and at
+    ``audit.log.sig`` (under the verifier's ``LOCK_SH``); see
+    :data:`_NO_BLOCK_NO_FOLLOW`. Raises ``OSError`` — ``FileNotFoundError``
+    included — for every refusal; callers map it to the fallback or the verdict
+    they already have for an absent or unreadable file.
+    """
+    with open(_open_regular_descriptor(path, _READ_OPEN_FLAGS), encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _write_text_owner_only(path: Path, text: str) -> None:
@@ -394,9 +425,16 @@ class AuditLogger:
         Not reentrant: ``flock`` is scoped to the open file description, so a
         second ``open()`` of this path in the same process blocks forever. No
         method holding this may call another that takes it.
+
+        **A pre-existing lock file wider than 0o600 is not narrowed** — this
+        module's stated posture on pre-existing modes, above — and review
+        measured the cost: with the lock at ``0o644`` another local user holds
+        ``LOCK_EX`` through a read-only open and this blocks for as long as they
+        like. ``scripts/_locking.py`` narrows on every open; whether this module
+        should too is one decision with the directory mode (#65), not taken here.
         """
         self._lock_path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-        descriptor = _open_lock_descriptor(self._lock_path, _LOCK_OPEN_FLAGS)
+        descriptor = _open_regular_descriptor(self._lock_path, _LOCK_OPEN_FLAGS)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
             try:
@@ -437,7 +475,7 @@ class AuditLogger:
         if not self._is_segment(self._lock_path):
             yield
             return
-        descriptor = _open_lock_descriptor(self._lock_path, _LOCK_OPEN_FLAGS & ~os.O_CREAT)
+        descriptor = _open_regular_descriptor(self._lock_path, _LOCK_OPEN_FLAGS & ~os.O_CREAT)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_SH)
             try:
@@ -467,10 +505,10 @@ class AuditLogger:
 
         ``is_symlink()`` is excluded as well, which is the discipline §5 of the
         charter already states for the log files ``collect/`` reads: a link at
-        the chain means the chain is not where it is believed to be. It does
-        **not** close :meth:`record`'s append-through-a-symlink path, which
-        never consults this predicate — a separate concern, recorded rather
-        than implied.
+        the chain means the chain is not where it is believed to be. The
+        append never consults this predicate; it is guarded on its own
+        descriptor instead (:func:`_opener_owner_only`), so a symlink or a
+        non-file at the chain path is refused there the way the lock refuses one.
         """
         return path.is_file() and not path.is_symlink()
 
@@ -506,9 +544,11 @@ class AuditLogger:
         return bool(self._segments_in_order()) or self._is_segment(self._checkpoint_path)
 
     def _last_event(self, segment: Path) -> AuditEvent | None:
-        if not segment.exists():
+        try:
+            text = _read_regular_text(segment)
+        except FileNotFoundError:
             return None
-        line = _last_nonempty_line(segment.read_text(encoding="utf-8"))
+        line = _last_nonempty_line(text)
         if not line:
             return None
         return AuditEvent(**json.loads(line))
@@ -529,7 +569,7 @@ class AuditLogger:
     def _read_checkpoint(self) -> tuple[int, str] | None:
         if not self._is_segment(self._checkpoint_path):
             return None
-        data = json.loads(self._checkpoint_path.read_text(encoding="utf-8"))
+        data = json.loads(_read_regular_text(self._checkpoint_path))
         return int(data["pruned_through_seq"]), str(data["pruned_through_hash"])
 
     def _write_checkpoint(self, seq: int, entry_hash: str) -> None:
@@ -739,21 +779,24 @@ class AuditLogger:
         """Granular status of the detached head signature against a known head.
 
         Returns ``unsigned`` (no signer configured), ``empty`` (nothing to
-        sign), ``missing``, ``malformed``, ``invalid`` (does not verify),
-        ``stale`` (verifies but covers an older head), or ``valid``.
+        sign), ``missing``, ``malformed`` (garbled — or not a regular file at
+        all: a directory, FIFO or symlink where the sidecar should be, which is
+        a verdict here rather than an exception or, for the FIFO, a hang),
+        ``invalid`` (does not verify), ``stale`` (verifies but covers an older
+        head), or ``valid``.
         """
         if self._signer is None:
             return "unsigned"
         if head_seq < 0:
             return "empty"
-        if not self._sig_path.exists():
-            return "missing"
         try:
-            sig = json.loads(self._sig_path.read_text(encoding="utf-8"))
+            sig = json.loads(_read_regular_text(self._sig_path))
             stored_seq = int(sig["seq"])
             stored_hash = str(sig["head_hash"])
             stored_signature = str(sig["signature"])
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        except FileNotFoundError:
+            return "missing"
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
             return "malformed"
         # The signature must verify AND cover the *current* head.
         message = self._head_message(stored_seq, stored_hash)
@@ -841,7 +884,7 @@ class AuditLogger:
 
         for segment in segments:
             try:
-                text = segment.read_text(encoding="utf-8")
+                text = _read_regular_text(segment)
             except (UnicodeDecodeError, OSError):
                 # Non-UTF-8 corruption (or an unreadable file) is a located
                 # fail-closed verdict, not an exception out of verification.
