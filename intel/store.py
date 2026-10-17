@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import cast
 
 from attack import AttackError, Corpus, load_corpus, validate_reference
 from intel.model import (
+    EXEMPT_SHAPES,
     AtomicIndicator,
     AtomicType,
     BehavioralRecord,
@@ -85,6 +87,9 @@ _BEHAVIOR_FIELDS = {
 _ATOMIC_TYPES = {"ipv4", "ipv6", "domain", "url", "sha256", "sha1", "md5", "email"}
 _RISKS = {"malicious", "suspicious", "benign"}
 _CONFIDENCES = {"low", "medium", "high"}
+#: Upstream identity is a string compare, so one spelling: measured, case, a
+#: trailing dot, a scheme or a U+200B each made a second "independent" word.
+_UPSTREAM = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*")
 
 
 class IntelStoreError(ValueError):
@@ -208,12 +213,15 @@ def _load_sources(path: Path) -> dict[str, Source]:
                 f"source {source_id!r} license {license_name!r} is not on the "
                 f"allow-list {sorted(ALLOWED_LICENSES)}"
             )
+        upstream = _bounded_str(raw["upstream"], f"source {source_id!r} upstream")
+        if not _UPSTREAM.fullmatch(upstream):
+            raise _reject(f"source {source_id!r} upstream must be a lowercase ASCII hostname")
         sources[source_id] = Source(
             source_id=source_id,
             name=_bounded_str(raw["name"], f"source {source_id!r} name"),
             url=_bounded_str(raw["url"], f"source {source_id!r} url"),
             license=license_name,
-            upstream=_bounded_str(raw["upstream"], f"source {source_id!r} upstream"),
+            upstream=upstream,
             retrieved=_iso(raw["retrieved"], f"source {source_id!r} retrieved"),
         )
     if not sources:
@@ -235,6 +243,9 @@ def _parse_atomic(
         raise _reject(f"unknown atomic type {indicator_type!r}")
     value = _bounded_str(raw["value"], "indicator value")
     context = f"indicator {value!r}"
+    shape = EXEMPT_SHAPES.get(indicator_type)
+    if shape is not None and not shape.fullmatch(value.lower()):
+        raise _reject(f"{context}: not shaped like a {indicator_type} value")
     risk = raw["risk"]
     if not isinstance(risk, str) or risk not in _RISKS:
         raise _reject(f"{context}: unknown risk {risk!r}")

@@ -20,6 +20,7 @@ network (enforced by ``tests/security/test_intel_no_egress.py``).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -31,6 +32,17 @@ BehaviorStatus = Literal["active", "review-due", "stale-anchor"]
 #: Network-observable types where a single feed's word is never enough: one
 #: poisoned source must not be able to brand infrastructure malicious.
 CORROBORATION_TYPES: frozenset[str] = frozenset({"ipv4", "ipv6", "domain", "url"})
+
+#: The cap exempts only these shapes (checked at ingest, and on the needle at
+#: query): keyed on the declared type alone it was the feed's to switch off —
+#: measured, an IP declared ``md5`` or a domain declared ``email`` came back
+#: ``malicious``, uncapped. None spells an IP, a dotted host or a URL with a scheme.
+EXEMPT_SHAPES: dict[str, re.Pattern[str]] = {
+    "md5": re.compile(r"[0-9a-f]{32}"),
+    "sha1": re.compile(r"[0-9a-f]{40}"),
+    "sha256": re.compile(r"[0-9a-f]{64}"),
+    "email": re.compile(r"[a-z0-9._+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*"),
+}
 
 
 @dataclass(frozen=True, slots=True)

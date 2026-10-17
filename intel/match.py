@@ -13,7 +13,9 @@ indicator types require **two sources with distinct declared upstreams, each
 asserting ``malicious``**, for a ``malicious`` verdict — a single feed's word
 caps at ``suspicious``, so one poisoned source can never brand infrastructure
 malicious on its own. A second feed's ``benign`` or ``suspicious`` record is
-a counter-signal or a weaker signal, not corroboration.
+a counter-signal or a weaker signal, not corroboration. A value escapes the
+cap only when the needle itself is shaped as a hash digest or an email
+address (``EXEMPT_SHAPES``), whatever type a feed declared for it.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from attack import Corpus, validate_reference
 from intel.decay import FLOOR, decayed_score, score_to_confidence
 from intel.model import (
     CORROBORATION_TYPES,
+    EXEMPT_SHAPES,
     AtomicVerdict,
     BehaviorMatch,
     BehaviorStatus,
@@ -113,8 +116,11 @@ def lookup_indicator(store: IntelStore, value: str, *, as_of: date) -> AtomicVer
     notes: list[str] = []
     if (
         worst_risk == "malicious"
-        and any(ind.indicator_type in CORROBORATION_TYPES for ind, _ in live)
         and len(malicious_upstreams) < 2
+        and (
+            any(ind.indicator_type in CORROBORATION_TYPES for ind, _ in live)
+            or not any(shape.fullmatch(needle) for shape in EXEMPT_SHAPES.values())
+        )
     ):
         worst_risk = "suspicious"
         notes.append(
