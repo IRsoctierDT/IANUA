@@ -8,8 +8,10 @@ The migration updates active text files while preserving captured historical
 GitHub Actions logs under ``sample-logs/``. It is deterministic and safe to run
 more than once.
 
-Security considerations: paths are constrained to the repository root, the
-scan is read-only unless ``--apply`` is passed, and this file excludes itself
+Security considerations: paths are constrained to the repository root — on
+the *resolved* file, not only the declared one, since a symlink at a scanned
+path is refused rather than followed (see :func:`eligible`) — the scan is
+read-only unless ``--apply`` is passed, and this file excludes itself
 from rewriting — its ``REPLACEMENTS`` table intentionally contains the legacy
 identifiers, so rewriting or scanning it would corrupt the migration (the
 table would collapse to identity mappings and ``--check`` would then flag
@@ -88,11 +90,25 @@ REPLACEMENTS: tuple[tuple[str, str], ...] = (
 
 
 def eligible(path: Path) -> bool:
-    """Return whether a repository file may be safely rewritten."""
+    """Return whether a repository file may be safely rewritten.
+
+    A symlink is refused on the declared path, before anything follows it.
+    ``rglob`` keeps every *declared* path under :data:`ROOT`, but it yields a
+    link inside the tree, and ``is_file()``, ``read_text`` and ``write_text``
+    all follow that link to wherever it points. Measured on the unpatched
+    gate: a ``docs/*.md`` link to a file outside the checkout was reported by
+    ``--check`` and the outside file was rewritten by ``--apply``. AGENTS.md
+    §5 scopes filesystem reach to the project, and ``collect/`` refuses a
+    symlink at a declared source for the same reason. A path that resolves
+    outside the root is refused outright rather than judged on its unresolved
+    parts, which was the previous fallback.
+    """
+    if path.is_symlink():
+        return False
     try:
         relative = path.resolve().relative_to(ROOT).parts
-    except ValueError:  # pragma: no cover - defensive; rglob stays under ROOT
-        relative = path.parts
+    except ValueError:
+        return False
     if any(relative[: len(prefix)] == prefix for prefix in EXCLUDED_PREFIXES):
         return False
     if not path.is_file() or any(part in EXCLUDED_PARTS for part in path.parts):
