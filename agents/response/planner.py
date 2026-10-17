@@ -72,18 +72,23 @@ _ALWAYS_FIRST: tuple[str, ...] = ("capture-volatile-memory",)
 _SELECTABLE_ACTIONS: frozenset[str] = frozenset(_ALWAYS_FIRST).union(*_TECHNIQUE_ACTIONS.values())
 
 #: ATT&CK technique identifier shape (``T1110``, ``T1059.001``) — the only
-#: form the pinned corpus emits, so anything else is not a technique.
-_TECHNIQUE_ID = re.compile(r"T\d{4}(?:\.\d{3})?")
+#: form the pinned corpus emits, so anything else is not a technique. ASCII
+#: digits only: ``\d`` matches every Unicode decimal digit, and measured, a
+#: fullwidth ``T\uff11\uff14\uff18\uff16`` passed, rendering like ``T1486`` and comparing
+#: unequal to it.
+_TECHNIQUE_ID = re.compile(r"T[0-9]{4}(?:\.[0-9]{3})?")
 #: The pinned release label (``"19.2"``): a short identifier, never prose.
 _ATTACK_VERSION = re.compile(r"[A-Za-z0-9._-]{0,32}")
 
 
+# Exact ``str`` only: a subclass can override ``__str__``/``__format__``, so
+# what it renders as need not be the buffer the pattern checked.
 def _is_technique_id(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and _TECHNIQUE_ID.fullmatch(value) is not None
+    return type(value) is str and _TECHNIQUE_ID.fullmatch(value) is not None
 
 
 def _is_attack_version(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and _ATTACK_VERSION.fullmatch(value) is not None
+    return type(value) is str and _ATTACK_VERSION.fullmatch(value) is not None
 
 
 def _plan_id(techniques: tuple[str, ...], targets: tuple[str, ...]) -> str:
@@ -121,14 +126,14 @@ class ResponsePlanner:
         """
         if not isinstance(techniques, (list, tuple)):
             raise ValueError("techniques must be a list or tuple.")
-        if not all(_is_technique_id(t) for t in techniques):
+        technique_ids = tuple(techniques)  # copy once, then check the copy
+        if not all(_is_technique_id(t) for t in technique_ids):
             raise ValueError("techniques must be ATT&CK technique ids (T1234 or T1234.001).")
         if not isinstance(targets, (list, tuple)) or not targets:
             raise ValueError("targets must be a non-empty list or tuple.")
         if not _is_attack_version(attack_version):
             raise ValueError("attack_version must be a bounded identifier (<= 32 chars).")
 
-        technique_ids = tuple(techniques)
         selected: list[str] = list(_ALWAYS_FIRST)
         for technique_id in technique_ids:
             for action_id in _TECHNIQUE_ACTIONS.get(technique_id, ()):
