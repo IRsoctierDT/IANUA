@@ -92,10 +92,17 @@ NEVER_JOIN = frozenset(
         "(none)",
         "localhost",
         "localhost.localdomain",
-        # The IPv6 loopback *names* a default /etc/hosts gives the same
-        # address: Debian's `ip6-localhost ip6-loopback`, Red Hat's
+        # Every loopback *name* a default /etc/hosts gives 127.0.0.1 or ::1:
+        # Debian's `ip6-localhost ip6-loopback`, and Red Hat's
+        # `localhost4 localhost4.localdomain4` and
         # `localhost6 localhost6.localdomain6`. Measured through the auditd
-        # parser: `node=ip6-localhost` on two unrelated records linked them.
+        # parser: `node=ip6-localhost`, and later `node=localhost4` (the
+        # IPv4 line of the same file, missed the first time), each linked
+        # two unrelated records. Not here: Debian's `ip6-allnodes`,
+        # `ip6-allrouters`, `ip6-localnet`, `ip6-mcastprefix` — multicast
+        # and prefix names, deferred with multicast (_address_literal).
+        "localhost4",
+        "localhost4.localdomain4",
         "localhost6",
         "localhost6.localdomain6",
         "ip6-localhost",

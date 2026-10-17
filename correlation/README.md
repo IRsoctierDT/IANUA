@@ -95,9 +95,14 @@ accounts' events, and a JSON boolean in a Zeek address field is rendered
 `true`. Such a value is kept as an alias for provenance and is never a join
 key. The cost is a missed link for an address written in a form the parser
 does not accept; the alternative is a confident incident about the wrong
-source. `NEVER_JOIN` also names the IPv6 loopback *names* a default
-`/etc/hosts` carries (`ip6-localhost`, `ip6-loopback`, `localhost6`,
-`localhost6.localdomain6`), measured linking two auditd records as one host.
+source. `NEVER_JOIN` also names every loopback *name* a default Debian or
+Red Hat `/etc/hosts` gives `127.0.0.1` or `::1` (`ip6-localhost`,
+`ip6-loopback`, `localhost4`, `localhost4.localdomain4`, `localhost6`,
+`localhost6.localdomain6`), each measured linking two auditd records as one
+host — the IPv4 pair only after review found the first fix had covered one line
+of the file. Debian's multicast and prefix names (`ip6-allnodes`,
+`ip6-allrouters`, `ip6-localnet`, `ip6-mcastprefix`) are not in the set: a list
+of names is a list, and those wait on the same decision as multicast addresses.
 
 ## Fan-out suppression
 

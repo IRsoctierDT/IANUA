@@ -353,13 +353,24 @@ def test_a_non_address_in_an_address_field_cannot_link_two_accounts() -> None:
 
 @pytest.mark.security
 @pytest.mark.parametrize(
-    "name", ["ip6-localhost", "ip6-loopback", "localhost6", "localhost6.localdomain6"]
+    "name",
+    [
+        "ip6-localhost",
+        "ip6-loopback",
+        "localhost6",
+        "localhost6.localdomain6",
+        "localhost4",
+        "localhost4.localdomain4",
+        "LOCALHOST4",
+    ],
 )
 def test_a_loopback_name_from_a_default_hosts_file_identifies_nothing(name: str) -> None:
-    """``localhost`` was refused; the IPv6 names beside it in ``/etc/hosts`` were not.
+    """``localhost`` was refused; the other loopback names in ``/etc/hosts`` were not.
 
     Measured through the auditd parser: ``node=ip6-localhost`` on two records
-    for different users linked them as one host.
+    for different users linked them as one host. The fix covered the ``::1``
+    line only, and review measured the ``127.0.0.1`` line of the same Red Hat
+    file open: ``localhost4`` and ``localhost4.localdomain4`` linked the same way.
     """
     window = _stored(
         (
