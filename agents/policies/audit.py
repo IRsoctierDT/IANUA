@@ -672,10 +672,22 @@ class AuditLogger:
             prev_hash=prev_hash,
             entry_hash=entry_hash,
         )
+        # Sign *before* appending. The signature covers only ``(seq, entry_hash)``,
+        # both known here, so computing it first changes no byte of what is
+        # signed — and a signer that cannot sign then leaves nothing behind.
+        # Measured before this: a writer built with a verify-only signer
+        # appended the entry and THEN raised from ``sign()``, leaving a chain
+        # whose head signature was missing and could never become valid, and
+        # every retry appended one more such entry.
+        signature = (
+            self._signer.sign(self._head_message(seq, entry_hash))
+            if self._signer is not None
+            else None
+        )
         with open(self.path, "a", encoding="utf-8", opener=_opener_owner_only) as fh:
             fh.write(json.dumps(asdict(event)) + "\n")
-        if self._signer is not None:
-            self._sign_head(seq, entry_hash)
+        if signature is not None:
+            self._write_head_signature(seq, entry_hash, signature)
         return event
 
     # ---------------------------------------------------------------- signing
@@ -684,14 +696,17 @@ class AuditLogger:
         """The bytes signed over the chain head: ``seq|hash``."""
         return f"{seq}|{head_hash}".encode()
 
-    def _sign_head(self, seq: int, head_hash: str) -> None:
-        """Write a detached signature over the current chain head.
+    def _write_head_signature(self, seq: int, head_hash: str, signature: str) -> None:
+        """Persist a detached, already-computed signature over the chain head.
 
         The head hash chains over every prior entry, so one signature attests the
         whole log. An attacker without the signing key can recompute a
         self-consistent chain but cannot forge this signature, so tampering is
         detectable by any holder of the (public) key — offline, without trusting
-        the file. The scheme (HMAC or Ed25519) is recorded in ``algo``.
+        the file. The scheme (HMAC or Ed25519) is recorded in ``algo``. The
+        signature itself is computed by :meth:`_record_locked` *before* the entry
+        is appended, so that an unsignable record is never half-written; this
+        method only writes it.
         """
         if self._signer is None:
             raise ValueError("no signer configured")
@@ -702,7 +717,7 @@ class AuditLogger:
                     "seq": seq,
                     "head_hash": head_hash,
                     "algo": self._signer.algo,
-                    "signature": self._signer.sign(self._head_message(seq, head_hash)),
+                    "signature": signature,
                 }
             ),
         )
