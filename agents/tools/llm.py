@@ -20,7 +20,6 @@ from __future__ import annotations
 import http.client
 import json
 import os
-import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -36,6 +35,8 @@ DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_HOST = "http://127.0.0.1:11434"
 LLAMACPP_DEFAULT_HOST = "http://127.0.0.1:8080"
+# A local model's answer, with headroom; a larger body is a misbehaving server, not a narrative.
+MAX_RESPONSE_BYTES = 1 << 20
 
 # GBNF grammar (llama.cpp) constraining the analyst narrative to a strict JSON object
 # with exactly these three string fields, in order. Guarantees parseable output.
@@ -110,13 +111,37 @@ def _open(req: urllib.request.Request, timeout: float) -> http.client.HTTPRespon
 
 
 def _urllib_transport(url: str, body: dict[str, object], timeout: float) -> dict[str, object]:
+    """POST ``body`` as JSON and return the decoded object, or raise :class:`ValidationError`.
+
+    Every failure a local server can cause arrives as ``ValidationError``,
+    because the caller degrades to the deterministic report on exactly that
+    type. The first filter was ``(URLError, TimeoutError, JSONDecodeError)``
+    and, measured, seven server-controlled failures slipped past it as their
+    raw types: a 4301-digit numeric body (CPython's int-string limit raises a
+    plain ``ValueError``, not ``JSONDecodeError``), invalid UTF-8, a
+    100000-deep array (``RecursionError``), a short body under a long
+    ``Content-Length``, a garbage status line, a connection closed without a
+    response, and an over-long header line. The tiers are therefore the
+    stdlib's own bases — ``OSError`` and ``http.client.HTTPException`` for
+    transport and framing, ``ValueError`` and ``RecursionError`` for decoding —
+    and the body is read to :data:`MAX_RESPONSE_BYTES`, never to EOF.
+    """
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed at construction and at egress
     try:
         with _open(req, timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))  # type: ignore[no-any-return]
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raw = resp.read(MAX_RESPONSE_BYTES + 1)
+    except (OSError, http.client.HTTPException) as exc:
         raise ValidationError(f"generation request failed: {exc}") from exc
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValidationError(f"generation response exceeds {MAX_RESPONSE_BYTES} bytes")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError, UnicodeDecodeError, int limit
+        raise ValidationError(f"generation response is not JSON: {type(exc).__name__}") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError("generator returned a non-object payload")
+    return payload
 
 
 @dataclass
@@ -143,10 +168,13 @@ class OllamaGenerator:
     def generate(self, prompt: str, *, system: str | None = None) -> str:
         """Return the model's completion for ``prompt`` (non-streaming).
 
-        Fails closed: a transport error, a payload that is not a JSON object, or
-        a response missing a non-empty ``response`` field, raises
-        :class:`ValidationError` — never anything else, since callers degrade
-        to the deterministic report on exactly that type.
+        Fails closed: through the shipped transport, every failure a local
+        server can cause — transport, framing, decoding, a body over the size
+        bound, a payload that is not a JSON object, or a missing/empty
+        ``response`` field — raises :class:`ValidationError`, the type callers
+        degrade to the deterministic report on. An injected transport is
+        trusted to keep that contract; this method re-checks the payload shape
+        but does not wrap arbitrary exceptions it raises.
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
