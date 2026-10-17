@@ -64,7 +64,16 @@ logs its address where its hostname would go, and the short-form rule took the
 "leading label" of `10.0.0.5` — so `10.0.0.5` and `10.0.0.7` became one host
 `10`, merging two hosts and both their users into one scored incident
 (measured through the auditd parser). An IP literal is kept whole; it still
-links its own events on exact equality.
+links its own events on exact equality. That rule was enforced by `ipaddress`
+parsing the value, and review measured its fall-through open: a literal the
+parser refuses — `10.0.0.5:514`, `[10.0.0.5]`, `10.0.0.5.`, `010.0.0.5`,
+`10.0.0.5/32`, `127.1`, `sensor@10.0.0.5`, fullwidth digits (11 spellings) —
+still reached the split and collapsed two hosts to `10`. So the short form is
+taken only from a value whose leading label has the shape of a hostname label
+(letters, digits, hyphen, underscore; not purely numeric), and a value that is
+neither such a name nor a parsed address is an alias that joins nothing. The
+cost: a host whose leading label is all digits (`01.corp.example`) or carries
+a character outside that shape is kept for provenance and does not link.
 
 **A placeholder is refused in every spelling.** `NEVER_JOIN` names `127.0.0.1`,
 `::1`, `0.0.0.0` and `::` as strings. Measured through the Zeek parser,

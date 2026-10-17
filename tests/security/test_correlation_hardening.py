@@ -407,6 +407,64 @@ def test_a_loopback_literal_in_the_hostname_field_identifies_nothing(spelling: s
     assert hosts == [], hosts
 
 
+#: Two different hosts whose address is decorated so that ``ipaddress`` refuses
+#: it: none reaches the parsed-value check, and each pair shares a leading label.
+_DECORATED_HOST_PAIRS = (
+    ("10.0.0.5:514", "10.0.0.7:514"),
+    ("10.0.0.5.", "10.0.0.7."),
+    ("[10.0.0.5]", "[10.0.0.7]"),
+    ("010.0.0.5", "010.0.0.7"),
+    ("10.0.0.5/32", "10.0.0.7/32"),
+    ("10.0.0.5,10.0.0.9", "10.0.0.7,10.0.0.8"),
+    ("10.0.0.5\u200b", "10.0.0.7\u200b"),
+    ("127.1", "127.2"),
+    ("[::ffff:10.0.0.5]:22", "[::ffff:10.0.0.7]:22"),
+    ("sensor@10.0.0.5", "sensor@10.0.0.7"),
+    ("\uff11\uff10.0.0.5", "\uff11\uff10.0.0.7"),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("first", "second"), _DECORATED_HOST_PAIRS)
+def test_an_ip_literal_the_parser_refuses_cannot_merge_two_hosts(first: str, second: str) -> None:
+    """The no-shortening rule was enforced by a strict parser, and its fall-through was open.
+
+    A port, brackets, a trailing dot, leading zeros, a CIDR suffix, a list, a
+    zero-width space, a short form, a user prefix, fullwidth digits: each
+    makes ``ipaddress`` refuse the value, which then reached the dot split.
+    Measured through the auditd parser before the fix, every pair here
+    collapsed to one host (``10``, ``[10``, ``010``, ``127``, ``sensor@10``)
+    and both users into a score-10 incident. Such a value is neither a name
+    nor an address, so it is an alias that joins nothing.
+    """
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": first, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": second, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{first!r} and {second!r} merged into one host"
+    hosts = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"]
+    assert all(not e.joinable for e in hosts), f"a decorated literal became a join key: {hosts}"
+    aliases = sorted(alias for e in hosts for alias in e.aliases)
+    assert aliases == sorted((first.casefold(), second.casefold())), hosts
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", ["127.000.000.001", "127.1", "[::1]", "127.0.0.1:514"])
+def test_a_loopback_literal_the_parser_refuses_identifies_no_host(spelling: str) -> None:
+    """``127.000.000.001`` in a hostname field short-formed to host ``127`` and linked two records."""
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": spelling, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": spelling, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{spelling!r} in a hostname field linked two events"
+    hosts = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"]
+    assert all(not e.joinable for e in hosts), hosts
+
+
 # --------------------------------------------------------------------------
 # Bounds and determinism
 # --------------------------------------------------------------------------

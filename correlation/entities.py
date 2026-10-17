@@ -187,8 +187,23 @@ def _clean(value: str | None) -> str:
     return "" if text in NEVER_JOIN else text
 
 
-def _short_host(value: str) -> str:
-    """``web-01.corp.example`` → ``web-01``.
+def _is_host_label(label: str) -> bool:
+    """Whether ``label`` could be the leading label of a hostname.
+
+    Letters, digits, hyphen and underscore — RFC 1123's LDH rule plus the
+    underscore Windows names carry, Unicode-aware so an IDN label qualifies.
+    A label that is *purely* numeric does not: it is an IPv4 octet, in any
+    script (``str.isnumeric`` catches a fullwidth ``10`` as well as ``10``).
+    A positive shape rather than a list of forbidden characters, because a
+    list is the rule the thing it means to stop can spell differently.
+    """
+    if not label or label.isnumeric():
+        return False
+    return all(character.isalnum() or character in "-_" for character in label)
+
+
+def _short_host(value: str) -> str | None:
+    """``web-01.corp.example`` → ``web-01``; ``None`` when the value is not a name.
 
     A fully-qualified name and its short form are the same machine, and
     sources disagree about which they report. Only the leading label is taken:
@@ -196,11 +211,19 @@ def _short_host(value: str) -> str:
     which are not necessarily one host — but in practice the short name is what
     endpoint telemetry carries and what an analyst types.
 
-    Never applied to an IP literal (see :func:`_address_literal`): a sender
-    with no name logs its address in the hostname field, and taking the
-    "leading label" of ``10.0.0.5`` yields ``10``.
+    The leading label must be a hostname label (:func:`_is_host_label`) or
+    nothing is returned, and the caller carries the value as an alias only.
+    An IP literal in the hostname field is handled by :func:`_address_literal`
+    first, but review measured the fall-through open: a literal ``ipaddress``
+    refuses — ``10.0.0.5:514``, ``[10.0.0.5]``, ``10.0.0.5.``, ``010.0.0.5``,
+    ``10.0.0.5/32``, ``127.1``, ``sensor@10.0.0.5``, fullwidth digits — still
+    reached this split, and ``10.0.0.5:514`` and ``10.0.0.7:514`` became one
+    host ``10`` (two hosts and both their users in one score-10 incident,
+    through the auditd parser). The strict parser had become the string rule
+    AGENTS.md §5 warns about, so the guard is on the shape of what is kept.
     """
-    return value.split(".", 1)[0] if "." in value else value
+    label = value.split(".", 1)[0] if "." in value else value
+    return label if _is_host_label(label) else None
 
 
 def _address_literal(value: str) -> str | None:
@@ -282,7 +305,14 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
         if kind == "host":
             literal = _address_literal(value)
             if literal is None:
-                value = _short_host(value)
+                short = _short_host(value)
+                if short is None:
+                    # A value that is neither a name nor an address identifies
+                    # no host. An alias for provenance, never a join key — see
+                    # _short_host for what reached the split before this.
+                    joinable = False
+                else:
+                    value = short
             elif not literal:
                 return
             else:

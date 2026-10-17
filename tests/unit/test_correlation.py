@@ -284,6 +284,32 @@ def test_an_ip_named_host_still_links_its_own_events() -> None:
     assert hosts == [("10.0.0.5", ("10.0.0.5",))], hosts
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("hostname", "short"),
+    [
+        ("web-01.corp.example", "web-01"),
+        ("web-01.corp.example.", "web-01"),
+        ("web_01.corp.example", "web_01"),
+        ("m\u00fcnchen.corp.example", "m\u00fcnchen"),
+        ("desktop-7f3a", "desktop-7f3a"),
+    ],
+)
+def test_a_dns_shaped_name_still_short_forms(hostname: str, short: str) -> None:
+    """The shape guard refuses octets and decorations, not names: LDH, underscore, IDN."""
+    event = normalize({"type": "SYSCALL", "node": hostname, "auid": "alice", "comm": "a"})
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "host"]
+    assert refs == [(short, True)], refs
+
+
+@pytest.mark.unit
+def test_a_hostname_that_is_neither_a_name_nor_an_address_is_kept_for_provenance() -> None:
+    """``10.0.0.5:514`` is what a relay wrote; an analyst sees it, nothing joins on it."""
+    event = normalize({"type": "SYSCALL", "node": "10.0.0.5:514", "auid": "alice", "comm": "a"})
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "host"]
+    assert refs == [("10.0.0.5:514", False)], refs
+
+
 # --------------------------------------------------------------------------
 # Assembly
 # --------------------------------------------------------------------------
