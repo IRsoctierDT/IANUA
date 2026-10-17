@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import functools
 import runpy
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -43,7 +44,9 @@ _BLOCK_SCRIPTS = (
 #: Any of these inside a string literal is a hard-coded host/port (AGENTS.md section 4).
 _HOST_LITERAL_FRAGMENTS = ("11434", "localhost", "127.0.0.1", "http://", "https://")
 #: Discovery primitives that would bypass ``discover_documents``'s controls.
-_DISCOVERY_BYPASSES = frozenset({"glob", "rglob", "iterdir", "walk", "scandir", "listdir"})
+_DISCOVERY_BYPASSES = frozenset(
+    {"glob", "iglob", "rglob", "iterdir", "walk", "fwalk", "scandir", "listdir"}
+)
 
 
 # ------------------------------------------------------------------ static
@@ -64,11 +67,17 @@ def test_ingest_scripts_discover_only_through_rag_ingest(script: str) -> None:
     assert "discover_documents" in imported, f"{script} must import rag.ingest.discover_documents"
     called = {call.func.id for call in _calls(tree) if isinstance(call.func, ast.Name)}
     assert "discover_documents" in called, f"{script} must call discover_documents"
-    bypasses = sorted(
-        call.func.attr
-        for call in _calls(tree)
-        if isinstance(call.func, ast.Attribute) and call.func.attr in _DISCOVERY_BYPASSES
-    )
+    # Attribute calls (``glob.iglob``, ``os.fwalk``), bare-name calls and imported
+    # names (``from glob import glob``, ``from os import walk as w``), and string
+    # constants (``getattr(KB_DIR, "rglob")``, ``__import__("glob")``): each of
+    # those forms passed the first version of this pin. A tripwire, not a proof
+    # -- the planted-symlink tests below are the behavioural guard.
+    nodes = list(ast.walk(tree))
+    seen = {call.func.attr for call in _calls(tree) if isinstance(call.func, ast.Attribute)}
+    seen |= {call.func.id for call in _calls(tree) if isinstance(call.func, ast.Name)}
+    seen |= {a.name for n in nodes if isinstance(n, ast.Import | ast.ImportFrom) for a in n.names}
+    seen |= {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    bypasses = sorted(seen & _DISCOVERY_BYPASSES)
     assert not bypasses, f"{script} discovers documents outside rag.ingest via {bypasses}"
 
 
@@ -153,10 +162,65 @@ def _install_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ]
 
 
-def _run(script: str) -> list[_StubPoint]:
-    runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+def _run(script: str, scripts_dir: Path = _SCRIPTS) -> list[_StubPoint]:
+    runpy.run_path(str(scripts_dir / script), run_name="__main__")
     (client,) = _StubClient.instances
     return [point for _, batch in client.upserts for point in batch]
+
+
+def _fake_repo(tmp_path: Path, script: str) -> Path:
+    """A byte-for-byte copy of ``script`` in a throwaway tree, so ``__file__`` anchors there."""
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    shutil.copy2(_SCRIPTS / script, repo / "scripts" / script)
+    return repo
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("script", "link"),
+    [
+        ("ingest_cyber_kb_chunked.py", "knowledge-base"),
+        ("ingest_cyber_kb.py", "knowledge-base"),
+        ("ingest_cyber_kb.py", "knowledge-base/cybersecurity"),
+    ],
+)
+def test_ingest_scripts_refuse_a_symlinked_corpus_root(
+    script: str, link: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``knowledge-base -> data`` once upserted gitignored lab data (``source='data/...'``)."""
+    _install_stubs(monkeypatch, tmp_path)
+    repo = _fake_repo(tmp_path, script)
+    (repo / "data" / "cybersecurity").mkdir(parents=True)
+    (repo / "data" / "cybersecurity" / "r.md").write_text("SYNTHETIC-LAB-DATA", encoding="utf-8")
+    if link == "knowledge-base":
+        (repo / "knowledge-base").symlink_to("data")
+    else:
+        (repo / "knowledge-base").mkdir()
+        (repo / link).symlink_to("../data/cybersecurity")
+    with pytest.raises(SystemExit, match="corpus root is a symlink"):
+        runpy.run_path(str(repo / "scripts" / script), run_name="__main__")
+    assert _StubClient.instances == [], "refused before any client was built"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", _INGEST_SCRIPTS)
+def test_ingest_scripts_never_store_a_planted_file_symlink(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original F-3 route, planted, so a symlink-following regression fails here."""
+    _install_stubs(monkeypatch, tmp_path)
+    repo = _fake_repo(tmp_path, script)
+    corpus = repo / "knowledge-base" / "cybersecurity"
+    corpus.mkdir(parents=True)
+    (corpus / "real.md").write_text("lab note", encoding="utf-8")
+    (tmp_path / "outside.md").write_text("OUTSIDE-THE-CORPUS", encoding="utf-8")
+    (corpus / "abs_link.md").symlink_to(tmp_path / "outside.md")
+    (corpus / "rel_link.md").symlink_to("../../../outside.md")
+    assert "OUTSIDE" in (corpus / "rel_link.md").read_text(encoding="utf-8")  # links are live
+    points = _run(script, repo / "scripts")
+    assert {p.payload["source"] for p in points} == {"knowledge-base/cybersecurity/real.md"}
+    assert all("OUTSIDE" not in p.payload["text"] for p in points)
 
 
 @pytest.mark.security

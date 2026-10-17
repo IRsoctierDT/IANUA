@@ -10,6 +10,12 @@ working directory. ``source`` is the repo-relative path
 (``knowledge-base/<category>/<file>.md``) -- the string ``str(path)`` produced
 from the repo root before, so ``uuid5`` point ids are unchanged -- and never
 an absolute path, which would carry the operator's directory into the store.
+
+A symlinked corpus root is refused before anything is built: ``discover_documents``
+resolves the root by design, so ``knowledge-base -> data`` (a mode-120000 tree
+entry a commit can deliver) once upserted gitignored ``data/**/*.md`` with
+``source='data/...'``. ``source`` is also derived relative to ``KB_DIR``, so it
+cannot name anything outside ``knowledge-base/`` even without that check.
 """
 
 from pathlib import Path
@@ -26,6 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 KB_DIR = REPO_ROOT / "knowledge-base"
 CHUNK_SIZE = 900
 OVERLAP = 150
+
+if KB_DIR.resolve() != KB_DIR:
+    raise SystemExit(f"refusing {KB_DIR}: the corpus root is a symlink (-> {KB_DIR.resolve()})")
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 client = make_client()
@@ -56,7 +65,7 @@ points = []
 for path in discover_documents(KB_DIR):
     if path.suffix != ".md":
         continue
-    source = path.relative_to(REPO_ROOT).as_posix()
+    source = (KB_DIR.relative_to(REPO_ROOT) / path.relative_to(KB_DIR)).as_posix()
     text = path.read_text(encoding="utf-8")
 
     for chunk_index, chunk in chunk_text(text):

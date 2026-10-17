@@ -6,7 +6,9 @@
 Discovery goes through ``rag.ingest.discover_documents`` (no symlink
 following, ``MAX_FILE_BYTES`` bound, confined to the corpus root) rather than
 a weaker local ``glob``; the root is anchored at the repository, not the
-working directory; ``source`` is stored repo-relative, never absolute.
+working directory; ``source`` is stored repo-relative, never absolute. A
+symlinked corpus root (``knowledge-base`` or ``cybersecurity``) is refused
+before anything is built, and ``source`` is derived relative to ``KB_DIR``.
 """
 
 from pathlib import Path
@@ -22,6 +24,9 @@ COLLECTION = "cybersecurity_kb"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 KB_DIR = REPO_ROOT / "knowledge-base" / "cybersecurity"
 
+if KB_DIR.resolve() != KB_DIR:
+    raise SystemExit(f"refusing {KB_DIR}: the corpus root is a symlink (-> {KB_DIR.resolve()})")
+
 model = SentenceTransformer("all-MiniLM-L6-v2")
 client = make_client()
 
@@ -31,7 +36,7 @@ docs = [p for p in discover_documents(KB_DIR) if p.suffix == ".md" and p.parent 
 points = []
 
 for path in docs:
-    source = path.relative_to(REPO_ROOT).as_posix()
+    source = (KB_DIR.relative_to(REPO_ROOT) / path.relative_to(KB_DIR)).as_posix()
     text = path.read_text(encoding="utf-8")
     vector = model.encode(text).tolist()
 
