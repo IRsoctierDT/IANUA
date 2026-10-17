@@ -7,8 +7,10 @@ Any ``write`` scope on ``GITHUB_TOKEN`` is the blast radius of the job that
 holds it, so the grants are pinned here as an allow-list rather than audited by
 hand on each change. Every file under ``.github/workflows/`` is read — ``*.yml``
 **and** ``*.yaml``, since GitHub loads both and review measured that one
-``.yaml`` file violating every property below left this suite green. Three
-assertions, each the mechanical form of an AGENTS.md §3 or §8 claim:
+``.yaml`` file violating every property below left this suite green. The
+extension compares case-insensitively, so ``.YML`` is read too (whether GitHub
+loads one was not measured). Three assertions, each the mechanical form of an
+AGENTS.md §3 or §8 claim:
 
 * **Workflow-level permissions are a mapping and are read-only.** A write at
   the workflow level reaches every job, including one added later for an
@@ -31,8 +33,19 @@ assertions, each the mechanical form of an AGENTS.md §3 or §8 claim:
   regex alone: review measured that ``- {uses: actions/checkout@main, ...}``
   and ``"uses": actions/setup-python@main`` matched no line the regex looked
   for and passed. The line regex stays as a second layer, and the checkout
-  check compares case-insensitively. A local ``./`` action or a ``docker://``
-  image cannot be pinned this way and fails here; neither is used.
+  check compares case-insensitively. The ref must begin with an owner-shaped
+  segment (letters, digits, ``-``) and a slash, so a local ``./`` action or a
+  ``docker://`` image fails here however it is suffixed: review measured
+  ``docker://alpine@<40 hex>`` and ``./x@<40 hex>`` passing the earlier
+  pattern; neither form is used. The whole value must match, so a trailing
+  newline in the parsed value fails the pattern itself.
+
+  What this does not hold, stated so it is not read in: a SHA is checked for
+  shape, not provenance; "a checkout" means ``actions/checkout``, so a fork of
+  it under another owner is not checked for ``persist-credentials``; a job's
+  ``container:`` or ``services:`` image is not a ``uses:`` and is not read;
+  and the version comment is looked for on any line carrying ``@<sha>``, so
+  a flow-style step can take it from another such line, a comment included.
 """
 
 from __future__ import annotations
@@ -46,11 +59,14 @@ import yaml
 
 _REPO = Path(__file__).resolve().parents[2]
 _WORKFLOWS = sorted(
-    path for ext in ("*.yml", "*.yaml") for path in (_REPO / ".github" / "workflows").glob(ext)
+    path
+    for path in (_REPO / ".github" / "workflows").iterdir()
+    if path.suffix.lower() in (".yml", ".yaml")
 )
 
-#: ``owner/repo[/path]@<40 hex>`` — the SHA is what runs.
-_PINNED_REF = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+#: ``owner/repo[/path]@<40 hex>`` — the SHA is what runs. The owner segment
+#: is letters, digits and ``-``, which ``.`` and ``docker:`` are not.
+_PINNED_REF = re.compile(r"^[A-Za-z0-9-]+/[^@\s]+@[0-9a-f]{40}$")
 #: ...and on the raw line the version comment Dependabot's ``actions-all``
 #: group keeps in step with the SHA.
 _PINNED_USES = re.compile(r"^\s*-?\s*uses:\s*\S+@[0-9a-f]{40}\s+#\s*v?\d")
@@ -159,7 +175,7 @@ def test_every_action_is_pinned_to_a_full_commit_sha_with_a_version_comment(
         if _ANY_USES.match(line) and not _PINNED_USES.match(line)
     ]
     for where, ref in _uses(_load(path)):
-        if not _PINNED_REF.match(ref):
+        if not _PINNED_REF.fullmatch(ref):
             unpinned.append(f"{path.name} {where}: {ref}")
             continue
         sha = ref.rsplit("@", 1)[1]
