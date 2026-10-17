@@ -36,11 +36,13 @@ Security notes:
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -149,10 +151,46 @@ class VerificationReport:
 _FILE_MODE = 0o600
 _DIR_MODE = 0o700
 
+#: How the chain lock is opened: the shape ``scripts/_locking.py`` landed for
+#: the CLI locks (#58), ported here (#69), where it matters more because the
+#: ``LOCK_EX`` that follows is deliberately blocking with no timeout — so there
+#: is no later step that would have returned. ``O_RDONLY`` is all ``flock``
+#: needs (it keys on the open file description, not the access mode) and the
+#: least the open can ask for. ``O_NONBLOCK`` is what makes the type guard
+#: reachable: measured, ``record()`` hung indefinitely on a FIFO at the lock
+#: path. ``O_NOFOLLOW`` fails a symlink ``ELOOP`` instead of following it:
+#: measured, a symlink at the lock path was followed and its target created
+#: ``0o600`` wherever it pointed. The type itself is checked on the descriptor.
+_LOCK_OPEN_FLAGS = os.O_RDONLY | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW
+
 
 def _opener_owner_only(path: str, flags: int) -> int:
     """``open()`` opener creating files 0o600 (no-op for existing files)."""
     return os.open(path, flags, _FILE_MODE)
+
+
+def _open_lock_descriptor(path: Path, flags: int) -> int:
+    """Open ``path`` for ``flock`` and require the *descriptor* to be a regular file.
+
+    ``os.fstat`` asks about the open file description ``os.open`` returned, so
+    the thing inspected and the thing locked are one inode by construction; a
+    path predicate before the open would not be, since a rename between the two
+    hands back a descriptor on a different inode. ``S_ISREG`` is an allow-list
+    rather than ``not S_ISFIFO``: a socket or a device opens without blocking
+    too. Raises ``OSError`` for every refusal, which is what ``record``'s
+    callers already handle for a disk that is full or a path that is not there.
+    """
+    descriptor = os.open(path, flags, _FILE_MODE)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(
+                errno.EINVAL,
+                f"audit lock {path} is not a regular file; refusing to lock through it",
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def _write_text_owner_only(path: Path, text: str) -> None:
@@ -358,12 +396,15 @@ class AuditLogger:
         method holding this may call another that takes it.
         """
         self._lock_path.parent.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
-        with open(self._lock_path, "a", encoding="utf-8", opener=_opener_owner_only) as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        descriptor = _open_lock_descriptor(self._lock_path, _LOCK_OPEN_FLAGS)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
     @contextlib.contextmanager
     def _shared(self) -> Iterator[None]:
@@ -389,15 +430,22 @@ class AuditLogger:
         ``audit-chains-intact`` grades these against a target of 1.0 every five
         minutes.
         """
-        if not self._lock_path.is_file():
+        # ``_is_segment`` rather than ``is_file()``: the latter follows a
+        # symlink, and the writer now refuses one, so no writer can be holding
+        # a lock through it. The same open flags as the writer, minus
+        # ``O_CREAT`` (this must never materialise the file).
+        if not self._is_segment(self._lock_path):
             yield
             return
-        with self._lock_path.open(encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        descriptor = _open_lock_descriptor(self._lock_path, _LOCK_OPEN_FLAGS & ~os.O_CREAT)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
     # ---------------------------------------------------------------- segments
     @staticmethod
