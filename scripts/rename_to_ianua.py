@@ -58,6 +58,20 @@ EXCLUDED_PARTS = {
 #: directory would let a tracked ``.claude`` file carry a legacy identifier
 #: past this gate. Found by review; ``tests/unit`` pins both halves.
 EXCLUDED_PREFIXES: tuple[tuple[str, ...], ...] = ((".claude", "worktrees"),)
+
+#: Top-level directories excluded as whole subtrees. ``data/`` is the
+#: gitignored lab-data root (``.gitignore`` lists ``/data/``, top-level only):
+#: it holds telemetry, evidence reports and staged third-party bundles, none
+#: of which is a repository identifier this gate exists to migrate. Measured
+#: on the unpatched gate: a probe report under ``data/reports/`` carrying a
+#: legacy identifier turned ``--check`` red — a required check (AGENTS.md §7)
+#: failing on content that is never committed, the same local-only false red
+#: ``.claude/worktrees`` produced — and ``--apply`` rewrote it, which is
+#: evidence mutated by a repository-hygiene tool. Matched on the first
+#: component of the path relative to :data:`ROOT` only, so ``attack/data/``
+#: (committed shards) stays in scope; :data:`EXCLUDED_PARTS` cannot express
+#: that, since it matches a component anywhere.
+EXCLUDED_TOP_LEVEL: frozenset[str] = frozenset({"data"})
 TEXT_SUFFIXES = {
     ".cjs",
     ".css",
@@ -110,6 +124,8 @@ def eligible(path: Path) -> bool:
     except ValueError:
         return False
     if any(relative[: len(prefix)] == prefix for prefix in EXCLUDED_PREFIXES):
+        return False
+    if relative and relative[0] in EXCLUDED_TOP_LEVEL:
         return False
     if not path.is_file() or any(part in EXCLUDED_PARTS for part in path.parts):
         return False
