@@ -118,6 +118,16 @@ def test_malformed_technique_ids_and_version_rejected(planner: ResponsePlanner) 
 
 
 @pytest.mark.unit
+def test_planner_refuses_a_catalogue_missing_a_selected_action() -> None:
+    """Measured: dropping ``isolate-host-network`` from an injected catalogue
+    surfaced as ``KeyError`` from ``plan_for_techniques(["T1685"], ...)``."""
+    catalogue = load_catalogue()
+    del catalogue["isolate-host-network"]
+    with pytest.raises(ResponseCatalogueError, match="isolate-host-network"):
+        ResponsePlanner(catalogue)
+
+
+@pytest.mark.unit
 def test_unknown_action_id_rejected(planner: ResponsePlanner) -> None:
     with pytest.raises(ResponseCatalogueError, match="unknown action_id"):
         build_action("delete-everything", "web-01", planner.catalogue)

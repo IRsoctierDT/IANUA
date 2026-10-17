@@ -29,7 +29,7 @@ import hashlib
 import re
 from typing import Any, TypeGuard
 
-from agents.response.catalogue import build_action, load_catalogue
+from agents.response.catalogue import ResponseCatalogueError, build_action, load_catalogue
 from agents.response.plan import ResponseAction, ResponsePlan
 
 #: Technique -> containment actions worth *proposing*. Deliberately narrow:
@@ -65,6 +65,12 @@ _TECHNIQUE_ACTIONS: dict[str, tuple[str, ...]] = {
 #: Collection actions every plan opens with — capture precedes disruption.
 _ALWAYS_FIRST: tuple[str, ...] = ("capture-volatile-memory",)
 
+#: Every action id the selection above can name. Resolved against the
+#: catalogue when a planner is built, so a catalogue entry renamed or removed
+#: in a reviewed PR fails closed at construction — measured before this, it
+#: surfaced as a bare ``KeyError`` the first time that technique was planned.
+_SELECTABLE_ACTIONS: frozenset[str] = frozenset(_ALWAYS_FIRST).union(*_TECHNIQUE_ACTIONS.values())
+
 #: ATT&CK technique identifier shape (``T1110``, ``T1059.001``) — the only
 #: form the pinned corpus emits, so anything else is not a technique.
 _TECHNIQUE_ID = re.compile(r"T\d{4}(?:\.\d{3})?")
@@ -94,6 +100,12 @@ class ResponsePlanner:
 
     def __init__(self, catalogue: dict[str, dict[str, Any]] | None = None) -> None:
         self.catalogue = load_catalogue() if catalogue is None else catalogue
+        missing = sorted(_SELECTABLE_ACTIONS - set(self.catalogue))
+        if missing:
+            raise ResponseCatalogueError(
+                "invalid response catalogue: the planner's selection table names "
+                f"action(s) the catalogue does not carry: {missing}"
+            )
 
     def plan_for_techniques(
         self,
