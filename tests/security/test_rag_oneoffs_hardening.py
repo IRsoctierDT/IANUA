@@ -503,3 +503,40 @@ def test_search_script_tolerates_a_point_without_text(
     monkeypatch.setattr("builtins.input", lambda _prompt="": "anything")
     runpy.run_path(str(_SCRIPTS / "search_cyber_kb.py"), run_name="__main__")
     assert "knowledge-base/x.md" in capsys.readouterr().out
+
+
+_TEXT_VALUES = (None, 123, True, 1.5, {"k": "v"}, ["L"] * 5000, b"B")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", ["search_cyber_kb.py", "ask_cyber_kb.py"])
+@pytest.mark.parametrize(
+    "payload",
+    [None, ["x"], {"source": "knowledge-base/x.md"}]
+    + [{"source": "knowledge-base/x.md", "text": value} for value in _TEXT_VALUES],
+)
+def test_search_scripts_print_every_result_whatever_its_text_value(
+    script: str,
+    payload: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A non-str ``text`` or a non-dict payload neither raises nor hides later results.
+
+    Measured before the fix: ``text=None`` (and 123, True, 1.5, a dict) raised a
+    ``TypeError`` on the slice, so the next result was never printed; a 5000-entry
+    list survived the ``[:1000]`` slice as a 5000-character line.
+    """
+    _install_stubs(monkeypatch, tmp_path)
+    after = {"source": "knowledge-base/next.md", "text": "NEXT-PASSAGE"}
+    _StubClient.canned_points = [
+        types.SimpleNamespace(score=0.5, payload=payload),
+        types.SimpleNamespace(score=0.4, payload=after),
+    ]
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "anything")
+    runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+    out = capsys.readouterr().out
+    assert "knowledge-base/next.md" in out and "NEXT-PASSAGE" in out
+    assert ("knowledge-base/x.md" in out) == isinstance(payload, dict)
+    assert max(len(line) for line in out.splitlines()) <= 1200
