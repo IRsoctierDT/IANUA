@@ -15,6 +15,7 @@ keys the dashboard reads).
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import http.server
 import runpy
@@ -22,6 +23,7 @@ import shutil
 import sys
 import threading
 import types
+import unicodedata
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import NAMESPACE_URL, uuid5
@@ -427,18 +429,22 @@ def test_block_scripts_carry_no_host_literal_and_use_the_qdrant_factory(script: 
     ``qdrant_client.QdrantClient(host="::1", port=6333)``, ``QdrantClient()``, a
     ``qdrant_client.qdrant_client`` import, ``AsyncQdrantClient`` and the split
     literal ``"http:/" + "/localhost:6333"`` passed it. It now refuses any client
-    class reference (name, attribute, import alias, string), any ``qdrant_client``
-    import other than ``qdrant_client.models``, and host fragments in any case. A
-    split literal still passes; the behavioural test below is the guard for that.
+    class reference (name, attribute, import alias, string), any ``import``/``from``
+    of ``qdrant_client`` other than ``qdrant_client.models``, that module named in a
+    string (``importlib.import_module``), and host fragments in any case after NFKC.
+    It parses the bytes, so a coding cookie decodes as Python does. It reads source,
+    so a name or host computed at run time still passes (a split literal, a decoded
+    or ``chr``-built string, a name built for ``getattr``); the behavioural test
+    below is the guard for that, within the configurations it runs.
     """
-    tree = ast.parse((_SCRIPTS / script).read_text(encoding="utf-8"))
+    tree = ast.parse((_SCRIPTS / script).read_bytes())
     fragments = (*_HOST_LITERAL_FRAGMENTS, "::1", "6333")
     offenders = [
         n.value
         for n in ast.walk(tree)
         if isinstance(n, ast.Constant)
         and isinstance(n.value, str)
-        and any(fragment in n.value.lower() for fragment in fragments)
+        and any(f in unicodedata.normalize("NFKC", n.value).lower() for f in fragments)
     ]
     assert not offenders, f"{script} hard-codes a host/port: {offenders}"
     clients = {"QdrantClient", "AsyncQdrantClient"}
@@ -448,7 +454,10 @@ def test_block_scripts_carry_no_host_literal_and_use_the_qdrant_factory(script: 
         if (isinstance(n, ast.Name) and n.id in clients)
         or (isinstance(n, ast.Attribute) and n.attr in clients)
         or (isinstance(n, ast.alias) and n.name.rpartition(".")[2] in clients)
-        or (isinstance(n, ast.Constant) and any(name in str(n.value) for name in clients))
+        or (
+            isinstance(n, ast.Constant)
+            and any(c in str(n.value) for c in (*clients, "qdrant_client"))
+        )
         or (isinstance(n, ast.Import) and any(a.name.startswith("qdrant_client") for a in n.names))
         or (
             isinstance(n, ast.ImportFrom)
@@ -460,22 +469,44 @@ def test_block_scripts_carry_no_host_literal_and_use_the_qdrant_factory(script: 
 
 
 @pytest.mark.security
+@pytest.mark.parametrize("locked", [False, True], ids=["opens", "locked"])
+@pytest.mark.parametrize("unset", [False, True], ids=["path-set", "path-unset"])
 @pytest.mark.parametrize("script", [s for s in _BLOCK_SCRIPTS if s != "rag_cli.py"])  # no Qdrant
 def test_block_scripts_build_only_an_embedded_client_by_default(
-    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    script: str, unset: bool, locked: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The pin's behavioural half: with ``QDRANT_URL`` unset, one client, ``path`` only.
 
-    Every spelling that passed the first static pin builds a ``url``/``host``
-    client here, or fails to import (the stub has no submodule and no
-    ``AsyncQdrantClient``). It sees only clients built through ``qdrant_client``.
+    Four runs: ``QDRANT_PATH`` set, or unset as documented (default store under a
+    tmp source tree); each with a client that opens, or one whose every build
+    raises ``RuntimeError`` (the embedded lock, simulated: the real client's type
+    is unmeasured). Every spelling that passed the first static pin builds a
+    ``url``/``host`` client here or fails to import (no submodule, no
+    ``AsyncQdrantClient`` in the stub), as does a server fallback on that error.
+    Not seen: a client built only under a condition these runs do not vary
+    (another variable, a file, the clock, detecting this test), a fallback on
+    another exception type, and a client not built through ``qdrant_client``.
     """
     _install_stubs(monkeypatch, tmp_path)
+    expected = str(tmp_path / "qdrant")
+    if unset:
+        monkeypatch.delenv("QDRANT_PATH")
+        monkeypatch.setattr("rag.qdrant._REPO_ROOT", tmp_path)
+        expected = str(tmp_path.resolve() / "data" / "qdrant")
+    if locked:
+
+        def refuse(self: _StubClient, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            _StubClient.instances.append(self)
+            raise RuntimeError("storage folder is already accessed (simulated)")
+
+        monkeypatch.setattr(_StubClient, "__init__", refuse)
     monkeypatch.setattr("builtins.input", lambda _prompt="": "QUESTION-TEXT")
     monkeypatch.setattr(sys, "argv", [script])
     _fake_generation(monkeypatch, [])
-    runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
-    assert [c.kwargs for c in _StubClient.instances] == [{"path": str(tmp_path / "qdrant")}]
+    with contextlib.suppress(RuntimeError) if locked else contextlib.nullcontext():
+        runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+    assert [c.kwargs for c in _StubClient.instances] == [{"path": expected}]
 
 
 @pytest.mark.security
