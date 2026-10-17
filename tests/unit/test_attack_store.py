@@ -62,6 +62,11 @@ def test_pin_parser_rejects_malformed_documents() -> None:
         lambda d: d.update(schema=True),  # measured: True == 1 passed equality
         lambda d: d.update(schema=1.0),  # measured: 1.0 == 1 passed equality
         lambda d: d.update(attack_version="nineteen"),
+        # measured: each passed ``\d+``; freshness() read the first as 19.2 and
+        # raised a bare ValueError (4300-digit int limit) on the last
+        lambda d: d.update(attack_version="\u0661\u0669.\u0662"),
+        lambda d: d.update(attack_version="\uff11\uff19.\uff12"),
+        lambda d: d.update(attack_version="1" * 5000 + ".2"),
         lambda d: d.update(retrieved="21/08/2026"),
         lambda d: d.update(retrieved="2026-02-30"),  # shape-valid, not a calendar date
         lambda d: d.update(extra_field=1),

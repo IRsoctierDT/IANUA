@@ -31,7 +31,9 @@ from attack.errors import AttackError, AttackUnavailableError
 
 _SCHEMA_VERSION = 1
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_VERSION_RE = re.compile(r"^\d+\.\d+$")
+# ASCII and bounded: measured, ``\d+`` accepted "\u0661\u0669.\u0662" (int() reads
+# 19.2) and a 5000-digit major that freshness() then raised a bare ValueError on.
+_VERSION_RE = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SHARD_NAME_RE = re.compile(r"^[a-z0-9_-]+\.json$")
 _HEX_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -182,11 +184,16 @@ def load_pin(path: Path | None = None) -> Pin:
 def load_pin_document(path: Path | None = None) -> dict[str, object]:
     """Read the raw pin document for signing/verification — validated, read once.
 
-    The first version read the file twice: once through ``load_pin`` (bounded,
-    validated, discarded) and again unbounded and unvalidated for the value
-    it returned, so what ``--sign`` signed or ``--check`` verified was never
-    the bytes that had been validated. The document returned is the one
-    ``parse_pin`` accepted.
+    One call reads the file once and returns the very document ``parse_pin``
+    accepted (the first version read it twice, the second time unbounded and
+    unvalidated). That holds per call, not per caller: nothing ties this read
+    to a separate ``load_pin()``. ``scripts/update_attack.py check()`` makes
+    both calls — shard digests, public key and signature from ``load_pin()``,
+    the payload they are verified over from here — so a pin swapped between
+    them gets a signature verified while the shards were checked against the
+    other pin (measured). One read per decision means
+    ``parse_pin(load_pin_document())`` at the call site; ``sign()`` makes only
+    the one call.
     """
     pin_path = DEFAULT_PIN_PATH if path is None else path
     document = _read_pin_document(pin_path)
