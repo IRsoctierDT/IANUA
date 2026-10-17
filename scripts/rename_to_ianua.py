@@ -131,11 +131,17 @@ def eligible(path: Path) -> bool:
         return False
     if path.resolve() == SELF:
         return False
+    # ``.env.example`` is named because ``Path(".env.example").suffix`` is
+    # ``.example`` and ``Path(".env").suffix`` is ``""``: the ``.env`` suffix
+    # entry above reaches neither, which kept the documented config out of
+    # the gate (measured) and keeps the operator's gitignored ``.env`` out of
+    # it, which is the half that must stay so.
     return path.suffix.lower() in TEXT_SUFFIXES or path.name in {
         "Dockerfile",
         "Makefile",
         "Procfile",
         ".pre-commit-config.yaml",
+        ".env.example",
     }
 
 

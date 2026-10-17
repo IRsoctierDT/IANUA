@@ -123,3 +123,24 @@ def test_the_script_still_skips_only_itself_among_its_own_copies() -> None:
     # which is the point: path equality does not generalise to copies.
     assert not copy_outside_worktrees.exists()
     assert not eligible(copy_outside_worktrees)
+
+
+@pytest.mark.unit
+def test_the_documented_env_example_is_gated_and_the_real_env_is_not() -> None:
+    """`Path(".env.example").suffix` is `.example` and `Path(".env").suffix` is `""`.
+
+    So the `.env` entry in `TEXT_SUFFIXES` reached neither file. The tracked,
+    documented `.env.example` must be gated by name; the operator's gitignored
+    `.env` holds secrets and must stay out, so it is probed as a real file
+    carrying a legacy identifier at a location the gate otherwise scans.
+    """
+    assert (ROOT / ".env.example").is_file(), "the documented config is expected here"
+    assert eligible(ROOT / ".env.example"), ".env.example is not gated — a legacy id there passes"
+
+    secrets_shaped = ROOT / ".claude" / ".env"
+    secrets_shaped.parent.mkdir(parents=True, exist_ok=True)
+    secrets_shaped.write_text(f"LEGACY_NAME={LEGACY}\n", encoding="utf-8")
+    try:
+        assert not eligible(secrets_shaped), "a .env file must never be read or rewritten"
+    finally:
+        secrets_shaped.unlink()
