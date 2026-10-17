@@ -302,10 +302,18 @@ def test_an_ip_named_host_still_links_its_own_events() -> None:
         ("web_01.corp.example", "web_01"),
         ("m\u00fcnchen.corp.example", "m\u00fcnchen"),
         ("desktop-7f3a", "desktop-7f3a"),
+        ("web-01.10.corp.example", "web-01"),
+        ("0x7f-gw.corp.example", "0x7f-gw"),
+        ("0xg1.corp.example", "0xg1"),
+        ("xn--mnchen-3ya.corp.example", "xn--mnchen-3ya"),
     ],
 )
 def test_a_dns_shaped_name_still_short_forms(hostname: str, short: str) -> None:
-    """The shape guard refuses octets and decorations, not names: LDH, underscore, IDN."""
+    """The shape guard refuses octets and decorations, not names: LDH, underscore, IDN.
+
+    A numeric middle label is a name; a label is a hex number only when all of
+    it after ``0x`` is hex digits.
+    """
     event = normalize({"type": "SYSCALL", "node": hostname, "auid": "alice", "comm": "a"})
     refs = [(r.value, r.joinable) for r in references(event) if r.kind == "host"]
     assert refs == [(short, True)], refs

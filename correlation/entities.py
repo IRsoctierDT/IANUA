@@ -207,19 +207,26 @@ def _clean(value: str | None) -> str:
     return "" if text in NEVER_JOIN else text
 
 
+def _is_ldh(label: str) -> bool:
+    """Letters, digits, hyphen and underscore, non-empty — Unicode-aware, so an IDN label passes."""
+    return bool(label) and all(character.isalnum() or character in "-_" for character in label)
+
+
 def _is_host_label(label: str) -> bool:
     """Whether ``label`` could be the leading label of a hostname.
 
-    Letters, digits, hyphen and underscore — RFC 1123's LDH rule plus the
-    underscore Windows names carry, Unicode-aware so an IDN label qualifies.
-    A label that is *purely* numeric does not: it is an IPv4 octet, in any
-    script (``str.isnumeric`` catches a fullwidth ``10`` as well as ``10``).
+    LDH-shaped (:func:`_is_ldh`: RFC 1123's rule plus the underscore Windows
+    names carry) and not a number. A purely numeric label is an IPv4 octet,
+    in any script (``str.isnumeric`` catches a fullwidth ``10`` as well as
+    ``10``), and so is a ``0x`` hex label: ``inet_aton`` reads ``0x7f000001``
+    as 127.0.0.1, and review measured it linking two records as one host.
     A positive shape rather than a list of forbidden characters, because a
     list is the rule the thing it means to stop can spell differently.
     """
-    if not label or label.isnumeric():
+    if not _is_ldh(label) or label.isnumeric():
         return False
-    return all(character.isalnum() or character in "-_" for character in label)
+    digits = label[2:] if label.startswith("0x") else ""
+    return not (digits and all(character in "0123456789abcdef" for character in digits))
 
 
 def _short_host(value: str) -> str | None:
@@ -231,19 +238,23 @@ def _short_host(value: str) -> str | None:
     which are not necessarily one host — but in practice the short name is what
     endpoint telemetry carries and what an analyst types.
 
-    The leading label must be a hostname label (:func:`_is_host_label`) or
-    nothing is returned, and the caller carries the value as an alias only.
-    An IP literal in the hostname field is handled by :func:`_address_literal`
-    first, but review measured the fall-through open: a literal ``ipaddress``
-    refuses — ``10.0.0.5:514``, ``[10.0.0.5]``, ``10.0.0.5.``, ``010.0.0.5``,
-    ``10.0.0.5/32``, ``127.1``, ``sensor@10.0.0.5``, fullwidth digits — still
-    reached this split, and ``10.0.0.5:514`` and ``10.0.0.7:514`` became one
-    host ``10`` (two hosts and both their users in one score-10 incident,
-    through the auditd parser). The strict parser had become the string rule
-    AGENTS.md §5 warns about, so the guard is on the shape of what is kept.
+    The whole value must be DNS-shaped or nothing is returned, and the caller
+    carries the value as an alias only: every label LDH-shaped, the leading
+    one a hostname label (:func:`_is_host_label`), the last one not all digits
+    (no top-level domain is), one trailing dot allowed. An IP literal in the
+    hostname field is handled by :func:`_address_literal` first, but review
+    measured the fall-through open twice. First a literal ``ipaddress``
+    refuses — ``10.0.0.5:514``, ``[10.0.0.5]``, ``010.0.0.5``, ``127.1``,
+    ``sensor@10.0.0.5``, fullwidth digits — reached the split, and
+    ``10.0.0.5:514`` and ``10.0.0.7:514`` became one host ``10``. Then, with
+    only the leading label checked, ``0x7f.0.0.1`` and ``0x7f.0.0.2`` became
+    one host ``0x7f``. The cost: a name with a character outside that shape
+    anywhere (``web-01.corp.example:8080``) is an alias and does not link.
     """
-    label = value.split(".", 1)[0] if "." in value else value
-    return label if _is_host_label(label) else None
+    labels = (value[:-1] if value.endswith(".") else value).split(".")
+    if not _is_host_label(labels[0]) or labels[-1].isnumeric():
+        return None
+    return labels[0] if all(_is_ldh(label) for label in labels[1:]) else None
 
 
 def _address_literal(value: str) -> str | None:
@@ -262,8 +273,11 @@ def _address_literal(value: str) -> str | None:
     reports an IPv4 peer as ``::ffff:a.b.c.d``.
 
     Only loopback and unspecified are refused — the two kinds the committed
-    set already names. Link-local and multicast are not: widening the set is
-    a deny-list decision for review, not a spelling fix.
+    set already names — as ``ipaddress`` reports them. Link-local and
+    multicast are not, and nor is an encoding it does not report as loopback
+    (IPv4-compatible ``::127.0.0.1``, NAT64 ``64:ff9b::127.0.0.1``, 6to4
+    ``2002:7f00:1::``): each is an ordinary address that joins. Widening the
+    set is a deny-list decision for review, not a spelling fix.
     """
     try:
         parsed = ipaddress.ip_address(value)

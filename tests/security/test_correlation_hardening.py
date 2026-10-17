@@ -505,6 +505,11 @@ _DECORATED_HOST_PAIRS = (
     ("[::ffff:10.0.0.5]:22", "[::ffff:10.0.0.7]:22"),
     ("sensor@10.0.0.5", "sensor@10.0.0.7"),
     ("\uff11\uff10.0.0.5", "\uff11\uff10.0.0.7"),
+    # Only the leading label was checked: each of these passed it.
+    ("0x7f.0.0.1", "0x7f.0.0.2"),
+    ("0xa.0.0.5", "0xa.0.0.7"),
+    ("0x7f.0.0.1:514", "0x7f.0.0.2:514"),
+    ("web.10.0.0.5", "web.10.0.0.7"),
 )
 
 
@@ -519,7 +524,10 @@ def test_an_ip_literal_the_parser_refuses_cannot_merge_two_hosts(first: str, sec
     Measured through the auditd parser before the fix, every pair here
     collapsed to one host (``10``, ``[10``, ``010``, ``127``, ``sensor@10``)
     and both users into a score-10 incident. Such a value is neither a name
-    nor an address, so it is an alias that joins nothing.
+    nor an address, so it is an alias that joins nothing. The fix checked the
+    leading label only, and review measured the hex ``inet_aton`` form open
+    (``0x7f.0.0.1`` and ``0x7f.0.0.2`` one host ``0x7f``), so the whole value
+    must now be DNS-shaped.
     """
     window = _stored(
         (
@@ -535,9 +543,16 @@ def test_an_ip_literal_the_parser_refuses_cannot_merge_two_hosts(first: str, sec
 
 
 @pytest.mark.security
-@pytest.mark.parametrize("spelling", ["127.000.000.001", "127.1", "[::1]", "127.0.0.1:514"])
+@pytest.mark.parametrize(
+    "spelling",
+    ["127.000.000.001", "127.1", "[::1]", "127.0.0.1:514", "0x7f000001", "0X7F000001", "0x7f.1"],
+)
 def test_a_loopback_literal_the_parser_refuses_identifies_no_host(spelling: str) -> None:
-    """``127.000.000.001`` in a hostname field short-formed to host ``127`` and linked two records."""
+    """``127.000.000.001`` in a hostname field short-formed to host ``127`` and linked two records.
+
+    ``0x7f000001`` (``inet_aton``'s hex spelling of 127.0.0.1) has the shape
+    of a hostname label and linked the same way until hex labels were refused.
+    """
     window = _stored(
         (
             {"type": "SYSCALL", "node": spelling, "auid": "alice", "comm": "a"},

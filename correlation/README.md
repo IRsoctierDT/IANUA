@@ -68,21 +68,35 @@ links its own events on exact equality. That rule was enforced by `ipaddress`
 parsing the value, and review measured its fall-through open: a literal the
 parser refuses — `10.0.0.5:514`, `[10.0.0.5]`, `10.0.0.5.`, `010.0.0.5`,
 `10.0.0.5/32`, `127.1`, `sensor@10.0.0.5`, fullwidth digits (11 spellings) —
-still reached the split and collapsed two hosts to `10`. So the short form is
-taken only from a value whose leading label has the shape of a hostname label
-(letters, digits, hyphen, underscore; not purely numeric), and a value that is
-neither such a name nor a parsed address is an alias that joins nothing. The
-cost: a host whose leading label is all digits (`01.corp.example`) or carries
-a character outside that shape is kept for provenance and does not link.
+still reached the split and collapsed two hosts to `10`. A check on the
+leading label alone was then measured open the same way: `0x7f.0.0.1` and
+`0x7f.0.0.2` (the hex form `inet_aton` reads) became one host `0x7f`, and
+`web.10.0.0.5` and `web.10.0.0.7` one host `web`. So the short form is taken
+only from a value that is DNS-shaped as a whole: every label letters, digits,
+hyphen or underscore; the leading one not a number (all digits, or `0x` and
+hex digits — `0x7f000001` is 127.0.0.1); the last one not all digits; one
+trailing dot allowed. A value that is neither such a name nor a parsed address
+is an alias that joins nothing. The cost: a host whose leading label is a
+number (`01.corp.example`, `0xbeef`) or whose name carries a character outside
+that shape anywhere (`web-01.corp.example:8080`) is kept for provenance and does
+not link.
 
-**A placeholder is refused in every spelling.** `NEVER_JOIN` names `127.0.0.1`,
-`::1`, `0.0.0.0` and `::` as strings. Measured through the Zeek parser,
-`0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1`, `127.0.0.2`, `0000::1`, `::0` and
-`0:0:0:0:0:0:0:0` each linked two unrelated flows into an incident. An address
-is therefore judged loopback or unspecified on the *parsed* value; the string
-set stays as defence in depth. Link-local and multicast are deliberately not
-refused here — widening the deny set is a decision for review, not a spelling
-fix.
+**A loopback or unspecified address is judged on its parsed value, not its
+spelling.** `NEVER_JOIN` names `127.0.0.1`, `::1`, `0.0.0.0` and `::` as
+strings. Measured through the Zeek parser, `0:0:0:0:0:0:0:1`,
+`::ffff:127.0.0.1`, `127.0.0.2`, `0000::1`, `::0` and `0:0:0:0:0:0:0:0` each
+linked two unrelated flows into an incident. An address is therefore refused
+when `ipaddress` reports the parsed value loopback or unspecified (an
+IPv4-mapped one unwrapped first); the string set stays as defence in depth. A
+spelling `ipaddress` refuses never joins either (the sections either side of
+this one). What that does not cover, so "every spelling" is not claimed: an
+encoding `ipaddress` parses and does *not* report as loopback —
+IPv4-compatible `::127.0.0.1`, NAT64 `64:ff9b::127.0.0.1`, 6to4
+`2002:7f00:1::` — is an ordinary address and joins, as do `0.0.0.1`,
+`255.255.255.255`, link-local and multicast; widening to those is a decision
+for review, not a spelling fix. And a placeholder *name* is refused only when
+`NEVER_JOIN` lists it: a list is a list, so `undefined` or `127-0-0-1` is a
+name and joins as one.
 
 **A value in an address field that is not an address never joins.** The
 parsed-value rule above had a fall-through, and review measured it open: a
