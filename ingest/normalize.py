@@ -132,6 +132,16 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     losing an event is the failure this layer exists to prevent.
     """
     if isinstance(raw, bytes):
+        # The ceiling is applied to the bytes, *before* decoding. A decode is
+        # linear in exactly the input the ceiling exists to bound, and the
+        # decoded length is a count of code points, not bytes: measured,
+        # 131072 four-byte code points are 524288 bytes — twice the ceiling —
+        # and passed a check on the decoded text as under it, with a note
+        # that would have called those code points "bytes". This is the path
+        # ``collect/`` uses, so it is the one where the unit has to be right.
+        if len(raw) > MAX_RAW_BYTES:
+            excerpt = raw[:MAX_RAW_EXCERPT].decode("utf-8", errors="replace")
+            return _over_ceiling(len(raw), "byte", excerpt)
         raw = raw.decode("utf-8", errors="replace")
     if isinstance(raw, Mapping):
         return _normalize_mapping(raw)
@@ -141,13 +151,10 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
         )
 
     if len(raw) > MAX_RAW_BYTES:
-        return _unrecognized(
-            evidence=_carried(raw[:MAX_RAW_EXCERPT]),
-            notes=(
-                f"record exceeds the {MAX_RAW_BYTES}-byte ceiling "
-                f"({len(raw)} bytes); carried as an excerpt without parsing",
-            ),
-        )
+        # On text the same constant bounds code points, which is the unit
+        # every regex and ``json.loads`` below do their work per — so it still
+        # bounds the work. The note names the unit it measured.
+        return _over_ceiling(len(raw), "character", raw[:MAX_RAW_EXCERPT])
 
     # A leading byte-order mark is an encoding artifact, not content, and it
     # defeated recognition: ``str.strip()`` leaves U+FEFF in place (a format
@@ -202,6 +209,21 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     if pairs is not None:
         return _normalize_mapping(pairs)
     return _unrecognized(evidence=_carried(raw))
+
+
+def _over_ceiling(size: int, unit: str, excerpt: str) -> NormalizedEvent:
+    """Carry a record past :data:`MAX_RAW_BYTES` as a bounded excerpt, unparsed.
+
+    ``unit`` is the one ``size`` was measured in — ``"byte"`` on the bytes
+    path, ``"character"`` on text — so the note never calls one the other.
+    """
+    return _unrecognized(
+        evidence=_carried(excerpt),
+        notes=(
+            f"record exceeds the {MAX_RAW_BYTES}-{unit} ceiling ({size} {unit}s); "
+            "carried as an excerpt without parsing",
+        ),
+    )
 
 
 def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[NormalizedEvent]:

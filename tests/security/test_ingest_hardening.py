@@ -2934,3 +2934,31 @@ def test_auditd_still_claims_on_its_own_clock_when_nothing_else_corroborates() -
     shipped = {"type": "PATH", "msg": "audit(1760000000.123:42): item=0 name=/usr/bin/x"}
     signature = detect_source(shipped)
     assert signature is not None and signature.vendor == "auditd"
+
+
+@pytest.mark.security
+def test_the_size_ceiling_is_measured_in_bytes_on_bytes() -> None:
+    """``MAX_RAW_BYTES`` bounded code points, not bytes, on the path collect/ uses.
+
+    Measured before the fix: 131072 four-byte code points — 524288 bytes,
+    twice the ceiling — were decoded in full and then passed the check as
+    under it, because the check ran on ``len()`` of the decoded text. The
+    constant is named in bytes and the note said "bytes" of a count that was
+    not one. On bytes the ceiling now applies before the decode; on text the
+    same constant bounds code points — the unit the regexes and ``json.loads``
+    work per — and the note names whichever it measured.
+    """
+    wide = chr(0x1F600) * (MAX_RAW_BYTES // 2)
+    encoded = wide.encode("utf-8")
+    assert len(wide) < MAX_RAW_BYTES < len(encoded), "the probe no longer straddles the ceiling"
+
+    event = normalize(encoded)
+    assert event.parse_status == "text"
+    assert len(event.raw_excerpt) <= MAX_RAW_EXCERPT
+    assert any(f"byte ceiling ({len(encoded)} bytes)" in note for note in event.notes), event.notes
+
+    # The same value as text is under the code-point ceiling, so it is read.
+    assert not any("ceiling" in note for note in normalize(wide).notes)
+    # And a text record over it is refused in the unit it was measured in.
+    over = normalize("x" * (MAX_RAW_BYTES + 1))
+    assert any(f"character ceiling ({MAX_RAW_BYTES + 1} characters)" in note for note in over.notes)
