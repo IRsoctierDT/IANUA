@@ -916,9 +916,33 @@ class EventStore:
         others, measured both ways on one construction — are handled there, and
         the pricing is recorded there too.
 
+        **Everything below reads one snapshot.** The verdict, the counts, the
+        id stream, the observables stream and the mark are separate
+        statements, and without an enclosing transaction each took its own.
+        Measured through this method: a writer's commit landing between the
+        count statement and the first step of the id stream gave ``COUNT(*)``
+        200 against 201 streamed ids and raised the inconsistency error below
+        — a damage verdict on a healthy store, reachable by
+        ``scripts/run_backup.py --verify-restore`` on a live root, whose
+        ``backup.lock`` excludes no writer. The observables stream has the same
+        shape against its own count. A deferred ``BEGIN`` in WAL mode blocks
+        nobody: the snapshot opens at the first read and ends at the commit the
+        ``with`` performs.
+
         Raises:
             StoreCorruptionError: if the database file is damaged.
             StoreIntegrityError: if the count and the id stream disagree.
+        """
+        with self._conn:
+            self._conn.execute("BEGIN")
+            return self._attest_in_snapshot()
+
+    def _attest_in_snapshot(self) -> Attestation:
+        """Every read :meth:`attest` makes, run inside the snapshot it opened.
+
+        Split out so the whole body sits in one transaction without
+        re-indenting it. Called only by :meth:`attest`, whose
+        ``_refuse_corruption`` boundary covers it.
         """
         self.verify_integrity()
         counts = self._conn.execute(ATTEST_COUNTS_SQL).fetchone()
