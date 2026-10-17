@@ -11,13 +11,14 @@ executor is absent or does not confirm execution.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -439,3 +440,115 @@ def test_release_chmod_does_not_follow_a_symlink_swapped_in_after_validation(
     with pytest.raises(ContainmentError, match="symlink"):
         kit.release_file(entry.name)
     assert stat.S_IMODE(outside.stat().st_mode) == 0o444
+
+
+@contextlib.contextmanager
+def _fail_if_blocked(seconds: int = 5) -> Iterator[None]:
+    """Fail instead of hanging when an open blocks; raises a BaseException, since a TimeoutError is an OSError."""
+
+    class Blocked(BaseException):
+        pass
+
+    def on_alarm(*_: object) -> None:
+        raise Blocked
+
+    previous = signal.signal(signal.SIGALRM, on_alarm)
+    signal.alarm(seconds)
+    try:
+        yield
+    except Blocked:
+        pytest.fail(f"blocked for {seconds}s in an open that must not block")
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _swap_after_is_file(
+    monkeypatch: pytest.MonkeyPatch, victim: Path, swap: Callable[[], None]
+) -> None:
+    """Run ``swap`` right after ``is_file()`` has said yes to ``victim`` (the race, deterministic)."""
+    real_is_file = Path.is_file
+
+    def hooked(self: Path) -> bool:
+        result = real_is_file(self)
+        if result and self == victim:
+            swap()
+        return result
+
+    monkeypatch.setattr(Path, "is_file", hooked)
+
+
+@pytest.mark.security
+def test_quarantine_refuses_a_hard_link_to_a_file_outside_the_root(tmp_path: Path) -> None:
+    """No symlink anywhere: measured before the fix, the outside file went 0o644 -> 0o400."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o644)
+    os.link(outside, root / "mal.bin")
+    with pytest.raises(ContainmentError, match="2 links"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+    assert (root / "mal.bin").exists()  # nothing moved
+
+
+@pytest.mark.security
+def test_release_refuses_a_vault_entry_that_is_a_hard_link(tmp_path: Path) -> None:
+    """Measured before the fix: the outside file went 0o444 -> 0o600 and was moved into the root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o444)
+    (root / "mal.bin").write_bytes(b"evil")
+    kit = ContainmentToolkit(root)
+    entry = root / QUARANTINE_DIRNAME / kit.quarantine_file("mal.bin").rollback.split("'")[1]
+    entry.unlink()
+    os.link(outside, entry)
+    with pytest.raises(ContainmentError, match="2 links"):
+        kit.release_file(entry.name)
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444
+    assert not (root / "mal.bin").exists()
+
+
+@pytest.mark.security
+def test_a_fifo_swapped_in_after_validation_fails_closed_instead_of_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured before the fix: ``os.open`` blocked forever before the regular-file check ran — at
+    the target on quarantine (pre-existing) and at the vault entry on release (introduced)."""
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "mal.bin"
+    target.write_bytes(b"evil")
+    kit = ContainmentToolkit(root)
+
+    def to_fifo(victim: Path) -> Callable[[], None]:
+        def swap() -> None:
+            victim.unlink()
+            os.mkfifo(victim)
+
+        return swap
+
+    _swap_after_is_file(monkeypatch, target, to_fifo(target))
+    with _fail_if_blocked(), pytest.raises(ContainmentError, match="not a regular file"):
+        kit.quarantine_file("mal.bin")
+
+    monkeypatch.undo()  # the first hook would turn the recreated target into a FIFO again
+    target.unlink()
+    target.write_bytes(b"evil")
+    entry = root / QUARANTINE_DIRNAME / kit.quarantine_file("mal.bin").rollback.split("'")[1]
+    _swap_after_is_file(monkeypatch, entry, to_fifo(entry))
+    with _fail_if_blocked(), pytest.raises(ContainmentError, match="not a regular file"):
+        kit.release_file(entry.name)
+
+
+@pytest.mark.security
+def test_overlong_entry_name_is_a_containment_error_not_a_raw_oserror(tmp_path: Path) -> None:
+    """Measured before the fix: ``ENAMETOOLONG`` escaped ``is_file()`` unwrapped."""
+    (tmp_path / "x.bin").write_bytes(b"x")
+    kit = ContainmentToolkit(tmp_path)
+    kit.quarantine_file("x.bin")  # the vault exists, so the long name reaches the stat
+    with pytest.raises(ContainmentError, match="no such vault entry"):
+        kit.release_file("a" * 300)

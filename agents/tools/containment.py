@@ -50,6 +50,8 @@ repository's Linux lab baseline.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -252,39 +254,55 @@ class ContainmentToolkit:
         return target
 
     @staticmethod
+    def _is_regular_file(path: Path) -> bool:
+        """``Path.is_file`` that reports an unstat-able path (e.g. ``ENAMETOOLONG``) as not a file."""
+        try:
+            return path.is_file()
+        except OSError:
+            return False
+
+    @staticmethod
     def _open_nofollow(path: Path, expected: os.stat_result | None = None) -> int:
-        """Open the regular file at ``path`` read-only, never through a symlink.
+        """Open the regular file at ``path`` read-only, never through a link of either kind.
 
         :meth:`_resolve_no_symlink` checks the path *before* the open, hash and
-        rename it guards, and ``Path.chmod`` follows symlinks — so a link
-        swapped in at the path after validation redirected the mode change to
-        whatever it pointed at, anywhere the toolkit's user may chmod (measured:
-        a vault entry replaced by a link to a file outside the root took that
-        file to ``0o400``, and the action reported executed). Everything that
-        acts on a quarantine path therefore goes through a descriptor opened
-        ``O_NOFOLLOW`` — a link fails to open instead of being followed — and,
-        when ``expected`` is given, the descriptor must be that inode, so the
-        entry sealed under a digest is the file the digest was computed from.
-        Fails closed; the caller owns and closes the returned descriptor.
+        rename it guards, and ``Path.chmod`` follows symlinks — measured, a link
+        swapped in after validation took a file outside the root to ``0o400``
+        with the action reporting executed. Everything that acts on a quarantine
+        path therefore goes through this descriptor, refused unless it is: not
+        reached through a symlink (``O_NOFOLLOW`` fails instead of following); a
+        regular file, checked after an ``O_NONBLOCK`` open so a FIFO cannot block
+        the open before the check (the flag is cleared once the file is known
+        regular); the only name for its inode (``st_nlink == 1`` — a hard link
+        passes every symlink check, yet ``fchmod`` through it changes a file at
+        another path, possibly outside the root); and, when ``expected`` is
+        given, the inode that was hashed. Fails closed; the caller closes it.
         """
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            fd = os.open(path, flags)
         except OSError as exc:
-            raise ContainmentError(
-                f"refusing to act on {path.name!r}: a symlink appeared at the path after "
-                "validation, or the entry vanished"
-            ) from exc
-        actual = os.fstat(fd)
-        if not stat.S_ISREG(actual.st_mode) or (
-            expected is not None
-            and (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)
-        ):
-            os.close(fd)
-            raise ContainmentError(
-                f"{path.name!r} is not the file that was validated and hashed — "
-                "treat the target as NOT contained"
+            why = (
+                "a symlink appeared at the path after validation"
+                if exc.errno == errno.ELOOP
+                else (exc.strerror or type(exc).__name__)
             )
-        return fd
+            raise ContainmentError(f"refusing to act on {path.name!r}: {why}") from exc
+        actual = os.fstat(fd)
+        if not stat.S_ISREG(actual.st_mode):
+            why = "is not a regular file"
+        elif actual.st_nlink != 1:
+            why = f"has {actual.st_nlink} links; acting on it would change a file at another path"
+        elif expected is not None and (actual.st_dev, actual.st_ino) != (
+            expected.st_dev,
+            expected.st_ino,
+        ):
+            why = "is not the file that was validated and hashed"
+        else:
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
+            return fd
+        os.close(fd)
+        raise ContainmentError(f"{path.name!r} {why} — treat the target as NOT contained")
 
     # --- file quarantine (stdlib, reversible) -------------------------------
 
@@ -295,14 +313,14 @@ class ContainmentToolkit:
         (``<root>/.quarantine/``, mode ``0o400`` — preserved for forensics, no
         longer executable) with a sidecar recording its origin for
         :meth:`release_file`. Validates ``path`` against traversal out of the
-        root; refuses non-files, files already in the vault, and duplicate
-        vault entries (fail closed).
+        root; refuses non-files, hard links, files already in the vault, and
+        duplicate vault entries (fail closed).
         """
         self._gate("quarantine_file")
         target = self._resolve_no_symlink(self.root, path)
         if self._vault in (target, *target.parents):
             raise ContainmentError("file is already inside the quarantine vault")
-        if not target.is_file():
+        if not self._is_regular_file(target):
             raise ContainmentError(f"not a file: {path!r}")
 
         digest = hashlib.sha256()
@@ -345,12 +363,12 @@ class ContainmentToolkit:
 
         The file is restored with mode ``0o600`` — never with execute
         permission; a human re-enables execution deliberately. Fails closed if
-        the vault entry or its sidecar is missing/invalid, or if a file now
-        exists at the original path.
+        the vault entry or its sidecar is missing/invalid, if the entry is not a
+        single-link regular file, or if a file now exists at the original path.
         """
         self._gate("release_file")
         entry = self._resolve_no_symlink(self._vault, entry_name)
-        if entry.parent != self._vault or not entry.is_file():
+        if entry.parent != self._vault or not self._is_regular_file(entry):
             raise ContainmentError(f"no such vault entry: {entry_name!r}")
         sidecar = entry.with_name(entry.name + ".meta.json")
         try:
