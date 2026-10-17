@@ -725,3 +725,69 @@ def test_a_symlinked_backup_is_neither_counted_nor_followed(
     measurement = measure_backup_present(linked_root, now=1_760_000_000.0)
     assert measurement.value is None, measurement.detail
     assert "symlink" in measurement.detail
+
+
+@pytest.mark.security
+def test_a_backup_entry_swapped_for_a_link_mid_probe_is_neither_counted_nor_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fix above checked each entry by path and then ``stat``ed it by path.
+
+    Measured against it: a thread flipping ``data/backups/victim`` between an
+    empty directory and a link to an outside directory holding a manifest made
+    the probe count that manifest 510 times in 29,581 probes, and follow-stat
+    the far side. The walk is now by descriptor with ``O_NOFOLLOW``, so the far
+    side is unreachable rather than unlikely: a count, or any ``open``/``stat``
+    whose result is the outside inode, fails here. One-directional by design —
+    a correct probe cannot trip it however the threads interleave.
+    """
+    import threading
+
+    from sli.indicators import BACKUP_SUBDIR, MANIFEST_FILE, measure_backup_present
+
+    root = _root(tmp_path)
+    backups = root / BACKUP_SUBDIR
+    (backups / "victim").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / MANIFEST_FILE).write_text("{}", encoding="utf-8")
+    far = {(st.st_dev, st.st_ino) for st in (outside.stat(), (outside / MANIFEST_FILE).stat())}
+    reached: list[str] = []
+    real_stat, real_open = os.stat, os.open
+
+    def stat_spy(path: Any, *args: Any, **kwargs: Any) -> Any:
+        result = real_stat(path, *args, **kwargs)
+        if (result.st_dev, result.st_ino) in far:
+            reached.append(f"stat:{path}")
+        return result
+
+    def open_spy(path: Any, *args: Any, **kwargs: Any) -> int:
+        fd = real_open(path, *args, **kwargs)
+        if (os.fstat(fd).st_dev, os.fstat(fd).st_ino) in far:
+            reached.append(f"open:{path}")
+        return fd
+
+    stop = threading.Event()
+
+    def flip() -> None:
+        victim, spare = backups / "victim", backups / ".spare"
+        while not stop.is_set():
+            with contextlib.suppress(OSError):
+                victim.rename(spare)
+                victim.symlink_to(outside)
+                victim.unlink()
+                spare.rename(victim)
+
+    monkeypatch.setattr(os, "stat", stat_spy)
+    monkeypatch.setattr(os, "open", open_spy)
+    flipper = threading.Thread(target=flip, daemon=True)
+    flipper.start()
+    try:
+        values = [measure_backup_present(root, now=1_760_000_000.0).value for _ in range(3000)]
+    finally:
+        stop.set()
+        flipper.join()
+    monkeypatch.undo()
+
+    assert 1.0 not in values, f"counted the far side's manifest {values.count(1.0)} times"
+    assert not reached, f"the probe reached beyond the root: {reached[:4]}"

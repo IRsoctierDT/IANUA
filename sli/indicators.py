@@ -37,6 +37,9 @@ Security considerations, all three load-bearing:
 
 from __future__ import annotations
 
+import errno
+import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -451,6 +454,32 @@ def measure_audit_chains_intact(root: Path, now: float) -> Measurement:
     return Measurement(len(intact) / len(present), detail)
 
 
+_NOFOLLOW_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _manifest_mtime(backups_fd: int, name: str) -> float | None:
+    """The mtime of ``name/manifest.json`` under ``backups_fd``, or ``None``.
+
+    ``None`` unless ``name`` opens as a directory without following a link and
+    its manifest is a regular file by ``lstat`` through that descriptor. An
+    entry swapped for a link, a file or nothing since the scan is skipped;
+    any other ``OSError`` (an unreadable entry) propagates.
+    """
+    try:
+        entry_fd = os.open(name, _NOFOLLOW_DIR, dir_fd=backups_fd)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            return None
+        raise
+    try:
+        info = os.stat(MANIFEST_FILE, dir_fd=entry_fd, follow_symlinks=False)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    finally:
+        os.close(entry_fd)
+    return info.st_mtime if stat.S_ISREG(info.st_mode) else None
+
+
 def measure_backup_present(root: Path, now: float) -> Measurement:
     """Whether any backup exists to restore from, and how old the newest is.
 
@@ -459,51 +488,58 @@ def measure_backup_present(root: Path, now: float) -> Measurement:
     recovery ordering and documents no cadence — a target here would be an
     invented requirement (AGENTS.md §9).
 
-    **A symlink anywhere between the root and a manifest is not followed.**
-    ``scripts/run_backup.py`` confines the directory it writes with the same
-    walk the store and the cursor use, so a link under ``data/backups`` was
-    planted rather than written. One at ``data`` or ``data/backups`` grades
-    ``UNKNOWN`` with the reason; a linked entry inside the directory is
-    skipped *before* anything on its far side is ``stat``ed. Measured before
-    this: a link to a directory outside the root holding a ``manifest.json``
-    read ``1.0`` — a backup that is not this node's — and the probe
-    ``stat``ed the manifest on the far side, the one reach this package
-    promises never to make.
+    **A symlink anywhere between the root and a manifest is not followed, and
+    the refusal holds against a swap.** ``scripts/run_backup.py`` confines the
+    directory it writes with the same walk the store and the cursor use, so a
+    link under ``data/backups`` was planted rather than written. ``data`` and
+    ``data/backups`` are opened by descriptor with ``O_NOFOLLOW``; a link at
+    either grades ``UNKNOWN`` with the reason. Each entry is opened the same
+    way relative to that descriptor, and its manifest ``lstat``ed through the
+    entry's own descriptor — one ``stat``, which also gives the age — so an
+    entry swapped for a link after the scan is skipped rather than followed.
+    Measured before this: a linked entry pointing outside the root read
+    ``1.0`` and ``stat``ed the far side; after a first fix checked by path, a
+    thread flipping an entry between a directory and that link still did both
+    (510 counts in 29,581 probes). The root itself is followed: it is the
+    operator's argument. An entry the probe cannot open raises, which the
+    report grades ``UNKNOWN``.
     """
-    walked = root
-    for part in BACKUP_SUBDIR.parts:
-        walked = walked / part
-        if walked.is_symlink():
-            return Measurement(
-                None,
-                f"{walked.relative_to(root)} is a symlink; refusing to follow it out of "
-                "the lab-data root",
-            )
-    directory = root / BACKUP_SUBDIR
-    if not directory.is_dir():
-        return Measurement(0.0, f"no backup directory at {BACKUP_SUBDIR}")
-    manifests: list[Path] = []
-    for entry in sorted(directory.iterdir()):
-        # ``is_symlink`` first: ``is_dir`` and ``is_file`` follow a link and
-        # would ``stat`` whatever is on its far side before it was noticed.
-        if entry.is_symlink() or not entry.is_dir():
-            continue
-        candidate = entry / MANIFEST_FILE
-        if not candidate.is_symlink() and candidate.is_file():
-            manifests.append(candidate)
+    no_directory = Measurement(0.0, f"no backup directory at {BACKUP_SUBDIR}")
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except (FileNotFoundError, NotADirectoryError):
+        return no_directory
+    try:
+        walked = root
+        for part in BACKUP_SUBDIR.parts:
+            walked = walked / part
+            try:
+                child = os.open(part, _NOFOLLOW_DIR, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+                    raise
+                if not walked.is_symlink():
+                    return no_directory
+                return Measurement(
+                    None,
+                    f"{walked.relative_to(root)} is a symlink; refusing to follow it out of "
+                    "the lab-data root",
+                )
+            os.close(fd)
+            fd = child
+        with os.scandir(fd) as entries:
+            names = sorted(e.name for e in entries if e.is_dir(follow_symlinks=False))
+        found = [(_manifest_mtime(fd, name), name) for name in names]
+    finally:
+        os.close(fd)
+    manifests = [(mtime, name) for mtime, name in found if mtime is not None]
     if not manifests:
         return Measurement(0.0, f"no backup manifest under {BACKUP_SUBDIR}")
-    try:
-        newest = max(manifests, key=lambda candidate: candidate.stat().st_mtime)
-        age = now - newest.stat().st_mtime
-    except OSError as exc:
-        return Measurement(
-            1.0, f"{len(manifests)} backup(s) present; age unreadable ({type(exc).__name__})"
-        )
+    newest, name = max(manifests, key=lambda manifest: manifest[0])
     return Measurement(
         1.0,
-        f"{len(manifests)} backup(s) present; newest written {age / 3600:.1f}h ago "
-        f"({newest.parent.name})",
+        f"{len(manifests)} backup(s) present; newest written {(now - newest) / 3600:.1f}h ago "
+        f"({name})",
     )
 
 
