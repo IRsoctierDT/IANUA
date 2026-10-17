@@ -63,6 +63,15 @@ def _reject(reason: str) -> MappingStoreError:
     return MappingStoreError(f"invalid mapping ruleset: {reason}")
 
 
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError(f"duplicate key {key!r}")
+        document[key] = value
+    return document
+
+
 def _read_document(path: Path) -> object:
     """Read (bounded) and decode one ruleset file; every failure is a rejection.
 
@@ -71,6 +80,9 @@ def _read_document(path: Path) -> object:
     ``UnicodeDecodeError``/``ValueError``/``RecursionError``, a directory named
     ``*.json`` as ``IsADirectoryError``, and a symlink to ``/dev/zero`` as
     ``MemoryError`` because the whole file was read before the size check.
+    A repeated key is refused too: ``json.loads`` keeps the last one, so a file
+    could read one way in review and load another (measured: a second
+    ``"rules"`` key cut the committed 15 rules to 1 and still loaded).
     """
     try:
         with path.open("rb") as handle:
@@ -80,7 +92,7 @@ def _read_document(path: Path) -> object:
     if len(raw) > MAX_STORE_BYTES:
         raise _reject(f"{path.name} exceeds {MAX_STORE_BYTES} bytes")
     try:
-        return json.loads(raw)
+        return json.loads(raw, object_pairs_hook=_unique_keys)
     except (ValueError, RecursionError) as exc:
         raise _reject(f"{path.name} is not valid JSON ({type(exc).__name__}: {exc})") from exc
 
@@ -248,7 +260,10 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
     including a file's own top level: measured before this check, a second
     file carrying ``schema: 2``, a typo'd ``rule`` key and an unknown key
     loaded silently and contributed nothing, which the single-file path
-    rejects on every count.
+    rejects on every count. "Exactly one" counts files whose top level carries
+    the key, whatever its value: a ``"fallback": null`` used to count as
+    absent, so a null in an earlier file loaded beside a real one in a later
+    file and was rejected only in the reverse order (measured).
     """
     directory = RULES_DIR if rules_dir is None else rules_dir
     resolved_corpus = load_corpus() if corpus is None else corpus
@@ -259,7 +274,7 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
         return parse_store(_read_document(paths[0]), corpus=resolved_corpus)
     # Multi-file: merge rules in filename order; exactly one fallback.
     merged_rules: list[object] = []
-    fallback: object | None = None
+    fallbacks: list[object] = []
     for path in paths:
         document = _read_document(path)
         if not isinstance(document, dict) or not set(document) <= _TOP_FIELDS:
@@ -271,11 +286,9 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
             raise _reject(f"{path.name}: rules must be a list")
         merged_rules.extend(document["rules"])
         if "fallback" in document:
-            if fallback is not None:
-                raise _reject("multiple ruleset files declare a fallback")
-            fallback = document["fallback"]
-    if fallback is None:
-        raise _reject("no ruleset file declares the fallback")
+            fallbacks.append(document["fallback"])
+    if len(fallbacks) != 1:
+        raise _reject(f"exactly one ruleset file must declare the fallback ({len(fallbacks)} do)")
     return parse_store(
-        {"schema": 1, "rules": merged_rules, "fallback": fallback}, corpus=resolved_corpus
+        {"schema": 1, "rules": merged_rules, "fallback": fallbacks[0]}, corpus=resolved_corpus
     )

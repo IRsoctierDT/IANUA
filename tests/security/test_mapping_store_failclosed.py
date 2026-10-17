@@ -173,6 +173,41 @@ def test_multi_file_store_merges_well_formed_files(tmp_path: Path, corpus: Corpu
     assert store.fallback.technique_id == "UNKNOWN"
 
 
+@pytest.mark.security
+@pytest.mark.parametrize("null_first", [True, False], ids=["null-first", "null-last"])
+def test_null_fallback_counts_as_declared(null_first: bool, tmp_path: Path, corpus: Corpus) -> None:
+    """A ``"fallback": null`` counted as absent: measured, null in an earlier
+    file loaded beside a real fallback in a later file; the reverse rejected."""
+    document = json.loads(_RULES.read_text(encoding="utf-8"))
+    real = document.pop("fallback")
+    null_name, real_name = ("a.json", "b.json") if null_first else ("b.json", "a.json")
+    null_file = {"schema": 1, "rules": [], "fallback": None}
+    (tmp_path / null_name).write_text(json.dumps(null_file), encoding="utf-8")
+    (tmp_path / real_name).write_text(json.dumps({**document, "fallback": real}), encoding="utf-8")
+    with pytest.raises(MappingStoreError, match="exactly one"):
+        load_store(tmp_path, corpus=corpus)
+    (tmp_path / real_name).write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(MappingStoreError, match="legacy block"):  # a lone null is no fallback
+        load_store(tmp_path, corpus=corpus)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("multi", [False, True], ids=["single-file", "multi-file"])
+def test_duplicate_json_key_rejects(multi: bool, tmp_path: Path, corpus: Corpus) -> None:
+    """``json.loads`` keeps the last duplicate key: measured, a second "rules"
+    key cut 15 rules to 1, and a hidden ``schema: 3`` file loaded, both silently."""
+    text = _RULES.read_text(encoding="utf-8").rstrip()
+    if multi:
+        (tmp_path / "a_core.json").write_text(text, encoding="utf-8")
+        text = '{"schema": 3, "rules": [{"id": "x"}], "schema": 1, "rules": []}'
+    else:
+        first_rule = json.dumps(json.loads(text)["rules"][:1])
+        text = text[:-1] + f', "rules": {first_rule}}}'
+    (tmp_path / "b.json").write_text(text, encoding="utf-8")
+    with pytest.raises(MappingStoreError, match=r"duplicate key '(rules|schema)'"):
+        load_store(tmp_path, corpus=corpus)
+
+
 _UNDECODABLE: list[tuple[str, Callable[[Path], object]]] = [
     ("invalid utf-8", lambda p: p.write_bytes(b'{"schema": 1, "rules": ["\xff"]}')),
     ("over-long integer", lambda p: p.write_text('{"schema": ' + "1" * 5000 + "}")),
