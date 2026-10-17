@@ -8,7 +8,9 @@ OpenSSF Scorecard *Dangerous-Workflow* criteria are asserted here against every
 file under ``.github/workflows/`` — ``*.yml`` **and** ``*.yaml``, since GitHub
 loads both and a pin that reads one extension is evaded by the other (review
 measured exactly that: one ``.yaml`` file violating every property below left
-this suite green).
+this suite green). The extension is matched case-insensitively, so a ``.YML``
+file is read too; whether GitHub loads one was not measured, and reading it is
+the fail-closed direction.
 
 * **No ``pull_request_target``.** It runs with the base repository's secrets
   against a pull request from anywhere; nothing in this repository needs it.
@@ -17,9 +19,10 @@ this suite green).
   script is script injection. Every event-derived value this repository hands
   to a shell goes through ``env:`` instead, so the shell sees a variable and
   never the expression. The match spans lines, because an expression split
-  across a newline is still one expression. A ``with:`` input that executes
-  its value (``actions/github-script``'s ``script``) is not read here — a
-  stated limit of this pin, not a claim about it.
+  across a newline is still one expression, and a ``run:`` that is not a
+  string (``!!binary``) fails rather than going unread. A ``with:`` input
+  that executes its value (``actions/github-script``'s ``script``) is not
+  read here — a stated limit of this pin, not a claim about it.
 * **``workflow_run`` is gated on the triggering run, not on its colour.** The
   trigger's ``branches: [main]`` filter applies to the triggering run's *head*
   branch, so a ``pull_request`` CI run from a fork whose head branch is named
@@ -32,7 +35,10 @@ this suite green).
   (``needs``) inherits the gate only while its ``if:`` calls no status
   function: ``always()``, ``!cancelled()`` and ``!failure()`` run it when the
   gated job was *skipped*, so a dependant that names one must carry the gate
-  itself.
+  itself. The function names are matched case-insensitively: review measured
+  ``Always()``, ``ALWAYS()``, ``${{ !CANCELLED() }}`` and ``${{ !Failure() }}``
+  passing a case-sensitive match, and cited the runner's case-insensitive
+  function lookup (not measured here; the pin refuses them regardless).
 * **A ``workflow_run`` workflow never cancels at the workflow level.** A
   workflow-level ``concurrency`` group is claimed when the *run* is created,
   before any job ``if:`` is evaluated, so a run whose only job is then skipped
@@ -60,7 +66,9 @@ import yaml
 
 _REPO = Path(__file__).resolve().parents[2]
 _WORKFLOWS = sorted(
-    path for ext in ("*.yml", "*.yaml") for path in (_REPO / ".github" / "workflows").glob(ext)
+    path
+    for path in (_REPO / ".github" / "workflows").iterdir()
+    if path.suffix.lower() in (".yml", ".yaml")
 )
 
 #: A GitHub Actions expression, possibly spanning lines. Inside ``run:`` it is
@@ -70,7 +78,7 @@ _EXPRESSION = re.compile(r"\$\{\{.*?\}\}", re.DOTALL)
 
 #: A status function in a dependant's ``if:`` replaces the implicit
 #: ``success()`` that otherwise skips it when a needed job was skipped.
-_STATUS_FUNCTION = re.compile(r"\b(?:always|cancelled|failure|success)\s*\(")
+_STATUS_FUNCTION = re.compile(r"\b(?:always|cancelled|failure|success)\s*\(", re.IGNORECASE)
 
 _PUSH_TO_MAIN = (
     "github.event.workflow_run.conclusion == 'success' && "
@@ -100,6 +108,8 @@ def _load(path: Path) -> dict[Any, Any]:
 
 
 def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
+    # A bare ``on`` and a quoted ``"on"`` are one key to GitHub and two here.
+    assert not (True in workflow and "on" in workflow), "a workflow declares `on` twice"
     on = workflow.get(True, workflow.get("on"))
     if isinstance(on, str):
         return {on: None}
@@ -111,6 +121,22 @@ def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
 
 def _canonical(condition: object) -> str:
     return " ".join(str(condition).split())
+
+
+def _ungated_jobs(name: str, workflow: dict[Any, Any]) -> list[str]:
+    """Each job of a ``workflow_run`` workflow that can run without its recorded gate."""
+    found = []
+    for job_name, job in workflow["jobs"].items():
+        condition = _canonical(job.get("if", ""))
+        gate = WORKFLOW_RUN_GATES.get((name, job_name))
+        if gate is not None:
+            if condition != gate:
+                found.append(f"entry job {job_name!r} carries {condition!r}, not the recorded gate")
+        elif not job.get("needs"):
+            found.append(f"entry job {job_name!r} has no gate recorded in WORKFLOW_RUN_GATES")
+        elif _STATUS_FUNCTION.search(condition):
+            found.append(f"dependant job {job_name!r} calls a status function in its if:")
+    return found
 
 
 @pytest.mark.security
@@ -129,8 +155,13 @@ def test_no_expression_is_interpolated_into_a_run_block(path: Path) -> None:
         f"{job_name}/{step.get('name') or step.get('id') or index}: {match}"
         for job_name, job in _load(path)["jobs"].items()
         for index, step in enumerate(job.get("steps") or [])
-        if isinstance(step.get("run"), str)
-        for match in _EXPRESSION.findall(step["run"])
+        for match in _EXPRESSION.findall(str(step["run"]) if "run" in step else "")
+    ]
+    offenders += [
+        f"{job_name}/{index}: run is a {type(step['run']).__name__}, not a string"
+        for job_name, job in _load(path)["jobs"].items()
+        for index, step in enumerate(job.get("steps") or [])
+        if "run" in step and not isinstance(step["run"], str)
     ]
     assert not offenders, (
         f"{path.name} expands an expression inside a shell script (script injection); "
@@ -148,24 +179,33 @@ def test_workflow_run_jobs_gate_on_a_push_to_main_from_this_repository(path: Pat
     assert triggers["workflow_run"].get("branches") == ["main"], (
         f"{path.name}: workflow_run must filter on the triggering run's head branch"
     )
-    for job_name, job in workflow["jobs"].items():
-        condition = _canonical(job.get("if", ""))
-        gate = WORKFLOW_RUN_GATES.get((path.name, job_name))
-        if gate is not None:
-            assert condition == gate, (
-                f"{path.name}: job {job_name!r} must carry exactly the recorded gate as its "
-                f"whole if: — got {condition!r}"
-            )
-        elif not job.get("needs"):
-            pytest.fail(
-                f"{path.name}: entry job {job_name!r} runs with this repository's token "
-                "without a gate recorded in WORKFLOW_RUN_GATES"
-            )
-        else:
-            assert not _STATUS_FUNCTION.search(condition), (
-                f"{path.name}: dependant job {job_name!r} calls a status function in its if:, "
-                "so it runs when its gated predecessor was skipped; gate it directly"
-            )
+    ungated = _ungated_jobs(path.name, workflow)
+    assert not ungated, (
+        f"{path.name}: an entry job must carry exactly its recorded gate as its whole if:, and "
+        "a dependant that calls a status function runs when its gated predecessor was skipped "
+        f"— {ungated}"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "condition",
+    ["always()", "Always()", "ALWAYS ()", "${{ !CANCELLED() }}", "${{ !Failure() }}", "SuCcEsS()"],
+)
+def test_a_dependants_status_function_is_caught_in_any_case(condition: str) -> None:
+    # The entry job carries its recorded gate, so the dependant branch is the
+    # one reached: review found the earlier harness failing on the entry job
+    # first and never exercising this check.
+    workflow = {
+        "jobs": {
+            "detect": {"if": _PUSH_TO_MAIN},
+            "ungated": {"needs": "detect", "if": condition},
+            "inherits": {"needs": "detect", "if": "needs.detect.result == 'skipped'"},
+        }
+    }
+    assert _ungated_jobs("release-on-merge.yml", workflow) == [
+        "dependant job 'ungated' calls a status function in its if:"
+    ]
 
 
 @pytest.mark.security
