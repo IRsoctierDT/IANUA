@@ -67,11 +67,18 @@ def _md_cell(text: str) -> str:
     """Escape untrusted text for a Markdown table cell or inline position.
 
     Pipes and backticks are backslash-escaped (a raw backtick would open a
-    code span and swallow the rest of the line), as are ``[`` and ``<`` so no
-    link, image beacon, autolink or raw HTML is live; the backslash itself is
-    escaped first, so one in the input cannot re-arm the mark after it. Line
-    breaks are flattened and control characters stripped via ``_sanitize``.
-    Emphasis (``*``/``_``) stays live: it changes styling, not structure.
+    code span and swallow the rest of the line), as are ``[`` and ``<``, so
+    under CommonMark no link, image beacon, ``<...>`` autolink or raw HTML is
+    live; the backslash itself is escaped first, so one in the input cannot
+    re-arm the mark after it. Line breaks are flattened and control characters
+    stripped via ``_sanitize``. Emphasis (``*``/``_``) stays live: it changes
+    styling, not structure.
+
+    Residual, not closed: GFM autolink literals need neither ``[`` nor ``<``,
+    so a bare ``http(s)://`` URL, a ``www.`` host or an email address passes
+    through unchanged and is a live link under a GFM renderer (measured with
+    pandoc's gfm reader; the dashboard renders reports with ``st.markdown``,
+    which was not measured). The link text is the URL itself and needs a click.
     """
     text = _sanitize(text).replace("\\", "\\\\")
     for mark in "|`[<":

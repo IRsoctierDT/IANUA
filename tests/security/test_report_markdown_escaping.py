@@ -185,3 +185,13 @@ def test_links_images_html_and_backslashes_are_not_live() -> None:
         "!\\[b](https://attacker.example/px) \\[l](u) \\<https://attacker.example> "
         "\\<img> \\\\\\`x\\`"
     )
+
+
+@pytest.mark.security
+def test_gfm_autolink_literals_are_a_stated_residual() -> None:
+    """Bare URLs, ``www.`` hosts and emails pass through and are live links under
+    GFM (measured with pandoc gfm). Pinned so that closing the gap updates this
+    test and ``_md_cell``'s docstring together, never one of them silently."""
+    bare = "https://attacker.example/r www.attacker.example/r admin@attacker.example"
+    assert _md_cell(bare) == bare
+    assert "GFM autolink literals" in (_md_cell.__doc__ or "")
