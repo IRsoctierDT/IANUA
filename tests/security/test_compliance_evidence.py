@@ -96,3 +96,27 @@ def test_export_bundle_content_is_declared_and_bounded(tmp_path: Path) -> None:
     payload = json.loads(written.read_text(encoding="utf-8"))
     assert payload["disclaimer"].startswith("Automated posture evidence")
     assert {c["id"] for c in payload["controls"]} == {"T-01"}
+
+
+@pytest.mark.security
+def test_a_symlinked_evidence_file_cannot_redirect_the_write(tmp_path: Path) -> None:
+    """The directory was confined; the file in it was not.
+
+    ``_evidence_dir`` resolves ``data/compliance`` and refuses an escape, but
+    ``evidence.jsonl`` itself was opened with a plain ``os.open``, which
+    follows a symlink. Measured before the fix: a link planted at that name
+    carried the whole append — 449 bytes of evidence lines — to a file
+    outside the root, with no error. The check is explicit so the operator
+    reads why, and the opener carries ``O_NOFOLLOW`` so the check cannot be
+    raced between the ``lstat`` and the ``open``.
+    """
+    root = tmp_path / "root"
+    (root / "data" / "compliance").mkdir(parents=True)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("", encoding="utf-8")
+    (root / "data" / "compliance" / "evidence.jsonl").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        record_run(_report(root), root=root, clock=lambda: _CLOCK)
+
+    assert outside.read_text(encoding="utf-8") == "", "the append followed the link"

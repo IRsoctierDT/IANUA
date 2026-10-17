@@ -15,7 +15,10 @@ Security considerations:
 - Records carry control ids, statuses, and short details only — never file
   contents, environment values, or secrets (AGENTS.md §5).
 - All paths are validated to stay inside the repository's ``data/`` directory
-  (fail closed on escape attempts).
+  (fail closed on escape attempts). That includes the evidence file itself: a
+  symlink at ``evidence.jsonl`` is refused, and the open carries
+  ``O_NOFOLLOW`` so the refusal cannot be raced. Measured before this: a link
+  planted at that name redirected the whole append to a file outside the root.
 - Files are created owner-read/write only, matching the audit logger's posture.
 """
 
@@ -43,7 +46,10 @@ _MAX_TAIL_BYTES = 1_000_000
 
 
 def _opener_owner_only(path: str, flags: int) -> int:
-    return os.open(path, flags, _FILE_MODE)
+    """``open()`` opener: files are created 0o600, and a symlink at the final
+    component is not followed (``ELOOP``), so a write can only land where its
+    directory check said it would."""
+    return os.open(path, flags | os.O_NOFOLLOW, _FILE_MODE)
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,11 @@ def record_run(
         for result in report.results
     )
     evidence_path = directory / _EVIDENCE_FILE
+    if evidence_path.is_symlink():
+        raise ValueError(
+            f"{_EVIDENCE_FILE} is a symlink (-> {evidence_path.readlink()}); refusing to "
+            "follow it out of data/compliance"
+        )
     with open(evidence_path, "a", encoding="utf-8", opener=_opener_owner_only) as fh:
         for record in records:
             fh.write(json.dumps(record.__dict__, sort_keys=True) + "\n")
