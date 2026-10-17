@@ -9,9 +9,11 @@ to the store's newest ``retrieved`` date — deterministic either way).
 
 Poisoning containment at query time (defense in depth over the ingest
 checks): never-flag suppression runs again here, and network-observable
-indicator types require **two sources with distinct declared upstreams** for
-a ``malicious`` verdict — a single feed's word caps at ``suspicious``, so one
-poisoned source can never brand infrastructure malicious on its own.
+indicator types require **two sources with distinct declared upstreams, each
+asserting ``malicious``**, for a ``malicious`` verdict — a single feed's word
+caps at ``suspicious``, so one poisoned source can never brand infrastructure
+malicious on its own. A second feed's ``benign`` or ``suspicious`` record is
+a counter-signal or a weaker signal, not corroboration.
 """
 
 from __future__ import annotations
@@ -98,12 +100,21 @@ def lookup_indicator(store: IntelStore, value: str, *, as_of: date) -> AtomicVer
         if ind.risk == "suspicious":
             worst_risk = "suspicious"
     source_ids = sorted({ind.source_id for ind, _ in live})
-    upstreams = {store.sources[sid].upstream for sid in source_ids}
+    # Corroboration is counted over the records that *assert* malicious. The
+    # first version counted every live record's upstream, so a benign (or
+    # suspicious) record from a second feed counted as a second word for
+    # "malicious": measured, feed A `benign` + feed B `malicious` returned
+    # `malicious` with no cap note, while feed B alone was capped — one
+    # poisoned feed branding infrastructure whenever any other feed had
+    # listed the value at all, which is the outcome the cap exists to stop.
+    malicious_upstreams = {
+        store.sources[ind.source_id].upstream for ind, _ in live if ind.risk == "malicious"
+    }
     notes: list[str] = []
     if (
         worst_risk == "malicious"
         and any(ind.indicator_type in CORROBORATION_TYPES for ind, _ in live)
-        and len(upstreams) < 2
+        and len(malicious_upstreams) < 2
     ):
         worst_risk = "suspicious"
         notes.append(
