@@ -238,3 +238,15 @@ def test_llamacpp_host_mutated_after_construction_is_blocked_at_egress() -> None
     with pytest.raises(ValidationError, match="allow-list"):
         gen.generate("prompt")
     assert calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("payload", [[], "text", None, 42])
+def test_non_object_payload_fails_closed_as_validation_error(payload: object) -> None:
+    """Measured before the fix: AttributeError escaped the caller's `except ValidationError`."""
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        return payload  # type: ignore[return-value]
+
+    with pytest.raises(ValidationError, match="non-object"):
+        OllamaGenerator(transport=_t).generate("x")

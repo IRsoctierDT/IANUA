@@ -104,8 +104,10 @@ class OllamaGenerator:
     def generate(self, prompt: str, *, system: str | None = None) -> str:
         """Return the model's completion for ``prompt`` (non-streaming).
 
-        Fails closed: a transport error, or a response missing a non-empty
-        ``response`` field, raises :class:`ValidationError`.
+        Fails closed: a transport error, a payload that is not a JSON object, or
+        a response missing a non-empty ``response`` field, raises
+        :class:`ValidationError` — never anything else, since callers degrade
+        to the deterministic report on exactly that type.
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
@@ -115,6 +117,8 @@ class OllamaGenerator:
         if system:
             body["system"] = system
         payload = self.transport(url, body, self.timeout)
+        if not isinstance(payload, dict):
+            raise ValidationError("generator returned a non-object payload")
         text = payload.get("response")
         if not isinstance(text, str) or not text.strip():
             raise ValidationError("generator returned no 'response' text")
