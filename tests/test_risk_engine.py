@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import sys
+from typing import Any
+
 import pytest
 
 from agents.risk_engine import (
@@ -157,3 +160,42 @@ def test_non_finite_scores_and_timestamps_are_rejected() -> None:
     contribs = contributions_from_analyses([{"severity_score": "nan", "indicators": ["10.0.0.5"]}])
     with pytest.raises(ValueError, match="finite"):
         engine.score(contribs)
+
+
+@pytest.mark.unit
+def test_finite_inputs_cannot_overflow_or_silence_the_engine() -> None:
+    """Measured after 94ca6c1: a finite ``1.7e308`` score totalled ``inf``, and a
+    ``nan``/``inf`` threshold, window or weight silenced findings or made the
+    total ``nan``. Bools and over-range ints are refused as ValueError too."""
+    nan, inf = float("nan"), float("inf")
+    huge = [{"severity_score": "1.7e308", "event_type": "log tampering", "indicators": ["h"]}]
+    bad_inputs = [
+        contributions_from_analyses(huge),
+        [RiskContribution("h", "x", 100.5)],
+        [RiskContribution("h", "x", True)],
+        [RiskContribution("h", "x", 10**400)],
+        [RiskContribution("h", "x", 50, timestamp=10**400)],
+        [RiskContribution("h", ["x"], 50)],  # type: ignore[arg-type]
+    ]
+    for bad in bad_inputs:
+        with pytest.raises(ValueError):
+            RiskEngine().score(bad)
+    bad_configs: list[dict[str, Any]] = [
+        {"threshold": inf},
+        {"threshold": nan},
+        {"threshold": True},
+        {"window_seconds": nan},
+        {"default_weight": nan},
+        {"weights": {"ids alert": inf}},
+        {"weights": {"log tampering": -1.0}},
+    ]
+    for kw in bad_configs:
+        with pytest.raises(ValueError, match="finite"):
+            RiskEngine(**kw)
+    with pytest.raises(ValueError, match="overflowed"):
+        RiskEngine(weights={"x": sys.float_info.max}).score([RiskContribution("h", "x", 100)])
+    assert RiskEngine().score([RiskContribution("h", "unlisted", 100)])[0].total_score == 100.0
+    # Pinned residual (module docstring), not endorsed: a later stamp anchors the window.
+    burst = [RiskContribution("h", "log tampering", 70, timestamp=1000.0 + i) for i in range(5)]
+    assert RiskEngine().score(burst)[0].total_score == 525.0
+    assert RiskEngine().score([*burst, RiskContribution("h", "x", 0, timestamp=1e18)]) == []
