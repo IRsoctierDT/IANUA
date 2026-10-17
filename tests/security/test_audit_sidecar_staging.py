@@ -12,10 +12,11 @@ three retries leaving three unsigned entries; a directory planted at either
 sidecar name did the same. Every other step that can fail for want of space or
 a writable name now runs before the append; what follows it is one
 same-directory rename. ``_stage_head_signature``'s docstring says what that
-leaves open: the rename, and the append's own ``write(2)``, which a full disk
-can tear anywhere — up to a complete entry with only its newline missing, which
-the head read used to accept and glue the next record onto. The torn-tail tests
-pin both cuts as refused and located, not a repair.
+leaves open: the rename, whose failure verdicts are pinned here, and the
+append's own ``write(2)``, which a full disk can tear anywhere — up to a
+complete entry with only its newline missing, which the head read used to
+accept and glue the next record onto. The torn-tail tests pin both cuts as
+refused and located, not a repair.
 
 Keys here are generated per run (``os.urandom``), never literals.
 """
@@ -210,3 +211,48 @@ def test_a_torn_tail_refuses_every_later_record_and_is_a_located_verdict(
     log.record(**_RECORD)
     report = log.verify_report()
     assert (report.intact, report.entries, report.signature) == (True, 2, "valid")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("planted", "while_failed", "after"), [(True, "malformed", "missing"), (False, "stale", None)]
+)
+def test_a_failed_commit_after_the_append_is_reported_and_repaired(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    planted: bool,
+    while_failed: str,
+    after: str | None,
+) -> None:
+    """The rename is the one step after the append. A directory planted at the
+    sidecar after the staging check (which meant removing the old one) reads
+    ``malformed``, then ``missing``; a rename error with the old sidecar in place
+    reads ``stale``. Either way the next successful record re-signs the head."""
+    log = AuditLogger(tmp_path / "audit.log", signer=HmacSigner(os.urandom(32)))
+    log.record(**_RECORD)
+    sig = tmp_path / "audit.log.sig"
+    real_commit = audit._commit_staged
+
+    def failing_commit(temporary: Path, path: Path) -> None:
+        if planted:  # remove the sidecar, plant a directory, then the real rename
+            path.unlink()
+            path.mkdir()
+            real_commit(temporary, path)  # raises IsADirectoryError
+        else:
+            temporary.unlink()
+            raise OSError(errno.EBUSY, "rename failed")
+
+    monkeypatch.setattr(audit, "_commit_staged", failing_commit)
+    with pytest.raises(OSError):
+        log.record(**_RECORD)
+    monkeypatch.undo()
+    assert _lines(log.path) == 2
+    assert not (tmp_path / ".audit.log.sig.tmp").exists()
+    assert log.verify_report().signature == while_failed
+    assert AuditLogger(log.path).verify_report().intact is True  # the unkeyed blind spot
+    if planted:
+        sig.rmdir()
+        assert log.verify_report().signature == after
+    log.record(**_RECORD)
+    report = log.verify_report()
+    assert (report.intact, report.entries, report.signature) == (True, 3, "valid")
