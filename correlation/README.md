@@ -104,6 +104,20 @@ of the file. Debian's multicast and prefix names (`ip6-allnodes`,
 `ip6-allrouters`, `ip6-localnet`, `ip6-mcastprefix`) are not in the set: a list
 of names is a list, and those wait on the same decision as multicast addresses.
 
+**A hostname a parser fills from a field that names no host never joins.** No
+check on the value can see this, because the values are well-formed hostnames.
+CloudTrail has no hostname field and its parser maps `userAgent` into
+`device.hostname`, so the service names refused above in `sourceIPAddress`
+arrived one field over as hosts `ec2`, `cloudformation`, `console`; Okta's
+`client.device` is a device category (`Computer`, `Mobile`). Measured: two
+accounts, or two users, from two addresses, sharing only that value formed an
+incident. `_HOSTNAME_NAMES_NO_HOST` names those two vendors, and their hostname
+is kept whole as an alias. What it does not cover: it is a list of vendors, so
+a parser that fills the field from another non-host source is not detected;
+Entra's `deviceDetail.displayName` stays joinable, since a registered device's
+display name is its name, so two users who both kept a default label such as
+`iPhone` still link; and the parser mappings themselves are ingest's to change.
+
 ## Fan-out suppression
 
 Grouping transitively on any shared entity merges everything the moment one

@@ -153,6 +153,19 @@ HOST_LOCAL_PRINCIPALS = frozenset(
 
 _WELL_KNOWN_SID_PREFIXES = ("s-1-0", "s-1-1", "s-1-2", "s-1-3", "s-1-5-18", "s-1-5-19", "s-1-5-20")
 
+#: Vendors (as each parser stamps ``vendor``) whose parser fills
+#: ``device.hostname`` from a field that names no host. No check on the value
+#: can refuse these, because the values are well-formed hostnames: CloudTrail
+#: has no hostname field and its parser maps ``userAgent`` there, so a
+#: service-initiated call's ``ec2.amazonaws.com`` short-formed to host ``ec2``;
+#: Okta's ``client.device`` is a device *category* (``Computer``, ``Mobile``).
+#: Measured: two accounts, or two users, sharing only that value assembled into
+#: an incident. Their hostname is an alias, never a join key. The mapping is
+#: ingest's to change; this holds whatever it decides. It names these two
+#: vendors and nothing else, so a parser that fills the field from some other
+#: non-host source is not caught here (see correlation/README.md).
+_HOSTNAME_NAMES_NO_HOST = frozenset({"aws-cloudtrail", "okta"})
+
 
 @dataclass(frozen=True, slots=True)
 class EntityRef:
@@ -312,7 +325,9 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
         if kind == "host":
             literal = _address_literal(value)
             if literal is None:
-                short = _short_host(value)
+                # Not short-formed when already refused: the alias keeps what
+                # the source wrote (`console.amazonaws.com`, not `console`).
+                short = _short_host(value) if joinable else None
                 if short is None:
                     # A value that is neither a name nor an address identifies
                     # no host. An alias for provenance, never a join key — see
@@ -362,7 +377,8 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
     add("user", event.actor.identity, "actor.identity")
     add("user", event.actor.user_uid, "actor.user_uid")
 
-    add("host", event.device.hostname, "device.hostname")
+    names_a_host = event.vendor not in _HOSTNAME_NAMES_NO_HOST
+    add("host", event.device.hostname, "device.hostname", joinable=names_a_host)
     add("host", event.device.device_id, "device.device_id")
 
     # device.ip is an ADDRESS, not a host — see the module docstring.

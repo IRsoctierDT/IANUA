@@ -272,6 +272,15 @@ def test_a_non_address_in_an_address_field_is_kept_for_provenance_only() -> None
 
 
 @pytest.mark.unit
+def test_a_hostname_from_a_field_that_names_no_host_is_kept_whole_for_provenance() -> None:
+    """CloudTrail's ``userAgent`` lands in ``device.hostname``: an alias, not shortened."""
+    event = normalize(dict(_CLOUD, userAgent="ec2.amazonaws.com"))
+    assert event.device.hostname == "ec2.amazonaws.com"
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "host"]
+    assert refs == [("ec2.amazonaws.com", False)], refs
+
+
+@pytest.mark.unit
 def test_an_ip_named_host_still_links_its_own_events() -> None:
     """Not shortened, but still a host: the same literal on two events is one host."""
     hosts = _of_kind(

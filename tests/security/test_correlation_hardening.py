@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -349,6 +349,79 @@ def test_a_non_address_in_an_address_field_cannot_link_two_accounts() -> None:
     window = _stored((first, second))
     assert window[0].event.src_endpoint.ip == "true", "the fixture no longer exercises the path"
     assert assemble(window) == (), "a JSON boolean in an address field linked two flows"
+
+
+#: Two principals from two addresses: index 1 and index 2 share nothing else.
+_PRINCIPALS = {1: ("alice", "203.0.113.5"), 2: ("bob", "198.51.100.7")}
+
+
+def _trail_with_agent(index: int, agent: str) -> dict[str, Any]:
+    """A CloudTrail record for principal ``index``, its own account; ``userAgent`` as given."""
+    user, src = _PRINCIPALS[index]
+    return {
+        "eventVersion": "1.08",
+        "eventTime": f"2026-10-14T01:{index:02d}:00Z",
+        "eventSource": "ec2.amazonaws.com",
+        "eventName": "RunInstances",
+        "awsRegion": "eu-west-1",
+        "sourceIPAddress": src,
+        "userAgent": agent,
+        "recipientAccountId": str(index),
+        "userIdentity": {"type": "IAMUser", "userName": user},
+    }
+
+
+def _okta_with_device(index: int, device: str) -> dict[str, Any]:
+    """An Okta System Log record for principal ``index``; ``client.device`` as given."""
+    user, ip = _PRINCIPALS[index]
+    return {
+        "actor": {"alternateId": f"{user}@corp.example", "id": f"00u{index}", "type": "User"},
+        "client": {"device": device, "ipAddress": ip},
+        "eventType": "user.session.start",
+        "outcome": {"result": "SUCCESS"},
+        "published": f"2026-10-14T01:{index:02d}:00.000Z",
+        "uuid": f"u{index}",
+    }
+
+
+_NOT_A_HOST = [
+    *(
+        pytest.param(_trail_with_agent, agent, id=f"cloudtrail-userAgent-{agent}")
+        for agent in (
+            "console.amazonaws.com",
+            "signin.amazonaws.com",
+            "ec2.amazonaws.com",
+            "cloudformation.amazonaws.com",
+            "autoscaling.amazonaws.com",
+            "lambda.amazonaws.com",
+        )
+    ),
+    *(
+        pytest.param(_okta_with_device, device, id=f"okta-client.device-{device}")
+        for device in ("Computer", "Mobile", "Tablet", "Other")
+    ),
+]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("record", "value"), _NOT_A_HOST)
+def test_a_parser_field_that_names_no_host_cannot_link_two_principals(
+    record: Callable[[int, str], dict[str, Any]], value: str
+) -> None:
+    """Closing the service-name link in ``sourceIPAddress`` left it open one field over.
+
+    The CloudTrail parser maps ``userAgent`` into ``device.hostname`` and the
+    Okta parser maps ``client.device`` (a category; this repo's own ingest
+    fixture carries ``Computer``) there too. Both are well-formed hostnames,
+    so the shape guard admits them. Measured before the fix: two accounts, or
+    two users, from two addresses, sharing only that value — ``ec2`` /
+    ``computer`` — assembled into an incident.
+    """
+    window = _stored((record(1, value), record(2, value)))
+    assert window[0].event.device.hostname == value, "the fixture no longer exercises the path"
+    assert assemble(window) == (), f"two principals linked on {value!r}"
+    hosts = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"]
+    assert [(e.key, e.aliases) for e in hosts] == [("", (value.casefold(),))], hosts
 
 
 @pytest.mark.security
