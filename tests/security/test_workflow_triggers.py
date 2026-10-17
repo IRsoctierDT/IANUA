@@ -46,13 +46,40 @@ the fail-closed direction.
   Actions history: four Pages deploys waiting for approval were cancelled by
   runs whose only job was ``skipped``, the cancellation landing one second
   before the canceller's job was evaluated. The gate above closes the enqueue
-  half of that hole; this closes the cancel half by requiring any
-  ``cancel-in-progress`` group to sit on the gated job, which a skipped job
-  never claims. ``cancel-in-progress: false`` at the workflow level is
-  tolerated (``release-on-merge.yml``): it cannot cancel a running job, though
-  GitHub keeps one *pending* run per group, so an unprivileged wake can still
-  displace a legitimate run that has not started — a narrower residual,
-  recorded here rather than closed.
+  half of that hole; this requires any ``cancel-in-progress`` group of a
+  ``workflow_run`` workflow to sit on the gated job, relying on a job skipped
+  by its ``if:`` never entering its job-level group — behaviour the move
+  depends on and that was not measured here. ``cancel-in-progress: false`` at
+  the workflow level is tolerated (``release-on-merge.yml``): it cannot cancel
+  a running job, though GitHub keeps one *pending* run per group, so an
+  unprivileged wake can still displace a legitimate run that has not started
+  — a narrower residual, recorded here rather than closed.
+* **No other workflow can claim a gated job's group.** Groups are
+  repository-wide, so the rule above was evaded from a *different* file:
+  review measured a new ``on: issues`` workflow, a new ``on: pull_request``
+  one, and a one-line rename of ``ci.yml``'s group, each claiming ``pages``
+  with ``cancel-in-progress: true`` and each leaving this suite green. Every
+  declaration in every workflow, at either level, must equal
+  :data:`CONCURRENCY_GROUPS`, and no group but a gated job's own may be able
+  to *evaluate* to that job's group: compared case-insensitively (how GitHub
+  treats case in a group name was not measured), a group containing ``${{``
+  counting as able to spell anything that starts with its literal prefix.
+  Both read the YAML node tree, so ``cancel-in-progress`` must be the plain
+  scalar ``true`` or ``false``; PyYAML reads ``off`` and ``no`` as False and
+  GitHub's parser need not.
+
+  **What this does not reach.** It is a merge gate over the files in this
+  tree. A ``pull_request`` run executes the pull request's own workflow files
+  (documented; not measured here), so a pull request that adds a ``pages``
+  claim runs it before this suite or a reviewer sees it, and whether a fork's
+  run shares this repository's group namespace was not measured. The
+  compensating control is the repository setting that requires approval
+  before outside collaborators' workflows run; it lives in the repository's
+  settings, nothing in this tree can check it, and keeping it on is the
+  owner's decision. ``release.yml``'s group can spell ``release-on-merge``
+  (a tag named ``on-merge``, which takes write access to create); only gated
+  jobs' groups are checked for that, so this pair is held by the allow-list
+  alone, and both sides are ``cancel-in-progress: false``.
 """
 
 from __future__ import annotations
@@ -79,6 +106,26 @@ _EXPRESSION = re.compile(r"\$\{\{.*?\}\}", re.DOTALL)
 #: A status function in a dependant's ``if:`` replaces the implicit
 #: ``success()`` that otherwise skips it when a needed job was skipped.
 _STATUS_FUNCTION = re.compile(r"\b(?:always|cancelled|failure|success)\s*\(", re.IGNORECASE)
+
+#: Not a legal job id (letters, digits, ``-`` and ``_``), so never one's name.
+_WORKFLOW_LEVEL = "(workflow)"
+_STR, _BOOL = "tag:yaml.org,2002:str", "tag:yaml.org,2002:bool"
+
+#: Every ``concurrency`` declaration in every workflow, at either level, as
+#: ``(file, job or _WORKFLOW_LEVEL) -> (group, cancel-in-progress)``. Groups
+#: are repository-wide, so a claim from any file reaches a run of any other;
+#: a new or changed claim is a deliberate edit that fails here first.
+CONCURRENCY_GROUPS: dict[tuple[str, str], tuple[str, bool]] = {
+    ("ci.yml", _WORKFLOW_LEVEL): ("ci-${{ github.ref }}", True),
+    ("pages.yml", "deploy"): ("pages", True),
+    ("release-on-merge.yml", _WORKFLOW_LEVEL): ("release-on-merge", False),
+    ("release.yml", _WORKFLOW_LEVEL): (
+        "release-${{ github.event.release.tag_name || inputs.tag }}",
+        False,
+    ),
+    ("runner-canary.yml", _WORKFLOW_LEVEL): ("runner-canary-${{ github.ref }}", True),
+    ("scorecard.yml", _WORKFLOW_LEVEL): ("scorecard-${{ github.ref }}", True),
+}
 
 _PUSH_TO_MAIN = (
     "github.event.workflow_run.conclusion == 'success' && "
@@ -121,6 +168,45 @@ def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
 
 def _canonical(condition: object) -> str:
     return " ".join(str(condition).split())
+
+
+def _entries(node: object, where: str) -> dict[str, Any]:
+    """A mapping node's entries by key; a duplicate, merge (``<<``) or non-scalar key fails."""
+    assert isinstance(node, yaml.MappingNode), f"{where} must be a mapping"
+    entries: dict[str, Any] = {}
+    for key, value in node.value:
+        assert isinstance(key, yaml.ScalarNode) and key.tag in (_STR, _BOOL), (
+            f"{where}: a merged or non-scalar key"
+        )
+        assert key.value not in entries, f"{where}: {key.value!r} appears twice"
+        entries[key.value] = value
+    return entries
+
+
+def _concurrency(path: Path) -> dict[tuple[str, str], tuple[str, bool]]:
+    """Every ``concurrency`` declaration in one workflow, from the YAML node tree."""
+    root = _entries(yaml.compose(path.read_text(encoding="utf-8")), path.name)
+    levels = [(_WORKFLOW_LEVEL, root.get("concurrency"))] + [
+        (job, _entries(node, f"{path.name}/{job}").get("concurrency"))
+        for job, node in _entries(root.get("jobs"), f"{path.name} jobs").items()
+    ]
+    found: dict[tuple[str, str], tuple[str, bool]] = {}
+    for where, node in levels:
+        if node is None:
+            continue
+        entries = _entries(node, f"{path.name}/{where} concurrency")
+        group, cancel = entries.get("group"), entries.get("cancel-in-progress")
+        assert (
+            set(entries) == {"group", "cancel-in-progress"}
+            and isinstance(group, yaml.ScalarNode)
+            and group.tag == _STR
+            and isinstance(cancel, yaml.ScalarNode)
+            and cancel.tag == _BOOL
+            and cancel.value in ("true", "false")
+        ), f"{path.name}/{where}: concurrency must be a string group and a plain true/false"
+        assert (path.name, where) not in found, f"{path.name}: {where!r} declared twice"
+        found[(path.name, where)] = (group.value, cancel.value == "true")
+    return found
 
 
 def _ungated_jobs(name: str, workflow: dict[Any, Any]) -> list[str]:
@@ -211,14 +297,39 @@ def test_a_dependants_status_function_is_caught_in_any_case(condition: str) -> N
 @pytest.mark.security
 @pytest.mark.parametrize("path", _WORKFLOWS, ids=lambda p: p.name)
 def test_workflow_run_workflows_never_cancel_at_the_workflow_level(path: Path) -> None:
-    workflow = _load(path)
-    if "workflow_run" not in _triggers(workflow):
+    if "workflow_run" not in _triggers(_load(path)):
         pytest.skip("not a workflow_run workflow")
-    concurrency = workflow.get("concurrency")
-    if concurrency is None:
-        return
-    assert isinstance(concurrency, dict) and concurrency.get("cancel-in-progress") is False, (
+    declared = _concurrency(path).get((path.name, _WORKFLOW_LEVEL))
+    assert declared is None or declared[1] is False, (
         f"{path.name}: a workflow-level concurrency group is claimed when the run is created, "
         "before any job gate is evaluated, so a run whose job is then skipped still cancels a "
         "deploy waiting for approval; put the cancel-in-progress group on the gated job"
     )
+
+
+@pytest.mark.security
+def test_every_concurrency_group_is_on_the_allow_list() -> None:
+    found: dict[tuple[str, str], tuple[str, bool]] = {}
+    for path in _WORKFLOWS:
+        found.update(_concurrency(path))
+    assert found == CONCURRENCY_GROUPS, (
+        "concurrency groups drifted from the allow-list — "
+        f"unexpected: { {k: v for k, v in found.items() if CONCURRENCY_GROUPS.get(k) != v} }; "
+        f"missing: { {k: v for k, v in CONCURRENCY_GROUPS.items() if found.get(k) != v} }"
+    )
+
+
+@pytest.mark.security
+def test_no_other_group_can_evaluate_to_a_gated_jobs_group() -> None:
+    declared: dict[tuple[str, str], tuple[str, bool]] = {}
+    for path in _WORKFLOWS:
+        declared.update(_concurrency(path))
+    clashes = []
+    for gated in WORKFLOW_RUN_GATES.keys() & declared.keys():
+        name = declared[gated][0].casefold()
+        assert "${{" not in name, f"{gated}: a gated job's group must be a literal"
+        for other, (group, _) in declared.items():
+            prefix, expression, _rest = group.casefold().partition("${{")
+            if other != gated and (name.startswith(prefix) if expression else name == prefix):
+                clashes.append(f"{other} {group!r} can evaluate to {gated}'s {name!r}")
+    assert not clashes, f"a gated job's concurrency group is reachable from elsewhere: {clashes}"

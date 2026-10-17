@@ -69,8 +69,14 @@ jobs:
       contents: read
       pages: write     # actions/deploy-pages creates the Pages deployment
       id-token: write  # OIDC token deploy-pages presents to the Pages service
-    # Latest-content-wins, claimed only once the gate below has passed: a
-    # skipped job never enters its group. Unlike GitHub's default
+    # Latest-content-wins, claimed on this job and not the run so that a run
+    # whose gate below skips this job does not cancel a deploy waiting for
+    # approval. That relies on a skipped job never entering its group, which
+    # was not measured. Groups are repository-wide, so no other workflow may
+    # claim `pages` either; every group in every workflow is pinned by
+    # tests/security/test_workflow_triggers.py, which is a merge gate and does
+    # not reach a pull request's own run of a workflow it modifies (see that
+    # file's docstring for the residual). Unlike GitHub's default
     # (cancel-in-progress: false) we DO cancel a superseded deploy: publishing
     # docs is idempotent, the newest commit should win, and a deploy stuck in
     # `waiting` for approval can then never permanently block the queue.
