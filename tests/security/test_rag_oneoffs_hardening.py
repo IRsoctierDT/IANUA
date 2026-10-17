@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import ast
 import functools
+import http.server
 import runpy
 import shutil
 import sys
+import threading
 import types
 from pathlib import Path
 from typing import Any, ClassVar
@@ -149,6 +151,7 @@ def _install_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setitem(sys.modules, "qdrant_client", qdrant)
     monkeypatch.setitem(sys.modules, "qdrant_client.models", models)
     monkeypatch.setitem(sys.modules, "sentence_transformers", transformers)
+    monkeypatch.setattr("urllib.request._opener", None)  # an ask script installs its own
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.setenv("QDRANT_PATH", str(tmp_path / "qdrant"))
     # The corpus root must not depend on the working directory.
@@ -374,6 +377,35 @@ def test_ask_scripts_refuse_a_non_loopback_host_before_asking_or_sending(
         runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
     assert "not in egress allow-list" in str(info.value)
     assert calls == [], "no request may leave before the host is validated"
+
+
+class _Redirector(http.server.BaseHTTPRequestHandler):
+    hits: ClassVar[list[str]] = []
+
+    def do_POST(self) -> None:
+        self.hits.append(self.path)
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))  # no RST on close
+        self.wfile.write(b'HTTP/1.0 302 Found\r\nLocation: /x\r\n\r\n{"response": "3xx"}')
+
+    do_GET = do_POST
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", _ASK_SCRIPTS)
+def test_ask_dials_direct(script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measured before the fix: the prompt went to ``http_proxy``, and a 302 was followed."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Redirector)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _install_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "QUESTION-TEXT")
+    for key in ("OLLAMA_HOST", "http_proxy"):  # the proxy is this same listener
+        monkeypatch.setenv(key, f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("no_proxy", "")  # an empty lowercase value overrides NO_PROXY
+    _Redirector.hits.clear()
+    with pytest.raises(SystemExit, match="generation request failed"):
+        runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+    server.shutdown()
+    assert _Redirector.hits == ["/api/generate"], "proxied (absolute-form target) or redirected"
 
 
 # ------------------------------------------------------------ whole block

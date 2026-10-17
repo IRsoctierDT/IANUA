@@ -12,6 +12,7 @@ the printed answer only, never a tool call.
 """
 
 import sys
+from urllib import request as _rq
 
 from sentence_transformers import SentenceTransformer
 
@@ -25,6 +26,10 @@ TIMEOUT_SECONDS = 120.0
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 client = make_client()
+_opener = _rq.OpenerDirector()  # direct HTTP(S): no ProxyHandler, no HTTPRedirectHandler
+for _h in (_rq.HTTPHandler, _rq.HTTPSHandler, _rq.HTTPErrorProcessor, _rq.HTTPDefaultErrorHandler):
+    _opener.add_handler(_h())
+_rq.install_opener(_opener)  # the default dialled http(s)_proxy and followed a 3xx (measured)
 try:
     generator = OllamaGenerator(model=MODEL, timeout=TIMEOUT_SECONDS)
 except ValidationError as exc:  # host outside the allow-list, bad scheme
