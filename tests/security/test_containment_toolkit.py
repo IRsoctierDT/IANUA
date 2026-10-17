@@ -358,3 +358,84 @@ def test_successful_action_records_decision_and_outcome(tmp_path: Path) -> None:
 def test_root_must_be_a_directory(tmp_path: Path) -> None:
     with pytest.raises(ContainmentError, match="not a directory"):
         ContainmentToolkit(tmp_path / "missing")
+
+
+# --- validate-then-act races on quarantine paths ------------------------------
+
+
+@pytest.mark.security
+def test_quarantine_chmod_does_not_follow_a_symlink_swapped_in_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The symlink check runs before the rename; the chmod after it must not follow one.
+
+    Measured before the fix: a vault entry replaced by a link to a file outside
+    the root took that file from 0o644 to 0o400 and the action reported executed.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o644)
+    (root / "mal.bin").write_bytes(b"evil")
+    real_rename = Path.rename
+
+    def swap_after_rename(self: Path, dst: Path) -> Path:
+        result = real_rename(self, dst)
+        Path(dst).unlink()  # the race, made deterministic: the path now aliases `outside`
+        Path(dst).symlink_to(outside)
+        return result
+
+    monkeypatch.setattr(Path, "rename", swap_after_rename)
+    with pytest.raises(ContainmentError, match="symlink"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+
+
+@pytest.mark.security
+def test_quarantine_refuses_an_entry_that_is_not_the_hashed_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different regular file swapped in after hashing must not be sealed under the digest."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "mal.bin").write_bytes(b"evil")
+    real_rename = Path.rename
+
+    def swap_after_rename(self: Path, dst: Path) -> Path:
+        result = real_rename(self, dst)
+        Path(dst).unlink()
+        Path(dst).write_bytes(b"something else entirely")  # a new inode at the vault path
+        return result
+
+    monkeypatch.setattr(Path, "rename", swap_after_rename)
+    with pytest.raises(ContainmentError, match="NOT contained"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+
+
+@pytest.mark.security
+def test_release_chmod_does_not_follow_a_symlink_swapped_in_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured before the fix: the aliased outside file went from 0o444 to 0o600."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o444)
+    (root / "mal.bin").write_bytes(b"evil")
+    kit = ContainmentToolkit(root)
+    entry = root / QUARANTINE_DIRNAME / kit.quarantine_file("mal.bin").rollback.split("'")[1]
+    real_mkdir = Path.mkdir
+
+    def swap_then_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        # release_file's last step before the chmod is this mkdir of the restore parent.
+        if not entry.is_symlink():
+            entry.unlink()
+            entry.symlink_to(outside)
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", swap_then_mkdir)
+    with pytest.raises(ContainmentError, match="symlink"):
+        kit.release_file(entry.name)
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444

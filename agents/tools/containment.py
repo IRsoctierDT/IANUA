@@ -55,6 +55,7 @@ import json
 import os
 import re
 import signal
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -250,6 +251,41 @@ class ContainmentToolkit:
             )
         return target
 
+    @staticmethod
+    def _open_nofollow(path: Path, expected: os.stat_result | None = None) -> int:
+        """Open the regular file at ``path`` read-only, never through a symlink.
+
+        :meth:`_resolve_no_symlink` checks the path *before* the open, hash and
+        rename it guards, and ``Path.chmod`` follows symlinks — so a link
+        swapped in at the path after validation redirected the mode change to
+        whatever it pointed at, anywhere the toolkit's user may chmod (measured:
+        a vault entry replaced by a link to a file outside the root took that
+        file to ``0o400``, and the action reported executed). Everything that
+        acts on a quarantine path therefore goes through a descriptor opened
+        ``O_NOFOLLOW`` — a link fails to open instead of being followed — and,
+        when ``expected`` is given, the descriptor must be that inode, so the
+        entry sealed under a digest is the file the digest was computed from.
+        Fails closed; the caller owns and closes the returned descriptor.
+        """
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError as exc:
+            raise ContainmentError(
+                f"refusing to act on {path.name!r}: a symlink appeared at the path after "
+                "validation, or the entry vanished"
+            ) from exc
+        actual = os.fstat(fd)
+        if not stat.S_ISREG(actual.st_mode) or (
+            expected is not None
+            and (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)
+        ):
+            os.close(fd)
+            raise ContainmentError(
+                f"{path.name!r} is not the file that was validated and hashed — "
+                "treat the target as NOT contained"
+            )
+        return fd
+
     # --- file quarantine (stdlib, reversible) -------------------------------
 
     def quarantine_file(self, path: str) -> ContainmentAction:
@@ -270,27 +306,32 @@ class ContainmentToolkit:
             raise ContainmentError(f"not a file: {path!r}")
 
         digest = hashlib.sha256()
-        with target.open("rb") as handle:
+        # The handle stays open through the rename: the hashed inode cannot be
+        # freed and its number reused before the identity check that seals it.
+        with os.fdopen(self._open_nofollow(target), "rb") as handle:
+            hashed = os.fstat(handle.fileno())
             for chunk in iter(lambda: handle.read(_HASH_CHUNK), b""):
                 digest.update(chunk)
-        sha256 = digest.hexdigest()
+            sha256 = digest.hexdigest()
 
-        self._vault.mkdir(mode=0o700, exist_ok=True)
-        entry = self._vault / f"{sha256[:12]}__{target.name}"
-        if entry.exists():
-            raise ContainmentError(f"vault entry already exists: {entry.name!r}")
+            self._vault.mkdir(mode=0o700, exist_ok=True)
+            entry = self._vault / f"{sha256[:12]}__{target.name}"
+            if entry.exists():
+                raise ContainmentError(f"vault entry already exists: {entry.name!r}")
 
-        meta = {
-            "original": target.relative_to(self.root).as_posix(),
-            "sha256": sha256,
-        }
-        # Sidecar first: a crash between the two steps leaves the original intact
-        # plus a stale sidecar — never a stranded payload with no way back.
-        entry.with_name(entry.name + ".meta.json").write_text(
-            json.dumps(meta, sort_keys=True), encoding="utf-8"
-        )
-        target.rename(entry)
-        entry.chmod(0o400)
+            meta = {
+                "original": target.relative_to(self.root).as_posix(),
+                "sha256": sha256,
+            }
+            # Sidecar first: a crash between the two steps leaves the original intact
+            # plus a stale sidecar — never a stranded payload with no way back.
+            entry.with_name(entry.name + ".meta.json").write_text(
+                json.dumps(meta, sort_keys=True), encoding="utf-8"
+            )
+            target.rename(entry)
+            # What now sits at the vault path must be the hashed inode, not a link.
+            os.close(self._open_nofollow(entry, expected=hashed))
+            os.fchmod(handle.fileno(), 0o400)
         return self._action(
             "quarantine_file",
             meta["original"],
@@ -324,7 +365,8 @@ class ContainmentToolkit:
         if original.exists():
             raise ContainmentError(f"refusing to overwrite existing file: {original_rel!r}")
         original.parent.mkdir(parents=True, exist_ok=True)
-        entry.chmod(0o600)
+        with os.fdopen(self._open_nofollow(entry), "rb") as vault_handle:
+            os.fchmod(vault_handle.fileno(), 0o600)
         entry.rename(original)
         sidecar.unlink()
         return self._action(
