@@ -15,6 +15,7 @@ keys the dashboard reads).
 from __future__ import annotations
 
 import ast
+import functools
 import runpy
 import sys
 import types
@@ -27,6 +28,9 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS = _REPO_ROOT / "scripts"
 _INGEST_SCRIPTS = ("ingest_cyber_kb.py", "ingest_cyber_kb_chunked.py")
+_ASK_SCRIPTS = ("ask_cyber_kb_ollama.py", "ask_cyber_kb_chunked_ollama.py")
+#: Any of these inside a string literal is a hard-coded host/port (AGENTS.md section 4).
+_HOST_LITERAL_FRAGMENTS = ("11434", "localhost", "127.0.0.1", "http://", "https://")
 #: Discovery primitives that would bypass ``discover_documents``'s controls.
 _DISCOVERY_BYPASSES = frozenset({"glob", "rglob", "iterdir", "walk", "scandir", "listdir"})
 
@@ -83,6 +87,7 @@ class _StubPoint:
 
 class _StubClient:
     instances: ClassVar[list[_StubClient]] = []
+    canned_points: ClassVar[list[Any]] = []
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -100,6 +105,9 @@ class _StubClient:
 
     def upsert(self, collection_name: str, points: list[_StubPoint]) -> None:
         self.upserts.append((collection_name, list(points)))
+
+    def query_points(self, **kwargs: Any) -> Any:
+        return types.SimpleNamespace(points=list(self.canned_points))
 
 
 def _install_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -119,6 +127,16 @@ def _install_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # The corpus root must not depend on the working directory.
     monkeypatch.chdir(tmp_path)
     _StubClient.instances.clear()
+    _StubClient.canned_points = [
+        types.SimpleNamespace(
+            score=0.9,
+            payload={
+                "source": "knowledge-base/x.md",
+                "chunk_index": 0,
+                "text": "RETRIEVED-PASSAGE",
+            },
+        )
+    ]
 
 
 def _run(script: str) -> list[_StubPoint]:
@@ -178,3 +196,72 @@ def test_ingest_point_ids_derive_from_identity_not_position(
         if "chunk_index" in point.payload:
             key = f"{key}:{point.payload['chunk_index']}"
         assert point.id == str(uuid5(NAMESPACE_URL, key)), (point.id, key)
+
+
+# -------------------------------------------------------------- ask scripts
+@pytest.mark.security
+@pytest.mark.parametrize("script", _ASK_SCRIPTS)
+def test_ask_scripts_carry_no_host_literal_and_no_requests(script: str) -> None:
+    """Generation goes through the allow-listed adapter; no literal host, no `requests`."""
+    tree = ast.parse((_SCRIPTS / script).read_text(encoding="utf-8"))
+    modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | {
+        alias.name for n in ast.walk(tree) if isinstance(n, ast.Import) for alias in n.names
+    }
+    assert "requests" not in modules, f"{script} imports the undeclared `requests`"
+    assert "agents.tools.llm" in modules, f"{script} must generate through OllamaGenerator"
+    offenders = [
+        n.value
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Constant)
+        and isinstance(n.value, str)
+        and any(fragment in n.value for fragment in _HOST_LITERAL_FRAGMENTS)
+    ]
+    assert not offenders, f"{script} hard-codes a host/port: {offenders}"
+
+
+def _fake_generation(monkeypatch: pytest.MonkeyPatch, calls: list[Any]) -> None:
+    import agents.tools.llm as llm
+
+    def transport(url: str, body: dict[str, object], timeout: float) -> dict[str, object]:
+        calls.append((url, body, timeout))
+        return {"response": "STUB-ANSWER"}
+
+    monkeypatch.setattr(
+        llm, "OllamaGenerator", functools.partial(llm.OllamaGenerator, transport=transport)
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", _ASK_SCRIPTS)
+def test_ask_scripts_generate_via_env_host_with_the_data_flow_intact(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "QUESTION-TEXT")
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+    calls: list[Any] = []
+    _fake_generation(monkeypatch, calls)
+    runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+    ((url, body, timeout),) = calls
+    assert url == "http://127.0.0.1:11434/api/generate"
+    assert body["model"] == "qwen3:4b" and body["stream"] is False and timeout > 0
+    assert "QUESTION-TEXT" in str(body["prompt"]) and "RETRIEVED-PASSAGE" in str(body["prompt"])
+    assert "STUB-ANSWER" in capsys.readouterr().out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", _ASK_SCRIPTS)
+def test_ask_scripts_refuse_a_non_loopback_host_before_asking_or_sending(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "builtins.input", lambda _prompt="": pytest.fail("input() reached before host validation")
+    )
+    monkeypatch.setenv("OLLAMA_HOST", "http://kb.example.invalid:11434")
+    calls: list[Any] = []
+    _fake_generation(monkeypatch, calls)
+    with pytest.raises(SystemExit) as info:
+        runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+    assert "not in egress allow-list" in str(info.value)
+    assert calls == [], "no request may leave before the host is validated"
