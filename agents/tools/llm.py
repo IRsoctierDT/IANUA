@@ -52,7 +52,13 @@ class Generator(Protocol):
 
 
 def _validate_local_host(host: str, allowed_hosts: frozenset[str], timeout: float) -> None:
-    """Enforce the egress allow-list and bounds shared by every generator (§5)."""
+    """Enforce the egress allow-list and bounds shared by every generator (§5).
+
+    Called at construction *and* at the point of egress: the generators are
+    mutable dataclasses, so a ``host`` or ``timeout`` assigned after
+    ``__post_init__`` would otherwise bypass the check (measured — the request
+    left for the assigned host). The control sits where the request leaves.
+    """
     parsed = urlparse(host)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValidationError(f"invalid LLM host: {host!r}")
@@ -103,6 +109,7 @@ class OllamaGenerator:
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
+        _validate_local_host(self.host, self.allowed_hosts, self.timeout)  # at egress, see above
         url = f"{self.host.rstrip('/')}/api/generate"
         body: dict[str, object] = {"model": self.model, "prompt": prompt, "stream": False}
         if system:
@@ -145,6 +152,7 @@ class LlamaCppGenerator:
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
+        _validate_local_host(self.host, self.allowed_hosts, self.timeout)  # at egress, see above
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
