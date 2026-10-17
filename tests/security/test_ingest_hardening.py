@@ -3027,6 +3027,17 @@ def test_auditd_still_claims_on_its_own_clock_when_nothing_else_corroborates() -
         pytest.param(
             'type=SERVICE_START msg="worker pool started audit(1.0:1) ok"', id="logfmt-token"
         ),
+        # The same token routed around the anchor through keyvalue's nested
+        # re-scan, which used to mine any quoted value: the username *becomes*
+        # a msg whose head is the stamp, or supplies comm and a 2099 timestamp.
+        pytest.param(
+            'level=warn type=USER_LOGIN user="msg=audit(1.0:1)" ip=198.51.100.7',
+            id="logfmt-token-as-a-quoted-username",
+        ),
+        pytest.param(
+            'type=USER_LOGIN msg="login failed for user comm=sshd timestamp=4070908800"',
+            id="logfmt-comm-and-timestamp-inside-msg",
+        ),
     ],
 )
 def test_a_stamp_quoted_inside_prose_does_not_make_a_record_auditd(
