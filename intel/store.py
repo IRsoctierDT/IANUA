@@ -141,12 +141,27 @@ def _load_never_flag(path: Path) -> tuple[str, ...]:
 
 
 def never_flagged(value: str, never_flag: tuple[str, ...]) -> bool:
-    """True when ``value`` is an IP address inside a never-flag CIDR."""
+    """True when ``value`` is an IP address inside a never-flag CIDR.
+
+    Judged on the parsed address — and, for an IPv4-mapped IPv6 spelling
+    (``::ffff:10.0.0.1``, what a dual-stack socket records for the IPv4 peer
+    ``10.0.0.1``), on the embedded IPv4 address as well. The mapped form
+    aliases the IPv4 address without being *contained* by any IPv4 network:
+    measured, ``::ffff:10.0.0.1 in 10.0.0.0/8`` is False, so before this
+    unwrap the spelling passed ingest as a malicious ``ipv6`` record and was
+    not suppressed at query. A literal the list means to stop must not pass
+    by being written differently (AGENTS.md §5, the egress allow-list's own
+    rule on aliasing forms).
+    """
     try:
         address = ipaddress.ip_address(value)
     except ValueError:
         return False
-    return any(address in ipaddress.ip_network(cidr) for cidr in never_flag)
+    candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [address]
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        candidates.append(address.ipv4_mapped)
+    networks = [ipaddress.ip_network(cidr) for cidr in never_flag]
+    return any(candidate in network for candidate in candidates for network in networks)
 
 
 def _load_sources(path: Path) -> dict[str, Source]:
