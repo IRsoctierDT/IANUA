@@ -59,6 +59,13 @@ is not enough on its own — it must also be excluded from the union. Two
 sign-ins for different principals sharing the display name "John Smith"
 merged into one entity *through* that shared value until this was enforced.
 
+**An address in a hostname field is not shortened.** A sender with no name
+logs its address where its hostname would go, and the short-form rule took the
+"leading label" of `10.0.0.5` — so `10.0.0.5` and `10.0.0.7` became one host
+`10`, merging two hosts and both their users into one scored incident
+(measured through the auditd parser). An IP literal is kept whole; it still
+links its own events on exact equality.
+
 **A placeholder is refused in every spelling.** `NEVER_JOIN` names `127.0.0.1`,
 `::1`, `0.0.0.0` and `::` as strings. Measured through the Zeek parser,
 `0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1`, `127.0.0.2`, `0000::1`, `::0` and

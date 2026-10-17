@@ -272,6 +272,42 @@ def test_a_loopback_or_unspecified_address_is_refused_in_every_spelling(spelling
     assert joinable == {"10.0.0.5", "10.0.0.6"}, f"{spelling!r} survived as a join key"
 
 
+@pytest.mark.security
+def test_an_ip_literal_in_the_hostname_field_cannot_merge_two_hosts() -> None:
+    """A sender with no name logs its address where its hostname would go.
+
+    Measured before the fix, through the auditd parser: ``node=10.0.0.5`` and
+    ``node=10.0.0.7`` were short-formed at the first dot to one host ``10``,
+    and two events that shared nothing else assembled into a score-10 incident
+    linking both hosts and both their users — the attribution error boundary
+    11 exists to prevent, produced by a rule meant for ``web-01.corp.example``.
+    """
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": "10.0.0.5", "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": "10.0.0.7", "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), "two IP-named hosts merged into one"
+    hosts = {e.key for e in resolve(tuple(item.event for item in window)) if e.kind == "host"}
+    assert hosts == {"10.0.0.5", "10.0.0.7"}, hosts
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", ["127.0.0.1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "::"])
+def test_a_loopback_literal_in_the_hostname_field_identifies_nothing(spelling: str) -> None:
+    """The parsed-value refusal applies to a hostname field too, in every spelling."""
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": spelling, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": spelling, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{spelling!r} in a hostname field linked two events"
+    hosts = [e for e in resolve(tuple(item.event for item in window)) if e.kind == "host"]
+    assert hosts == [], hosts
+
+
 # --------------------------------------------------------------------------
 # Bounds and determinism
 # --------------------------------------------------------------------------

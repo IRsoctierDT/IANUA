@@ -187,6 +187,10 @@ def _short_host(value: str) -> str:
     stripping more would collide ``web-01.a.example`` with ``web-01.b.example``,
     which are not necessarily one host — but in practice the short name is what
     endpoint telemetry carries and what an analyst types.
+
+    Never applied to an IP literal (see :func:`_address_literal`): a sender
+    with no name logs its address in the hostname field, and taking the
+    "leading label" of ``10.0.0.5`` yields ``10``.
     """
     return value.split(".", 1)[0] if "." in value else value
 
@@ -268,7 +272,17 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
         if not value:
             return
         if kind == "host":
-            value = _short_host(value)
+            literal = _address_literal(value)
+            if literal is None:
+                value = _short_host(value)
+            elif not literal:
+                return
+            else:
+                # An address in a hostname field: its dots are not label
+                # separators. Measured through the auditd parser: `10.0.0.5`
+                # and `10.0.0.7` short-formed to one host `10`, which merged
+                # two hosts and both their users into one scored incident.
+                value = literal
             if not value or value in NEVER_JOIN:
                 return
         if kind == "address":

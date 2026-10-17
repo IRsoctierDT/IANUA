@@ -263,6 +263,19 @@ def test_an_address_written_two_ways_is_one_entity() -> None:
     assert sorted(key for key, _ in addresses) == ["2001:db8::1", "203.0.113.9"], addresses
 
 
+@pytest.mark.unit
+def test_an_ip_named_host_still_links_its_own_events() -> None:
+    """Not shortened, but still a host: the same literal on two events is one host."""
+    hosts = _of_kind(
+        (
+            {"type": "SYSCALL", "node": "10.0.0.5", "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": "10.0.0.5", "auid": "bob", "comm": "b"},
+        ),
+        "host",
+    )
+    assert hosts == [("10.0.0.5", ("10.0.0.5",))], hosts
+
+
 # --------------------------------------------------------------------------
 # Assembly
 # --------------------------------------------------------------------------
