@@ -15,7 +15,8 @@ Every enumerated scalar is type-checked before its membership test. A bare
 ``field``, ``op`` or ``confidence``), which is still a failure but not the
 :class:`MappingStoreError` the gate script and callers catch — so the
 whole-store contract is "one error type for every anomaly", not "some
-exception".
+exception". Reading and decoding a file is held to it too (see
+``_read_document``); a FIFO is the exception, since opening one blocks.
 """
 
 from __future__ import annotations
@@ -60,6 +61,28 @@ _CONFIDENCES = {"low", "medium", "high"}
 
 def _reject(reason: str) -> MappingStoreError:
     return MappingStoreError(f"invalid mapping ruleset: {reason}")
+
+
+def _read_document(path: Path) -> object:
+    """Read (bounded) and decode one ruleset file; every failure is a rejection.
+
+    Measured on both load paths before this: invalid UTF-8, an over-long
+    integer and over-deep nesting escaped ``json.loads`` as
+    ``UnicodeDecodeError``/``ValueError``/``RecursionError``, a directory named
+    ``*.json`` as ``IsADirectoryError``, and a symlink to ``/dev/zero`` as
+    ``MemoryError`` because the whole file was read before the size check.
+    """
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_STORE_BYTES + 1)
+    except OSError as exc:
+        raise _reject(f"{path.name} is unreadable ({type(exc).__name__})") from exc
+    if len(raw) > MAX_STORE_BYTES:
+        raise _reject(f"{path.name} exceeds {MAX_STORE_BYTES} bytes")
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        raise _reject(f"{path.name} is not valid JSON ({type(exc).__name__}: {exc})") from exc
 
 
 def _check_schema(value: object, context: str) -> None:
@@ -233,25 +256,12 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
     if not paths:
         raise _reject(f"no ruleset files under {directory}")
     if len(paths) == 1:
-        raw = paths[0].read_bytes()
-        if len(raw) > MAX_STORE_BYTES:
-            raise _reject(f"{paths[0].name} exceeds {MAX_STORE_BYTES} bytes")
-        try:
-            document = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise _reject(f"{paths[0].name} is not valid JSON ({exc})") from exc
-        return parse_store(document, corpus=resolved_corpus)
+        return parse_store(_read_document(paths[0]), corpus=resolved_corpus)
     # Multi-file: merge rules in filename order; exactly one fallback.
     merged_rules: list[object] = []
     fallback: object | None = None
     for path in paths:
-        raw = path.read_bytes()
-        if len(raw) > MAX_STORE_BYTES:
-            raise _reject(f"{path.name} exceeds {MAX_STORE_BYTES} bytes")
-        try:
-            document = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise _reject(f"{path.name} is not valid JSON ({exc})") from exc
+        document = _read_document(path)
         if not isinstance(document, dict) or not set(document) <= _TOP_FIELDS:
             raise _reject(f"{path.name}: top level must be an object of {sorted(_TOP_FIELDS)}")
         if "schema" not in document or "rules" not in document:

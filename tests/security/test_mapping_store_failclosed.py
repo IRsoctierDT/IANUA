@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -169,3 +171,51 @@ def test_multi_file_store_merges_well_formed_files(tmp_path: Path, corpus: Corpu
     store = load_store(tmp_path, corpus=corpus)
     assert len(store.rules) == len(document["rules"])
     assert store.fallback.technique_id == "UNKNOWN"
+
+
+_UNDECODABLE: list[tuple[str, Callable[[Path], object]]] = [
+    ("invalid utf-8", lambda p: p.write_bytes(b'{"schema": 1, "rules": ["\xff"]}')),
+    ("over-long integer", lambda p: p.write_text('{"schema": ' + "1" * 5000 + "}")),
+    ("over-deep nesting", lambda p: p.write_text("[" * 50_000 + "]" * 50_000)),
+    ("directory named *.json", lambda p: p.mkdir()),
+]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("multi", [False, True], ids=["single-file", "multi-file"])
+@pytest.mark.parametrize(("label", "make"), _UNDECODABLE, ids=[u[0] for u in _UNDECODABLE])
+def test_undecodable_file_rejects_as_mapping_store_error(
+    label: str, make: Callable[[Path], object], multi: bool, tmp_path: Path, corpus: Corpus
+) -> None:
+    """Measured before: UnicodeDecodeError, ValueError, RecursionError and
+    IsADirectoryError escaped on both paths, not the one type callers catch."""
+    if multi:
+        (tmp_path / "a_core.json").write_bytes(_RULES.read_bytes())
+    make(tmp_path / "b_bad.json")
+    with pytest.raises(MappingStoreError):
+        load_store(tmp_path, corpus=corpus)
+
+
+@pytest.mark.security
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_AS and /dev/zero")
+def test_endless_file_is_read_bounded(tmp_path: Path) -> None:
+    """A symlink to /dev/zero raised MemoryError: the whole file was read before
+    the size check. Under an address-space cap a regression fails, not hangs."""
+    (tmp_path / "core.json").symlink_to("/dev/zero")
+    code = (
+        "import resource, sys; from pathlib import Path\n"
+        "resource.setrlimit(resource.RLIMIT_AS, (2_000_000_000, 2_000_000_000))\n"
+        "from agents.mapping import MappingStoreError, load_store\n"
+        "try:\n    load_store(Path(sys.argv[1]))\n"
+        "except MappingStoreError as exc:\n    print(exc)\n"
+    )
+    root = _RULES.parents[3]
+    done = subprocess.run(  # noqa: S603 - fixed interpreter and code, no shell
+        [sys.executable, "-c", code, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=root,
+        check=False,
+    )
+    assert "exceeds" in done.stdout, done.stderr[-500:]
