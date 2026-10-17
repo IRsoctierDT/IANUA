@@ -269,6 +269,25 @@ def test_a_bad_window_is_a_bad_argument(tmp_path: Path, value: str) -> None:
 
 
 @pytest.mark.unit
+def test_a_window_that_overflows_seconds_is_refused_before_the_gate(
+    tmp_path: Path, capsys: Any
+) -> None:
+    """``1e305`` is finite; ``1e305 * 86_400`` is not, and the threshold was ``-inf``.
+
+    Measured on the code this pins: ``count_before`` refused the bound — at exit
+    **1**, "damage, page someone", with the gate decision already in the audit
+    chain. A bad argument is exit 2 and records nothing; the audit log must not
+    exist afterwards because nothing in a refused startup creates it.
+    """
+    root = _root(tmp_path)
+    _seed(root, old=1, recent=1)
+    assert _cli_main()(["--root", str(root), "--caller", "test", "--keep-days", "1e305"]) == 2
+    assert "too large" in capsys.readouterr().err
+    assert not (root / "data" / "events" / "audit.log").exists(), "the gate recorded an attempt"
+    assert _held(root) == 2
+
+
+@pytest.mark.unit
 def test_a_declined_lock_exits_zero_and_changes_nothing(tmp_path: Path, capsys: Any) -> None:
     """Overlap is expected on a schedule; failing would train the operator to ignore it."""
     from scripts._locking import prepare_lock, single_instance
