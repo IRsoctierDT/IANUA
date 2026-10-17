@@ -78,6 +78,17 @@ _MUTATIONS: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
         lambda d: d["rules"][0].update(techniques=[]),
     ),
     ("legacy with extra field", lambda d: d["fallback"].update(color="red")),
+    # Type confusion. A list is unhashable, so a bare membership test raised
+    # TypeError instead of MappingStoreError (measured) — still a failure, but
+    # not the one error type the gate script and callers catch. And `True == 1`
+    # / `1.0 == 1`, so a boolean or float schema loaded as schema 1.
+    ("list-typed clause field", lambda d: d["rules"][0]["when"][0].update(field=["event_type"])),
+    ("list-typed operator", lambda d: d["rules"][0]["when"][0].update(op=["equals"])),
+    ("list-typed tactic", lambda d: d["rules"][0]["techniques"][0].update(tactic=["impact"])),
+    ("list-typed confidence", lambda d: d["rules"][0]["techniques"][0].update(confidence=["high"])),
+    ("list-typed legacy confidence", lambda d: d["fallback"].update(confidence=["low"])),
+    ("boolean schema", lambda d: d.update(schema=True)),
+    ("float schema", lambda d: d.update(schema=1.0)),
 ]
 
 

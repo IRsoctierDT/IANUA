@@ -9,12 +9,20 @@ is resolved against the pinned ATT&CK corpus at load — an unknown ID rejects
 the store; a revoked ID rejects it **naming the successor**; a deprecated ID
 rejects it too (a mapping rule is operational content and must re-anchor
 deliberately, unlike intel records which merely degrade).
+
+Every enumerated scalar is type-checked before its membership test. A bare
+``x in SET`` raises ``TypeError`` on an unhashable value (measured: a list in
+``field``, ``op`` or ``confidence``), which is still a failure but not the
+:class:`MappingStoreError` the gate script and callers catch — so the
+whole-store contract is "one error type for every anomaly", not "some
+exception".
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 from agents.mapping.schema import (
     MAX_CLAUSES_PER_RULE,
@@ -26,9 +34,12 @@ from agents.mapping.schema import (
     MAX_VALUE_LEN,
     MAX_VALUES_PER_CLAUSE,
     Clause,
+    Confidence,
+    FieldName,
     LegacyBlock,
     MappingRule,
     MappingStoreError,
+    Operator,
     RuleStore,
     RuleTechnique,
 )
@@ -68,10 +79,10 @@ def _parse_clause(raw: object, context: str) -> Clause:
     if not isinstance(raw, dict) or set(raw) != _CLAUSE_FIELDS:
         raise _reject(f"{context}: clause must carry exactly field/op/values")
     field = raw["field"]
-    if field not in _FIELDS:
+    if not isinstance(field, str) or field not in _FIELDS:
         raise _reject(f"{context}: unknown field {field!r}")
     op = raw["op"]
-    if op not in _OPS:
+    if not isinstance(op, str) or op not in _OPS:
         raise _reject(f"{context}: unknown operator {op!r} (predicates are literal-only)")
     values = raw["values"]
     if (
@@ -81,7 +92,11 @@ def _parse_clause(raw: object, context: str) -> Clause:
         or not all(isinstance(item, str) and 0 < len(item) <= MAX_VALUE_LEN for item in values)
     ):
         raise _reject(f"{context}: values must be 1..{MAX_VALUES_PER_CLAUSE} bounded strings")
-    return Clause(field=field, op=op, values=tuple(item.lower() for item in values))
+    return Clause(
+        field=cast(FieldName, field),
+        op=cast(Operator, op),
+        values=tuple(item.lower() for item in values),
+    )
 
 
 def _parse_technique(raw: object, context: str, corpus: Corpus) -> RuleTechnique:
@@ -108,20 +123,20 @@ def _parse_technique(raw: object, context: str, corpus: Corpus) -> RuleTechnique
         )
     technique = corpus.techniques[technique_id]
     tactic_shortname = raw["tactic"]
-    if tactic_shortname not in technique.tactics:
+    if not isinstance(tactic_shortname, str) or tactic_shortname not in technique.tactics:
         raise _reject(
             f"{context}: tactic {tactic_shortname!r} is not one of {technique_id}'s "
             f"tactics {list(technique.tactics)} in the pinned release"
         )
     confidence = raw["confidence"]
-    if confidence not in _CONFIDENCES:
+    if not isinstance(confidence, str) or confidence not in _CONFIDENCES:
         raise _reject(f"{context}: unknown confidence {confidence!r}")
     return RuleTechnique(
         technique_id=technique_id,
         name=technique.name,
         tactic_shortname=tactic_shortname,
         tactic=corpus.tactics[tactic_shortname].name,
-        confidence=confidence,
+        confidence=cast(Confidence, confidence),
         evidence=_string_list(raw["evidence"], f"{context} evidence"),
         investigation=_string_list(raw["investigation"], f"{context} investigation"),
         url=technique.url,
@@ -134,13 +149,13 @@ def _parse_legacy(raw: object, context: str) -> LegacyBlock:
     for key in ("tactic", "technique", "technique_id"):
         if not isinstance(raw[key], str) or not raw[key]:
             raise _reject(f"{context}: legacy {key} must be a non-empty string")
-    if raw["confidence"] not in _CONFIDENCES:
+    if not isinstance(raw["confidence"], str) or raw["confidence"] not in _CONFIDENCES:
         raise _reject(f"{context}: unknown legacy confidence {raw['confidence']!r}")
     return LegacyBlock(
         tactic=raw["tactic"],
         technique=raw["technique"],
         technique_id=raw["technique_id"],
-        confidence=raw["confidence"],
+        confidence=cast(Confidence, raw["confidence"]),
         evidence=_string_list(raw["evidence"], f"{context} legacy evidence"),
         investigation=_string_list(raw["investigation"], f"{context} legacy investigation"),
     )
@@ -150,8 +165,10 @@ def parse_store(document: object, *, corpus: Corpus) -> RuleStore:
     """Validate one parsed ruleset document fail-closed; return the store."""
     if not isinstance(document, dict) or set(document) != _TOP_FIELDS:
         raise _reject(f"top level must carry exactly {sorted(_TOP_FIELDS)}")
-    if document["schema"] != 1:
-        raise _reject(f"unsupported schema: {document['schema']!r}")
+    schema = document["schema"]
+    # Strictly the integer 1: ``True == 1`` and ``1.0 == 1`` both passed before.
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema != 1:
+        raise _reject(f"unsupported schema: {schema!r}")
     raw_rules = document["rules"]
     if not isinstance(raw_rules, list) or not raw_rules or len(raw_rules) > MAX_RULES:
         raise _reject(f"rules must be a list of 1..{MAX_RULES} entries")
