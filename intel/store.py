@@ -100,18 +100,36 @@ def _reject(reason: str) -> IntelStoreError:
     return IntelStoreError(f"invalid intel store: {reason}")
 
 
-def _read_json(path: Path) -> object:
-    if not path.is_file():
-        raise _reject(f"missing file: {path.name}")
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document = dict(pairs)
+    if len(document) != len(pairs):  # json's default is last-wins
+        raise ValueError("an object repeats a key")
+    return document
+
+
+def _read_json(path: Path, *, literal: bool = False) -> object:
+    """Parse one data file so that what a diff shows is what loads.
+
+    Strict UTF-8 (``json.loads`` on bytes also auto-detects UTF-16/32, which
+    git diffs as "Binary files differ"), a repeated key refused rather than
+    last-wins, and no symlink at the file itself, whose content a diff never
+    shows (a symlinked ``seed/`` or ``behaviors/`` directory is not checked).
+    ``literal`` (never_flag.json only) also refuses non-ASCII and every
+    backslash, so no ``\\u`` escape spells an entry the diff does not.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise _reject(f"missing file (or a symlink): {path.name}")
     with path.open("rb") as handle:  # the read is bounded, not the whole file
         raw = handle.read(MAX_FILE_BYTES + 1)
     if len(raw) > MAX_FILE_BYTES:
         raise _reject(f"{path.name} exceeds {MAX_FILE_BYTES} bytes")
+    if literal and (not raw.isascii() or b"\\" in raw):
+        raise _reject(f"{path.name} must be plain ASCII with no escapes")
     try:
-        return json.loads(raw)
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_keys)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
         raise _reject(f"{path.name}: nesting depth exceeds parser limits") from exc
-    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, int-digit limit
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, digits, duplicates
         raise _reject(f"{path.name} is not valid JSON ({exc})") from exc
 
 
@@ -152,7 +170,7 @@ def _str_tuple(value: object, context: str, *, allow_empty: bool = False) -> tup
 
 
 def _load_never_flag(path: Path) -> tuple[str, ...]:
-    document = _read_json(path)
+    document = _read_json(path, literal=True)
     if not isinstance(document, dict) or set(document) != {"cidrs"}:
         raise _reject("never_flag.json must carry exactly a 'cidrs' list")
     cidrs = document["cidrs"]
@@ -167,9 +185,15 @@ def _load_never_flag(path: Path) -> tuple[str, ...]:
         if not isinstance(cidr, str):
             raise _reject(f"never_flag cidr must be a string, got {cidr!r}")
         try:
-            ipaddress.ip_network(cidr)
+            network = ipaddress.ip_network(cidr)
         except ValueError as exc:
             raise _reject(f"never_flag cidr invalid: {cidr!r}") from exc
+        # One spelling, the one ``ipaddress`` prints. Measured: netmask and
+        # hostmask forms, ``/0015``, a bare address and uppercase or expanded
+        # IPv6 all loaded, and a scope id made ``::%10.0.0.0/8`` read as
+        # RFC 1918 while it loads as ``::/8``.
+        if "%" in cidr or str(network) != cidr:
+            raise _reject(f"never_flag cidr {cidr!r} is not canonical (or has a scope id)")
     return tuple(cidrs)
 
 

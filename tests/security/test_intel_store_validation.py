@@ -144,7 +144,56 @@ def test_hostile_bytes_are_a_store_error(relative: str, payload: bytes, tmp_path
     # agent's fail-soft `except (IntelStoreError, AttackError, OSError)` catches.
     work = _workdir(tmp_path)
     (work / relative).write_bytes(payload)
-    with pytest.raises(IntelStoreError, match=r"nesting|not valid JSON"):
+    with pytest.raises(IntelStoreError, match=r"nesting|not valid JSON|plain ASCII"):
+        load_store(work)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "relative", ["never_flag.json", "sources.json", _SEED, "behaviors/core.json"]
+)
+def test_every_data_file_loads_as_a_diff_shows_it(relative: str, tmp_path: Path) -> None:
+    # Measured before: a UTF-16 file (git diffs it as "Binary files differ"),
+    # a repeated key (json keeps the last) and a symlink (its content is never
+    # in the diff) each loaded.
+    work = _workdir(tmp_path)
+    path = work / relative
+    original = path.read_bytes()
+    for hostile in (original.decode("utf-8").encode("utf-16"), b'{"k": 1, "k": 2}'):
+        path.write_bytes(hostile)
+        with pytest.raises(IntelStoreError, match=r"not valid JSON|plain ASCII"):
+            load_store(work)
+    (tmp_path / "outside.json").write_bytes(original)
+    path.unlink()
+    path.symlink_to(tmp_path / "outside.json")
+    with pytest.raises(IntelStoreError, match="symlink"):
+        load_store(work)
+
+
+#: never_flag spellings that loaded before and read as something other than
+#: what loads: netmask, hostmask (half of IPv4), zero-padded prefix, bare host,
+#: upper-case and expanded IPv6, a scope id that reads as RFC 1918 but loads as
+#: ``::/8``, and ``\u`` escapes that a diff shows as escapes and load as 198.18/15.
+_SPELLINGS: tuple[str, ...] = (
+    "198.18.0.0/255.254.0.0",
+    "198.18.0.0/0.1.255.255",
+    "0.0.0.0/127.255.255.255",
+)
+_SPELLINGS += ("198.18.0.0/0015", "203.0.113.7", "2001:DB8::/32", "2001:0db8:0:0:0:0:0:0/32")
+_SPELLINGS += ("::%10.0.0.0/8", "\\u0031\\u0039\\u0038.18.0.0/15")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", ("198.18.0.0/15", *_SPELLINGS))
+def test_a_never_flag_entry_has_one_readable_spelling(spelling: str, tmp_path: Path) -> None:
+    work = _workdir(tmp_path)
+    path = work / "never_flag.json"
+    text = path.read_text(encoding="utf-8").replace("[", f'["{spelling}", ', 1)
+    path.write_text(text, encoding="utf-8")
+    if spelling == "198.18.0.0/15":  # control: the same range, written plainly, loads
+        assert spelling in load_store(work).never_flag
+        return
+    with pytest.raises(IntelStoreError, match=r"not canonical|plain ASCII"):
         load_store(work)
 
 
