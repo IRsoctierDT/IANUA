@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from attack.errors import AttackError, AttackUnavailableError
@@ -87,14 +88,21 @@ def parse_pin(document: object) -> Pin:
         raise _reject("top level must be an object")
     if set(document) != _TOP_FIELDS:
         raise _reject(f"unexpected field set: {sorted(document)}")
-    if document["schema"] != _SCHEMA_VERSION:
-        raise _reject(f"unsupported schema: {document['schema']!r}")
+    schema = document["schema"]
+    # ``True == 1`` and ``1.0 == 1``: measured, both passed an equality test
+    # and both serialize differently from ``1`` in the signing payload.
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema != _SCHEMA_VERSION:
+        raise _reject(f"unsupported schema: {schema!r}")
     version = document["attack_version"]
     if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
         raise _reject(f"attack_version must look like '19.2', got {version!r}")
     retrieved = document["retrieved"]
     if not isinstance(retrieved, str) or not _DATE_RE.fullmatch(retrieved):
         raise _reject(f"retrieved must be an ISO date, got {retrieved!r}")
+    try:
+        date.fromisoformat(retrieved)  # shape-valid is not calendar-valid: 2026-02-30
+    except ValueError as exc:
+        raise _reject(f"retrieved is not a calendar date: {retrieved!r}") from exc
 
     bundle = document["bundle"]
     if not isinstance(bundle, dict) or set(bundle) != _BUNDLE_FIELDS:
@@ -149,29 +157,39 @@ def parse_pin(document: object) -> Pin:
     )
 
 
-def load_pin(path: Path | None = None) -> Pin:
-    """Read and validate the pin manifest from disk (fail closed)."""
-    pin_path = DEFAULT_PIN_PATH if path is None else path
+def _read_pin_document(pin_path: Path) -> object:
+    """One bounded read and parse of the pin file; validation is the caller's."""
     if not pin_path.is_file():
         raise AttackUnavailableError(f"ATT&CK pin not found: {pin_path}")
     raw = pin_path.read_bytes()
     if len(raw) > _MAX_PIN_BYTES:
         raise _reject(f"pin exceeds {_MAX_PIN_BYTES} bytes")
     try:
-        document = json.loads(raw)
+        return json.loads(raw)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
         raise _reject("pin nesting depth exceeds parser limits") from exc
     except json.JSONDecodeError as exc:
         raise _reject(f"pin is not valid JSON ({exc})") from exc
-    return parse_pin(document)
+
+
+def load_pin(path: Path | None = None) -> Pin:
+    """Read and validate the pin manifest from disk (fail closed)."""
+    pin_path = DEFAULT_PIN_PATH if path is None else path
+    return parse_pin(_read_pin_document(pin_path))
 
 
 def load_pin_document(path: Path | None = None) -> dict[str, object]:
-    """Read the raw pin document (already validated) for signing/verification."""
+    """Read the raw pin document for signing/verification — validated, read once.
+
+    The first version read the file twice: once through ``load_pin`` (bounded,
+    validated, discarded) and again unbounded and unvalidated for the value
+    it returned, so what ``--sign`` signed or ``--check`` verified was never
+    the bytes that had been validated. The document returned is the one
+    ``parse_pin`` accepted.
+    """
     pin_path = DEFAULT_PIN_PATH if path is None else path
-    pin = load_pin(pin_path)  # fail-closed validation first
-    del pin
-    result = json.loads(pin_path.read_bytes())
-    if not isinstance(result, dict):  # unreachable after parse, kept fail-closed
+    document = _read_pin_document(pin_path)
+    parse_pin(document)  # fail-closed validation of this very document
+    if not isinstance(document, dict):  # unreachable after parse, kept fail-closed
         raise _reject("top level must be an object")
-    return result
+    return document

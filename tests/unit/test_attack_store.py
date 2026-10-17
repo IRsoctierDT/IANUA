@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from attack.errors import AttackError, AttackIntegrityError, AttackUnavailableError
-from attack.pin import DEFAULT_PIN_PATH, load_pin, parse_pin, signing_payload
+from attack.pin import DEFAULT_PIN_PATH, load_pin, load_pin_document, parse_pin, signing_payload
 from attack.store import DATA_DIR, load_corpus, read_shard
 
 
@@ -59,8 +59,11 @@ def test_pin_parser_rejects_malformed_documents() -> None:
     for mutate in (
         lambda d: d.pop("schema"),
         lambda d: d.update(schema=2),
+        lambda d: d.update(schema=True),  # measured: True == 1 passed equality
+        lambda d: d.update(schema=1.0),  # measured: 1.0 == 1 passed equality
         lambda d: d.update(attack_version="nineteen"),
         lambda d: d.update(retrieved="21/08/2026"),
+        lambda d: d.update(retrieved="2026-02-30"),  # shape-valid, not a calendar date
         lambda d: d.update(extra_field=1),
         lambda d: d["bundle"].pop("sha256"),
         lambda d: d["bundle"].update(sha256="zz"),
@@ -83,6 +86,27 @@ def test_signing_payload_excludes_signature_and_is_deterministic() -> None:
     payload = signing_payload(document)
     document["signature"] = {"algorithm": "ed25519", "public_key": "0" * 64, "signature": "0" * 128}
     assert signing_payload(document) == payload
+
+
+@pytest.mark.unit
+def test_load_pin_document_reads_the_validated_bytes_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Measured before: two read_bytes calls — the second unbounded and
+    # unvalidated, and the one whose result was signed or verified.
+    pin_copy = tmp_path / "pin.json"
+    pin_copy.write_bytes(DEFAULT_PIN_PATH.read_bytes())
+    reads: list[Path] = []
+    original = Path.read_bytes
+
+    def counting(self: Path) -> bytes:
+        reads.append(self)
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    document = load_pin_document(pin_copy)
+    assert reads.count(pin_copy) == 1
+    assert document["attack_version"] == load_pin(pin_copy).attack_version
 
 
 @pytest.mark.unit
