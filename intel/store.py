@@ -30,9 +30,18 @@ import ipaddress
 import json
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 from attack import AttackError, Corpus, load_corpus, validate_reference
-from intel.model import AtomicIndicator, BehavioralRecord, IntelStore, Source
+from intel.model import (
+    AtomicIndicator,
+    AtomicType,
+    BehavioralRecord,
+    Confidence,
+    IntelStore,
+    Risk,
+    Source,
+)
 
 INTEL_DIR = Path(__file__).resolve().parent
 
@@ -208,17 +217,23 @@ def _parse_atomic(
 ) -> AtomicIndicator:
     if not isinstance(raw, dict) or set(raw) != _ATOMIC_FIELDS:
         raise _reject(f"atomic indicator must carry exactly {sorted(_ATOMIC_FIELDS)}")
+    # Membership is tested on strings only: ``[] in {...}`` raises TypeError
+    # (unhashable), which is not an IntelStoreError and escapes every
+    # fail-closed caller. Measured on a list-valued type/risk/confidence/
+    # source_id before the isinstance guards.
     indicator_type = raw["type"]
-    if indicator_type not in _ATOMIC_TYPES:
+    if not isinstance(indicator_type, str) or indicator_type not in _ATOMIC_TYPES:
         raise _reject(f"unknown atomic type {indicator_type!r}")
     value = _bounded_str(raw["value"], "indicator value")
     context = f"indicator {value!r}"
-    if raw["risk"] not in _RISKS:
-        raise _reject(f"{context}: unknown risk {raw['risk']!r}")
-    if raw["confidence"] not in _CONFIDENCES:
-        raise _reject(f"{context}: unknown confidence {raw['confidence']!r}")
+    risk = raw["risk"]
+    if not isinstance(risk, str) or risk not in _RISKS:
+        raise _reject(f"{context}: unknown risk {risk!r}")
+    confidence = raw["confidence"]
+    if not isinstance(confidence, str) or confidence not in _CONFIDENCES:
+        raise _reject(f"{context}: unknown confidence {confidence!r}")
     source_id = raw["source_id"]
-    if source_id not in sources:
+    if not isinstance(source_id, str) or source_id not in sources:
         raise _reject(f"{context}: source {source_id!r} is not registered in sources.json")
     tlp = raw["tlp"]
     if tlp != "clear":
@@ -244,10 +259,10 @@ def _parse_atomic(
                 "must never enter the indicator store"
             )
     return AtomicIndicator(
-        indicator_type=indicator_type,
+        indicator_type=cast(AtomicType, indicator_type),  # membership-checked above
         value=value.lower(),
-        risk=raw["risk"],
-        confidence=raw["confidence"],
+        risk=cast(Risk, risk),
+        confidence=cast(Confidence, confidence),
         source_id=source_id,
         first_seen=first_seen,
         retrieved=retrieved,
@@ -273,10 +288,11 @@ def _parse_behavior(raw: object, sources: dict[str, Source], corpus: Corpus) -> 
         # deprecated/revoked anchors are accepted here and degrade the record
         # to stale-anchor at match time (see module docstring).
     source_id = raw["source_id"]
-    if source_id not in sources:
+    if not isinstance(source_id, str) or source_id not in sources:
         raise _reject(f"{context}: source {source_id!r} is not registered in sources.json")
-    if raw["confidence"] not in _CONFIDENCES:
-        raise _reject(f"{context}: unknown confidence {raw['confidence']!r}")
+    confidence = raw["confidence"]
+    if not isinstance(confidence, str) or confidence not in _CONFIDENCES:
+        raise _reject(f"{context}: unknown confidence {confidence!r}")
     interval = raw["review_interval_days"]
     if not isinstance(interval, int) or isinstance(interval, bool) or not 0 < interval <= 730:
         raise _reject(f"{context}: review_interval_days must be an integer in 1..730")
@@ -288,7 +304,7 @@ def _parse_behavior(raw: object, sources: dict[str, Source], corpus: Corpus) -> 
         event_types=_str_tuple(raw["event_types"], f"{context} event_types"),
         markers=_str_tuple(raw["markers"], f"{context} markers"),
         false_positives=_str_tuple(raw["false_positives"], f"{context} false_positives"),
-        confidence=raw["confidence"],
+        confidence=cast(Confidence, confidence),  # membership-checked above
         source_id=source_id,
         last_reviewed=_iso(raw["last_reviewed"], f"{context} last_reviewed"),
         review_interval_days=interval,

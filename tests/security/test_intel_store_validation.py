@@ -91,6 +91,22 @@ _CASES: list[tuple[str, str, Callable[[dict], None]]] = [
     # True as 0.0.0.1/32 — a suppression entry no reviewer can read in a diff.
     ("int never_flag cidr", "never_flag.json", lambda d: d["cidrs"].append(2886729729)),
     ("bool never_flag cidr", "never_flag.json", lambda d: d["cidrs"].append(True)),
+    # Measured before the isinstance guards: each raised TypeError (unhashable),
+    # not IntelStoreError, so the agent's fail-soft path did not catch it.
+    ("list-valued atomic type", _SEED, lambda d: d["indicators"][0].update(type=["ipv4"])),
+    ("list-valued risk", _SEED, lambda d: d["indicators"][0].update(risk=[])),
+    ("dict-valued confidence", _SEED, lambda d: d["indicators"][0].update(confidence={})),
+    ("list-valued source_id", _SEED, lambda d: d["indicators"][0].update(source_id=[])),
+    (
+        "list-valued behavior confidence",
+        "behaviors/core.json",
+        lambda d: d["behaviors"][0].update(confidence=[]),
+    ),
+    (
+        "list-valued behavior source_id",
+        "behaviors/core.json",
+        lambda d: d["behaviors"][0].update(source_id=[]),
+    ),
 ]
 
 
