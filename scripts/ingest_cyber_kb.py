@@ -11,13 +11,18 @@ symlinked corpus root (``knowledge-base`` or ``cybersecurity``) is refused
 before anything is built, and ``source`` is derived relative to ``KB_DIR``.
 Reads go through ``rag.ingest.read_document``; its residuals apply here.
 
-Ids are ``uuid5(source)``, so a re-run overwrites each *present* document's
-point in place -- and never deletes, so it does not converge the collection:
-a removed or renamed document's point, and every integer id the earlier
-``enumerate`` scheme wrote, stay searchable beside the current text (measured).
+Ids are ``uuid5(source)``, so a run that exits 0 overwrites the point of each
+document it ingests -- the direct-child ``.md`` files ``discover_documents``
+returns, which the printed count counts -- and never deletes, so it does not
+converge the collection. These stay searchable beside the current text
+(measured): a removed or renamed document's point; every integer id the
+earlier ``enumerate`` scheme wrote; and the old point of a document still
+present that discovery now skips -- silently, for a symlink, a non-regular
+file, a file over ``MAX_FILE_BYTES``, and every file when this directory
+cannot be listed. Such a run still exits 0 and names none of them.
 ``create_cyber_collection.py`` does not clear them; it only creates a missing
 collection. Clearing is a delete, so it is an operator act behind AGENTS.md
-section 5.1's destructive gate: ``make_client().delete_collection(COLLECTION)``,
+section 5.1's destructive gate: ``make_client().delete_collection("cybersecurity_kb")``,
 then ``create_cyber_collection.py``, then this script.
 """
 

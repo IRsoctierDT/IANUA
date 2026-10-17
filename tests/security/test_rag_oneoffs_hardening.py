@@ -292,10 +292,13 @@ def test_ingest_never_deletes_and_create_collection_clears_nothing(
 
     Measured with a persisting stub, a removed document's point and the legacy
     ``enumerate`` integer ids survive every re-run, and ``create_cyber_collection.py``
-    on an existing collection only prints. Any client call beyond list/create/upsert
-    (a delete, a scroll) fails this, so a pruning change must update that docstring.
+    on an existing collection only prints. The stub keeps get_collections,
+    create_collection and upsert; any other client method either script reaches (a
+    delete, a scroll, a query) is recorded and fails this, so a pruning change must
+    update that docstring. A filesystem delete of the store is not a client call.
     """
     _install_stubs(monkeypatch, tmp_path)
+    monkeypatch.delattr(_StubClient, "query_points")  # routed through record below
     other: list[str] = []
 
     def record(_self: object, name: str) -> Any:
