@@ -1139,7 +1139,20 @@ class EventStore:
 
         Observables cascade. The only sanctioned deletion path, and counted so
         a retention job can report what it removed.
+
+        Raises:
+            ValueError: for a non-finite threshold, exactly as
+                :meth:`count_before` does. Measured before this check, on
+                three stored events: ``prune(before=inf)`` deleted all three
+                and ``prune(before=nan)`` deleted none, both silently, after
+                ``count_before`` had raised for the same value — so the report
+                could refuse a threshold whose delete still went through.
+                Retention is report-then-apply, and the two halves must refuse
+                the same inputs. The write-side twin of a read-side bound: the
+                defect class :meth:`_project` already records.
         """
+        if not math.isfinite(before):
+            raise ValueError(f"retention threshold must be finite, got {before!r}")
         with self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM events WHERE ingested_at < ?", (float(before),)

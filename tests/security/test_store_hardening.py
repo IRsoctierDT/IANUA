@@ -1684,6 +1684,31 @@ def test_a_non_finite_ingestion_time_is_refused(tmp_path: Path, bad: float) -> N
 
 
 @pytest.mark.security
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_retention_threshold_is_refused_by_the_delete_too(
+    tmp_path: Path, bad: float
+) -> None:
+    """``count_before`` refused a non-finite threshold; ``prune`` did not.
+
+    Measured on the parent commit with three stored events:
+    ``prune(before=inf)`` deleted all three and ``prune(before=nan)`` deleted
+    none, both silently, after ``count_before`` had raised for the same value.
+    Retention is report-then-apply, so a threshold the report refuses must be
+    refused by the delete it would have authorised — the write-side twin of a
+    read-side bound, which is the defect class ``_project`` already records.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD), normalize(_OTHER_RECORD)), ingested_at=1_000.0)
+        held = store.count()
+        assert held > 0, "the fixture stored nothing"
+        with pytest.raises(ValueError, match="finite"):
+            store.count_before(before=bad)
+        with pytest.raises(ValueError, match="finite"):
+            store.prune(before=bad)
+        assert store.count() == held, "a refused prune removed rows"
+
+
+@pytest.mark.security
 def test_next_stamp_is_strictly_after_the_mark(tmp_path: Path) -> None:
     """Equality is permitted for batching, and that is what the hazard needs.
 
