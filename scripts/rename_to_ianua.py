@@ -8,19 +8,25 @@ The migration updates active text files while preserving captured historical
 GitHub Actions logs under ``sample-logs/``. It is deterministic and safe to run
 more than once.
 
-Security considerations: paths are constrained to the repository root — on
-the *resolved* file, not only the declared one, since a symlink at a scanned
-path is refused rather than followed (see :func:`eligible`) — the scan is
-read-only unless ``--apply`` is passed, and this file excludes itself
-from rewriting — its ``REPLACEMENTS`` table intentionally contains the legacy
-identifiers, so rewriting or scanning it would corrupt the migration (the
-table would collapse to identity mappings and ``--check`` would then flag
-every occurrence of the *new* name as a leftover).
+Security considerations: every read and write goes through a descriptor
+opened beneath the repository root without following a symlink at any
+component, and a write goes only to the inode that was read and only when it
+has exactly one name (see :func:`_open_beneath` and :func:`_rewrite`); a
+refusal exits 2. A hard link is still *read*: its bytes may be shared with a
+name outside the root, and a scan reports only which legacy identifier it
+found. The scan is read-only unless ``--apply`` is passed, and this file
+excludes itself (by inode) from rewriting — its ``REPLACEMENTS`` table
+intentionally contains the legacy identifiers, so rewriting or scanning it
+would corrupt the migration (the table would collapse to identity mappings and
+``--check`` would then flag every occurrence of the *new* name as a leftover).
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import stat
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -116,6 +122,14 @@ def eligible(path: Path) -> bool:
     symlink at a declared source for the same reason. A path that resolves
     outside the root is refused outright rather than judged on its unresolved
     parts, which was the previous fallback.
+
+    This judges a *path*, which can change before it is opened, so it does not
+    bound reach on its own: :func:`_open_beneath` decides again on the
+    descriptor. A hard link is eligible to scan, since every file in a
+    ``cp -al`` copy of a checkout has two names (measured: 495 of 495), and
+    refusing them would scan nothing and report it clean; :func:`_rewrite`
+    refuses to write one. The script is excluded by inode (``samefile``), so
+    a second name for it is not scanned either.
     """
     if path.is_symlink():
         return False
@@ -129,7 +143,7 @@ def eligible(path: Path) -> bool:
         return False
     if not path.is_file() or any(part in EXCLUDED_PARTS for part in path.parts):
         return False
-    if path.resolve() == SELF:
+    if path.samefile(SELF):
         return False
     # ``.env.example`` is named because ``Path(".env.example").suffix`` is
     # ``.example`` and ``Path(".env").suffix`` is ``""``: the ``.env`` suffix
@@ -145,27 +159,105 @@ def eligible(path: Path) -> bool:
     }
 
 
+class RefusedPath(OSError):
+    """A scanned path the descriptor checks refused; :func:`main` exits 2."""
+
+
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _open_beneath(path: Path, flags: int) -> int:
+    """Open ``path`` from :data:`ROOT` one component at a time, following no link.
+
+    Each directory is opened ``O_NOFOLLOW`` relative to its parent's
+    descriptor, and the file ``O_NOFOLLOW | O_NONBLOCK`` and then ``fstat``-ed.
+    So a symlink swapped in at *any* component after :func:`eligible` approved
+    the path fails instead of being followed, and a FIFO fails the
+    regular-file check instead of blocking the gate. Measured on the previous
+    gate: a file or an ancestor directory swapped for a link after the check
+    was followed and its outside target rewritten, and a FIFO hung it. Unlike
+    ``collect/``, ancestors are walked: ``rglob`` never descends a link, so no
+    legitimate path beneath ROOT goes through one.
+    """
+    try:
+        parts = path.relative_to(ROOT).parts
+    except ValueError:
+        parts = ()
+    if not parts or ".." in parts:
+        raise RefusedPath(f"{path}: not a path beneath the repository root")
+    parent = os.open(ROOT, _DIR_FLAGS)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, _DIR_FLAGS, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        leaf = flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        descriptor = os.open(parts[-1], leaf, dir_fd=parent)
+    except OSError as exc:
+        raise RefusedPath(f"{path}: {exc.strerror} on open beneath the root") from exc
+    finally:
+        os.close(parent)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RefusedPath(f"{path}: not a regular file when opened")
+    return descriptor
+
+
+def _rewrite(path: Path, text: str, read: os.stat_result) -> None:
+    """Write ``text`` to the inode ``read`` describes, and to nothing else.
+
+    The path is reopened, so the descriptor must be that inode: anything
+    renamed, linked or created in its place in between is refused. That holds
+    only while the caller keeps the read descriptor open (measured: with it
+    closed, a file unlinked and recreated in between got the same inode number
+    and was written). And it must have exactly one name, because a write
+    through a hard link rewrites every name of the inode, including one
+    outside the root (measured on the previous gate: ``--apply`` rewrote an
+    outside file through a ``docs/*.md`` hard link, and this script through a
+    hard link to it). No ``O_TRUNC``: nothing is truncated until both
+    checks pass. A write that fails after the truncate leaves the file short,
+    as ``write_text`` did.
+    """
+    descriptor = _open_beneath(path, os.O_WRONLY)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        status = os.fstat(descriptor)
+        if (status.st_dev, status.st_ino) != (read.st_dev, read.st_ino):
+            raise RefusedPath(f"{path}: replaced between read and write")
+        if status.st_nlink != 1:
+            raise RefusedPath(f"{path}: has {status.st_nlink} names; a write rewrites all")
+        handle.truncate(0)
+        handle.write(text)
+
+
 def migrate(*, apply: bool) -> tuple[list[Path], list[tuple[Path, str]]]:
-    """Find and optionally replace legacy identifiers."""
+    """Find and optionally replace legacy identifiers.
+
+    :raises RefusedPath: when a descriptor check refuses a path. The pass stops
+        there; files already rewritten stay so, which a rerun tolerates since
+        the migration is idempotent.
+    """
     changed: list[Path] = []
     remaining: list[tuple[Path, str]] = []
 
     for path in sorted(ROOT.rglob("*")):
         if not eligible(path):
             continue
-        try:
-            original = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
+        # Held open until the write, so the inode it read cannot be freed and
+        # its number reused by a file created in its place (see _rewrite).
+        with os.fdopen(_open_beneath(path, os.O_RDONLY), encoding="utf-8") as source:
+            try:
+                original = source.read()
+            except UnicodeDecodeError:
+                continue
 
-        updated = original
-        for old, new in REPLACEMENTS:
-            updated = updated.replace(old, new)
+            updated = original
+            for old, new in REPLACEMENTS:
+                updated = updated.replace(old, new)
 
-        if updated != original:
-            changed.append(path.relative_to(ROOT))
-            if apply:
-                path.write_text(updated, encoding="utf-8")
+            if updated != original:
+                changed.append(path.relative_to(ROOT))
+                if apply:
+                    _rewrite(path, updated, os.fstat(source.fileno()))
 
         inspected = updated if apply else original
         for old, _ in REPLACEMENTS:
@@ -185,7 +277,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    changed, remaining = migrate(apply=args.apply)
+    try:
+        changed, remaining = migrate(apply=args.apply)
+    except OSError as exc:
+        print(f"rename gate refused: {exc}", file=sys.stderr)
+        return 2
     for path in changed:
         print(f"{'updated' if args.apply else 'would update'}: {path}")
 

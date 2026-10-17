@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Ivan Rozenblad
 # SPDX-License-Identifier: Apache-2.0
 
-"""The IANUA-rename gate must not read or write outside the repository.
+"""The IANUA-rename gate must not follow a symlink out of the repository.
 
 `scripts/rename_to_ianua.py` says "paths are constrained to the repository
 root", and `ROOT.rglob("*")` does keep every *declared* path under ROOT. It did
@@ -15,10 +15,14 @@ its unresolved parts, so it was permissive where it needed to fail closed.
 
 AGENTS.md §5 scopes filesystem reach to the project, and `collect/` already
 refuses a symlink at a declared source for exactly this reason. These tests
-pin the same rule here. Every probe is a real file carrying a real legacy
-identifier, because `eligible` refuses a nonexistent path through its own
-`is_file()` guard and a test against a missing path holds whatever the rule
-does (the lesson `test_rename_gate_scope.py` records).
+pin the same rule here, and only the symlink route: a hard link is a name in
+the tree and is still read, and a path can change after `eligible` judged it.
+The write side of both is pinned in
+`tests/security/test_rename_gate_descriptor_reach.py`. Every probe is a real
+file carrying a real legacy identifier, because `eligible` refuses a
+nonexistent path through its own `is_file()` guard and a test against a
+missing path holds whatever the rule does (the lesson
+`test_rename_gate_scope.py` records).
 """
 
 from __future__ import annotations
