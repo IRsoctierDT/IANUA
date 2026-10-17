@@ -11,6 +11,7 @@ these tests need no dependency on the broker package.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -140,3 +141,37 @@ def test_empty_chain_is_a_healthy_empty_queue(tmp_path: Path) -> None:
     view = load_chain_view(chain)
     assert view.records == 0
     assert view.pending == ()
+
+
+def test_non_utf8_chain_is_a_chain_error(tmp_path: Path) -> None:
+    """Bytes that are not UTF-8 are a malformed chain, not a traceback.
+
+    Measured on the base commit: ``read_text`` raised ``UnicodeDecodeError``,
+    which neither ``except`` in the dashboard's approvals tab caught, and a
+    directory at the path raised ``IsADirectoryError`` the same way.
+    """
+    chain = tmp_path / "audit.jsonl"
+    chain.write_bytes(b"\xff\xfe\x00garbage")
+    with pytest.raises(AuditChainError, match="not valid UTF-8"):
+        load_chain_view(chain)
+    with pytest.raises(IsADirectoryError):  # an I/O failure stays an OSError for the caller
+        load_chain_view(tmp_path)
+
+
+def test_approvals_tab_catches_every_read_failure() -> None:
+    """The one ``try`` around ``load_chain_view`` in app.py handles OSError, after the narrower two."""
+    app = Path(__file__).resolve().parents[2] / "dashboard" / "app.py"
+    tries = [
+        node
+        for node in ast.walk(ast.parse(app.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Try)
+        and any(
+            isinstance(n, ast.Name) and n.id == "load_chain_view"
+            for stmt in node.body
+            for n in ast.walk(stmt)
+        )
+    ]
+    assert len(tries) == 1
+    handlers = [h.type.id for h in tries[0].handlers if isinstance(h.type, ast.Name)]
+    assert "AuditChainError" in handlers
+    assert handlers.index("FileNotFoundError") < handlers.index("OSError"), handlers

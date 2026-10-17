@@ -72,9 +72,11 @@ def load_chain_view(path: Path) -> ChainView:
     """Parse and verify the broker audit chain; derive outstanding approvals.
 
     Raises ``AuditChainError`` on any malformed line, hash mismatch, or break
-    in the chain — a tampered queue must never render as a healthy one.
+    in the chain — a tampered queue must never render as a healthy one — and
+    on a file that is not UTF-8, which is malformed content, not an I/O error.
     Raises ``FileNotFoundError`` if the file does not exist (callers decide
-    how to present "no broker configured").
+    how to present "no broker configured"); any other ``OSError`` (a directory
+    or a permission denial at the path) propagates for the caller to surface.
     """
     if not isinstance(path, Path):
         raise AuditChainError("path must be a pathlib.Path")
@@ -85,7 +87,11 @@ def load_chain_view(path: Path) -> ChainView:
     prev = _GENESIS
     count = 0
 
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise AuditChainError(f"{path.name}: not valid UTF-8") from exc
+    for line_number, line in enumerate(text.splitlines(), 1):
         if not line.strip():
             continue
         try:

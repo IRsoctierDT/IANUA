@@ -310,6 +310,13 @@ with tab_approvals:
         except AuditChainError as exc:
             # A broken chain is a security event, not a display glitch (THR-0003).
             st.error(f"Audit chain FAILED verification — treat as a security event: {exc}")
+        except OSError as exc:
+            # Unreadable is not "not run yet": a directory or a permission
+            # denial at the declared path is surfaced here, never as a traceback.
+            st.error(
+                f"Audit chain at `{chain_path}` could not be read "
+                f"({exc.__class__.__name__}) — treat as a security event until explained."
+            )
         else:
             col_pend, col_rec, col_res, col_used = st.columns(4)
             col_pend.metric("Pending", len(view.pending))
