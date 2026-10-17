@@ -458,15 +458,39 @@ def measure_backup_present(root: Path, now: float) -> Measurement:
     objective because ``docs/RESTORE.md`` documents the procedure and the
     recovery ordering and documents no cadence — a target here would be an
     invented requirement (AGENTS.md §9).
+
+    **A symlink anywhere between the root and a manifest is not followed.**
+    ``scripts/run_backup.py`` confines the directory it writes with the same
+    walk the store and the cursor use, so a link under ``data/backups`` was
+    planted rather than written. One at ``data`` or ``data/backups`` grades
+    ``UNKNOWN`` with the reason; a linked entry inside the directory is
+    skipped *before* anything on its far side is ``stat``ed. Measured before
+    this: a link to a directory outside the root holding a ``manifest.json``
+    read ``1.0`` — a backup that is not this node's — and the probe
+    ``stat``ed the manifest on the far side, the one reach this package
+    promises never to make.
     """
+    walked = root
+    for part in BACKUP_SUBDIR.parts:
+        walked = walked / part
+        if walked.is_symlink():
+            return Measurement(
+                None,
+                f"{walked.relative_to(root)} is a symlink; refusing to follow it out of "
+                "the lab-data root",
+            )
     directory = root / BACKUP_SUBDIR
     if not directory.is_dir():
         return Measurement(0.0, f"no backup directory at {BACKUP_SUBDIR}")
-    manifests = [
-        candidate
-        for candidate in sorted(directory.glob(f"*/{MANIFEST_FILE}"))
-        if candidate.is_file() and not candidate.is_symlink()
-    ]
+    manifests: list[Path] = []
+    for entry in sorted(directory.iterdir()):
+        # ``is_symlink`` first: ``is_dir`` and ``is_file`` follow a link and
+        # would ``stat`` whatever is on its far side before it was noticed.
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        candidate = entry / MANIFEST_FILE
+        if not candidate.is_symlink() and candidate.is_file():
+            manifests.append(candidate)
     if not manifests:
         return Measurement(0.0, f"no backup manifest under {BACKUP_SUBDIR}")
     try:
