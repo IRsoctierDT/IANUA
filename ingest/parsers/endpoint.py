@@ -234,8 +234,15 @@ _AUDITD_TYPES = frozenset(
     }
 )
 
-#: auditd stamps its own clock into ``msg=audit(<epoch>.<ms>:<serial>)``.
-_AUDIT_MSG_CLOCK = re.compile(r"audit\((\d+\.\d+):(\d+)\)")
+#: auditd stamps its own clock into ``msg=audit(<epoch>.<ms>:<serial>)``, and
+#: the stamp is the *head* of the field, never a token inside it — so the
+#: pattern is anchored and both readers below use ``match``. Unanchored,
+#: review measured that a logger's prose quoting the token anywhere in
+#: ``msg`` (``login failed for user 'audit(1.0:1)'``) was claimed as auditd
+#: *and* dated from the prose, so whoever controlled an echoed string chose
+#: the event's timestamp. ``ausearch -i``'s date-form stamp is not this
+#: spelling and is not claimed; ``collect/`` reads raw ``audit.log``, which is.
+_AUDIT_MSG_CLOCK = re.compile(r"^audit\((\d+\.\d+):(\d+)\)")
 #: EXECVE splits a command line across a0, a1, a2 … in argv order.
 _EXECVE_ARG = re.compile(r"^a(\d+)$")
 
@@ -261,9 +268,12 @@ def _recognizes_auditd(payload: Mapping[str, Any]) -> bool:
         return True
     # A ``PATH`` or ``EXECVE`` record carries none of those: beside ``type``
     # the only auditd-shaped thing on it is ``msg=audit(<epoch>.<ms>:<serial>)``,
-    # the daemon's own clock stamp. So ``msg`` counts when it reads like that,
-    # and a logger's prose in the same field does not.
-    return _AUDIT_MSG_CLOCK.search(text(payload.get("msg")) or "") is not None
+    # the daemon's own clock stamp. So ``msg`` counts when it *begins* with
+    # that, and a logger's prose in the same field does not — including prose
+    # that quotes the token. The first version of this line used ``search``
+    # and, measured, five prose records carrying ``audit(1.0:1)`` mid-sentence
+    # were claimed: a string-shaped rule the thing it stops can spell around.
+    return _AUDIT_MSG_CLOCK.match(text(payload.get("msg")) or "") is not None
 
 
 def _execve_command(payload: Mapping[str, Any]) -> str | None:
@@ -298,7 +308,9 @@ def _parse_auditd(payload: Mapping[str, Any]) -> NormalizedEvent:
 
     timestamp = epoch(first(payload.get("@timestamp"), payload.get("timestamp")))
     if timestamp is None:
-        clock = _AUDIT_MSG_CLOCK.search(text(payload.get("msg")) or "")
+        # Anchored like the recognizer: a record claimed on ``comm`` whose
+        # ``msg`` is prose quoting a stamp must not be dated from the prose.
+        clock = _AUDIT_MSG_CLOCK.match(text(payload.get("msg")) or "")
         if clock:
             timestamp = epoch(float(clock.group(1)))
     if timestamp is None:

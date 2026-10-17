@@ -3001,6 +3001,89 @@ def test_auditd_still_claims_on_its_own_clock_when_nothing_else_corroborates() -
 
 
 @pytest.mark.security
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(
+            {
+                "type": "USER_LOGIN",
+                "time": "2026-10-17T09:00:00Z",
+                "level": "warn",
+                "msg": "login failed for user 'audit(1.0:1)' from 198.51.100.7",
+            },
+            id="json-token-in-a-quoted-username",
+        ),
+        pytest.param(
+            {"type": "SERVICE_START", "msg": "worker pool started; see audit(1.0:1) for details"},
+            id="json-token-mid-sentence",
+        ),
+        pytest.param(
+            {"type": "CONFIG_CHANGE", "msg": "reload requested by audit(4070908800.000:1) handler"},
+            id="json-token-with-a-2099-epoch",
+        ),
+        pytest.param(
+            {"type": "PATH", "msg": "handler finished audit(1.0:1)"}, id="json-token-last"
+        ),
+        pytest.param(
+            'type=SERVICE_START msg="worker pool started audit(1.0:1) ok"', id="logfmt-token"
+        ),
+    ],
+)
+def test_a_stamp_quoted_inside_prose_does_not_make_a_record_auditd(
+    record: dict[str, str] | str,
+) -> None:
+    """The clock stamp is the *head* of ``msg``, not a token found anywhere in it.
+
+    77b3e3d let ``msg`` corroborate only in auditd's own spelling, then tested
+    that spelling with an unanchored ``search``. Measured before this fix:
+    every record here was claimed as auditd — ``structured``, ``endpoint``,
+    ``notes=()`` — and dated from the prose (``timestamp=1.0``, or a 2099
+    epoch), so whoever controls a string an application echoes into ``msg``
+    (a username, as in the first case) both re-opened the ING-02
+    misattribution and chose the event's timestamp. The string-shaped rule
+    AGENTS.md §5 keeps finding: the thing it stops can spell around it.
+    """
+    event = normalize(record)
+    assert event.vendor == "unrecognized", (event.vendor, event.notes)
+    assert event.source_type == "unknown"
+    assert event.activity is None
+    assert event.timestamp is None, "the timestamp was read out of prose"
+    if isinstance(record, dict):
+        assert not any(signature.recognizes(record) for signature in SIGNATURES)
+        assert detect_source(record) is None
+
+
+@pytest.mark.security
+def test_a_claimed_record_is_not_dated_from_prose_that_quotes_a_stamp() -> None:
+    """The timestamp read is anchored like the recognizer, for the same reason.
+
+    A record claimed on ``comm`` can still carry a prose ``msg``. Measured
+    before the fix: ``{"type": "SYSCALL", "comm": "bash", "msg": "see
+    audit(1.0:1) later"}`` parsed with ``timestamp=1.0`` and no note — an
+    attacker-chosen instant in the field correlation orders on. It is now
+    undated, says so, and is ``partial`` rather than ``structured``. The same
+    anchored read still dates every real shape, since on those the stamp
+    *is* the head of ``msg`` — after ``text()`` has stripped a shipper's
+    leading whitespace, so the anchor is on the cleaned value.
+    """
+    event = normalize({"type": "SYSCALL", "comm": "bash", "msg": "see audit(1.0:1) later"})
+    assert event.vendor == "auditd"
+    assert event.timestamp is None
+    assert event.parse_status == "partial"
+    assert any("no usable timestamp" in note for note in event.notes), event.notes
+
+    dated = {
+        "type=PROCTITLE msg=audit(1760000000.123:42): proctitle=2F7573722F62696E2F78": 1760000000.123,
+        "node=web-01 type=SYSCALL msg=audit(1760000001.200:2): auid=svc comm=bash": 1760000001.2,
+    }
+    for line, expected in dated.items():
+        real = normalize(line)
+        assert real.vendor == "auditd" and real.timestamp == expected, (line, real.notes)
+    padded = normalize({"type": "PATH", "msg": "  audit(1760000000.123:42): item=0"})
+    assert padded.vendor == "auditd" and padded.timestamp == 1760000000.123
+
+
+@pytest.mark.security
 def test_the_size_ceiling_is_measured_in_bytes_on_bytes() -> None:
     """``MAX_RAW_BYTES`` bounded code points, not bytes, on the path collect/ uses.
 
