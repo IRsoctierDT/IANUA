@@ -135,6 +135,13 @@ def _load_never_flag(path: Path) -> tuple[str, ...]:
     if not isinstance(cidrs, list) or not cidrs:
         raise _reject("never_flag.json cidrs must be a non-empty list")
     for cidr in cidrs:
+        # A JSON string only. ``ip_network`` also accepts an int (and a bool,
+        # an int subclass) and JSON carries both: measured, ``2886729729``
+        # loaded as ``172.16.0.1/32`` and ``true`` as ``0.0.0.1/32`` — a
+        # suppression entry no reviewer can read in a diff. Same rule as the
+        # egress allow-list (AGENTS.md §5).
+        if not isinstance(cidr, str):
+            raise _reject(f"never_flag cidr must be a string, got {cidr!r}")
         try:
             ipaddress.ip_network(cidr)
         except ValueError as exc:

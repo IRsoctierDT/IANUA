@@ -87,6 +87,10 @@ _CASES: list[tuple[str, str, Callable[[dict], None]]] = [
         lambda d: d["behaviors"].append(dict(d["behaviors"][0])),
     ),
     ("bad never_flag cidr", "never_flag.json", lambda d: d["cidrs"].append("not-a-cidr")),
+    # Measured before the type check: both loaded — 2886729729 as 172.16.0.1/32,
+    # True as 0.0.0.1/32 — a suppression entry no reviewer can read in a diff.
+    ("int never_flag cidr", "never_flag.json", lambda d: d["cidrs"].append(2886729729)),
+    ("bool never_flag cidr", "never_flag.json", lambda d: d["cidrs"].append(True)),
 ]
 
 
