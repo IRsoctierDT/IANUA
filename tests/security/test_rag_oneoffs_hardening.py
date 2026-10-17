@@ -146,6 +146,7 @@ def _install_stubs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     models.PointStruct = _StubPoint  # type: ignore[attr-defined]
     models.VectorParams = lambda **kwargs: kwargs  # type: ignore[attr-defined]
     models.Distance = types.SimpleNamespace(COSINE="Cosine")  # type: ignore[attr-defined]
+    models.Filter = models.FieldCondition = models.MatchValue = dict  # type: ignore[attr-defined]
     transformers = types.ModuleType("sentence_transformers")
     transformers.SentenceTransformer = _StubModel  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "qdrant_client", qdrant)
@@ -417,28 +418,61 @@ def test_block_scripts_carry_no_host_literal_and_use_the_qdrant_factory(script: 
     Measured before the fix, ``test_embeddings_qdrant.py`` built
     ``QdrantClient(url="http://localhost:6333")`` directly -- the one script
     that forced server mode regardless of ``QDRANT_URL``/``QDRANT_PATH``.
+
+    A tripwire, not a proof. Its first version matched only ``from qdrant_client
+    import QdrantClient`` and a bare-name call, case-sensitively; measured, each of
+    ``qdrant_client.QdrantClient(host="::1", port=6333)``, ``QdrantClient()``, a
+    ``qdrant_client.qdrant_client`` import, ``AsyncQdrantClient`` and the split
+    literal ``"http:/" + "/localhost:6333"`` passed it. It now refuses any client
+    class reference (name, attribute, import alias, string), any ``qdrant_client``
+    import other than ``qdrant_client.models``, and host fragments in any case. A
+    split literal still passes; the behavioural test below is the guard for that.
     """
     tree = ast.parse((_SCRIPTS / script).read_text(encoding="utf-8"))
+    fragments = (*_HOST_LITERAL_FRAGMENTS, "::1", "6333")
     offenders = [
         n.value
         for n in ast.walk(tree)
         if isinstance(n, ast.Constant)
         and isinstance(n.value, str)
-        and any(fragment in n.value for fragment in _HOST_LITERAL_FRAGMENTS)
+        and any(fragment in n.value.lower() for fragment in fragments)
     ]
     assert not offenders, f"{script} hard-codes a host/port: {offenders}"
+    clients = {"QdrantClient", "AsyncQdrantClient"}
     direct = [
-        alias.name
+        ast.unparse(n)
         for n in ast.walk(tree)
-        if isinstance(n, ast.ImportFrom) and n.module == "qdrant_client"
-        for alias in n.names
-        if alias.name == "QdrantClient"
-    ] + [
-        n.func.id
-        for n in _calls(tree)
-        if isinstance(n.func, ast.Name) and n.func.id == "QdrantClient"
+        if (isinstance(n, ast.Name) and n.id in clients)
+        or (isinstance(n, ast.Attribute) and n.attr in clients)
+        or (isinstance(n, ast.alias) and n.name.rpartition(".")[2] in clients)
+        or (isinstance(n, ast.Constant) and any(name in str(n.value) for name in clients))
+        or (isinstance(n, ast.Import) and any(a.name.startswith("qdrant_client") for a in n.names))
+        or (
+            isinstance(n, ast.ImportFrom)
+            and (n.module or "").startswith("qdrant_client")
+            and n.module != "qdrant_client.models"
+        )
     ]
-    assert not direct, f"{script} builds a QdrantClient outside rag.qdrant.make_client"
+    assert not direct, f"{script} reaches a Qdrant client outside make_client: {direct}"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", [s for s in _BLOCK_SCRIPTS if s != "rag_cli.py"])  # no Qdrant
+def test_block_scripts_build_only_an_embedded_client_by_default(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pin's behavioural half: with ``QDRANT_URL`` unset, one client, ``path`` only.
+
+    Every spelling that passed the first static pin builds a ``url``/``host``
+    client here, or fails to import (the stub has no submodule and no
+    ``AsyncQdrantClient``). It sees only clients built through ``qdrant_client``.
+    """
+    _install_stubs(monkeypatch, tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "QUESTION-TEXT")
+    monkeypatch.setattr(sys, "argv", [script])
+    _fake_generation(monkeypatch, [])
+    runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+    assert [c.kwargs for c in _StubClient.instances] == [{"path": str(tmp_path / "qdrant")}]
 
 
 @pytest.mark.security
