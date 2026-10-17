@@ -275,14 +275,20 @@ def check_attack_corpus_integrity(root: Path) -> CheckResult:
     Read-only and fail closed: a missing pin, a hash mismatch, or a corpus
     that does not load is a FAIL — never a silent pass. Runs the same loader
     the platform uses, so the control is load-bearing, not decorative.
+
+    ``root`` is **data, never a code path**. The loader is this process's own
+    :mod:`attack` package, resolved from the interpreter's import path as it
+    already stands; only the pin and the shards are read from under ``root``.
+    This function used to insert ``root`` at the front of ``sys.path`` first,
+    which meant an ``attack/`` directory under whatever root a caller passed
+    was *executed* — measured: a planted ``attack/__init__.py`` under a
+    temporary root ran, and the process kept that module and the mutated
+    ``sys.path`` afterwards. A read-only check must not load code from the
+    tree it is grading.
     """
-    import sys
+    from attack import load_corpus, load_pin
 
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
     try:
-        from attack import load_corpus, load_pin
-
         pin = load_pin(root / "attack" / "pins" / "enterprise-attack.pin.json")
         corpus = load_corpus(pin=pin, data_dir=root / "attack" / "data")
     except Exception as exc:
