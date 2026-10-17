@@ -1444,6 +1444,61 @@ def test_a_store_with_tables_but_no_version_row_is_refused(tmp_path: Path) -> No
 
 
 @pytest.mark.security
+def test_a_failure_before_the_version_row_leaves_no_half_created_store(tmp_path: Path) -> None:
+    """The "one transaction" the test above relies on, made true and pinned.
+
+    ``executescript`` commits any pending transaction and then runs its script
+    in autocommit mode. Measured on the parent commit: ``in_transaction`` was
+    False after it and a second connection saw all three tables before the
+    version row existed, so a failure between the two statements left a store
+    the next open refused as "the version row was removed" — fail-closed, but
+    a misdiagnosis, and one an operator can clear only by deleting the file.
+    With the DDL opened by an explicit ``BEGIN`` inside the script, a failure
+    rolls the tables back with the row that never landed.
+    """
+    from store import SCHEMA_VERSION
+
+    real = sqlite3.connect(tmp_path / "fresh.sqlite3")
+    try:
+        with pytest.raises(RuntimeError, match="simulated"):
+            EventStore._apply_schema(_FailBeforeVersionRow(real))  # type: ignore[arg-type]
+        assert real.in_transaction is False
+        tables = real.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table'").fetchone()
+        assert tables[0] == 0, f"{tables[0]} table(s) survived a failed creation"
+        # And the same connection creates the store cleanly afterwards.
+        EventStore._apply_schema(real)
+        row = real.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        assert row is not None and row[0] == str(SCHEMA_VERSION)
+    finally:
+        real.close()
+
+
+class _FailBeforeVersionRow:
+    """A connection proxy that fails the version-row INSERT and nothing else.
+
+    Dunders are delegated by name because ``with conn:`` and attribute lookup
+    through ``__getattr__`` are different protocols.
+    """
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+
+    def execute(self, sql: str, *args: Any) -> Any:
+        if sql.lstrip().upper().startswith("INSERT INTO META"):
+            raise RuntimeError("simulated crash before the version row")
+        return self._real.execute(sql, *args)
+
+    def __enter__(self) -> Any:
+        return self._real.__enter__()
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._real.__exit__(*exc)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+@pytest.mark.security
 def test_a_projection_that_is_not_json_is_refused(tmp_path: Path) -> None:
     """Hash-consistent but undecodable: a row only a direct edit could produce."""
     forged = "this is not json"

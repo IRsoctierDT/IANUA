@@ -512,8 +512,19 @@ class EventStore:
             return
         # Fresh database: tables and version land in one transaction, so a
         # store can never exist with tables but no recorded version.
+        #
+        # The explicit BEGIN is what makes that sentence true. `executescript`
+        # COMMITs any pending transaction and then runs its script in
+        # autocommit mode — measured: `in_transaction` was False after it, and
+        # a second connection could see all three tables before the version
+        # row existed. A failure between the two statements therefore left a
+        # store the next open refused as "the version row was removed": a
+        # fail-closed misdiagnosis an operator could clear only by deleting
+        # the file. With BEGIN inside the script the DDL stays uncommitted
+        # until `with` commits it alongside the version row, and a failure
+        # rolls both back — measured, zero tables after a simulated crash.
         with conn:
-            conn.executescript(DDL)
+            conn.executescript("BEGIN;" + DDL)
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES (?, ?)",
                 (VERSION_KEY, str(SCHEMA_VERSION)),
