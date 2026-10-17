@@ -122,19 +122,29 @@ def _urllib_transport(url: str, body: dict[str, object], timeout: float) -> dict
     100000-deep array (``RecursionError``), a short body under a long
     ``Content-Length``, a garbage status line, a connection closed without a
     response, and an over-long header line. The tiers are therefore the
-    stdlib's own bases — ``OSError`` and ``http.client.HTTPException`` for
-    transport and framing, ``ValueError`` and ``RecursionError`` for decoding —
-    and the body is read to :data:`MAX_RESPONSE_BYTES`, never to EOF.
+    stdlib's own bases — ``OSError``, ``http.client.HTTPException``, ``ValueError``
+    (a malformed redirect ``Location``) and ``OverflowError`` (chunk size
+    ``-FFFFFFFFFFFFFFFFFFFF``) around open/read, ``ValueError`` and ``RecursionError``
+    around decode. The body is read by ``read1`` (``read(n)`` reads a ``-1`` chunk to
+    EOF) to at most 64 KiB past :data:`MAX_RESPONSE_BYTES`, and a body short of its
+    ``Content-Length`` is refused rather than parsed as complete.
     """
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed at construction and at egress
     try:
         with _open(req, timeout) as resp:
-            raw = resp.read(MAX_RESPONSE_BYTES + 1)
-    except (OSError, http.client.HTTPException) as exc:
+            raw = bytearray()
+            while len(raw) <= MAX_RESPONSE_BYTES and (part := resp.read1(1 << 16)):
+                raw += part
+            missing = resp.length  # Content-Length bytes never sent; read1 does not raise
+    except ValidationError:
+        raise  # a refused redirect: already the right type and message
+    except (OSError, http.client.HTTPException, ValueError, OverflowError) as exc:
         raise ValidationError(f"generation request failed: {exc}") from exc
     if len(raw) > MAX_RESPONSE_BYTES:
         raise ValidationError(f"generation response exceeds {MAX_RESPONSE_BYTES} bytes")
+    if missing:
+        raise ValidationError(f"generation response truncated: {missing} bytes never arrived")
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (ValueError, RecursionError) as exc:  # JSONDecodeError, UnicodeDecodeError, int limit
@@ -151,7 +161,7 @@ class OllamaGenerator:
     Args:
         host: Base URL of the Ollama server (must resolve to an allowed host).
         model: Generation model name (default from ``LLM_MODEL``).
-        timeout: Per-request timeout in seconds (bounded; fail closed).
+        timeout: Per-socket-operation timeout in seconds, not a bound on the whole request.
         allowed_hosts: Host allow-list enforced before any request.
         transport: Injectable HTTP seam (defaults to stdlib urllib).
     """

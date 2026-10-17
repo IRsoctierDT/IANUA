@@ -21,6 +21,8 @@ from agents.incident_report_agent import _build_narrative
 from agents.tools.llm import MAX_RESPONSE_BYTES, OllamaGenerator
 from agents.tools.validation import ValidationError
 
+_CHUNKED = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+
 
 def _http(body: bytes, declared: int | None = None) -> bytes:
     """A 200 response carrying ``body`` — with a lying ``Content-Length`` when asked."""
@@ -78,12 +80,17 @@ def _assert_fails_closed(gen: OllamaGenerator) -> None:
             _http(b"[" * 100_000 + b"]" * 100_000), id="100000-deep array: RecursionError"
         ),
         pytest.param(_http(b"12345", declared=100), id="short body under Content-Length 100"),
+        pytest.param(_http(b'{"response": "x"}', 99), id="valid object, short of Content-Length"),
         pytest.param(
             _http(b'"' + b"A" * (MAX_RESPONSE_BYTES + 1) + b'"'), id="body over the bound"
         ),
         pytest.param(_http(b"[]"), id="non-object payload"),
         pytest.param(b"NOT-HTTP garbage\r\n\r\n", id="garbage status line: BadStatusLine"),
         pytest.param(b"", id="closed without a response: RemoteDisconnected"),
+        pytest.param(b"HTTP/1.1 302 Found\r\nLocation: http://[\r\n\r\n", id="malformed Location"),
+        pytest.param(
+            _CHUNKED + b"-FFFFFFFFFFFFFFFFFFFF\r\n", id="chunk size -FFFF...: OverflowError"
+        ),
         pytest.param(b"HTTP/1.1 200 OK\r\nX: " + b"a" * 70_000 + b"\r\n\r\n{}", id="LineTooLong"),
     ],
 )
@@ -98,3 +105,10 @@ def test_a_response_inside_the_bound_still_parses(raw_serve: Callable[[bytes], s
     text = "A" * 1000
     gen = OllamaGenerator(host=raw_serve(_http(f'{{"response": "{text}"}}'.encode())))
     assert gen.generate("x") == text
+
+
+@pytest.mark.security
+def test_a_negative_chunk_size_does_not_lift_the_bound(raw_serve: Callable[[bytes], str]) -> None:
+    reply = _CHUNKED + b"-1\r\n" + b"A" * 64 * MAX_RESPONSE_BYTES  # outlasts both socket buffers
+    with pytest.raises(ValidationError, match="exceeds"):  # not IncompleteRead after reading to EOF
+        OllamaGenerator(host=raw_serve(reply)).generate("x")
