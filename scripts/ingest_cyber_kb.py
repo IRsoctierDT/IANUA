@@ -10,6 +10,7 @@ working directory; ``source`` is stored repo-relative, never absolute.
 """
 
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client.models import PointStruct
 from sentence_transformers import SentenceTransformer
@@ -29,16 +30,21 @@ docs = [p for p in discover_documents(KB_DIR) if p.suffix == ".md" and p.parent 
 
 points = []
 
-for idx, path in enumerate(docs, start=1):
+for path in docs:
+    source = path.relative_to(REPO_ROOT).as_posix()
     text = path.read_text(encoding="utf-8")
     vector = model.encode(text).tolist()
 
     points.append(
         PointStruct(
-            id=idx,
+            # Identity, not position: an enumeration index renumbered every
+            # existing point whenever a document was added (measured), so a
+            # re-run's upsert overwrote unrelated points. Same scheme as the
+            # chunked one-off, so a re-run upserts each document in place.
+            id=str(uuid5(NAMESPACE_URL, source)),
             vector=vector,
             payload={
-                "source": path.relative_to(REPO_ROOT).as_posix(),
+                "source": source,
                 "text": text,
             },
         )

@@ -20,6 +20,7 @@ import sys
 import types
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
@@ -153,3 +154,27 @@ def test_chunked_ingest_keeps_the_payload_shape_the_dashboard_reads(
         assert set(point.payload) == {"source", "category", "chunk_index", "text"}
         assert point.payload["category"] == Path(point.payload["source"]).parent.name
         assert isinstance(point.payload["chunk_index"], int)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", _INGEST_SCRIPTS)
+def test_ingest_point_ids_derive_from_identity_not_position(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-running an ingest must upsert each document in place (AGENTS.md section 3).
+
+    Measured before the fix, ``ingest_cyber_kb.py`` numbered points by
+    enumeration order, so adding one document renumbered every existing id and
+    the next upsert overwrote unrelated points. Both one-offs now derive the id
+    from the repo-relative ``source`` (plus chunk index for the chunked one).
+    """
+    _install_stubs(monkeypatch, tmp_path)
+    points = _run(script)
+    assert points
+    ids = [point.id for point in points]
+    assert len(set(ids)) == len(ids), "point ids must be unique"
+    for point in points:
+        key = point.payload["source"]
+        if "chunk_index" in point.payload:
+            key = f"{key}:{point.payload['chunk_index']}"
+        assert point.id == str(uuid5(NAMESPACE_URL, key)), (point.id, key)
