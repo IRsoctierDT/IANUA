@@ -10,6 +10,15 @@ working directory; ``source`` is stored repo-relative, never absolute. A
 symlinked corpus root (``knowledge-base`` or ``cybersecurity``) is refused
 before anything is built, and ``source`` is derived relative to ``KB_DIR``.
 Reads go through ``rag.ingest.read_document``; its residuals apply here.
+
+Ids are ``uuid5(source)``, so a re-run overwrites each *present* document's
+point in place -- and never deletes, so it does not converge the collection:
+a removed or renamed document's point, and every integer id the earlier
+``enumerate`` scheme wrote, stay searchable beside the current text (measured).
+``create_cyber_collection.py`` does not clear them; it only creates a missing
+collection. Clearing is a delete, so it is an operator act behind AGENTS.md
+section 5.1's destructive gate: ``make_client().delete_collection(COLLECTION)``,
+then ``create_cyber_collection.py``, then this script.
 """
 
 from pathlib import Path
@@ -46,7 +55,7 @@ for path in docs:
             # Identity, not position: an enumeration index renumbered every
             # existing point whenever a document was added (measured), so a
             # re-run's upsert overwrote unrelated points. Same scheme as the
-            # chunked one-off, so a re-run upserts each document in place.
+            # chunked one-off; stale points stay (see the module docstring).
             id=str(uuid5(NAMESPACE_URL, source)),
             vector=vector,
             payload={

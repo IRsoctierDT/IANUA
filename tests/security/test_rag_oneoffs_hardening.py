@@ -280,6 +280,33 @@ def test_ingest_point_ids_derive_from_identity_not_position(
         assert point.id == str(uuid5(NAMESPACE_URL, key)), (point.id, key)
 
 
+@pytest.mark.security
+def test_ingest_never_deletes_and_create_collection_clears_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Pins ``ingest_cyber_kb.py``'s stated residual: nothing here clears a stale point.
+
+    Measured with a persisting stub, a removed document's point and the legacy
+    ``enumerate`` integer ids survive every re-run, and ``create_cyber_collection.py``
+    on an existing collection only prints. Any client call beyond list/create/upsert
+    (a delete, a scroll) fails this, so a pruning change must update that docstring.
+    """
+    _install_stubs(monkeypatch, tmp_path)
+    other: list[str] = []
+
+    def record(_self: object, name: str) -> Any:
+        other.append(name)
+        return lambda *_a, **_k: None
+
+    monkeypatch.setattr(_StubClient, "__getattr__", record, raising=False)
+    assert _run("ingest_cyber_kb.py")
+    listed = types.SimpleNamespace(collections=[types.SimpleNamespace(name="cybersecurity_kb")])
+    monkeypatch.setattr(_StubClient, "get_collections", lambda _self: listed)
+    runpy.run_path(str(_SCRIPTS / "create_cyber_collection.py"), run_name="__main__")
+    assert "Collection already exists" in capsys.readouterr().out
+    assert other == [] and _StubClient.instances[-1].created == [], other
+
+
 # -------------------------------------------------------------- ask scripts
 @pytest.mark.security
 @pytest.mark.parametrize("script", _ASK_SCRIPTS)
