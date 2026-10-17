@@ -30,6 +30,7 @@ from dashboard.compliance_view import (
 )
 from dashboard.escalations import AuditChainError, load_chain_view
 from dashboard.kb_search import search_kb_resilient
+from dashboard.markdown_safety import code_span, inert
 from dashboard.ollama_service import ensure_ollama_running
 from dashboard.scan_report_view import render_scan_reports
 from dashboard.system_health import (
@@ -309,6 +310,13 @@ with tab_approvals:
         except AuditChainError as exc:
             # A broken chain is a security event, not a display glitch (THR-0003).
             st.error(f"Audit chain FAILED verification — treat as a security event: {exc}")
+        except OSError as exc:
+            # Unreadable is not "not run yet": a directory or a permission
+            # denial at the declared path is surfaced here, never as a traceback.
+            st.error(
+                f"Audit chain at `{chain_path}` could not be read "
+                f"({exc.__class__.__name__}) — treat as a security event until explained."
+            )
         else:
             col_pend, col_rec, col_res, col_used = st.columns(4)
             col_pend.metric("Pending", len(view.pending))
@@ -364,7 +372,8 @@ with tab_soc:
         if kb_references:
             for ref in kb_references:
                 st.markdown(
-                    f"- **{ref['source']}** (relevance {ref['score']:.2f}) — {ref['snippet']}"
+                    f"- **{inert(ref['source'])}** (relevance {ref['score']:.2f}) — "
+                    f"{inert(ref['snippet'])}"
                 )
         else:
             st.caption("No knowledge-base references matched this event.")
@@ -458,7 +467,7 @@ with tab_batch:
             col_sev.metric("Sequence severity", str(sequence["severity"]).upper())
             col_score.metric("Severity score", f"{sequence['severity_score']} / 100")
             col_events.metric("Events analyzed", sequence["event_count"])
-            st.caption(sequence["summary"])
+            st.caption(inert(sequence["summary"]))
 
             # Honest-degradation strip: surface analysis caveats the result
             # already records, so evasion-by-formatting is visible, not buried.
@@ -492,7 +501,7 @@ with tab_batch:
                 st.markdown(
                     "**Source labels:** "
                     + " · ".join(
-                        f"{_BADGE.get(sl['label'], '⚪')} `{sl['source']}` "
+                        f"{_BADGE.get(sl['label'], '⚪')} `{code_span(sl['source'])}` "
                         f"{sl['label']} ({sl['rule']})"
                         for sl in source_labels
                     )
@@ -501,11 +510,11 @@ with tab_batch:
             if risk_findings:
                 for rf in risk_findings:
                     st.markdown(
-                        f"- **`{rf['entity']}`** — risk **{rf['total_score']}** "
+                        f"- **`{code_span(rf['entity'])}`** — risk **{rf['total_score']}** "
                         f"(threshold {rf['threshold']}), {rf['contribution_count']} "
                         f"event(s), dominant: _{rf['dominant_event_type']}_"
                     )
-                    with st.expander(f"Risk story for {rf['entity']}"):
+                    with st.expander(f"Risk story for {inert(rf['entity'])}"):
                         st.dataframe(rf["contributions"], use_container_width=True)
             else:
                 st.caption("No entity crossed the risk threshold in this batch.")
@@ -516,9 +525,9 @@ with tab_batch:
                 for finding in findings:
                     event_numbers = ", ".join(str(i + 1) for i in finding["event_indices"])
                     st.markdown(
-                        f"- **{finding['pattern']}** from `{finding['source']}` — "
+                        f"- **{finding['pattern']}** from `{code_span(finding['source'])}` — "
                         f"severity **{str(finding['severity']).upper()}** "
-                        f"(events {event_numbers}): {finding['description']}"
+                        f"(events {event_numbers}): {inert(finding['description'])}"
                     )
             else:
                 st.caption("No multi-event patterns detected in this batch.")
@@ -563,10 +572,10 @@ with tab_batch:
             if citations:
                 for citation in citations:
                     st.markdown(
-                        f"- **{citation['source']}** "
+                        f"- **{inert(citation['source'])}** "
                         f"[chars {citation['char_start']}-{citation['char_end']}, "
                         f"relevance {citation['score']:.2f}]: "
-                        f'"{citation["quote"]}"'
+                        f'"{inert(citation["quote"])}"'
                     )
             else:
                 st.caption("No knowledge-base passages passed citation verification.")
@@ -581,7 +590,10 @@ with tab_batch:
             sequence_report = Path("data/reports/orchestrated_sequence_incident.md")
             if sequence_report.exists():
                 with st.expander("Sequence Incident Report (Markdown)"):
-                    st.markdown(sequence_report.read_text(encoding="utf-8"))
+                    # st.code, as the SOC tab renders its report: the evidence
+                    # table carries log fields verbatim, and a Markdown image
+                    # in one would make the analyst's browser fetch its URL.
+                    st.code(sequence_report.read_text(encoding="utf-8"), language="markdown")
 
 with tab_coverage:
     st.subheader("ATT&CK Detection Coverage")
@@ -666,7 +678,7 @@ with tab_reports:
         if report_files:
             for report_file in report_files:
                 with st.expander(report_file.name):
-                    st.markdown(report_file.read_text(encoding="utf-8"))
+                    st.code(report_file.read_text(encoding="utf-8"), language="markdown")
         else:
             st.info("No reports generated yet. Run a SOC workflow to create one.")
     else:
