@@ -12,14 +12,16 @@ these tests need no dependency on the broker package.
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from dashboard.escalations import AuditChainError, load_chain_view
+from dashboard.escalations import MAX_CHAIN_BYTES, AuditChainError, load_chain_view
 
 _GENESIS = "sha256:" + "0" * 64
 
@@ -175,3 +177,64 @@ def test_approvals_tab_catches_every_read_failure() -> None:
     handlers = [h.type.id for h in tries[0].handlers if isinstance(h.type, ast.Name)]
     assert "AuditChainError" in handlers
     assert handlers.index("FileNotFoundError") < handlers.index("OSError"), handlers
+
+
+def _hashed_deep_record(depth: int) -> str:
+    """A correctly hashed record whose ``ref`` nests ``depth`` lists, built as text.
+
+    The chain hash is unkeyed, so whoever can append can compute it; building
+    by text keeps the builder clear of the recursion limit it probes.
+    """
+    body = f'"decision_id":"d1","payload":{{"ref":{"[" * depth}{"]" * depth},"type":"t"}}'
+    digest = hashlib.sha256(f'{{{body},"prev":"{_GENESIS}"}}'.encode()).hexdigest()
+    return f'{{{body},"prev_hash":"{_GENESIS}","record_hash":"sha256:{digest}"}}\n'
+
+
+def test_content_json_refuses_otherwise_is_a_chain_error(tmp_path: Path) -> None:
+    """Every content failure is an ``AuditChainError``, which the approvals tab catches.
+
+    Measured on 909914e through that tab's ``try``: a 4301-digit integer escaped
+    as ``ValueError`` and 100000 brackets as ``RecursionError``, and on 3.11 a
+    correctly hashed record one level short of ``json.loads``'s limit escaped
+    from the re-hash. The sweep straddles that limit wherever this interpreter
+    and this stack put it (996 deep at top level on 3.11, 9998 on 3.12).
+    """
+    chain = tmp_path / "audit.jsonl"
+    chain.write_text(_hashed_deep_record(3), encoding="utf-8")
+    assert load_chain_view(chain).records == 1  # the builder hashes correctly
+    ok, fails = 1, 1 << 20  # bisect the deepest nesting json.loads accepts here
+    while fails - ok > 1:
+        mid = (ok + fails) // 2
+        try:
+            json.loads("[" * mid + "]" * mid)
+            ok = mid
+        except RecursionError:
+            fails = mid
+    hostile = [_hashed_deep_record(depth) for depth in range(ok - 20, fails + 3)]
+    hostile += ['{"decision_id":"d","payload":{"ref":' + "9" * 4301 + "}}", "[" * 100_000]
+    for content in hostile:
+        chain.write_text(content, encoding="utf-8")
+        with contextlib.suppress(AuditChainError):  # anything else escapes and fails
+            load_chain_view(chain)
+
+
+def test_non_regular_chain_is_refused_without_blocking(tmp_path: Path) -> None:
+    """On 909914e a FIFO blocked the read and ``/dev/null`` read as a verified, empty chain."""
+    fifo = tmp_path / "fifo.jsonl"
+    os.mkfifo(fifo)
+    device = tmp_path / "device.jsonl"
+    device.symlink_to(os.devnull)
+    for path in (fifo, device):
+        with pytest.raises(OSError, match="not a regular file"):
+            load_chain_view(path)
+
+
+def test_chain_read_is_bounded(tmp_path: Path) -> None:
+    """The read was unbounded; one byte past the bound is refused before decoding."""
+    chain = tmp_path / "audit.jsonl"
+    chain.write_bytes(b" " * MAX_CHAIN_BYTES)  # at the bound: read, blank, empty chain
+    assert load_chain_view(chain).records == 0
+    with chain.open("ab") as handle:
+        handle.write(b" ")
+    with pytest.raises(AuditChainError, match="larger than"):
+        load_chain_view(chain)
