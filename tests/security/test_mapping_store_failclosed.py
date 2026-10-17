@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from agents.mapping import MappingStoreError, load_store, parse_store
+from agents.mapping.schema import MAX_STORE_BYTES
 from attack import Corpus, load_corpus
 
 _RULES = Path(__file__).resolve().parents[2] / "agents" / "mapping" / "rules" / "core.json"
@@ -254,3 +255,22 @@ def test_endless_file_is_read_bounded(tmp_path: Path) -> None:
         check=False,
     )
     assert "exceeds" in done.stdout, done.stderr[-500:]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("over", [0, 1], ids=["at-bound", "one-byte-over"])
+def test_byte_bound_holds_across_files(over: int, tmp_path: Path, corpus: Corpus) -> None:
+    """MAX_STORE_BYTES bounded each file, not the store: measured before, 400
+    files of 256 KiB each raised MemoryError out of load_store under a 2 GB cap,
+    and a store over the bound in total loaded. All files now share one budget."""
+    core = _RULES.read_bytes()
+    (tmp_path / "a_core.json").write_bytes(core)
+    tail = b'{"schema": 1, "rules": []}'
+    (tmp_path / "b_pad.json").write_bytes(
+        tail + b" " * (MAX_STORE_BYTES - len(core) - len(tail) + over)
+    )
+    if over:
+        with pytest.raises(MappingStoreError, match=f"exceeds {MAX_STORE_BYTES} bytes in all"):
+            load_store(tmp_path, corpus=corpus)
+    else:
+        assert load_store(tmp_path, corpus=corpus).rules
