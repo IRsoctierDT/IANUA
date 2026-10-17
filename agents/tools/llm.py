@@ -17,13 +17,14 @@ The default model is read from ``LLM_MODEL`` (default ``qwen3.5:9b`` — Apache-
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import IO, Any, NoReturn, Protocol
 from urllib.parse import urlparse
 
 from agents.tools.validation import ValidationError
@@ -57,7 +58,8 @@ def _validate_local_host(host: str, allowed_hosts: frozenset[str], timeout: floa
     Called at construction *and* at the point of egress: the generators are
     mutable dataclasses, so a ``host`` or ``timeout`` assigned after
     ``__post_init__`` would otherwise bypass the check (measured — the request
-    left for the assigned host). The control sits where the request leaves.
+    left for the assigned host). The control sits where the request leaves,
+    on a snapshot of the fields that the request is then built from.
     """
     parsed = urlparse(host)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -70,11 +72,48 @@ def _validate_local_host(host: str, allowed_hosts: frozenset[str], timeout: floa
         raise ValidationError("timeout must be positive")
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every HTTP redirect instead of following it.
+
+    The allow-list is checked on the configured host; urllib's default handler
+    then followed a 301/302/303 from whatever answered on that loopback port to
+    any host, re-issuing the POST as a GET with the body in the query string
+    (measured: the full prompt and system prompt reached a second listener, and
+    its reply came back as the model's answer). A redirect is a failure that
+    names the host it pointed at, never a hop.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> NoReturn:
+        raise ValidationError(
+            f"generation request failed: refusing HTTP {code} redirect "
+            f"to {urlparse(newurl).hostname!r}"
+        )
+
+
+def _open(req: urllib.request.Request, timeout: float) -> http.client.HTTPResponse:
+    """Send ``req`` through an opener that uses no proxy and follows no redirect.
+
+    ``urlopen`` honours ``http_proxy`` from the environment, so a request
+    addressed to loopback could leave for a proxy the allow-list never saw
+    (measured: ``http_proxy=http://203.0.113.9:3128`` received it).
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
+    return opener.open(req, timeout=timeout)  # type: ignore[no-any-return]
+
+
 def _urllib_transport(url: str, body: dict[str, object], timeout: float) -> dict[str, object]:
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed by OllamaGenerator.__post_init__
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed at construction and at egress
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310 - scheme restricted to http/https and host allow-listed in __post_init__
+        with _open(req, timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))  # type: ignore[no-any-return]
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ValidationError(f"generation request failed: {exc}") from exc
@@ -111,12 +150,16 @@ class OllamaGenerator:
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
-        _validate_local_host(self.host, self.allowed_hosts, self.timeout)  # at egress, see above
-        url = f"{self.host.rstrip('/')}/api/generate"
+        # Snapshot, validate the snapshot, use the snapshot: re-reading self.host
+        # after the check let a concurrent writer put a host the check never saw
+        # into the request (measured: 1,153 of 100,000 calls).
+        host, timeout = self.host, self.timeout
+        _validate_local_host(host, self.allowed_hosts, timeout)  # at egress, see above
+        url = f"{host.rstrip('/')}/api/generate"
         body: dict[str, object] = {"model": self.model, "prompt": prompt, "stream": False}
         if system:
             body["system"] = system
-        payload = self.transport(url, body, self.timeout)
+        payload = self.transport(url, body, timeout)
         if not isinstance(payload, dict):
             raise ValidationError("generator returned a non-object payload")
         text = payload.get("response")
@@ -156,16 +199,17 @@ class LlamaCppGenerator:
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
-        _validate_local_host(self.host, self.allowed_hosts, self.timeout)  # at egress, see above
+        host, timeout = self.host, self.timeout  # snapshot; see OllamaGenerator.generate
+        _validate_local_host(host, self.allowed_hosts, timeout)  # at egress, see above
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        url = f"{self.host.rstrip('/')}/v1/chat/completions"
+        url = f"{host.rstrip('/')}/v1/chat/completions"
         body: dict[str, object] = {"model": self.model, "messages": messages, "stream": False}
         if grammar:
             body["grammar"] = grammar  # llama-server GBNF extension
-        payload = self.transport(url, body, self.timeout)
+        payload = self.transport(url, body, timeout)
         try:
             choices = payload["choices"]
             text = choices[0]["message"]["content"]  # type: ignore[index]
