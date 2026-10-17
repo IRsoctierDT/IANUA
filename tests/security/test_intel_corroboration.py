@@ -92,9 +92,10 @@ def test_same_upstream_twice_is_one_word(tmp_path: Path) -> None:
     assert verdict.risk == "suspicious" and "capped" in verdict.notes[0]
 
 
-#: Six spellings of alpha's upstream; each counted as a second word before.
+#: Spellings of one upstream; each counted as a second word before.
 _ALIASES: tuple[str, ...] = ("FEED-ALPHA.EXAMPLE", "feed-alpha.example.", " feed-alpha.example")
 _ALIASES += ("feed-alpha.example\u200b", "https://feed-alpha.example", "\uff46eed-alpha.example")
+_ALIASES += ("198.51.100.7", "198.51.100.07", "3325256711", "0xc6.0x33.0x64.0x07", "198.3367943")
 
 
 @pytest.mark.security

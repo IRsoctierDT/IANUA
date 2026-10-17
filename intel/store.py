@@ -89,7 +89,8 @@ _RISKS = {"malicious", "suspicious", "benign"}
 _CONFIDENCES = {"low", "medium", "high"}
 #: Upstream identity is a string compare, so one spelling: measured, case, a
 #: trailing dot, a scheme or a U+200B each made a second "independent" word.
-_UPSTREAM = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*")
+#: A numeric or 0x final label is refused: inet_aton reads 198.51.100.07 as .7.
+_UPSTREAM = re.compile(r"(?:[a-z0-9-]+\.)*(?![0-9]+\Z|0x[0-9a-f]*\Z)[a-z0-9-]+")
 
 
 class IntelStoreError(ValueError):
