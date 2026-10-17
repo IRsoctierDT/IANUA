@@ -2962,3 +2962,37 @@ def test_the_size_ceiling_is_measured_in_bytes_on_bytes() -> None:
     # And a text record over it is refused in the unit it was measured in.
     over = normalize("x" * (MAX_RAW_BYTES + 1))
     assert any(f"character ceiling ({MAX_RAW_BYTES + 1} characters)" in note for note in over.notes)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "iso",
+    [
+        pytest.param("1970-01-01T00:00:00Z", id="zeroed-clock"),
+        pytest.param("1969-12-31T23:59:59Z", id="before-the-epoch"),
+        pytest.param("0001-01-01T00:00:00Z", id="year-one"),
+        pytest.param("9999-12-31T23:59:59Z", id="year-9999"),
+    ],
+)
+def test_an_implausible_iso_timestamp_is_refused_like_a_bare_number(iso: str) -> None:
+    """Two spellings of one instant must not get two answers.
+
+    The numeric path refuses ``seconds <= 0`` and anything past ~3237 as a
+    fabricated ordering; the ISO path returned them. Measured before the fix:
+    ``"0001-01-01T00:00:00Z"`` gave -62135596800.0, ``"9999-12-31T23:59:59Z"``
+    gave 253402300799.0 and ``"1970-01-01T00:00:00Z"`` — a zeroed clock on a
+    device with no RTC, the realistic case — gave 0.0, placing the event at
+    the epoch while the bare number 0 was already refused. Refused means
+    ``None``, which every parser turns into a "no usable timestamp" note and
+    a ``partial`` parse, so the event is still kept and says it is undated.
+    """
+    assert _coerce.epoch(iso) is None
+    # The bare-number twin of the first two, already refused and still so.
+    assert _coerce.epoch(0) is None and _coerce.epoch(-1) is None
+    # A plausible instant still parses through both spellings to one value.
+    assert _coerce.epoch("2026-10-15T09:00:00Z") == _coerce.epoch(1792054800) == 1792054800.0
+    # And the whole event says so rather than inventing an instant.
+    event = normalize({"type": "SYSCALL", "auid": "svc", "comm": "bash", "@timestamp": iso})
+    assert event.timestamp is None
+    assert event.parse_status == "partial"
+    assert any("no usable timestamp" in note for note in event.notes)
