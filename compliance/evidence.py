@@ -112,11 +112,17 @@ def record_run(
         for record in records:
             fh.write(json.dumps(record.__dict__, sort_keys=True) + "\n")
     automated = len(report.automated)
+    # ``automated and`` because ``0 == 0``: a run that evaluated no automated
+    # control chained ``decision=pass`` with the reason "0/0 automated controls
+    # passing" — measured — which is the empty-conjunction shape ``sli`` and
+    # ``ComplianceReport.score`` (0 for no controls) both already refuse. A
+    # chain record is what an auditor reads; it must not attest to a pass
+    # nothing was measured for.
     _logger(root, clock).record(
         actor="compliance-engine",
         action="compliance_run",
         action_class="read_only",
-        decision="pass" if report.passing == automated else "attention",
+        decision="pass" if automated and report.passing == automated else "attention",
         reason=f"{report.passing}/{automated} automated controls passing",
     )
     return records

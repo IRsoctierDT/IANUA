@@ -120,3 +120,31 @@ def test_a_symlinked_evidence_file_cannot_redirect_the_write(tmp_path: Path) -> 
         record_run(_report(root), root=root, clock=lambda: _CLOCK)
 
     assert outside.read_text(encoding="utf-8") == "", "the append followed the link"
+
+
+@pytest.mark.security
+def test_a_run_over_no_automated_controls_is_not_chained_as_a_pass(tmp_path: Path) -> None:
+    """``0 == 0`` is the empty-conjunction shape, and the chain is what an
+    auditor reads.
+
+    Measured before the fix: a run whose registry held only manual controls
+    chained ``decision=pass`` with the reason "0/0 automated controls passing".
+    ``ComplianceReport.score`` already answers 0 for that report; the audit
+    record disagreed with it.
+    """
+    manual = Control(
+        id="T-02",
+        title="Manual control",
+        description="d",
+        category=Category.POLICY,
+        severity=Severity.LOW,
+    )
+    report = run_controls(tmp_path, clock=lambda: _CLOCK, controls=(manual,))
+    assert len(report.automated) == 0 and report.score == 0
+
+    record_run(report, root=tmp_path, clock=lambda: _CLOCK)
+
+    chain = (tmp_path / "data" / "compliance" / "audit.log").read_text(encoding="utf-8")
+    entry = json.loads(chain.splitlines()[-1])
+    assert entry["decision"] == "attention", entry
+    assert "0/0" in entry["reason"]
