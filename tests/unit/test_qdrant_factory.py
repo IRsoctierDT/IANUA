@@ -46,6 +46,31 @@ def test_default_is_embedded_with_no_listening_service(
     assert (tmp_path / "embedded").is_dir()  # created eagerly for the store
 
 
+def test_empty_path_variable_falls_back_to_default_not_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``QDRANT_PATH=`` (set but empty) must not plant the store in the CWD.
+
+    ``Path("") == Path(".")``, so the pre-fix ``environ.get(key, default)`` made
+    an empty variable select the working directory (measured:
+    ``QdrantClient(path=".")``). Same class as the ``--root ""`` hole closed
+    in ``store/paths.py``.
+    """
+    _install_stub(monkeypatch)
+    monkeypatch.delenv("QDRANT_URL", raising=False)
+    monkeypatch.setenv("QDRANT_PATH", "")
+    default = tmp_path / "default-embedded"
+    monkeypatch.setattr("rag.qdrant.DEFAULT_EMBEDDED_PATH", str(default))
+    monkeypatch.chdir(tmp_path)
+
+    client = make_client()
+
+    assert isinstance(client, _StubClient)
+    assert client.kwargs == {"path": str(default)}
+    assert client.kwargs["path"] not in {"", "."}
+    assert default.is_dir()
+
+
 def test_url_opts_in_to_server_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_stub(monkeypatch)
     monkeypatch.setenv("QDRANT_URL", "http://127.0.0.1:6333")

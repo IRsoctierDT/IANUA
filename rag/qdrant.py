@@ -51,6 +51,12 @@ def make_client() -> QdrantClient:
     if url:
         return QdrantClient(url=url, check_compatibility=False)
 
-    path = Path(os.environ.get("QDRANT_PATH", DEFAULT_EMBEDDED_PATH))
+    # ``or``, not a default argument: a variable that is *set but empty*
+    # (``QDRANT_PATH=`` in a .env, or ``"$QDRANT_PATH"`` with it unset) would
+    # otherwise become ``Path("")``, which equals ``Path(".")`` -- and the
+    # embedded store would be planted in whatever the working directory is.
+    # Measured: ``QDRANT_PATH=""`` reached ``QdrantClient(path=".")``. Same
+    # class as the ``--root ""`` hole ``store/paths.py`` closes.
+    path = Path(os.environ.get("QDRANT_PATH") or DEFAULT_EMBEDDED_PATH)
     path.mkdir(parents=True, exist_ok=True)
     return QdrantClient(path=str(path))
