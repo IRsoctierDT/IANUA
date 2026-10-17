@@ -86,6 +86,25 @@ MODELLED_FIELDS: tuple[FieldPath, ...] = tuple(
 #: ``_unrecognized`` below.
 _MAX_NAMED_KEYS = MAX_PROJECTED_ITEMS
 
+#: What is trimmed from both ends of a text record before detection: every
+#: code point ``str.isspace()`` is true for — the 29 that ``str.strip()``
+#: removes with no argument — plus U+FEFF, the UTF-8 byte-order mark, which
+#: it does not remove (a format character, not whitespace). One set, so one
+#: C-level ``str.strip`` handles any interleaving of the two at either edge:
+#: measured 4.4 ms on 262144 alternating mark/space characters. The two
+#: shapes it replaces were both unfit — ``lstrip(mark).strip()`` is
+#: order-dependent (see ``normalize``), and the regex ``^[\s\ufeff]+|
+#: [\s\ufeff]+$`` is quadratic on an *interior* whitespace run (measured
+#: 61 ms at 4096 characters, 929 ms at 16384, so minutes at the ceiling).
+#: Enumerated rather than derived so import costs nothing; ``tests/security``
+#: pins the list against ``str.isspace()`` over the whole code space.
+_EDGE_NOISE = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+    "\ufeff"
+)
+
 #: The five domains, plus the honest fallback.
 SOURCE_TYPES: tuple[SourceType, ...] = (
     "endpoint",
@@ -156,19 +175,35 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
         # bounds the work. The note names the unit it measured.
         return _over_ceiling(len(raw), "character", raw[:MAX_RAW_EXCERPT])
 
-    # A leading byte-order mark is an encoding artifact, not content, and it
-    # defeated recognition: ``str.strip()`` leaves U+FEFF in place (a format
-    # character, not whitespace) and ``json.loads`` refuses a leading BOM
-    # outright. Measured: a well-formed Defender record behind the three bytes
-    # a Windows editor writes at the head of a UTF-8 file was carried verbatim
-    # — ``vendor="unrecognized"``, ``parse_status="text"``, no note, and the
+    # A byte-order mark is an encoding artifact, not content, and it defeated
+    # recognition: ``str.strip()`` leaves U+FEFF in place (a format character,
+    # not whitespace) and ``json.loads`` refuses one at either end. Measured:
+    # a well-formed Defender record behind the three bytes a Windows editor
+    # writes at the head of a UTF-8 file was carried verbatim —
+    # ``vendor="unrecognized"``, ``parse_status="text"``, no note, and the
     # mail ``Body`` in both ``message`` and ``raw_excerpt`` — while the same
-    # bytes without the BOM were claimed and the body withheld. That is not
+    # bytes without the mark were claimed and the body withheld. That is not
     # the stated residual (a record that *cannot* decode to a mapping); this
     # one could, so the projection must see it. ``collect/`` hands over each
-    # line's raw bytes and strips nothing, so the first line of every such
-    # file took this route.
-    stripped = raw.lstrip("\ufeff").strip()
+    # line's raw bytes and strips nothing.
+    #
+    # The first fix was ``raw.lstrip("\ufeff").strip()``, and review bypassed
+    # it by spelling the input one character differently: the mark was
+    # removed only at index 0, and the ``strip()`` that ran second does not
+    # remove it, so whitespace *before* the mark (a space, a tab, a NBSP) and
+    # a mark at the *tail* both survived into the verbatim path. Measured on
+    # that fix: seven such spellings, each in str and in bytes — fourteen of
+    # sixteen cells — with the body leaked and five personal names from it
+    # stored as observables. A rule about string position is one the thing it
+    # stops can spell differently; a single strip over the union of whitespace
+    # and the mark has no order.
+    #
+    # The ceiling above measures the record as received, mark and whitespace
+    # included — as a trailing newline always has counted — so a record at
+    # exactly ``MAX_RAW_BYTES`` with a mark in front of it is over it and never
+    # reaches this line. That is the oversized residual, not a path this strip
+    # chooses, and the security test pins it as a limitation.
+    stripped = raw.strip(_EDGE_NOISE)
     if stripped.startswith(("{", "[")):
         try:
             decoded = json.loads(stripped)

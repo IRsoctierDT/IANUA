@@ -62,7 +62,7 @@ from ingest._coerce import (
     project,
 )
 from ingest.errors import IngestError, MalformedProjectionError, UnsupportedInputError
-from ingest.normalize import detect_source
+from ingest.normalize import _EDGE_NOISE, detect_source
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore, Query
 
@@ -2837,32 +2837,47 @@ def test_the_excerpt_serializer_degrades_to_shape_when_it_cannot_render() -> Non
 # --------------------------------------------------------------------------
 
 
+#: Where an encoding mark can sit around a record, as ``(prefix, suffix)``.
+#: The first fix stripped the mark at index 0 only; review found the rest.
+_MARK_EDGES = [
+    pytest.param("﻿", "", id="mark-at-index-0"),
+    pytest.param(" ﻿", "", id="space-then-mark"),
+    pytest.param("\t﻿", "", id="tab-then-mark"),
+    pytest.param("\xa0﻿", "", id="nbsp-then-mark"),
+    pytest.param("﻿ ﻿", "", id="mark-space-mark"),
+    pytest.param("", "﻿", id="trailing-mark"),
+    pytest.param("﻿", "﻿", id="mark-both-ends"),
+    pytest.param("", "\r\n﻿", id="crlf-then-trailing-mark"),
+]
+
+
 @pytest.mark.security
 @pytest.mark.parametrize("form", ["bytes", "str"])
-def test_a_byte_order_mark_does_not_turn_a_decodable_record_verbatim(form: str) -> None:
-    """A UTF-8 BOM in front of well-formed JSON must not defeat the projection.
+@pytest.mark.parametrize(("prefix", "suffix"), _MARK_EDGES)
+def test_a_byte_order_mark_does_not_turn_a_decodable_record_verbatim(
+    form: str, prefix: str, suffix: str
+) -> None:
+    """A UTF-8 BOM around well-formed JSON must not defeat the projection.
 
-    The residual two tests up is for records that *cannot* decode to a
-    mapping. This one can: only the BOM stood between it and ``json.loads``.
-    ``str.strip()`` leaves U+FEFF in place (a format character, not
-    whitespace) and ``json.loads`` refuses a leading BOM outright, so a record
-    whose only defect was the three bytes a Windows editor writes at the head
-    of a UTF-8 file was carried verbatim. Measured before the fix:
-    ``vendor="unrecognized"``, ``parse_status="text"``, **no note at all**,
-    the mail ``Body`` in both ``message`` and ``raw_excerpt``, and
-    ``Mr.Jones`` — a personal name from that body — stored as an observable,
-    while the same bytes without the BOM were claimed by Defender and the body
-    withheld. ``collect/`` hands ``normalize`` each line's raw bytes and
-    strips no BOM, so the first line of every such file took this route.
+    The residual pinned above is for records that *cannot* decode to a
+    mapping. This one can: only the mark stood between it and ``json.loads``,
+    which refuses U+FEFF at either end while ``str.strip()`` leaves it in
+    place. Measured before any fix: ``vendor="unrecognized"``,
+    ``parse_status="text"``, **no note at all**, the mail ``Body`` in both
+    ``message`` and ``raw_excerpt``, and five personal names from it stored
+    as observables, while the same bytes without the mark were claimed.
 
-    The assertion is equality with the BOM-free control, not merely "the body
-    is absent": the mark is an encoding artifact, so the two inputs describe
-    one record and must yield one event.
+    The first fix, ``raw.lstrip("\\ufeff").strip()``, was bypassed by review
+    with one leading space: it removed the mark at index 0 only, and the
+    ``strip()`` that ran second does not remove it. Every spelling in
+    ``_MARK_EDGES`` but the first reproduced the full pre-fix outcome on that
+    code, in str and in bytes — 14 of 16 cells. The assertion is equality
+    with the mark-free control, not merely the body's absence: the two
+    inputs describe one record.
     """
     whole = _undecodable("trailing-comma", _PROSE_BODY)[:-2] + "}"  # repair the comma
-    marked: str | bytes = (
-        "\ufeff" + whole if form == "str" else b"\xef\xbb\xbf" + whole.encode("utf-8")
-    )
+    text = prefix + whole + suffix
+    marked: str | bytes = text if form == "str" else text.encode("utf-8")
     control = normalize(whole)
     assert control.vendor == "defender-o365", "the control is not even claimed; fix the fixture"
     event = normalize(marked)
@@ -2873,19 +2888,68 @@ def test_a_byte_order_mark_does_not_turn_a_decodable_record_verbatim(form: str) 
 
 
 @pytest.mark.security
-def test_a_byte_order_mark_does_not_hide_a_key_value_line_either() -> None:
-    """The same mark in front of an auditd line: decoded, not carried as prose.
+@pytest.mark.parametrize(("prefix", "suffix"), _MARK_EDGES)
+def test_a_byte_order_mark_does_not_hide_a_key_value_line_either(prefix: str, suffix: str) -> None:
+    """The same marks around an auditd line: decoded, equal to the control.
 
-    Measured to hold *before* the fix as well — ``keyvalue._PAIR`` is not
-    anchored, so the mark is one un-matched character ahead of the first pair
-    and costs a fraction of a percent of coverage. Pinned so the JSON path,
-    which did need the fix, and the key=value path cannot drift apart on it.
+    A *leading* mark held before any fix — ``keyvalue._PAIR`` is unanchored,
+    so it is one un-matched character ahead of the first pair. A *trailing*
+    one did not: measured, it became the tail of the last value, ``comm`` =
+    ``"bash\\ufeff"``. Pinned on every spelling the JSON test uses so the two
+    paths cannot drift apart on it.
     """
     line = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
     control = normalize(line)
     assert control.vendor == "auditd"
-    assert normalize("\ufeff" + line).to_dict() == control.to_dict()
-    assert normalize(b"\xef\xbb\xbf" + line.encode("utf-8")).to_dict() == control.to_dict()
+    text = prefix + line + suffix
+    assert normalize(text).to_dict() == control.to_dict()
+    assert normalize(text.encode("utf-8")).to_dict() == control.to_dict()
+
+
+@pytest.mark.security
+def test_the_edge_strip_is_exactly_what_str_strip_removes_plus_the_mark() -> None:
+    """``_EDGE_NOISE`` is enumerated, so pin it to the interpreter's own set.
+
+    A hand-kept list is a rule the thing it stops can spell differently once
+    Python's notion of whitespace moves, so every code point is scanned here
+    (measured: 42 ms) and the list may not disagree with ``str.isspace()``.
+    """
+    whitespace = {chr(cp) for cp in range(sys.maxunicode + 1) if chr(cp).isspace()}
+    assert set(_EDGE_NOISE) == whitespace | {"﻿"}
+    assert len(_EDGE_NOISE) == len(whitespace) + 1, "a duplicate entry means the list was not read"
+
+
+@pytest.mark.security
+def test_a_mark_counts_against_the_ceiling_like_any_other_character() -> None:
+    """Pins a **limitation**: the ceiling measures the record as received.
+
+    ``MAX_RAW_BYTES`` is applied before the edge strip — on bytes before the
+    decode, deliberately — so a mark in front of a record at exactly the
+    ceiling carries it over, into the oversized path that carries an excerpt
+    verbatim (the residual ``test_a_record_that_never_decodes…`` pins). Review
+    found this one character wide and it is left so: a strip ahead of the
+    ceiling would run on unbounded input, and a byte-level one before the
+    decode would reopen the ordering hole the fix above closes. Each form is
+    over by its own unit — one character on text, three bytes on the wire.
+    """
+    record = _undecodable("trailing-comma", _PROSE_BODY)[:-2] + ', "pad": ""}'
+    exact = record[:-2] + "x" * (MAX_RAW_BYTES - len(record)) + '"}'
+    assert len(exact) == MAX_RAW_BYTES == len(exact.encode("utf-8"))
+    claimed = normalize(exact)
+    assert claimed.vendor == "defender-o365"
+    assert _PROSE_BODY not in json.dumps(claimed.to_dict(), default=str)
+    marked: list[tuple[str | bytes, str]] = [
+        ("﻿" + exact, f"character ceiling ({MAX_RAW_BYTES + 1} characters)"),
+        (b"\xef\xbb\xbf" + exact.encode("utf-8"), f"byte ceiling ({MAX_RAW_BYTES + 3} bytes)"),
+    ]
+    for raw, expected in marked:
+        event = normalize(raw)
+        assert event.vendor == "unrecognized"
+        assert any(expected in note for note in event.notes), event.notes
+        assert _PROSE_BODY in event.raw_excerpt, (
+            "the oversized residual no longer holds — if deliberate, update AGENTS.md §5 "
+            "and DESIGN.md boundary 9 with it"
+        )
 
 
 @pytest.mark.security
