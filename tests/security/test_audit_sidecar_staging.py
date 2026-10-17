@@ -9,11 +9,13 @@ scratch file and a rename — and 48bfa47 moved the *signing* ahead of the appen
 without moving the sidecar write. Review measured what that left: a full 64 KiB
 tmpfs appended records 178-180 and then raised ``ENOSPC`` from the sidecar,
 three retries leaving three unsigned entries; a directory planted at either
-sidecar name did the same. Every step that can fail for want of space or a
-writable name now runs before the append; what follows it is one same-directory
-rename. ``_stage_head_signature``'s docstring says what that leaves open: the
-rename, and the append's own ``write(2)``, which a full disk can tear — the last
-test here pins the shape the code does hold for a torn tail, not a repair.
+sidecar name did the same. Every other step that can fail for want of space or
+a writable name now runs before the append; what follows it is one
+same-directory rename. ``_stage_head_signature``'s docstring says what that
+leaves open: the rename, and the append's own ``write(2)``, which a full disk
+can tear anywhere — up to a complete entry with only its newline missing, which
+the head read used to accept and glue the next record onto. The torn-tail tests
+pin both cuts as refused and located, not a repair.
 
 Keys here are generated per run (``os.urandom``), never literals.
 """
@@ -162,20 +164,49 @@ def test_a_verify_only_signer_appends_nothing_without_cryptography(tmp_path: Pat
     assert (report.entries, report.intact) == (0, True)
 
 
-@pytest.mark.security
-def test_a_torn_tail_refuses_every_later_record_and_is_a_located_verdict(tmp_path: Path) -> None:
-    """Measured on a 64 KiB tmpfs: the append's own ``write(2)`` was cut short,
-    leaving a torn tail. Not repaired here (a design decision); what the code
-    holds is that nothing is written after it and verification locates it."""
-    log = AuditLogger(tmp_path / "audit.log", signer=HmacSigner(os.urandom(32)))
+def _tear(log: AuditLogger, cut: str) -> None:
+    """Leave ``log`` as a failing append on a full disk does, cut at ``cut``.
+
+    ``"newline"`` is the geometry review measured on a tmpfs: the failing call's
+    whole entry landed except its ``\\n``, and the sidecar was never committed,
+    so it still signs the previous head.
+    """
+    if cut == "mid-json":
+        with log.path.open("ab") as fh:
+            fh.write(b'{"seq": 1, "timestamp": "2026-')
+        return
+    sidecar = (log.path.parent / "audit.log.sig").read_bytes()
     log.record(**_RECORD)
-    with log.path.open("ab") as fh:
-        fh.write(b'{"seq": 1, "timestamp": "2026-')  # no newline: a torn line
+    (log.path.parent / "audit.log.sig").write_bytes(sidecar)
+    log.path.write_bytes(log.path.read_bytes()[:-1])
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("cut", ["mid-json", "newline"])
+def test_a_torn_tail_refuses_every_later_record_and_is_a_located_verdict(
+    tmp_path: Path, cut: str
+) -> None:
+    """Measured on a 64 KiB tmpfs: the append's ``write(2)`` was cut short. Cut on
+    the newline, the tail was a complete entry: the head read accepted it, keyed
+    verify said ``stale``, unkeyed said intact, and the first record after space
+    was freed returned success glued onto it. Both cuts are now refused before
+    any byte is written and located by every verifier; not repaired here."""
+    key = os.urandom(32)
+    log = AuditLogger(tmp_path / "audit.log", signer=HmacSigner(key))
+    log.record(**_RECORD)
+    _tear(log, cut)
     size = log.path.stat().st_size
     for _ in range(3):
-        with pytest.raises(ValueError):  # JSONDecodeError, out of the head read
+        with pytest.raises(ValueError, match=r"unterminated final line at audit\.log:2;"):
             log.record(**_RECORD)
     assert log.path.stat().st_size == size, "a retry wrote past the torn tail"
+    for reader in (log, AuditLogger(log.path)):
+        report = reader.verify_report()
+        assert (report.intact, report.entries) == (False, 1)
+        assert report.failure == "malformed entry at audit.log:2 (unterminated line)"
+    data = log.path.read_bytes()
+    log.path.write_bytes(data[: data.rfind(b"\n") + 1])  # the operator's repair
+    assert log.verify_report().signature == "valid"
+    log.record(**_RECORD)
     report = log.verify_report()
-    assert (report.intact, report.entries) == (False, 1)
-    assert report.failure == "malformed entry at audit.log:2"
+    assert (report.intact, report.entries, report.signature) == (True, 2, "valid")

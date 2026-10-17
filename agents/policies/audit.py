@@ -581,10 +581,27 @@ class AuditLogger:
         return bool(self._segments_in_order()) or self._is_segment(self._checkpoint_path)
 
     def _last_event(self, segment: Path) -> AuditEvent | None:
+        """The last entry of ``segment``; ``None`` if it is absent or empty.
+
+        Raises ``ValueError`` for an unterminated final line, before parsing it.
+        The writer ends every entry with ``\\n``, so a non-empty segment ending
+        in anything else holds a write that did not finish. Parsing the line
+        instead refused only a cut that broke the JSON: measured on a 64 KiB
+        tmpfs, a ``write(2)`` cut landing exactly on the newline left a
+        *complete* entry, the head read accepted it, and the first ``record()``
+        after space was freed returned success while gluing its line onto it —
+        ``malformed entry`` at that line, and every record after it refused.
+        Nothing is rewritten; an operator truncates the segment.
+        """
         try:
             text = _read_regular_text(segment)
         except FileNotFoundError:
             return None
+        if text and not text.endswith("\n"):
+            raise ValueError(
+                f"unterminated final line at {segment.name}:{len(text.splitlines())}; "
+                "refusing to append after a write that did not finish"
+            )
         line = _last_nonempty_line(text)
         if not line:
             return None
@@ -756,8 +773,8 @@ class AuditLogger:
         # ``sign()``; with only the signing moved, a full disk or a directory at
         # a sidecar name still appended and THEN raised from the sidecar write —
         # the same half-written chain one step later, and every retry appended
-        # one more entry. Now everything that can fail for want of space or a
-        # writable name fails first; what follows the append is one rename.
+        # one more entry. Now every other step that can fail for want of space
+        # or a writable name fails first; what follows the append is one rename.
         staged: Path | None = None
         if self._signer is not None:
             signature = self._signer.sign(self._head_message(seq, entry_hash))
@@ -796,24 +813,34 @@ class AuditLogger:
 
         Staged, not written: :meth:`_record_locked` computes the signature and
         calls this *before* the entry is appended, then commits the staged file
-        with :func:`_commit_staged` after it, so everything that can fail for
-        want of disk, inodes or a writable scratch name fails before any byte of
-        the chain is written. **What that does not make true is "never
-        half-written."** Two things remain. The commit is a same-directory
-        ``rename`` after the append, and if it fails — a directory planted at
-        ``audit.log.sig`` after the staging check, or a filesystem error on the
-        rename — the chain holds the entry and the sidecar is one head behind,
-        which a keyed verifier reports as ``stale`` and the next successful
-        record repairs. And the append itself is one ``write(2)``, which a full
-        disk cuts short: measured on a 64 KiB tmpfs, the first failing call
-        left a 248-byte torn tail that ``verify_report`` names as a malformed
-        entry, no *complete* entry was written by any failing call (three were,
-        before), and every retry wrote 0 bytes — refusing with the
-        ``JSONDecodeError`` the head read raises on the torn line until an
-        operator truncates it. Making that write atomic (pre-allocating with
-        ``posix_fallocate``, or truncating a torn tail back under the lock) is a
-        decision against the module's "never rewrites a segment" posture and is
-        left to the owner rather than taken here.
+        with :func:`_commit_staged` after it, so every step but the append itself
+        that can fail for want of disk, inodes or a writable scratch name fails
+        before any byte of the chain is written. **What that does not make true
+        is "never half-written."** Two things remain.
+
+        The commit is a same-directory ``rename`` after the append. If it fails
+        the chain holds the entry and the head is unsigned until the next
+        successful record re-signs it. A keyed verifier reports ``stale`` when
+        the old sidecar is still in place (a filesystem error on the rename),
+        and ``malformed`` — ``missing`` once removed — for a directory planted
+        at ``audit.log.sig`` after the staging check, since planting one meant
+        removing the old sidecar. An unkeyed reader reports intact, as it does
+        for any unsigned head.
+
+        And the append is one ``write(2)``, which a full disk cuts short,
+        leaving any prefix of the line: measured on a 64 KiB tmpfs, a cut
+        mid-JSON, and a cut landing exactly on the newline — a complete entry
+        from a failing call, which the head read used to accept. Both are
+        an unterminated final line, which :meth:`_last_event` refuses and
+        ``verify_report`` names ``malformed entry … (unterminated line)``, keyed
+        or not; every later ``record()`` raises ``ValueError`` and writes 0 bytes
+        until an operator truncates the segment to its last newline. Not
+        covered, and not measured: an error reported only after the newline
+        landed (``close(2)`` on a network filesystem can report one), which
+        leaves the commit case's shape — a complete entry, the old sidecar
+        ``stale``. Making the append atomic (``posix_fallocate`` first, or
+        truncating a torn tail under the lock) decides against the module's
+        "never rewrites a segment" posture and is left to the owner.
         """
         if self._signer is None:
             raise ValueError("no signer configured")
@@ -959,10 +986,17 @@ class AuditLogger:
                     f"unreadable segment {segment.name} (undecodable or inaccessible)",
                     "unchecked",
                 )
-            for line_no, line in enumerate(text.splitlines(), start=1):
+            lines = text.splitlines()
+            # Every entry is written with its "\n", so an unterminated final
+            # line is a write that did not finish, whatever it holds — a complete
+            # entry included. Checked first, as the head read checks it.
+            torn_at = len(lines) if text and not text.endswith("\n") else 0
+            for line_no, line in enumerate(lines, start=1):
+                where = f"{segment.name}:{line_no}"
+                if line_no == torn_at:
+                    return _report(f"malformed entry at {where} (unterminated line)", "unchecked")
                 if not line.strip():
                     continue
-                where = f"{segment.name}:{line_no}"
                 try:
                     record = json.loads(line)
                     seq = int(record["seq"])
