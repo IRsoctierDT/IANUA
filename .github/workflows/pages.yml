@@ -46,13 +46,14 @@ on:
   # On-demand deploy (content-only changes, or operator-initiated publish).
   workflow_dispatch:
 
-# Latest-content-wins. Unlike GitHub's default (cancel-in-progress:false), we
-# DO cancel a superseded run: publishing docs is idempotent, the newest commit
-# should always win, and — critically — this guarantees a run stuck in `waiting`
-# for approval can never permanently block the queue.
-concurrency:
-  group: pages
-  cancel-in-progress: true
+# Concurrency lives on the `deploy` job below, NOT here. A workflow-level group
+# is claimed when the RUN is created, before any job `if:` is evaluated, so a
+# run whose only job is then skipped still cancelled the deploy waiting for
+# approval. Measured from this repository's Actions history by the review of
+# the job gate: four waiting deploys cancelled by runs whose only job was
+# `skipped`, the cancellation landing one second before the canceller's job was
+# evaluated. The job gate alone closed the enqueue half of that hole and left
+# the cancel half open. Pinned by tests/security/test_workflow_triggers.py.
 
 # Least privilege by default (AGENTS.md §3); the job opts into its two writes.
 permissions:
@@ -68,15 +69,25 @@ jobs:
       contents: read
       pages: write     # actions/deploy-pages creates the Pages deployment
       id-token: write  # OIDC token deploy-pages presents to the Pages service
+    # Latest-content-wins, claimed only once the gate below has passed: a
+    # skipped job never enters its group. Unlike GitHub's default
+    # (cancel-in-progress: false) we DO cancel a superseded deploy: publishing
+    # docs is idempotent, the newest commit should win, and a deploy stuck in
+    # `waiting` for approval can then never permanently block the queue.
+    concurrency:
+      group: pages
+      cancel-in-progress: true
     # workflow_run: only a green CI run for a PUSH to main in THIS repository.
     # `branches: [main]` above filters on the triggering run's *head* branch,
     # and a pull_request CI run from a fork whose head branch is named `main`
     # (the default name for a fork) carries that name too. Checking only the
     # conclusion therefore let an unprivileged PR enqueue a deploy under the
-    # approval gate and, through cancel-in-progress above, cancel a deploy
-    # already waiting for approval. The content deployed was never at risk
-    # (the checkout below is the default branch), the queue was. Same four
-    # conditions as release-on-merge.yml's `detect` job, pinned by
+    # approval gate; this gate closes that. It does NOT stop such a run from
+    # cancelling a deploy already waiting — a workflow-level concurrency group
+    # is claimed before any job gate runs — which is why the group sits on this
+    # job (above). The content deployed was never at risk (the checkout below
+    # is the default branch), the queue was. Same four conditions as
+    # release-on-merge.yml's `detect` job, pinned by
     # tests/security/test_workflow_triggers.py.
     # workflow_dispatch: only from main — a manual run must never publish docs/
     # from an untested branch, which would bypass the CI-success gate.
