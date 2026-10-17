@@ -175,6 +175,29 @@ def test_an_eligible_file_that_is_not_text_fails_the_check(
 
 
 @pytest.mark.unit
+def test_a_utf7_id_and_a_reencoding_attribute_fail_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """glibc iconv's UTF-7, which `working-tree-encoding` runs, writes `_` as `+AF8-`.
+
+    That is NUL-free UTF-8, so the rule above admitted it: measured on 015815f, a
+    UTF-7 `.env.example` exited 0 with or without the attribute. CPython's codec
+    writes `_` directly, so the bytes are spelled here as iconv writes them.
+    """
+    hidden = LEGACY.replace("_", "+AF8-")
+    assert LEGACY not in hidden and hidden.encode().decode("utf-7") == LEGACY
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    (tmp_path / ".env.example").write_bytes(f"LEGACY+AF8-KEY+AD0-{hidden}\n".encode())
+    attributes = ".env.example working-tree-encoding=UTF-7\n"
+    (tmp_path / ".gitattributes").write_text(attributes, encoding="utf-8")
+    (tmp_path / "notes.md").write_text("C++, a+b, +1, a lone + and +AF8-\n", encoding="utf-8")
+    assert migrate(apply=False)[1] == [
+        (Path(".env.example"), LEGACY),
+        (Path(".gitattributes"), gate.REENCODED),
+    ]
+
+
+@pytest.mark.unit
 def test_a_checkout_beneath_an_excluded_name_is_still_scanned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

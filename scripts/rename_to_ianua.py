@@ -31,6 +31,16 @@ carrying a legacy identifier), a local-only false red; which scope the gate
 should have is an open decision. Within scope it fails closed: an admitted
 file that is not NUL-free UTF-8 is reported as :data:`UNSCANNABLE` rather than
 skipped, since every UTF-16 or UTF-32 form of an ASCII identifier holds a NUL.
+The UTF-7 reading is searched too: glibc iconv writes ``_`` as ``+AF8-``, and
+of the 1180 names glibc 2.39's iconv lists only UTF-7 (and its alias UTF7) gave
+a legacy identifier as NUL-free UTF-8 without spelling it (measured). Git's
+``working-tree-encoding`` makes the file read here differ from its committed
+blob, so an admitted ``.gitattributes`` naming it is reported as
+:data:`REENCODED` (one in an excluded subtree applies only there and is not
+read); ``.git/info/attributes`` and ``core.attributesFile`` are local
+configuration and are not read. Any other spelling (a deliberate transform, a
+homoglyph, a fullwidth form Python folds by NFKC) passes: this is a literal
+search of two readings, not an obfuscation detector.
 """
 
 from __future__ import annotations
@@ -115,6 +125,10 @@ TEXT_SUFFIXES = {
 #: identifier, and ``--check`` reported the tree clean with exit 0.
 UNSCANNABLE = "not NUL-free UTF-8, so not scanned"
 
+#: Reported for a ``.gitattributes`` naming ``working-tree-encoding``, under
+#: which the checked-out text is not the committed text (see the module doc).
+REENCODED = "names working-tree-encoding, so the scanned text is not the blob"
+
 REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("AI_Operator_Cyber_Command_Center_Master_v1_STICHES", "IANUA"),
     ("ai-operator-cyber-command-center-master-v1-stiches", "ianua"),
@@ -177,6 +191,7 @@ def eligible(path: Path) -> bool:
         "Procfile",
         ".pre-commit-config.yaml",
         ".env.example",
+        ".gitattributes",
     }
 
 
@@ -284,8 +299,13 @@ def migrate(*, apply: bool) -> tuple[list[Path], list[tuple[Path, str]]]:
                     _rewrite(path, updated, os.fstat(source.fileno()))
 
         inspected = updated if apply else original
+        # Joined on a newline, which no legacy identifier contains, so no match
+        # spans the two readings. ``errors="replace"``: any ``+`` starts a shift.
+        readings = f"{inspected}\n{inspected.encode().decode('utf-7', errors='replace')}"
+        if path.name == ".gitattributes" and "working-tree-encoding" in readings:
+            remaining.append((path.relative_to(ROOT), REENCODED))
         for old, _ in REPLACEMENTS:
-            if old in inspected:
+            if old in readings:
                 remaining.append((path.relative_to(ROOT), old))
 
     return changed, remaining
