@@ -9,6 +9,7 @@ a weaker local ``glob``; the root is anchored at the repository, not the
 working directory; ``source`` is stored repo-relative, never absolute. A
 symlinked corpus root (``knowledge-base`` or ``cybersecurity``) is refused
 before anything is built, and ``source`` is derived relative to ``KB_DIR``.
+Reads go through ``rag.ingest.read_document``; its residuals apply here.
 """
 
 from pathlib import Path
@@ -17,7 +18,7 @@ from uuid import NAMESPACE_URL, uuid5
 from qdrant_client.models import PointStruct
 from sentence_transformers import SentenceTransformer
 
-from rag.ingest import discover_documents
+from rag.ingest import discover_documents, read_document
 from rag.qdrant import make_client
 
 COLLECTION = "cybersecurity_kb"
@@ -37,7 +38,7 @@ points = []
 
 for path in docs:
     source = (KB_DIR.relative_to(REPO_ROOT) / path.relative_to(KB_DIR)).as_posix()
-    text = path.read_text(encoding="utf-8")
+    text = read_document(path)  # one descriptor: no link, no FIFO, bounded
     vector = model.encode(text).tolist()
 
     points.append(

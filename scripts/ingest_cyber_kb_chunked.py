@@ -16,6 +16,9 @@ resolves the root by design, so ``knowledge-base -> data`` (a mode-120000 tree
 entry a commit can deliver) once upserted gitignored ``data/**/*.md`` with
 ``source='data/...'``. ``source`` is also derived relative to ``KB_DIR``, so it
 cannot name anything outside ``knowledge-base/`` even without that check.
+Each document is read through ``rag.ingest.read_document`` (one descriptor, so
+no link, FIFO or growth swapped in after discovery); an *ancestor* directory
+swapped for a link after discovery is still followed -- see that function.
 """
 
 from pathlib import Path
@@ -24,7 +27,7 @@ from uuid import NAMESPACE_URL, uuid5
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
 
-from rag.ingest import discover_documents
+from rag.ingest import discover_documents, read_document
 from rag.qdrant import make_client
 
 COLLECTION = "cybersecurity_kb_chunks"
@@ -66,7 +69,7 @@ for path in discover_documents(KB_DIR):
     if path.suffix != ".md":
         continue
     source = (KB_DIR.relative_to(REPO_ROOT) / path.relative_to(KB_DIR)).as_posix()
-    text = path.read_text(encoding="utf-8")
+    text = read_document(path)  # one descriptor: no link, no FIFO, bounded
 
     for chunk_index, chunk in chunk_text(text):
         point_id = str(uuid5(NAMESPACE_URL, f"{source}:{chunk_index}"))

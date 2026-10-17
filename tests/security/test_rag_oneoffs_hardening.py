@@ -79,6 +79,10 @@ def test_ingest_scripts_discover_only_through_rag_ingest(script: str) -> None:
     seen |= {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
     bypasses = sorted(seen & _DISCOVERY_BYPASSES)
     assert not bypasses, f"{script} discovers documents outside rag.ingest via {bypasses}"
+    # A path read after discovery follows a link or a FIFO swapped in meanwhile.
+    assert "read_document" in called, f"{script} must read through rag.ingest.read_document"
+    raw = sorted(seen & {"read_text", "read_bytes", "open"})
+    assert not raw, f"{script} reads a discovered document by path via {raw}"
 
 
 # ----------------------------------------------------------------- dynamic

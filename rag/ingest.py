@@ -11,6 +11,8 @@ are abstracted behind protocols so the default build performs NO network egress.
 
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,8 @@ from agents.tools.validation import ValidationError, resolve_within
 # Allow-list of text formats we will ingest. Extend deliberately.
 ALLOWED_SUFFIXES: frozenset[str] = frozenset({".txt", ".md", ".rst"})
 MAX_FILE_BYTES: int = 5_000_000
+_O_NOFOLLOW: int = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK: int = getattr(os, "O_NONBLOCK", 0)  # a FIFO swapped in must not block the open
 
 
 @dataclass(frozen=True)
@@ -64,7 +68,7 @@ def discover_documents(corpus_root: Path) -> list[Path]:
     (``chmod -R 644``), a file removed between ``is_file()`` and ``stat()``, a
     path past ``PATH_MAX`` -- and a symlink loop (``RuntimeError`` from
     ``resolve``) raise :class:`ValidationError` naming the corpus-relative
-    entry, the taxonomy :func:`_read_document` gives a read. Measured before:
+    entry, the taxonomy :func:`read_document` gives a read. Measured before:
     each escaped every caller as a raw exception carrying the absolute path.
     The whole corpus fails, not just the entry, as one undecodable file does.
     A failure at the root itself names the root as the caller passed it.
@@ -120,7 +124,7 @@ def chunk_text(source: str, text: str, *, size: int = 800, overlap: int = 100) -
     return chunks
 
 
-def _read_document(doc: Path) -> str:
+def read_document(doc: Path) -> str:
     """Read one discovered document as strict UTF-8, in this module's own taxonomy.
 
     A file that is not valid UTF-8, or that cannot be opened, raises
@@ -130,20 +134,39 @@ def _read_document(doc: Path) -> str:
     escaped all three as a traceback. Strict decoding is kept deliberately: a
     citation quotes its source verbatim, which a replacement character would
     silently falsify. The message names the document, not its full path.
+
+    **One descriptor, opened ``O_NOFOLLOW | O_NONBLOCK`` and checked by
+    ``fstat``**, because discovery and the read are separate calls: measured
+    through ``scripts/ingest_cyber_kb_chunked.py``, a document swapped for a
+    symlink after :func:`discover_documents` saw it had an outside file's content
+    upserted, and one grown past ``MAX_FILE_BYTES`` was read to 7,199,874
+    characters. Now the last component must be a regular file when opened, and
+    more than ``MAX_FILE_BYTES`` is refused. **Not covered:** an *ancestor*
+    directory swapped for a symlink (``O_NOFOLLOW`` governs the last component
+    only), and a hard link, which is a regular file. Newlines are translated as
+    ``read_text`` did, so chunk offsets are unchanged.
     """
     try:
-        return doc.read_text(encoding="utf-8", errors="strict")
-    except UnicodeDecodeError as exc:
-        raise ValidationError(f"corpus document is not valid UTF-8: {doc.name!r}") from exc
+        with os.fdopen(os.open(doc, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValidationError(f"corpus document is not a regular file: {doc.name!r}")
+            data = handle.read(MAX_FILE_BYTES + 1)
     except OSError as exc:
         raise ValidationError(f"cannot read corpus document {doc.name!r}: {exc.strerror}") from exc
+    if len(data) > MAX_FILE_BYTES:
+        raise ValidationError(f"corpus document exceeds {MAX_FILE_BYTES} bytes: {doc.name!r}")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(f"corpus document is not valid UTF-8: {doc.name!r}") from exc
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def ingest(corpus_root: Path) -> list[Chunk]:
     """Discover, read, and chunk every allow-listed document in the corpus."""
     chunks: list[Chunk] = []
     for doc in discover_documents(corpus_root):
-        chunks.extend(chunk_text(doc.name, _read_document(doc)))
+        chunks.extend(chunk_text(doc.name, read_document(doc)))
     return chunks
 
 
@@ -155,7 +178,7 @@ def read_documents(corpus_root: Path) -> dict[str, str]:
     two documents share a basename the last read wins — matching the ``source``
     naming used by :func:`ingest`.
     """
-    return {doc.name: _read_document(doc) for doc in discover_documents(corpus_root)}
+    return {doc.name: read_document(doc) for doc in discover_documents(corpus_root)}
 
 
 def embed_chunks(chunks: Iterable[Chunk], embedder: Embedder) -> list[tuple[Chunk, list[float]]]:

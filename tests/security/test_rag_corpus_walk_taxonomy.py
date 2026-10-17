@@ -49,28 +49,30 @@ def _vanishes_after_is_file(corpus: Path, mp: pytest.MonkeyPatch) -> None:
     mp.setattr("rag.ingest.resolve_within", unlink_in_the_window)
 
 
-def _deny(method: str, under: Path) -> Callable[[Path, pytest.MonkeyPatch], None]:
+def _deny(holder: object, name: str) -> Callable[[Path, pytest.MonkeyPatch], None]:
+    """EACCES from ``holder.name`` for anything below ``sub/``: DAC, as root."""
+
     def hook(corpus: Path, mp: pytest.MonkeyPatch) -> None:
         (corpus / "sub").mkdir()
         (corpus / "sub" / "doc.md").write_text("brute force", encoding="utf-8")
-        real = getattr(Path, method)
+        real = getattr(holder, name)
 
-        def denied(self: Path, *args: object, **kwargs: object) -> object:
-            if self.is_relative_to(corpus / under) and self != corpus / under:
-                raise PermissionError(errno.EACCES, "Permission denied", str(self))
-            return real(self, *args, **kwargs)
+        def denied(first: Path, *args: object, **kwargs: object) -> object:
+            if Path(first).is_relative_to(corpus / "sub") and Path(first) != corpus / "sub":
+                raise PermissionError(errno.EACCES, "Permission denied", str(first))
+            return real(first, *args, **kwargs)
 
-        mp.setattr(Path, method, denied)
+        mp.setattr(holder, name, denied)
 
     return hook
 
 
-_BREAKERS = [_past_path_max, _vanishes_after_is_file, _deny("is_symlink", Path("sub"))]
+_BREAKERS = [_past_path_max, _vanishes_after_is_file, _deny(Path, "is_symlink")]
 
 
 @pytest.mark.parametrize(
     "breaker",
-    [*_BREAKERS, _deny("read_text", Path("sub"))],
+    [*_BREAKERS, _deny(os, "open")],
     ids=["path-max", "vanished", "unsearchable-dir", "unreadable-file"],
 )
 def test_corpus_failures_stay_in_the_taxonomy_without_the_absolute_path(
