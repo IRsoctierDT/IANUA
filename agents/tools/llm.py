@@ -17,13 +17,13 @@ The default model is read from ``LLM_MODEL`` (default ``qwen3.5:9b`` — Apache-
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
-import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import IO, Any, NoReturn, Protocol
 from urllib.parse import urlparse
 
 from agents.tools.validation import ValidationError
@@ -35,6 +35,8 @@ DEFAULT_ALLOWED_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::
 DEFAULT_MODEL = "qwen3.5:9b"
 DEFAULT_HOST = "http://127.0.0.1:11434"
 LLAMACPP_DEFAULT_HOST = "http://127.0.0.1:8080"
+# A local model's answer, with headroom; a larger body is a misbehaving server, not a narrative.
+MAX_RESPONSE_BYTES = 1 << 20
 
 # GBNF grammar (llama.cpp) constraining the analyst narrative to a strict JSON object
 # with exactly these three string fields, in order. Guarantees parseable output.
@@ -52,7 +54,14 @@ class Generator(Protocol):
 
 
 def _validate_local_host(host: str, allowed_hosts: frozenset[str], timeout: float) -> None:
-    """Enforce the egress allow-list and bounds shared by every generator (§5)."""
+    """Enforce the egress allow-list and bounds shared by every generator (§5).
+
+    Called at construction *and* at the point of egress: the generators are
+    mutable dataclasses, so a ``host`` or ``timeout`` assigned after
+    ``__post_init__`` would otherwise bypass the check (measured — the request
+    left for the assigned host). The control sits where the request leaves,
+    on a snapshot of the fields that the request is then built from.
+    """
     parsed = urlparse(host)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValidationError(f"invalid LLM host: {host!r}")
@@ -64,14 +73,85 @@ def _validate_local_host(host: str, allowed_hosts: frozenset[str], timeout: floa
         raise ValidationError("timeout must be positive")
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every HTTP redirect instead of following it.
+
+    The allow-list is checked on the configured host; urllib's default handler
+    then followed a 301/302/303 from whatever answered on that loopback port to
+    any host, re-issuing the POST as a GET with the body in the query string
+    (measured: the full prompt and system prompt reached a second listener, and
+    its reply came back as the model's answer). A redirect is a failure that
+    names the host it pointed at, never a hop.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> NoReturn:
+        raise ValidationError(
+            f"generation request failed: refusing HTTP {code} redirect "
+            f"to {urlparse(newurl).hostname!r}"
+        )
+
+
+def _open(req: urllib.request.Request, timeout: float) -> http.client.HTTPResponse:
+    """Send ``req`` through an opener that uses no proxy and follows no redirect.
+
+    ``urlopen`` honours ``http_proxy`` from the environment, so a request
+    addressed to loopback could leave for a proxy the allow-list never saw
+    (measured: ``http_proxy=http://203.0.113.9:3128`` received it).
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
+    return opener.open(req, timeout=timeout)  # type: ignore[no-any-return]
+
+
 def _urllib_transport(url: str, body: dict[str, object], timeout: float) -> dict[str, object]:
+    """POST ``body`` as JSON and return the decoded object, or raise :class:`ValidationError`.
+
+    Every failure a local server can cause arrives as ``ValidationError``,
+    because the caller degrades to the deterministic report on exactly that
+    type. The first filter was ``(URLError, TimeoutError, JSONDecodeError)``
+    and, measured, seven server-controlled failures slipped past it as their
+    raw types: a 4301-digit numeric body (CPython's int-string limit raises a
+    plain ``ValueError``, not ``JSONDecodeError``), invalid UTF-8, a
+    100000-deep array (``RecursionError``), a short body under a long
+    ``Content-Length``, a garbage status line, a connection closed without a
+    response, and an over-long header line. The tiers are therefore the
+    stdlib's own bases — ``OSError``, ``http.client.HTTPException``, ``ValueError``
+    (a malformed redirect ``Location``) and ``OverflowError`` (chunk size
+    ``-FFFFFFFFFFFFFFFFFFFF``) around open/read, ``ValueError`` and ``RecursionError``
+    around decode. The body is read by ``read1`` (``read(n)`` reads a ``-1`` chunk to
+    EOF) to at most 64 KiB past :data:`MAX_RESPONSE_BYTES`, and a body short of its
+    ``Content-Length`` is refused rather than parsed as complete.
+    """
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed by OllamaGenerator.__post_init__
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})  # noqa: S310 - host allow-listed at construction and at egress
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310 - scheme restricted to http/https and host allow-listed in __post_init__
-            return json.loads(resp.read().decode("utf-8"))  # type: ignore[no-any-return]
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        with _open(req, timeout) as resp:
+            raw = bytearray()
+            while len(raw) <= MAX_RESPONSE_BYTES and (part := resp.read1(1 << 16)):
+                raw += part
+            missing = resp.length  # Content-Length bytes never sent; read1 does not raise
+    except ValidationError:
+        raise  # a refused redirect: already the right type and message
+    except (OSError, http.client.HTTPException, ValueError, OverflowError) as exc:
         raise ValidationError(f"generation request failed: {exc}") from exc
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValidationError(f"generation response exceeds {MAX_RESPONSE_BYTES} bytes")
+    if missing:
+        raise ValidationError(f"generation response truncated: {missing} bytes never arrived")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError, UnicodeDecodeError, int limit
+        raise ValidationError(f"generation response is not JSON: {type(exc).__name__}") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError("generator returned a non-object payload")
+    return payload
 
 
 @dataclass
@@ -81,7 +161,7 @@ class OllamaGenerator:
     Args:
         host: Base URL of the Ollama server (must resolve to an allowed host).
         model: Generation model name (default from ``LLM_MODEL``).
-        timeout: Per-request timeout in seconds (bounded; fail closed).
+        timeout: Per-socket-operation timeout in seconds, not a bound on the whole request.
         allowed_hosts: Host allow-list enforced before any request.
         transport: Injectable HTTP seam (defaults to stdlib urllib).
     """
@@ -98,16 +178,28 @@ class OllamaGenerator:
     def generate(self, prompt: str, *, system: str | None = None) -> str:
         """Return the model's completion for ``prompt`` (non-streaming).
 
-        Fails closed: a transport error, or a response missing a non-empty
-        ``response`` field, raises :class:`ValidationError`.
+        Fails closed: through the shipped transport, every failure a local
+        server can cause — transport, framing, decoding, a body over the size
+        bound, a payload that is not a JSON object, or a missing/empty
+        ``response`` field — raises :class:`ValidationError`, the type callers
+        degrade to the deterministic report on. An injected transport is
+        trusted to keep that contract; this method re-checks the payload shape
+        but does not wrap arbitrary exceptions it raises.
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
-        url = f"{self.host.rstrip('/')}/api/generate"
+        # Snapshot, validate the snapshot, use the snapshot: re-reading self.host
+        # after the check let a concurrent writer put a host the check never saw
+        # into the request (measured: 1,153 of 100,000 calls).
+        host, timeout = self.host, self.timeout
+        _validate_local_host(host, self.allowed_hosts, timeout)  # at egress, see above
+        url = f"{host.rstrip('/')}/api/generate"
         body: dict[str, object] = {"model": self.model, "prompt": prompt, "stream": False}
         if system:
             body["system"] = system
-        payload = self.transport(url, body, self.timeout)
+        payload = self.transport(url, body, timeout)
+        if not isinstance(payload, dict):
+            raise ValidationError("generator returned a non-object payload")
         text = payload.get("response")
         if not isinstance(text, str) or not text.strip():
             raise ValidationError("generator returned no 'response' text")
@@ -145,15 +237,17 @@ class LlamaCppGenerator:
         """
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValidationError("prompt must be a non-empty string")
+        host, timeout = self.host, self.timeout  # snapshot; see OllamaGenerator.generate
+        _validate_local_host(host, self.allowed_hosts, timeout)  # at egress, see above
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        url = f"{self.host.rstrip('/')}/v1/chat/completions"
+        url = f"{host.rstrip('/')}/v1/chat/completions"
         body: dict[str, object] = {"model": self.model, "messages": messages, "stream": False}
         if grammar:
             body["grammar"] = grammar  # llama-server GBNF extension
-        payload = self.transport(url, body, self.timeout)
+        payload = self.transport(url, body, timeout)
         try:
             choices = payload["choices"]
             text = choices[0]["message"]["content"]  # type: ignore[index]

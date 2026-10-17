@@ -202,3 +202,51 @@ def test_generate_json_non_object_fails_closed() -> None:
 
     with pytest.raises(ValidationError):
         LlamaCppGenerator(transport=_t).generate_json("facts")
+
+
+# --- the allow-list is enforced where the request leaves ----------------------
+
+
+@pytest.mark.security
+def test_host_mutated_after_construction_is_blocked_at_egress() -> None:
+    """The dataclass is mutable; construction-time validation alone was bypassed (measured)."""
+    calls: list[str] = []
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        calls.append(url)
+        return {"response": "x"}
+
+    gen = OllamaGenerator(transport=_t)
+    gen.host = "http://203.0.113.9:11434"  # RFC 5737 documentation address
+    with pytest.raises(ValidationError, match="allow-list"):
+        gen.generate("prompt")
+    assert calls == []
+
+
+@pytest.mark.security
+def test_llamacpp_host_mutated_after_construction_is_blocked_at_egress() -> None:
+    from agents.tools.llm import LlamaCppGenerator
+
+    calls: list[str] = []
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        calls.append(url)
+        return {"choices": [{"message": {"content": "x"}}]}
+
+    gen = LlamaCppGenerator(transport=_t)
+    gen.host = "http://203.0.113.9:8080"
+    with pytest.raises(ValidationError, match="allow-list"):
+        gen.generate("prompt")
+    assert calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("payload", [[], "text", None, 42])
+def test_non_object_payload_fails_closed_as_validation_error(payload: object) -> None:
+    """Measured before the fix: AttributeError escaped the caller's `except ValidationError`."""
+
+    def _t(url: str, body: dict, timeout: float) -> dict:
+        return payload  # type: ignore[return-value]
+
+    with pytest.raises(ValidationError, match="non-object"):
+        OllamaGenerator(transport=_t).generate("x")
