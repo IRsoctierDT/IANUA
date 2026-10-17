@@ -38,6 +38,7 @@ def _mutate(work: Path, relative: str, mutate: Callable[[dict], None]) -> None:
 
 _SEED = "seed/indicators.json"
 _HOSTILE = (b"[" * 500_000, b'{"x": "\xff"}', b"[" + b"1" * 5000 + b"]")
+_NOT_A_LIST: tuple[object, ...] = (None, 5, True, 1.5, {})
 
 _CASES: list[tuple[str, str, Callable[[dict], None]]] = [
     ("unknown seed field", _SEED, lambda d: d["indicators"][0].update(surprise=1)),
@@ -117,6 +118,13 @@ _CASES: list[tuple[str, str, Callable[[dict], None]]] = [
         "list-valued behavior source_id",
         "behaviors/core.json",
         lambda d: d["behaviors"][0].update(source_id=[]),
+    ),
+    # Measured before the container checks: null, 5, true and 1.5 escaped both
+    # loops as TypeError, and {"behaviors": {}} loaded as zero records.
+    *(
+        (f"{key} container is {value!r}", rel, lambda d, k=key, v=value: d.update({k: v}))
+        for rel, key in (("sources.json", "sources"), ("behaviors/core.json", "behaviors"))
+        for value in _NOT_A_LIST
     ),
 ]
 

@@ -225,6 +225,10 @@ def _load_sources(path: Path) -> dict[str, Source]:
     document = _read_json(path)
     if not isinstance(document, dict) or set(document) != {"sources"}:
         raise _reject("sources.json must carry exactly a 'sources' list")
+    # The value's type, not only the key set: measured, null, 5, true and 1.5
+    # escaped the loop below as TypeError, which the agent's fail-soft misses.
+    if not isinstance(document["sources"], list):
+        raise _reject("sources.json must carry exactly a 'sources' list")
     sources: dict[str, Source] = {}
     for raw in document["sources"]:
         if not isinstance(raw, dict) or set(raw) != _SOURCE_FIELDS:
@@ -384,6 +388,8 @@ def load_store(intel_dir: Path | None = None, *, corpus: Corpus | None = None) -
     for path in behavior_paths:
         document = _read_json(path)
         if not isinstance(document, dict) or set(document) != {"behaviors"}:
+            raise _reject(f"{path.name} must carry exactly a 'behaviors' list")
+        if not isinstance(document["behaviors"], list):  # {} loaded as zero records
             raise _reject(f"{path.name} must carry exactly a 'behaviors' list")
         for raw in document["behaviors"]:
             record = _parse_behavior(raw, sources, resolved_corpus)
