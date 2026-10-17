@@ -156,8 +156,11 @@ def test_non_utf8_chain_is_a_chain_error(tmp_path: Path) -> None:
     chain.write_bytes(b"\xff\xfe\x00garbage")
     with pytest.raises(AuditChainError, match="not valid UTF-8"):
         load_chain_view(chain)
+    os.close(free := os.open(os.devnull, os.O_RDONLY))  # the lowest unused descriptor number
     with pytest.raises(IsADirectoryError):  # an I/O failure stays an OSError for the caller
         load_chain_view(tmp_path)
+    with pytest.raises(OSError):  # still unused: aa2fd4e leaked the directory's, once per call
+        os.fstat(free)
 
 
 def test_approvals_tab_catches_every_read_failure() -> None:

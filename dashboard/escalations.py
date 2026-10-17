@@ -34,10 +34,11 @@ _GENESIS = "sha256:" + "0" * 64
 _SUBMITTED = "escalation_submitted"
 _RESOLVED = "escalation_resolved"
 _CONSUMED = "approval_consumed"
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
 #: The most bytes ``load_chain_view`` reads; past it the chain is refused
 #: unverified (``AuditChainError``). The read was unbounded, so a 2 GB sparse
-#: file raised ``MemoryError``; at this bound peak RSS measured 96-143 MB. A
+#: file raised ``MemoryError``. It bounds bytes, not heap: in-cap nested lists peaked near 800 MB. A
 #: legitimate chain past it (~54,000 short records) fails closed too: the
 #: figure is a choice for the owner to revisit, not a measured need.
 MAX_CHAIN_BYTES = 16 * 1024 * 1024
@@ -83,17 +84,19 @@ def _read_chain(path: Path) -> str:
 
     ``O_NONBLOCK`` lets the open return on a FIFO with no writer, where a plain
     open blocked until one appeared; ``fstat`` on that descriptor then refuses anything
-    that is not a regular file with an ``OSError`` (``IsADirectoryError`` for a
+    else that is not a regular file with an ``OSError`` (``open`` raises ``IsADirectoryError`` on a
     directory). Symlinks are followed, as ``read_text`` did. At most
     ``MAX_CHAIN_BYTES + 1`` bytes are read, so an oversized file is refused
     before it is decoded.
     """
-    with os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)), "rb") as handle:
+    with open(path, "rb", opener=lambda p, f: os.open(p, f | _NONBLOCK)) as handle:
         mode = os.fstat(handle.fileno()).st_mode
         if not stat.S_ISREG(mode):
             code = errno.EISDIR if stat.S_ISDIR(mode) else errno.EINVAL
             raise OSError(code, "not a regular file", path.name)
         data = handle.read(MAX_CHAIN_BYTES + 1)
+    if data is None:  # a non-blocking read with nothing ready, e.g. /proc/kmsg
+        raise OSError(errno.EAGAIN, "nothing to read without blocking", path.name)
     if len(data) > MAX_CHAIN_BYTES:
         raise AuditChainError(f"{path.name}: larger than {MAX_CHAIN_BYTES} bytes; not verified")
     try:
@@ -116,14 +119,14 @@ def load_chain_view(path: Path) -> ChainView:
     path that is not a regular file (directory, FIFO, socket, device) raises
     ``OSError`` without blocking, and any other ``OSError`` (a permission
     denial) propagates for the caller to surface. ``MemoryError`` is not
-    caught; the read is bounded by ``MAX_CHAIN_BYTES``.
+    caught in the read; in ``_verify`` it is an ``AuditChainError``: bytes are bounded, heap is not.
     """
     if not isinstance(path, Path):
         raise AuditChainError("path must be a pathlib.Path")
     text = _read_chain(path)
     try:
         return _verify(path, text)
-    except (ValueError, RecursionError) as exc:
+    except (ValueError, RecursionError, MemoryError) as exc:
         raise AuditChainError(f"{path.name}: malformed record ({exc.__class__.__name__})") from exc
 
 
