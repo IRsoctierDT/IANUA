@@ -33,9 +33,12 @@ Security considerations:
   redirects the chain record (measured). Closing that needs ``dir_fd`` support
   in ``agents/policies/audit.py``, which serves every chain on the platform.
   Hard links are not refused (an operator's snapshot tool may make them).
-- The readers confine the *directory* by ``resolve()`` and do not refuse a
-  link at a file name; :func:`export_bundle` confines its destination by
-  ``resolve()`` and refuses a link at the final component only.
+- :func:`verify_chain` checks by path when called (a point-in-time check,
+  not a walk): it fails a linked ``audit.log`` and raises on a linked
+  ``data`` or ``data/compliance``. :func:`load_recent` confines the directory
+  by ``resolve()`` and does not refuse a link at ``evidence.jsonl``;
+  :func:`export_bundle` confines its destination by ``resolve()`` and refuses
+  a link at the final component only.
 - Files are created owner-read/write only, matching the audit logger's posture.
 """
 
@@ -46,7 +49,7 @@ import errno
 import json
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from agents.policies.audit import (
@@ -242,8 +245,29 @@ def _reader(root: Path) -> AuditLogger:
 
 
 def verify_chain(root: Path) -> VerificationReport:
-    """Verify the compliance audit chain (fail closed if it was tampered)."""
-    return _reader(root).verify_report()
+    """Verify the compliance audit chain (fail closed if it was tampered).
+
+    A symlink at ``audit.log`` is a failed verification that names it. The
+    logger does not read a linked segment, so without this such a chain read
+    ``intact=True, entries=0`` — measured with the link aimed at another chain
+    holding a genuine entry, the shape a redirected chain write leaves. A
+    symlink at ``data`` or ``data/compliance`` raises ``ValueError``, as
+    :func:`record_run` does, rather than verifying whatever it points at.
+    """
+    walked = root
+    for part in _EVIDENCE_DIR.parts:
+        walked /= part
+        if walked.is_symlink():
+            raise ValueError(
+                f"{walked.relative_to(root)} is a symlink; refusing to verify through it"
+            )
+    report = _reader(root).verify_report()
+    if (_evidence_dir(root) / _AUDIT_FILE).is_symlink():
+        failure = (
+            f"{_EVIDENCE_DIR / _AUDIT_FILE} is a symlink; the chain is not where it is believed"
+        )
+        return replace(report, intact=False, failure=failure)
+    return report
 
 
 def export_bundle(report: ComplianceReport, *, root: Path, dest: Path) -> Path:

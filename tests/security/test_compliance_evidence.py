@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from agents.policies.audit import AuditLogger
 from compliance.controls import Category, CheckResult, Control, ControlStatus, Severity
 from compliance.engine import run_controls
 from compliance.evidence import export_bundle, load_recent, record_run, verify_chain
@@ -225,3 +226,47 @@ def test_a_directory_swapped_after_the_walk_cannot_carry_the_evidence_write(
 
     assert list(outside.iterdir()) == [], "a write followed the swapped directory"
     assert (root / "data" / "moved" / "evidence.jsonl").is_file()
+
+
+@pytest.mark.security
+def test_a_linked_chain_is_never_verified_intact(tmp_path: Path) -> None:
+    """The reader half of the redirect the writer now refuses.
+
+    Measured before the fix: with ``audit.log`` a link to another chain holding
+    a genuine entry, ``record_run`` appended a chain-valid entry to it and
+    ``verify_chain`` read ``intact=True, entries=0`` — a redirected chain was
+    indistinguishable from one never written.
+    """
+    root = tmp_path / "root"
+    (root / "data" / "compliance").mkdir(parents=True)
+    foreign = tmp_path / "other-node" / "audit.log"
+    foreign.parent.mkdir()
+    AuditLogger(foreign, clock=lambda: _CLOCK).record(
+        actor="someone-else",
+        action="unrelated",
+        action_class="read_only",
+        decision="pass",
+        reason="genuine",
+    )
+    (root / "data" / "compliance" / "audit.log").symlink_to(foreign)
+
+    report = verify_chain(root)
+    assert report.intact is False and "symlink" in (report.failure or ""), report
+    with pytest.raises(ValueError, match="symlink"):
+        record_run(_report(root), root=root, clock=lambda: _CLOCK)
+    assert len(foreign.read_text(encoding="utf-8").splitlines()) == 1, "chained into another chain"
+
+
+@pytest.mark.security
+def test_verify_chain_refuses_a_linked_evidence_directory(tmp_path: Path) -> None:
+    """A link back inside the root verified another subsystem's chain as this one's."""
+    root = tmp_path / "root"
+    collect_chain = root / "data" / "collect" / "audit.log"
+    collect_chain.parent.mkdir(parents=True)
+    AuditLogger(collect_chain, clock=lambda: _CLOCK).record(
+        actor="collector", action="collect", action_class="read_only", decision="pass", reason="ok"
+    )
+    (root / "data" / "compliance").symlink_to(collect_chain.parent, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        verify_chain(root)
