@@ -1763,6 +1763,93 @@ def test_a_non_finite_retention_threshold_is_refused_by_the_delete_too(
         assert store.count() == held, "a refused prune removed rows"
 
 
+class _StatefulFloat:
+    """``__float__`` answers ``first`` once, then ``then`` on every later call.
+
+    The shape that defeats a check-then-convert pair: ``math.isfinite(x)`` and
+    ``float(x)`` each convert ``x`` afresh, so one object can be finite for the
+    check and infinite for the statement.
+    """
+
+    def __init__(self, first: float, then: float) -> None:
+        self.first = first
+        self.then = then
+        self.calls = 0
+
+    def __float__(self) -> float:
+        self.calls += 1
+        return self.first if self.calls == 1 else self.then
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("then", [float("inf"), float("-inf"), float("nan")])
+def test_a_retention_threshold_is_converted_once_and_the_checked_value_is_bound(
+    tmp_path: Path, then: float
+) -> None:
+    """The value that passed the finiteness check must be the value the SQL binds.
+
+    Measured on the parent commit with three stored events: ``prune`` ran
+    ``math.isfinite(before)`` and then ``float(before)`` as two separate
+    conversions, so an object answering ``1.0`` first and ``inf`` second passed
+    the check and the DELETE removed all three rows; ``count_before`` had the
+    same shape, and its keyset bound converted three times. Not reachable from
+    ``scripts/run_retention.py``, which passes argparse floats — but the store
+    is the boundary that outlives any one caller, and the test above pins that
+    report and apply refuse the same inputs, which held only for stateless
+    values. Found by review.
+
+    The oracle is the plain float the object first answers: every result must
+    equal that float's, and the object must have been converted exactly once.
+    Two events at 100 and 300 with a first answer of 200 make each
+    parametrization discriminate in both directions — ``inf`` would count or
+    delete both, ``-inf`` and ``nan`` neither.
+    """
+    first = 200.0
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=100.0)
+        store.append(normalize(_OTHER_RECORD), ingested_at=300.0)
+        assert store.count() == 2, "the fixture stored fewer than two events"
+        assert store.count_before(before=first) == 1
+        assert store.count_before(before=2e9, after=(first, "")) == 1
+
+        value = _StatefulFloat(first, then)
+        assert store.count_before(before=value) == 1, (  # type: ignore[arg-type]
+            "count_before bound a later answer"
+        )
+        assert value.calls == 1, f"count_before converted the threshold {value.calls} times"
+
+        value = _StatefulFloat(first, then)
+        assert store.count_before(before=2e9, after=(value, "")) == 1, (  # type: ignore[arg-type]
+            "the keyset bound bound a later answer"
+        )
+        assert value.calls == 1, f"count_before converted the keyset bound {value.calls} times"
+
+        value = _StatefulFloat(first, then)
+        assert store.prune(before=value) == 1, "prune bound a later answer"  # type: ignore[arg-type]
+        assert value.calls == 1, f"prune converted the threshold {value.calls} times"
+        assert store.count() == 1, "prune deleted other than what the checked value selects"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("text", ["2000000000", b"2000000000"])
+def test_a_textual_retention_threshold_is_still_refused(tmp_path: Path, text: object) -> None:
+    """Folding the conversion into one must not start parsing text as a number.
+
+    ``float()`` parses ``str`` and ``bytes``; ``math.isfinite()`` refuses them,
+    and so did both methods before the fold — measured on the parent commit,
+    ``TypeError`` from each with the rows untouched. Pinned so the fix cannot
+    quietly widen the accepted domain while closing the double conversion.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD), normalize(_OTHER_RECORD)), ingested_at=1_000.0)
+        held = store.count()
+        with pytest.raises(TypeError, match="real number"):
+            store.count_before(before=text)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="real number"):
+            store.prune(before=text)  # type: ignore[arg-type]
+        assert store.count() == held, "a refused prune removed rows"
+
+
 @pytest.mark.security
 def test_next_stamp_is_strictly_after_the_mark(tmp_path: Path) -> None:
     """Equality is permitted for batching, and that is what the hazard needs.

@@ -61,7 +61,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ParamSpec, Self, TypeVar
+from typing import Any, ParamSpec, Self, SupportsFloat, SupportsIndex, TypeVar
 
 from ingest.schema import NormalizedEvent
 from store.errors import (
@@ -397,6 +397,41 @@ def _narrow(path: Path, mode: int) -> None:
             path.chmod(mode)
     except OSError:  # pragma: no cover - filesystem without mode support
         pass
+
+
+def _finite(value: object, what: str) -> float:
+    """Convert ``value`` to a float once and refuse a non-finite result.
+
+    The value checked is the value returned, so what a statement binds is
+    what passed the check. That is the whole point: :meth:`EventStore.prune`
+    used to run ``math.isfinite(before)`` and then ``float(before)`` — two
+    conversions of the same object — and an object whose ``__float__``
+    answered ``1.0`` on the first call and ``inf`` on the second passed the
+    check and the DELETE ran with ``inf``. Measured, three stored events to
+    zero. :meth:`EventStore.count_before` had the same shape (two conversions;
+    three for its keyset bound), so the report-then-apply parity it shares
+    with ``prune`` held only for stateless values. Not reachable from
+    ``scripts/run_retention.py``, which passes argparse floats, and no
+    deserialization path builds such an object; closed here because the store
+    is the boundary that outlives any one caller.
+
+    The protocol guard keeps the accepted domain exactly what ``math.isfinite``
+    accepted — ``__float__`` or ``__index__``. ``float()`` alone also parses
+    ``str``, ``bytes``, ``bytearray`` and ``memoryview`` (measured), and a fix
+    for a double conversion must not start reading text as a number. The
+    ``append`` path already had the safe shape (``float()`` once, the check on
+    the result) and is unchanged.
+
+    Raises:
+        TypeError: for a value that is not a real number.
+        ValueError: for a non-finite value.
+    """
+    if not isinstance(value, (SupportsFloat, SupportsIndex)):
+        raise TypeError(f"{what} must be a real number, not {type(value).__name__}")
+    coerced = float(value)
+    if not math.isfinite(coerced):
+        raise ValueError(f"{what} must be finite, got {coerced!r}")
+    return coerced
 
 
 class EventStore:
@@ -1073,17 +1108,22 @@ class EventStore:
         ``+`` passed it, measured on exactly this method. The check asserts
         provenance at the ``execute`` call instead, so the ``+`` above is
         verified to join two module constants rather than merely intended to.
+
+        Raises:
+            TypeError: for a threshold or keyset bound that is not a real
+                number; ``ValueError`` for one that is not finite. Both come
+                from :func:`_finite`, which converts once and binds the value
+                it checked, and :meth:`prune` goes through the same function —
+                so report and apply refuse the same inputs by construction,
+                not by two checks kept in step.
         """
-        if not math.isfinite(before):
-            raise ValueError(f"retention threshold must be finite, got {before!r}")
         statement = _COUNT_BEFORE
-        params: list[float | str] = [float(before)]
+        params: list[float | str] = [_finite(before, "retention threshold")]
         if after is not None:
             at, identifier = after
-            if not math.isfinite(at):
-                raise ValueError(f"keyset bound must be finite, got {at!r}")
+            bound = _finite(at, "keyset bound")
             statement = _COUNT_BEFORE + _AND + _INGESTED_AFTER
-            params.extend((float(at), float(at), identifier))
+            params.extend((bound, bound, identifier))
         row = self._conn.execute(statement, tuple(params)).fetchone()
         return int(row["n"])
 
@@ -1185,13 +1225,19 @@ class EventStore:
                 Retention is report-then-apply, and the two halves must refuse
                 the same inputs. The write-side twin of a read-side bound: the
                 defect class :meth:`_project` already records.
+
+                "Exactly as" is by construction: both go through
+                :func:`_finite`, which converts once and binds the value it
+                checked. The first version of this check converted twice —
+                ``math.isfinite(before)`` and then ``float(before)`` — and an
+                object whose ``__float__`` answered ``1.0`` first and ``inf``
+                second passed it; the DELETE ran with ``inf``. Measured, three
+                events to zero. Found by review.
+            TypeError: for a threshold that is not a real number, as before.
         """
-        if not math.isfinite(before):
-            raise ValueError(f"retention threshold must be finite, got {before!r}")
+        threshold = _finite(before, "retention threshold")
         with self._conn:
-            cursor = self._conn.execute(
-                "DELETE FROM events WHERE ingested_at < ?", (float(before),)
-            )
+            cursor = self._conn.execute("DELETE FROM events WHERE ingested_at < ?", (threshold,))
         return int(cursor.rowcount)
 
 
