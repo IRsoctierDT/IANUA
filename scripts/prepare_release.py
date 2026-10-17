@@ -210,9 +210,17 @@ def plan(version: str, title: str, date: str) -> dict[Path, tuple[str, str]]:
             "title must be 3-80 chars of letters, digits, spaces and & : , . ' + / -"
         )
     try:
-        dt.date.fromisoformat(date)
+        parsed = dt.date.fromisoformat(date)
     except ValueError as exc:
         raise ReleaseError(f"date must be ISO YYYY-MM-DD, got {date!r}") from exc
+    if parsed.isoformat() != date:
+        # `fromisoformat` also accepts the basic form (`20261102`) and a week
+        # date (`2026-W44-1`); measured, both passed and `--dry-run` listed
+        # every surface. The heading they would write is one
+        # `release_notes.py`'s `_RELEASE_HEADING` does not match, so the
+        # release would fail at the tag step instead of here. Validate, never
+        # repair: the one spelling every reader of the heading expects.
+        raise ReleaseError(f"date must be spelled YYYY-MM-DD, got {date!r}")
 
     old_q = re.escape(old)
     bump = _set_version(old, version)
