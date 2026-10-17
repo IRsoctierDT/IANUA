@@ -113,6 +113,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -540,6 +541,85 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
     }
 
 
+#: The one path :func:`_take_backup` writes the store to, and so the only one
+#: a manifest may name. See :func:`_load_manifest`.
+_STORE_PATH = str(EVENTS_SUBDIR / DEFAULT_FILENAME)
+
+
+def _is_count(value: object) -> bool:
+    """A non-negative ``int`` that is not a ``bool`` (an ``int`` subclass)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _malformed(directory: Path, what: str) -> StoreError:
+    """The refusal for a manifest whose shape cannot be verified against."""
+    return StoreError(
+        f"{MANIFEST_FILE} in {directory}: {what}; refusing to verify against a "
+        "damaged or edited manifest"
+    )
+
+
+def _load_manifest(directory: Path) -> dict[str, Any]:
+    """Read ``directory``'s manifest and check its **shape**, or raise ``StoreError``.
+
+    A manifest is data inside the artifact being verified (see
+    :func:`_unsafe_path`), and both verifiers used its fields as though they
+    were well-formed. Measured through the CLI on the code this replaces: a
+    JSON array, a string ``store``, a string ``files`` entry and a list
+    ``chains`` each ended in a ``TypeError``/``AttributeError`` traceback under
+    ``--verify`` and ``--verify-restore`` alike — exit 1 by accident, no message.
+
+    **The sharper defect was a write.** A ``store.path`` naming any *other*
+    existing file in the backup passed ``is_file()``, so :func:`_verify_backup`
+    went on to ``EventStore.open(directory)`` — which ``mkdir``s and
+    ``connect``s — and **created** ``data/events/events.sqlite3`` inside the
+    backup under inspection (measured). That is the hazard
+    :func:`_verify_restore` already guards against, so ``store.path`` must be
+    the one path :func:`_take_backup` writes. Shape only: every digest, size
+    and count is still compared by the callers, and the escape checks still run.
+    """
+    manifest_path = directory / MANIFEST_FILE
+    if not manifest_path.is_file():
+        raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise _malformed(directory, "not a JSON object")
+    if manifest.get("format") != "ianua.backup.v1":
+        raise StoreError(f"unknown backup format {manifest.get('format')!r}")
+    store_entry = manifest.get("store")
+    if not isinstance(store_entry, dict):
+        raise _malformed(directory, "'store' is not an object")
+    if store_entry.get("path") != _STORE_PATH:
+        raise _malformed(
+            directory,
+            f"store path {store_entry.get('path')!r} is not {_STORE_PATH!r}, the only path "
+            "a backup writes",
+        )
+    attestation = store_entry.get("attestation")
+    if not isinstance(store_entry.get("sha256"), str) or not isinstance(attestation, dict):
+        raise _malformed(directory, "store sha256 must be a string and attestation an object")
+    if not _is_count(attestation.get("events")) or not isinstance(attestation.get("digest"), str):
+        raise _malformed(directory, "attestation must carry an integer events and a string digest")
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise _malformed(directory, "'files' is not a list")
+    for entry in files:
+        if not (
+            isinstance(entry, dict)
+            and isinstance(entry.get("path"), str)
+            and isinstance(entry.get("sha256"), str)
+            and _is_count(entry.get("size"))
+        ):
+            raise _malformed(
+                directory,
+                f"file entry {str(entry)[:80]!r} needs a string path, a string sha256 and an "
+                "integer size",
+            )
+    if not isinstance(manifest.get("chains"), dict):
+        raise _malformed(directory, "'chains' is not an object")
+    return manifest
+
+
 def _verify_backup(directory: Path) -> dict[str, object]:
     """Re-check a backup against its own manifest, and report every mismatch.
 
@@ -547,12 +627,7 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     deciding whether to restore from this copy needs to know everything that
     is wrong with it, not the first thing.
     """
-    manifest_path = directory / MANIFEST_FILE
-    if not manifest_path.is_file():
-        raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != "ianua.backup.v1":
-        raise StoreError(f"unknown backup format {manifest.get('format')!r}")
+    manifest = _load_manifest(directory)
 
     problems: list[str] = []
 
@@ -673,12 +748,7 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
       the backup — which step 4's ``cp -a`` *merges* rather than replaces —
       survived unseen. See :func:`_live_tree_inventory`.
     """
-    manifest_path = backup / MANIFEST_FILE
-    if not manifest_path.is_file():
-        raise StoreError(f"no {MANIFEST_FILE} in {backup}; this is not a backup")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != "ianua.backup.v1":
-        raise StoreError(f"unknown backup format {manifest.get('format')!r}")
+    manifest = _load_manifest(backup)
 
     problems: list[str] = []
     store_entry = manifest["store"]
