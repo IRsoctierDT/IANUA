@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from agents.mapping import MappingStoreError, parse_store
+from agents.mapping import MappingStoreError, load_store, parse_store
 from attack import Corpus, load_corpus
 
 _RULES = Path(__file__).resolve().parents[2] / "agents" / "mapping" / "rules" / "core.json"
@@ -129,3 +129,43 @@ def test_committed_store_is_valid(corpus: Corpus) -> None:
     document = json.loads(_RULES.read_text(encoding="utf-8"))
     store = parse_store(document, corpus=corpus)
     assert store.rules and store.fallback.technique_id == "UNKNOWN"
+
+
+_MULTI_FILE_MUTATIONS: list[tuple[str, dict[str, Any]]] = [
+    ("second file with schema 2", {"schema": 2, "rules": []}),
+    ("second file with a typo'd rules key", {"schema": 1, "rule": []}),
+    ("second file with an unknown top-level key", {"schema": 1, "rules": [], "extra": 1}),
+    ("second file whose rules is not a list", {"schema": 1, "rules": {}}),
+    ("second file with no schema", {"rules": []}),
+]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("label", "extra"), _MULTI_FILE_MUTATIONS, ids=[m[0] for m in _MULTI_FILE_MUTATIONS]
+)
+def test_multi_file_store_validates_every_file(
+    label: str, extra: dict[str, Any], tmp_path: Path, corpus: Corpus
+) -> None:
+    """The merge path held each file to less than the single-file path.
+
+    Measured: a second file carrying ``schema: 2``, a typo'd ``rule`` key and
+    an unknown key loaded silently and contributed nothing.
+    """
+    (tmp_path / "a_core.json").write_bytes(_RULES.read_bytes())
+    (tmp_path / "b_extra.json").write_text(json.dumps(extra), encoding="utf-8")
+    with pytest.raises(MappingStoreError):
+        load_store(tmp_path, corpus=corpus)
+
+
+@pytest.mark.security
+def test_multi_file_store_merges_well_formed_files(tmp_path: Path, corpus: Corpus) -> None:
+    document = json.loads(_RULES.read_text(encoding="utf-8"))
+    fallback = document.pop("fallback")
+    (tmp_path / "a_rules.json").write_text(json.dumps(document), encoding="utf-8")
+    (tmp_path / "b_fallback.json").write_text(
+        json.dumps({"schema": 1, "rules": [], "fallback": fallback}), encoding="utf-8"
+    )
+    store = load_store(tmp_path, corpus=corpus)
+    assert len(store.rules) == len(document["rules"])
+    assert store.fallback.technique_id == "UNKNOWN"

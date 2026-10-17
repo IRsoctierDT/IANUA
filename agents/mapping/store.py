@@ -62,6 +62,12 @@ def _reject(reason: str) -> MappingStoreError:
     return MappingStoreError(f"invalid mapping ruleset: {reason}")
 
 
+def _check_schema(value: object, context: str) -> None:
+    # Strictly the integer 1: ``True == 1`` and ``1.0 == 1`` both passed before.
+    if not isinstance(value, int) or isinstance(value, bool) or value != 1:
+        raise _reject(f"{context}unsupported schema: {value!r}")
+
+
 def _string_list(value: object, context: str, *, max_len: int = MAX_STRING_LEN) -> tuple[str, ...]:
     if (
         not isinstance(value, list)
@@ -165,10 +171,7 @@ def parse_store(document: object, *, corpus: Corpus) -> RuleStore:
     """Validate one parsed ruleset document fail-closed; return the store."""
     if not isinstance(document, dict) or set(document) != _TOP_FIELDS:
         raise _reject(f"top level must carry exactly {sorted(_TOP_FIELDS)}")
-    schema = document["schema"]
-    # Strictly the integer 1: ``True == 1`` and ``1.0 == 1`` both passed before.
-    if not isinstance(schema, int) or isinstance(schema, bool) or schema != 1:
-        raise _reject(f"unsupported schema: {schema!r}")
+    _check_schema(document["schema"], "")
     raw_rules = document["rules"]
     if not isinstance(raw_rules, list) or not raw_rules or len(raw_rules) > MAX_RULES:
         raise _reject(f"rules must be a list of 1..{MAX_RULES} entries")
@@ -218,7 +221,11 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
     """Load and validate every ruleset file (sorted, deterministic order).
 
     Multiple files concatenate their ``rules`` in filename order; exactly one
-    file must declare the ``fallback``. Whole-store rejection on any anomaly.
+    file must declare the ``fallback``. Whole-store rejection on any anomaly —
+    including a file's own top level: measured before this check, a second
+    file carrying ``schema: 2``, a typo'd ``rule`` key and an unknown key
+    loaded silently and contributed nothing, which the single-file path
+    rejects on every count.
     """
     directory = RULES_DIR if rules_dir is None else rules_dir
     resolved_corpus = load_corpus() if corpus is None else corpus
@@ -245,9 +252,14 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
             document = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise _reject(f"{path.name} is not valid JSON ({exc})") from exc
-        if not isinstance(document, dict):
-            raise _reject(f"{path.name}: top level must be an object")
-        merged_rules.extend(document.get("rules", []))
+        if not isinstance(document, dict) or not set(document) <= _TOP_FIELDS:
+            raise _reject(f"{path.name}: top level must be an object of {sorted(_TOP_FIELDS)}")
+        if "schema" not in document or "rules" not in document:
+            raise _reject(f"{path.name}: top level must carry schema and rules")
+        _check_schema(document["schema"], f"{path.name}: ")
+        if not isinstance(document["rules"], list):
+            raise _reject(f"{path.name}: rules must be a list")
+        merged_rules.extend(document["rules"])
         if "fallback" in document:
             if fallback is not None:
                 raise _reject("multiple ruleset files declare a fallback")
