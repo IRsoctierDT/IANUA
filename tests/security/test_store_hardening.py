@@ -1444,6 +1444,61 @@ def test_a_store_with_tables_but_no_version_row_is_refused(tmp_path: Path) -> No
 
 
 @pytest.mark.security
+def test_a_failure_before_the_version_row_leaves_no_half_created_store(tmp_path: Path) -> None:
+    """The "one transaction" the test above relies on, made true and pinned.
+
+    ``executescript`` commits any pending transaction and then runs its script
+    in autocommit mode. Measured on the parent commit: ``in_transaction`` was
+    False after it and a second connection saw all three tables before the
+    version row existed, so a failure between the two statements left a store
+    the next open refused as "the version row was removed" — fail-closed, but
+    a misdiagnosis, and one an operator can clear only by deleting the file.
+    With the DDL opened by an explicit ``BEGIN`` inside the script, a failure
+    rolls the tables back with the row that never landed.
+    """
+    from store import SCHEMA_VERSION
+
+    real = sqlite3.connect(tmp_path / "fresh.sqlite3")
+    try:
+        with pytest.raises(RuntimeError, match="simulated"):
+            EventStore._apply_schema(_FailBeforeVersionRow(real))  # type: ignore[arg-type]
+        assert real.in_transaction is False
+        tables = real.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table'").fetchone()
+        assert tables[0] == 0, f"{tables[0]} table(s) survived a failed creation"
+        # And the same connection creates the store cleanly afterwards.
+        EventStore._apply_schema(real)
+        row = real.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        assert row is not None and row[0] == str(SCHEMA_VERSION)
+    finally:
+        real.close()
+
+
+class _FailBeforeVersionRow:
+    """A connection proxy that fails the version-row INSERT and nothing else.
+
+    Dunders are delegated by name because ``with conn:`` and attribute lookup
+    through ``__getattr__`` are different protocols.
+    """
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+
+    def execute(self, sql: str, *args: Any) -> Any:
+        if sql.lstrip().upper().startswith("INSERT INTO META"):
+            raise RuntimeError("simulated crash before the version row")
+        return self._real.execute(sql, *args)
+
+    def __enter__(self) -> Any:
+        return self._real.__enter__()
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._real.__exit__(*exc)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+@pytest.mark.security
 def test_a_projection_that_is_not_json_is_refused(tmp_path: Path) -> None:
     """Hash-consistent but undecodable: a row only a direct edit could produce."""
     forged = "this is not json"
@@ -1681,6 +1736,118 @@ def test_a_non_finite_ingestion_time_is_refused(tmp_path: Path, bad: float) -> N
             store.append_many((normalize(_RECORD),), ingested_at=bad)
         assert store.count() == 0
         assert store.high_water_mark() is None, "a refused write moved the mark"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_retention_threshold_is_refused_by_the_delete_too(
+    tmp_path: Path, bad: float
+) -> None:
+    """``count_before`` refused a non-finite threshold; ``prune`` did not.
+
+    Measured on the parent commit with three stored events:
+    ``prune(before=inf)`` deleted all three and ``prune(before=nan)`` deleted
+    none, both silently, after ``count_before`` had raised for the same value.
+    Retention is report-then-apply, so a threshold the report refuses must be
+    refused by the delete it would have authorised — the write-side twin of a
+    read-side bound, which is the defect class ``_project`` already records.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD), normalize(_OTHER_RECORD)), ingested_at=1_000.0)
+        held = store.count()
+        assert held > 0, "the fixture stored nothing"
+        with pytest.raises(ValueError, match="finite"):
+            store.count_before(before=bad)
+        with pytest.raises(ValueError, match="finite"):
+            store.prune(before=bad)
+        assert store.count() == held, "a refused prune removed rows"
+
+
+class _StatefulFloat:
+    """``__float__`` answers ``first`` once, then ``then`` on every later call.
+
+    The shape that defeats a check-then-convert pair: ``math.isfinite(x)`` and
+    ``float(x)`` each convert ``x`` afresh, so one object can be finite for the
+    check and infinite for the statement.
+    """
+
+    def __init__(self, first: float, then: float) -> None:
+        self.first = first
+        self.then = then
+        self.calls = 0
+
+    def __float__(self) -> float:
+        self.calls += 1
+        return self.first if self.calls == 1 else self.then
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("then", [float("inf"), float("-inf"), float("nan")])
+def test_a_retention_threshold_is_converted_once_and_the_checked_value_is_bound(
+    tmp_path: Path, then: float
+) -> None:
+    """The value that passed the finiteness check must be the value the SQL binds.
+
+    Measured on the parent commit with three stored events: ``prune`` ran
+    ``math.isfinite(before)`` and then ``float(before)`` as two separate
+    conversions, so an object answering ``1.0`` first and ``inf`` second passed
+    the check and the DELETE removed all three rows; ``count_before`` had the
+    same shape, and its keyset bound converted three times. Not reachable from
+    ``scripts/run_retention.py``, which passes argparse floats — but the store
+    is the boundary that outlives any one caller, and the test above pins that
+    report and apply refuse the same inputs, which held only for stateless
+    values. Found by review.
+
+    The oracle is the plain float the object first answers: every result must
+    equal that float's, and the object must have been converted exactly once.
+    Two events at 100 and 300 with a first answer of 200 make each
+    parametrization discriminate in both directions — ``inf`` would count or
+    delete both, ``-inf`` and ``nan`` neither.
+    """
+    first = 200.0
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=100.0)
+        store.append(normalize(_OTHER_RECORD), ingested_at=300.0)
+        assert store.count() == 2, "the fixture stored fewer than two events"
+        assert store.count_before(before=first) == 1
+        assert store.count_before(before=2e9, after=(first, "")) == 1
+
+        value = _StatefulFloat(first, then)
+        assert store.count_before(before=value) == 1, (  # type: ignore[arg-type]
+            "count_before bound a later answer"
+        )
+        assert value.calls == 1, f"count_before converted the threshold {value.calls} times"
+
+        value = _StatefulFloat(first, then)
+        assert store.count_before(before=2e9, after=(value, "")) == 1, (  # type: ignore[arg-type]
+            "the keyset bound bound a later answer"
+        )
+        assert value.calls == 1, f"count_before converted the keyset bound {value.calls} times"
+
+        value = _StatefulFloat(first, then)
+        assert store.prune(before=value) == 1, "prune bound a later answer"  # type: ignore[arg-type]
+        assert value.calls == 1, f"prune converted the threshold {value.calls} times"
+        assert store.count() == 1, "prune deleted other than what the checked value selects"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("text", ["2000000000", b"2000000000"])
+def test_a_textual_retention_threshold_is_still_refused(tmp_path: Path, text: object) -> None:
+    """Folding the conversion into one must not start parsing text as a number.
+
+    ``float()`` parses ``str`` and ``bytes``; ``math.isfinite()`` refuses them,
+    and so did both methods before the fold — measured on the parent commit,
+    ``TypeError`` from each with the rows untouched. Pinned so the fix cannot
+    quietly widen the accepted domain while closing the double conversion.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_RECORD), normalize(_OTHER_RECORD)), ingested_at=1_000.0)
+        held = store.count()
+        with pytest.raises(TypeError, match="real number"):
+            store.count_before(before=text)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="real number"):
+            store.prune(before=text)  # type: ignore[arg-type]
+        assert store.count() == held, "a refused prune removed rows"
 
 
 @pytest.mark.security

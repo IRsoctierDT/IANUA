@@ -39,6 +39,7 @@ package's AST in ``tests/security/test_correlation_hardening.py``.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from typing import Literal
 
@@ -91,6 +92,21 @@ NEVER_JOIN = frozenset(
         "(none)",
         "localhost",
         "localhost.localdomain",
+        # Every loopback *name* a default /etc/hosts gives 127.0.0.1 or ::1:
+        # Debian's `ip6-localhost ip6-loopback`, and Red Hat's
+        # `localhost4 localhost4.localdomain4` and
+        # `localhost6 localhost6.localdomain6`. Measured through the auditd
+        # parser: `node=ip6-localhost`, and later `node=localhost4` (the
+        # IPv4 line of the same file, missed the first time), each linked
+        # two unrelated records. Not here: Debian's `ip6-allnodes`,
+        # `ip6-allrouters`, `ip6-localnet`, `ip6-mcastprefix` — multicast
+        # and prefix names, deferred with multicast (_address_literal).
+        "localhost4",
+        "localhost4.localdomain4",
+        "localhost6",
+        "localhost6.localdomain6",
+        "ip6-localhost",
+        "ip6-loopback",
         "127.0.0.1",
         "::1",
         # Suppression justified: this literal is a value being REFUSED as an
@@ -137,6 +153,19 @@ HOST_LOCAL_PRINCIPALS = frozenset(
 
 _WELL_KNOWN_SID_PREFIXES = ("s-1-0", "s-1-1", "s-1-2", "s-1-3", "s-1-5-18", "s-1-5-19", "s-1-5-20")
 
+#: Vendors (as each parser stamps ``vendor``) whose parser fills
+#: ``device.hostname`` from a field that names no host. No check on the value
+#: can refuse these, because the values are well-formed hostnames: CloudTrail
+#: has no hostname field and its parser maps ``userAgent`` there, so a
+#: service-initiated call's ``ec2.amazonaws.com`` short-formed to host ``ec2``;
+#: Okta's ``client.device`` is a device *category* (``Computer``, ``Mobile``).
+#: Measured: two accounts, or two users, sharing only that value assembled into
+#: an incident. Their hostname is an alias, never a join key. The mapping is
+#: ingest's to change; this holds whatever it decides. It names these two
+#: vendors and nothing else, so a parser that fills the field from some other
+#: non-host source is not caught here (see correlation/README.md).
+_HOSTNAME_NAMES_NO_HOST = frozenset({"aws-cloudtrail", "okta"})
+
 
 @dataclass(frozen=True, slots=True)
 class EntityRef:
@@ -178,16 +207,87 @@ def _clean(value: str | None) -> str:
     return "" if text in NEVER_JOIN else text
 
 
-def _short_host(value: str) -> str:
-    """``web-01.corp.example`` → ``web-01``.
+def _is_ldh(label: str) -> bool:
+    """Letters, digits, hyphen and underscore, non-empty — Unicode-aware, so an IDN label passes."""
+    return bool(label) and all(character.isalnum() or character in "-_" for character in label)
+
+
+def _is_host_label(label: str) -> bool:
+    """Whether ``label`` could be the leading label of a hostname.
+
+    LDH-shaped (:func:`_is_ldh`: RFC 1123's rule plus the underscore Windows
+    names carry) and not a number. A purely numeric label is an IPv4 octet,
+    in any script (``str.isnumeric`` catches a fullwidth ``10`` as well as
+    ``10``), and so is a ``0x`` hex label: ``inet_aton`` reads ``0x7f000001``
+    as 127.0.0.1, and review measured it linking two records as one host.
+    A positive shape rather than a list of forbidden characters, because a
+    list is the rule the thing it means to stop can spell differently.
+    """
+    if not _is_ldh(label) or label.isnumeric():
+        return False
+    digits = label[2:] if label.startswith("0x") else ""
+    return not (digits and all(character in "0123456789abcdef" for character in digits))
+
+
+def _short_host(value: str) -> str | None:
+    """``web-01.corp.example`` → ``web-01``; ``None`` when the value is not a name.
 
     A fully-qualified name and its short form are the same machine, and
     sources disagree about which they report. Only the leading label is taken:
     stripping more would collide ``web-01.a.example`` with ``web-01.b.example``,
     which are not necessarily one host — but in practice the short name is what
     endpoint telemetry carries and what an analyst types.
+
+    The whole value must be DNS-shaped or nothing is returned, and the caller
+    carries the value as an alias only: every label LDH-shaped, the leading
+    one a hostname label (:func:`_is_host_label`), the last one not all digits
+    (no top-level domain is), one trailing dot allowed. An IP literal in the
+    hostname field is handled by :func:`_address_literal` first, but review
+    measured the fall-through open twice. First a literal ``ipaddress``
+    refuses — ``10.0.0.5:514``, ``[10.0.0.5]``, ``010.0.0.5``, ``127.1``,
+    ``sensor@10.0.0.5``, fullwidth digits — reached the split, and
+    ``10.0.0.5:514`` and ``10.0.0.7:514`` became one host ``10``. Then, with
+    only the leading label checked, ``0x7f.0.0.1`` and ``0x7f.0.0.2`` became
+    one host ``0x7f``. The cost: a name with a character outside that shape
+    anywhere (``web-01.corp.example:8080``) is an alias and does not link.
     """
-    return value.split(".", 1)[0] if "." in value else value
+    labels = (value[:-1] if value.endswith(".") else value).split(".")
+    if not _is_host_label(labels[0]) or labels[-1].isnumeric():
+        return None
+    return labels[0] if all(_is_ldh(label) for label in labels[1:]) else None
+
+
+def _address_literal(value: str) -> str | None:
+    """Canonical spelling of an IP literal; ``""`` if it identifies nothing; ``None`` if not one.
+
+    :data:`NEVER_JOIN` names ``127.0.0.1``, ``::1``, ``0.0.0.0`` and ``::`` as
+    strings, and a string rule catches one spelling of each. Measured through
+    the Zeek parser: ``0:0:0:0:0:0:0:1``, ``::ffff:127.0.0.1``, ``127.0.0.2``,
+    ``0000::1``, ``::0`` and ``0:0:0:0:0:0:0:0`` each became a *joinable*
+    address entity, and two flows sharing nothing but that placeholder became
+    an incident. So the refusal is on the **parsed** value — AGENTS.md §5
+    records this defect class ("six spellings are unspecified and a literal
+    rule catches one of them") — and the value that survives is the canonical
+    spelling, so one address written two ways is one entity rather than two.
+    An IPv4-mapped literal is the IPv4 address it wraps: a dual-stack socket
+    reports an IPv4 peer as ``::ffff:a.b.c.d``.
+
+    Only loopback and unspecified are refused — the two kinds the committed
+    set already names — as ``ipaddress`` reports them. Link-local and
+    multicast are not, and nor is an encoding it does not report as loopback
+    (IPv4-compatible ``::127.0.0.1``, NAT64 ``64:ff9b::127.0.0.1``, 6to4
+    ``2002:7f00:1::``): each is an ordinary address that joins. Widening the
+    set is a deny-list decision for review, not a spelling fix.
+    """
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    if parsed.is_loopback or parsed.is_unspecified:
+        return ""
+    return str(parsed)
 
 
 def _is_display_name(value: str) -> bool:
@@ -237,9 +337,47 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
         if not value:
             return
         if kind == "host":
-            value = _short_host(value)
+            literal = _address_literal(value)
+            if literal is None:
+                # Not short-formed when already refused: the alias keeps what
+                # the source wrote (`console.amazonaws.com`, not `console`).
+                short = _short_host(value) if joinable else None
+                if short is None:
+                    # A value that is neither a name nor an address identifies
+                    # no host. An alias for provenance, never a join key — see
+                    # _short_host for what reached the split before this.
+                    joinable = False
+                else:
+                    value = short
+            elif not literal:
+                return
+            else:
+                # An address in a hostname field: its dots are not label
+                # separators. Measured through the auditd parser: `10.0.0.5`
+                # and `10.0.0.7` short-formed to one host `10`, which merged
+                # two hosts and both their users into one scored incident.
+                value = literal
             if not value or value in NEVER_JOIN:
                 return
+        if kind == "address":
+            # Refused on the parsed value and carried in canonical form; the
+            # string set above still applies first, as defence in depth.
+            literal = _address_literal(value)
+            if literal is None:
+                # The field is declared to carry an address and this is not
+                # one: a service name (CloudTrail writes `ec2.amazonaws.com`
+                # as sourceIPAddress for a service-initiated call), a JSON
+                # boolean rendered `true`, or a spelling ipaddress refuses
+                # (`127.000.000.001`, `127.1`, `[::1]`, `127.0.0.1:443`).
+                # Measured: 19 such spellings and 3 such service names each
+                # linked two unrelated events as an opaque string. An alias
+                # for provenance, never a join key — the fail-closed branch
+                # the first version of this check did not have.
+                joinable = False
+            elif not literal:
+                return
+            else:
+                value = literal
         if (kind, value) in seen:
             return
         seen.add((kind, value))
@@ -253,7 +391,8 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
     add("user", event.actor.identity, "actor.identity")
     add("user", event.actor.user_uid, "actor.user_uid")
 
-    add("host", event.device.hostname, "device.hostname")
+    names_a_host = event.vendor not in _HOSTNAME_NAMES_NO_HOST
+    add("host", event.device.hostname, "device.hostname", joinable=names_a_host)
     add("host", event.device.device_id, "device.device_id")
 
     # device.ip is an ADDRESS, not a host — see the module docstring.

@@ -444,6 +444,16 @@ class _CountInflater:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
+    # Dunder lookups bypass ``__getattr__``, so the transaction ``attest`` now
+    # opens with ``with conn:`` has to be delegated by name. Measured: without
+    # these the proxy raised ``TypeError: '_CountInflater' object does not
+    # support the context manager protocol`` before the injected count was read.
+    def __enter__(self) -> Any:
+        return self._real.__enter__()
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._real.__exit__(*exc)
+
 
 @pytest.mark.unit
 def test_the_observables_digest_commits_to_values_and_not_only_to_their_count(
@@ -613,3 +623,50 @@ def test_the_observables_digest_distinguishes_a_blob_from_the_text_of_its_repr(
         assert attested.observables == 1
         digests.append(attested.observables_digest)
     assert len(set(digests)) == 3, digests
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "statement",
+    [ATTEST_IDS_SQL, ATTEST_OBSERVABLES_SQL],
+    ids=["id-stream", "observables-stream"],
+)
+def test_an_attestation_describes_one_snapshot_under_a_concurrent_writer(
+    tmp_path: Path, statement: str
+) -> None:
+    """A commit landing mid-attestation must not read as damage.
+
+    Each stream is a separate statement from the counts, and without an
+    enclosing transaction each took its own snapshot. Measured through this
+    method on the parent commit: a writer's commit between the count and the
+    first step of the id stream gave ``COUNT(*)`` 200 against 201 streamed ids
+    and raised "attestation is inconsistent" — a damage verdict on a healthy
+    store, reachable by ``run_backup.py --verify-restore`` on a live root,
+    whose lock excludes no writer. The observables stream has the same shape
+    against its own count. The injection point is the trace callback, which
+    fires as a statement begins and before its first step would open a read
+    snapshot of its own.
+    """
+    with _seeded(tmp_path, 200) as reader, EventStore.open(tmp_path) as writer:
+        quiet = reader.attest()
+        fired = 0
+
+        def commit_mid_stream(sql: str) -> None:
+            nonlocal fired
+            if fired == 0 and sql == statement:
+                fired += 1
+                writer.append(
+                    normalize("Failed password for u200 from 10.0.0.251 port 22 ssh2"),
+                    ingested_at=1_760_000_000.0 + 200,
+                )
+
+        reader._conn.set_trace_callback(commit_mid_stream)
+        try:
+            racing = reader.attest()
+        finally:
+            reader._conn.set_trace_callback(None)
+        assert fired == 1, "the injection did not fire; the stream statement has moved"
+        assert racing == quiet, "the attestation mixed two snapshots"
+        # The write really landed, and the next attestation sees it whole.
+        assert reader.count() == 201
+        assert reader.attest().events == 201
