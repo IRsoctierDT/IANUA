@@ -73,9 +73,19 @@ class ComplianceReport:
         return round(100 * self.passing / total)
 
     def framework_rollups(self) -> tuple[FrameworkRollup, ...]:
-        """Per-framework coverage. Manual controls count toward totals but
-        never toward passing until they are automated — unverified claims do
-        not inflate coverage."""
+        """Per-framework coverage over **every** control, manual ones included.
+
+        A control counts toward the total of each framework it maps to, and
+        toward passing when :attr:`ControlResult.passed` holds — a green
+        automated check *or* a current human attestation. So an un-attested
+        or expired manual control holds coverage back rather than inflating
+        it, and an attested one lifts it; that is the committed decision
+        (``DESIGN.md`` §11, 2026-07-24: "attested controls count in framework
+        rollups but never in the automated posture score"). The earlier text
+        here said manual controls "never" count toward passing, which the
+        code did not do and the design record does not say — it is
+        :attr:`score` that attestations never enter.
+        """
         return rollup((r.control.framework_refs, r.passed) for r in self.results)
 
 
