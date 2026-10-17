@@ -7,8 +7,9 @@ Renders SOC, MITRE, threat-intel, knowledge-base, detection, and citation
 results into a reviewable Markdown incident report (optional PDF export).
 Deterministic and network-free; the only write is the report file itself.
 Cell content is escaped so untrusted log text cannot break table structure,
-and the "(verified)" citations heading renders only when the caller attests
-verification (see ``generate_report``).
+the AI narrative is escaped the same way (model output is untrusted text that
+a crafted log line can steer), and the "(verified)" citations heading renders
+only when the caller attests verification (see ``generate_report``).
 """
 
 from __future__ import annotations
@@ -76,6 +77,14 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
 
     Opt-in and fail-soft: with no generator the deterministic report is unchanged;
     if the local model errors, the section records that rather than failing the report.
+
+    Security consideration: model output is **untrusted** — the prompt carries
+    log-derived indicators, so a crafted log line can steer what comes back. Both
+    narrative paths therefore pass through ``_md_cell`` (newlines flattened,
+    control characters stripped, pipes/backticks escaped, length capped) before
+    they reach the report, exactly like any other attacker-influenced value.
+    Measured before this: a generator returning a Markdown heading, an image
+    beacon, a NUL byte and 5,000 characters landed in the report verbatim.
     """
     if generator is None:
         return "_AI narrative not enabled (no local model configured)._"
@@ -90,7 +99,7 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
     try:
         if callable(generate_json):
             return _render_structured(generate_json(facts, system=_NARRATIVE_SYSTEM))
-        return generator.generate(facts, system=_NARRATIVE_SYSTEM).strip()
+        return _md_cell(generator.generate(facts, system=_NARRATIVE_SYSTEM).strip())
     except ValidationError as exc:
         # Analyst-facing taxonomy: a transport failure (model simply not
         # running — the generator chains URLError/TimeoutError/OSError as the
@@ -105,7 +114,7 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
                 "this section; all findings above are deterministic and "
                 "unaffected._"
             )
-        return f"_AI narrative unavailable (generator error: {exc})._"
+        return f"_AI narrative unavailable (generator error: {_md_cell(str(exc))})._"
 
 
 def _render_structured(data: dict) -> str:

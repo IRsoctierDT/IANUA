@@ -99,3 +99,49 @@ def test_hostile_mitre_evidence_is_escaped(tmp_path: Path) -> None:
     assert "\x07" not in content
     # Indicator renders in a code span with backticks neutralized, not live.
     assert "203.0.113.5'whoami'" in content
+
+
+class _HostileFreeTextGenerator:
+    """A model whose output a crafted log line steered into active Markdown."""
+
+    def generate(self, prompt: str, *, system: str | None = None) -> str:
+        return (
+            "Root brute-force success.\n# INJECTED HEADING\n"
+            "![beacon](https://attacker.example/px)\n| a | b |\n`live`\x00\x07" + "Z" * 5_000
+        )
+
+
+@pytest.mark.security
+def test_free_text_narrative_is_escaped_like_any_untrusted_value(tmp_path: Path) -> None:
+    """Model output is untrusted: it must get the same treatment as log text.
+
+    Before the fix the free-text generator path was the one place the report
+    wrote text verbatim — a heading, an image beacon, a NUL byte and 5,000
+    characters all survived (measured). The structured path already escaped.
+    """
+    content = _report(
+        tmp_path,
+        "Failed password for root from 203.0.113.5 port 22 ssh2",
+        generator=_HostileFreeTextGenerator(),
+    )
+    narrative = content.split("## Analyst Narrative (AI-generated)")[1].split("## Severity")[0]
+    assert "brute-force success" in narrative  # the legitimate sentence survives
+    assert "\n# INJECTED HEADING" not in narrative, "newline + heading must be flattened"
+    assert "\x00" not in content and "\x07" not in content
+    assert "| a | b |" not in narrative and "\\| a \\| b \\|" in narrative
+    assert "`live`" not in narrative and "\\`live\\`" in narrative
+    assert "…[truncated]" in narrative and len(narrative) < 700
+
+
+@pytest.mark.security
+def test_generator_error_text_is_escaped(tmp_path: Path) -> None:
+    from agents.tools.validation import ValidationError
+
+    class _NoisyFailure:
+        def generate(self, prompt: str, *, system: str | None = None) -> str:
+            raise ValidationError("bad output\n# not a heading | `tick`\x00")
+
+    content = _report(tmp_path, "Failed password for root", generator=_NoisyFailure())
+    assert "AI narrative unavailable" in content
+    assert "\n# not a heading" not in content and "\x00" not in content
+    assert "\\`tick\\`" in content
