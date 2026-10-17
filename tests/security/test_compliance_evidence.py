@@ -9,6 +9,8 @@ must detect tampering.
 """
 
 import json
+import os
+import secrets
 import stat
 from pathlib import Path
 
@@ -148,3 +150,78 @@ def test_a_run_over_no_automated_controls_is_not_chained_as_a_pass(tmp_path: Pat
     entry = json.loads(chain.splitlines()[-1])
     assert entry["decision"] == "attention", entry
     assert "0/0" in entry["reason"]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("name", ["audit.log", "audit.log.lock", ".audit.log.sig.tmp"])
+@pytest.mark.parametrize("dangling", [False, True])
+def test_a_link_beside_the_evidence_file_cannot_redirect_the_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, dangling: bool
+) -> None:
+    """The evidence file was guarded; the chain's own files beside it were not.
+
+    Measured before the fix: a link at ``audit.log`` appended the run's chain
+    record to any file — another chain included, which then verified intact —
+    and a dangling one created its target; ``.audit.log.sig.tmp`` truncated its
+    target when a signing key was set. Refused before anything is written.
+    """
+    monkeypatch.setenv("AUDIT_HMAC_KEY", secrets.token_hex(32))  # throwaway
+    root = tmp_path / "root"
+    (root / "data" / "compliance").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    if not dangling:
+        outside.write_text("kept\n", encoding="utf-8")
+    (root / "data" / "compliance" / name).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        record_run(_report(root), root=root, clock=lambda: _CLOCK)
+
+    assert outside.exists() is not dangling, "a dangling link's target was created"
+    assert dangling or outside.read_text(encoding="utf-8") == "kept\n"
+    assert not (root / "data" / "compliance" / "evidence.jsonl").exists()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("link", "inside"), [("data/compliance", True), ("data", False)])
+def test_a_symlinked_evidence_directory_is_refused(tmp_path: Path, link: str, inside: bool) -> None:
+    """Resolve-and-compare accepted a link back inside the root (into ``docs/``)."""
+    root = tmp_path / "root"
+    target = root / "docs" if inside else tmp_path / "elsewhere"
+    (target / "compliance").mkdir(parents=True)
+    (root / link).parent.mkdir(parents=True, exist_ok=True)
+    (root / link).symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        record_run(_report(root), root=root, clock=lambda: _CLOCK)
+
+    assert [p for p in target.rglob("*") if p.is_file()] == []
+
+
+@pytest.mark.security
+def test_a_directory_swapped_after_the_walk_cannot_carry_the_evidence_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's race, made deterministic: ``data/compliance`` swapped for
+    a link out of the root after it was checked. Measured before the fix: the
+    evidence landed outside before a later re-resolve raised. The append now
+    goes through the walked descriptor, and the re-check refuses the chain."""
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    (root / "data" / "compliance").mkdir(parents=True)
+    outside.mkdir()
+    real_open = os.open
+
+    def swapping_open(
+        path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        if path == "evidence.jsonl" and dir_fd is not None:
+            monkeypatch.setattr(os, "open", real_open)
+            (root / "data" / "compliance").rename(root / "data" / "moved")
+            (root / "data" / "compliance").symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swapping_open)
+    with pytest.raises(ValueError):
+        record_run(_report(root), root=root, clock=lambda: _CLOCK)
+
+    assert list(outside.iterdir()) == [], "a write followed the swapped directory"
+    assert (root / "data" / "moved" / "evidence.jsonl").is_file()
