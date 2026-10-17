@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal, cast
 
-from attack import Corpus
+from attack import Corpus, validate_reference
 from intel.decay import FLOOR, decayed_score, score_to_confidence
 from intel.model import (
     CORROBORATION_TYPES,
@@ -141,18 +141,29 @@ def behavior_status(
     *,
     as_of: date,
 ) -> tuple[BehaviorStatus, tuple[str, ...]]:
-    """Compute a behavioral record's aging status (pure function)."""
+    """Compute a behavioral record's aging status (pure function).
+
+    Anchors go through ``attack.validate_reference`` so every non-active
+    verdict degrades the record: deprecated, revoked, and *unknown*. The
+    first version consulted ``corpus.techniques`` alone, so an anchor the
+    corpus did not know at all — a tombstone-only ID, or a store matched
+    against a different pin than it was loaded against — read as ``active``
+    with no note (measured on ``T9999``): a matcher vouching for an anchor
+    it could not resolve. A malformed ID raises ``AttackError``, as the
+    loader already rejects it at ingest.
+    """
     notes: list[str] = []
     for technique_id in techniques:
-        technique = corpus.techniques.get(technique_id)
-        if technique is not None and technique.status != "active":
-            tombstone = corpus.tombstones.get(technique_id)
-            successor = tombstone.successor if tombstone else None
-            notes.append(
-                f"ATT&CK anchor {technique_id} is {technique.status} in the pinned "
-                f"release{f' (successor: {successor})' if successor else ''} — "
-                "re-anchor this record."
-            )
+        verdict = validate_reference(technique_id, corpus)
+        if verdict.ok:
+            continue
+        state = (
+            "not in the pinned release"
+            if verdict.status == "unknown"
+            else f"{verdict.status} in the pinned release"
+        )
+        successor = f" (successor: {verdict.successor})" if verdict.successor else ""
+        notes.append(f"ATT&CK anchor {technique_id} is {state}{successor} — re-anchor this record.")
     if notes:
         return "stale-anchor", tuple(notes)
     reviewed = date.fromisoformat(record_last_reviewed)

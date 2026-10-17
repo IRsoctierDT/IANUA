@@ -175,3 +175,32 @@ def test_deprecated_anchor_degrades_not_rejects(tmp_path: Path) -> None:
     target = [m for m in matches if m.record.record_id == store.behaviors[0].record_id]
     assert target and target[0].status == "stale-anchor"
     assert "deprecated" in target[0].notes[0]
+
+
+@pytest.mark.security
+def test_unknown_anchor_at_match_time_degrades_not_vouches() -> None:
+    # Ingest rejects an unknown anchor against the corpus it loads with; at
+    # match time a different corpus may be passed. Measured before: T9999
+    # read as "active" with no note. A matcher must not vouch for an anchor
+    # it cannot resolve.
+    from datetime import date
+
+    from attack import load_corpus
+    from attack.errors import AttackError
+    from attack.model import Corpus, Tombstone
+    from intel.match import behavior_status
+
+    corpus = load_corpus()
+    status, notes = behavior_status("2026-08-01", 180, ("T9999",), corpus, as_of=date(2026, 8, 21))
+    assert status == "stale-anchor" and "not in the pinned release" in notes[0]
+    # A tombstone-only anchor (absent from the catalog) is revoked, with its successor named.
+    tiny = Corpus(
+        attack_version="19.2",
+        tactics={},
+        techniques={},
+        tombstones={"T1001": Tombstone("T1001", "revoked", "Old", "T1002")},
+    )
+    status, notes = behavior_status("2026-08-01", 180, ("T1001",), tiny, as_of=date(2026, 8, 21))
+    assert status == "stale-anchor" and "revoked" in notes[0] and "T1002" in notes[0]
+    with pytest.raises(AttackError):
+        behavior_status("2026-08-01", 180, ("not-an-id",), corpus, as_of=date(2026, 8, 21))
