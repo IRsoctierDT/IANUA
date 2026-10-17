@@ -581,11 +581,17 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
     manifest_path = directory / MANIFEST_FILE
     if not manifest_path.is_file():
         raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError) as exc:
+        # ValueError covers JSONDecodeError and UnicodeDecodeError; RecursionError
+        # is json's own — measured, 100,000 nested `[` was a traceback in both modes.
+        raise _malformed(directory, f"cannot be decoded as JSON ({type(exc).__name__})") from exc
     if not isinstance(manifest, dict):
         raise _malformed(directory, "not a JSON object")
     if manifest.get("format") != "ianua.backup.v1":
-        raise StoreError(f"unknown backup format {manifest.get('format')!r}")
+        # Capped: the repr of a 2 MB format string was 2,000,032 bytes of stderr.
+        raise _malformed(directory, f"unknown format {str(manifest.get('format'))[:80]!r}")
     store_entry = manifest.get("store")
     if not isinstance(store_entry, dict):
         raise _malformed(directory, "'store' is not an object")
@@ -615,9 +621,95 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
                 f"file entry {str(entry)[:80]!r} needs a string path, a string sha256 and an "
                 "integer size",
             )
-    if not isinstance(manifest.get("chains"), dict):
+    chains = manifest.get("chains")
+    if not isinstance(chains, dict):
         raise _malformed(directory, "'chains' is not an object")
+    for relative in CHAIN_FILES:
+        # A backup records a verdict for every chain, so an absent or non-object
+        # one is an edit — and both verifiers used to `continue` past it, which
+        # let removing a chain's record (or `chains: {}`) silence the one check
+        # made independently of the manifest: measured, exit 0 over intact=False.
+        recorded = chains.get(str(relative))
+        if not (
+            isinstance(recorded, dict)
+            and isinstance(recorded.get("present"), bool)
+            and (not recorded["present"] or _is_count(recorded.get("entries")))
+        ):
+            raise _malformed(
+                directory,
+                f"chains[{str(relative)!r}] must record a boolean present and, when "
+                "present, an integer entries",
+            )
     return manifest
+
+
+#: SQLite's file header begins with this magic; bytes 18 and 19 are the write
+#: and read format versions, both ``2`` for a WAL-mode database.
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _unsafe_to_open(db: Path, *, what: str) -> str | None:
+    """Why ``EventStore.open`` must not be handed ``db``, or ``None`` if it may be.
+
+    ``EventStore.open`` is the store's only constructor and it **initialises**:
+    it sets ``journal_mode=WAL``, applies the schema to any file without a
+    ``meta`` table, and on close checkpoints whatever ``-wal`` sits beside the
+    file. Right for the collector; a write for a verifier. Measured through the
+    CLI before this check, manifest untouched and the store at the canonical
+    path: a 0-byte backup store (the module docstring's "truncated transfer")
+    went 0 -> 61440 bytes with ``events``/``meta``/``observables`` created
+    *inside the backup under inspection*, same inode, and a second ``--verify``
+    then reported a different digest — the evidence that it was a truncated
+    copy was gone; a foreign SQLite file holding one table gained the three
+    and went 0o644 -> 0o600; a 0-byte file *outside* the backup, hard-linked
+    to the store path (which :func:`_unsafe_path` cannot see), was initialised
+    in place; a 0-byte **live** store under ``--verify-restore`` likewise; and
+    a hot ``-wal`` planted beside an intact backup store was checkpointed into
+    it at **exit 0**, "every file digest match the manifest", sha256 changed.
+
+    So the facts ``open`` would act on are read first, without a connection
+    that can write: size, the sidecar, the header bytes, and the schema
+    catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
+    ``-wal`` and ``-shm`` behind in the backup after close; ``immutable=1``
+    touched nothing. It ignores a WAL, which is why a non-empty one is refused
+    on its own rather than read through. A reason is a reported problem and
+    not a raise, so the rest of the report still runs.
+    """
+    size = db.stat().st_size
+    if size == 0:
+        return (
+            f"{what} is 0 bytes, a truncated transfer; SQLite treats an empty file as a "
+            "new database and opening it would initialise it, so it was not opened"
+        )
+    wal = db.with_name(db.name + "-wal")
+    if wal.is_file() and wal.stat().st_size:
+        return (
+            f"{what} has a {wal.stat().st_size}-byte -wal beside it that was never "
+            "checkpointed; opening it would checkpoint those frames into the file, so it "
+            "was not opened"
+        )
+    with db.open("rb") as handle:
+        head = handle.read(20)
+    if head[:16] != _SQLITE_MAGIC:
+        return f"{what} is not a SQLite database ({size} bytes)"
+    if head[18:20] != b"\x02\x02":
+        return (
+            f"{what} is not in WAL mode (header bytes 18-19 are {head[18:20].hex()}); "
+            "opening it would rewrite its header, so it was not opened"
+        )
+    try:
+        with contextlib.closing(sqlite3.connect(f"{db.as_uri()}?immutable=1", uri=True)) as conn:
+            schema = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'"
+            ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        return f"{what} cannot be read as a SQLite database: {exc}"
+    if schema is None:
+        return (
+            f"{what} carries no event-store schema (no meta table); opening it would "
+            "create one, so it was not opened"
+        )
+    return None
 
 
 def _verify_backup(directory: Path) -> dict[str, object]:
@@ -626,6 +718,14 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     Collects findings rather than raising on the first, because an operator
     deciding whether to restore from this copy needs to know everything that
     is wrong with it, not the first thing.
+
+    **What this writes, stated exactly.** The *bytes* of every file it reads,
+    the store included, are left as found — :func:`_unsafe_to_open` names the
+    cases that used to be initialised in place. Two things still change under
+    it: ``EventStore.open`` narrows the store and its directory to owner-only
+    if a transfer left them wider (a mode change, in the direction
+    :func:`_take_backup` writes), and the WAL sidecars it creates while open
+    are removed on close. Content-neutral is the claim; metadata-neutral is not.
     """
     manifest = _load_manifest(directory)
 
@@ -651,15 +751,19 @@ def _verify_backup(directory: Path) -> dict[str, object]:
                 f"{store_entry['path']}: sha256 {actual} does not match the manifest's "
                 f"{store_entry['sha256']}"
             )
-        with EventStore.open(directory) as copy:
-            attested = copy.attest().to_dict()
-        expected = store_entry["attestation"]
-        for key in sorted(expected):
-            if attested.get(key) != expected[key]:
-                problems.append(
-                    f"store attestation {key}: {attested.get(key)!r} does not match the "
-                    f"manifest's {expected[key]!r}"
-                )
+        unopenable = _unsafe_to_open(db, what=str(store_entry["path"]))
+        if unopenable is not None:
+            problems.append(unopenable)
+        else:
+            with EventStore.open(directory) as copy:
+                attested = copy.attest().to_dict()
+            expected = store_entry["attestation"]
+            for key in sorted(expected):
+                if attested.get(key) != expected[key]:
+                    problems.append(
+                        f"store attestation {key}: {attested.get(key)!r} does not match "
+                        f"the manifest's {expected[key]!r}"
+                    )
 
     for entry in manifest["files"]:
         unsafe = _unsafe_path(directory, Path(str(entry["path"])), what="manifest path")
@@ -681,15 +785,17 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     # for.
     chains = _verify_chains(directory)
     for name, state in sorted(chains.items()):
-        recorded = manifest["chains"].get(name)
-        if not isinstance(state, dict) or not isinstance(recorded, dict):
+        if not isinstance(state, dict):
             continue
+        recorded = manifest["chains"][name]  # shape-checked by _load_manifest
         if state.get("present") != recorded.get("present"):
             problems.append(
                 f"{name}: present={state.get('present')!r} at backup time was "
                 f"{recorded.get('present')!r}"
             )
-        elif state.get("present") and not state.get("intact"):
+        # Independent of the record on purpose: this is the one check the
+        # manifest cannot answer, so nothing in the manifest may silence it.
+        if state.get("present") and not state.get("intact"):
             problems.append(f"{name}: chain no longer verifies: {state.get('failure')}")
 
     return {
@@ -759,12 +865,17 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # CREATES the database if absent, so opening it blind would have this
     # verification manufacture an empty store and then report the loss of every
     # event — a read-only check that writes the thing it was asked to inspect.
+    # And existence is not enough: an existing EMPTY file was created into
+    # regardless (measured, 0 -> 61440 bytes with the schema), so whether
+    # opening would write is checked next. See _unsafe_to_open.
     db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
     if not db.is_file():
         problems.append(
             f"no store at {db}: the restore did not put one there, and this check will "
             "not create one to measure"
         )
+    elif (unopenable := _unsafe_to_open(db, what=f"the live store {db}")) is not None:
+        problems.append(unopenable)
     else:
         with EventStore.open(root) as live:
             attested = live.attest().to_dict()
@@ -925,9 +1036,9 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # Chains: entries may only GROW, and must still verify.
     chains = _verify_chains(root)
     for name, state in sorted(chains.items()):
-        recorded = manifest["chains"].get(name)
-        if not isinstance(state, dict) or not isinstance(recorded, dict):
+        if not isinstance(state, dict):
             continue
+        recorded = manifest["chains"][name]  # shape-checked by _load_manifest
         if recorded.get("present") and not state.get("present"):
             problems.append(f"{name}: present in the backup, absent from the live root")
             continue

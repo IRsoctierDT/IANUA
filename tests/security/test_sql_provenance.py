@@ -11,8 +11,12 @@ statements sit in one module behind one connection. Measured while writing it,
 the same analysis over every package in the repository was already green —
 ``rag/vector_store.py`` holds six statements and nothing covered them, and
 ``scripts/run_*.py`` import :mod:`sqlite3` while executing nothing through it.
-Extending coverage was therefore free, and was deliberately left out of that
-change because it is a different claim: new coverage, not a fixed control.
+(``scripts/run_backup.py`` has since gained one statement — a literal
+``sqlite_master`` read in ``_unsafe_to_open``, so a verifier can refuse a file
+``EventStore.open`` would initialise — which is why the package list asserted
+below names three.) Extending coverage was therefore free, and was deliberately
+left out of that change because it is a different claim: new coverage, not a
+fixed control.
 
 **What the extension actually cost**, because "free" was measured for the
 *lattice* and not for the three shape rules the lattice depends on:
@@ -94,8 +98,8 @@ def test_the_sweep_reaches_every_executed_statement() -> None:
 
 
 @pytest.mark.security
-def test_only_the_two_known_packages_execute_sql() -> None:
-    """A third package gaining a statement is worth a human's attention.
+def test_only_the_known_packages_execute_sql() -> None:
+    """A package gaining its first statement is worth a human's attention.
 
     The shape rules below already run over every shipped package, so a new
     sqlite writer is *analysed* the moment it lands; this assertion is about
@@ -108,7 +112,7 @@ def test_only_the_two_known_packages_execute_sql() -> None:
         where.split(":", 1)[0].split(".", 1)[0]
         for where, _line, _kind, _source in sqlprov.statement_sites(_shipped_sources())
     }
-    assert packages == {"rag", "store"}, (
+    assert packages == {"rag", "scripts", "store"}, (
         f"packages executing SQL changed to {sorted(packages)} — confirm the three shape "
         "rules below hold for the newcomer (they are asserted repository-wide, so a "
         "violation fails on its own), then update this list"
