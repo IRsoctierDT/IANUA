@@ -30,7 +30,8 @@ projection: only the declared fields of the frozen dataclasses are emitted.
 Nothing from raw incident text, log content, or the process environment can
 transit into a plan, because there is no field for it to travel in — the
 free-text surface is limited to catalogue-declared constants plus a bounded,
-sanitized target label.
+sanitized target label; the technique ids and the ATT&CK version label are
+shape-checked identifiers (see ``planner.py``).
 """
 
 from __future__ import annotations

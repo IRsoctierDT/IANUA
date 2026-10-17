@@ -106,6 +106,18 @@ def test_input_validation_fails_closed(planner: ResponsePlanner) -> None:
 
 
 @pytest.mark.unit
+def test_malformed_technique_ids_and_version_rejected(planner: ResponsePlanner) -> None:
+    for bad in ("T1110; DROP", "# heading", "t1110", "T11100", "UNKNOWN", "", 12345, None):
+        with pytest.raises(ValueError, match="technique ids"):
+            planner.plan_for_techniques(["T1110", bad], ["web-01"])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="attack_version"):
+        planner.plan_for_techniques(["T1110"], ["web-01"], attack_version="<b>" + "x" * 40)
+    # The shapes the corpus actually emits still pass, sub-techniques included.
+    plan = planner.plan_for_techniques(["T1110", "T1059.001"], ["web-01"], attack_version="19.2")
+    assert plan.techniques == ("T1110", "T1059.001") and plan.attack_version == "19.2"
+
+
+@pytest.mark.unit
 def test_unknown_action_id_rejected(planner: ResponsePlanner) -> None:
     with pytest.raises(ResponseCatalogueError, match="unknown action_id"):
         build_action("delete-everything", "web-01", planner.catalogue)

