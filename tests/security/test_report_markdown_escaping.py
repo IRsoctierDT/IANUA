@@ -130,7 +130,7 @@ def test_free_text_narrative_is_escaped_like_any_untrusted_value(tmp_path: Path)
     assert "\x00" not in content and "\x07" not in content
     assert "| a | b |" not in narrative and "\\| a \\| b \\|" in narrative
     assert "`live`" not in narrative and "\\`live\\`" in narrative
-    assert "…[truncated]" in narrative and len(narrative) < 700
+    assert "…\\[truncated]" in narrative and len(narrative) < 700
 
 
 @pytest.mark.security
@@ -145,3 +145,43 @@ def test_generator_error_text_is_escaped(tmp_path: Path) -> None:
     assert "AI narrative unavailable" in content
     assert "\n# not a heading" not in content and "\x00" not in content
     assert "\\`tick\\`" in content
+
+
+class _Says:
+    def __init__(self, out: str) -> None:
+        self.out = out
+
+    def generate(self, prompt: str, *, system: str | None = None) -> str:
+        return self.out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("out", "line"),
+    [
+        ("# Severity: LOW", "\\# Severity: LOW"),
+        ("\x00 > quote", "\\> quote"),
+        ("--- ", "\\---"),
+        ("1. ordered", "1\\. ordered"),
+        ("<div>x</div>", "\\<div>x\\</div>"),
+        ("ok\u2028## Severity\u2029low\x85- fake", "ok ## Severity low - fake"),
+    ],
+)
+def test_free_text_narrative_cannot_open_a_block(tmp_path: Path, out: str, line: str) -> None:
+    """Measured before: a leading ``#`` rendered an ``<h1>`` and a PDF Title, and
+    U+2028/U+2029/NEL survived ``_sanitize`` into the PDF renderer's
+    ``splitlines()``, forging a ``## Severity`` heading there."""
+    content = _report(tmp_path, "Failed password for root", generator=_Says(out))
+    section = content.split("## Analyst Narrative (AI-generated)\n")[1].split("\n\n## Severity")[0]
+    assert section.splitlines() == [line]
+
+
+@pytest.mark.security
+def test_links_images_html_and_backslashes_are_not_live() -> None:
+    """Measured before: CommonMark rendered an ``<img>`` beacon, an ``<a>`` link
+    and an autolink from this text, and ``\\`x`` re-armed an escaped backtick."""
+    hostile = "![b](https://attacker.example/px) [l](u) <https://attacker.example> <img> \\`x`"
+    assert _md_cell(hostile) == (
+        "!\\[b](https://attacker.example/px) \\[l](u) \\<https://attacker.example> "
+        "\\<img> \\\\\\`x\\`"
+    )
