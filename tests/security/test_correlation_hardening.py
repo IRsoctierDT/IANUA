@@ -272,6 +272,105 @@ def test_a_loopback_or_unspecified_address_is_refused_in_every_spelling(spelling
     assert joinable == {"10.0.0.5", "10.0.0.6"}, f"{spelling!r} survived as a join key"
 
 
+#: Loopback or unspecified under ``inet_aton`` or by decoration (port, brackets,
+#: CIDR, trailing dot, zero-width space, fullwidth digits) — and refused by
+#: ``ipaddress``, so none reaches the parsed-value check above.
+_UNPARSEABLE_PLACEHOLDERS = (
+    "127.000.000.001",
+    "0127.0.0.1",
+    "127.00.00.01",
+    "127.1",
+    "127.0.1",
+    "2130706433",
+    "0x7f000001",
+    "0177.0.0.1",
+    "0x7f.0.0.1",
+    "000.000.000.000",
+    "0.0.0.00",
+    "[::1]",
+    "127.0.0.1:443",
+    "[::1]:443",
+    "::1/128",
+    "127.0.0.1/32",
+    "127.0.0.1.",
+    "\uff11\uff12\uff17.0.0.1",
+    "::1\u200b",
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", _UNPARSEABLE_PLACEHOLDERS)
+def test_an_address_the_parser_refuses_is_an_alias_and_never_a_join_key(spelling: str) -> None:
+    """The parsed-value refusal had a fall-through, and review measured it open.
+
+    Before the fix every spelling here was carried as an opaque string and two
+    flows sharing nothing but it assembled into an incident: the strict parser
+    had become the string rule AGENTS.md §5 warns about, with everything it
+    rejects falling open. The value is kept as an alias — an analyst should
+    see what the source wrote — and keys nothing.
+    """
+    window = _stored((_flow(spelling, "10.0.0.5", 1), _flow(spelling, "10.0.0.6", 2)))
+    assert assemble(window) == (), f"{spelling!r} linked two unrelated flows"
+    addresses = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "address"]
+    assert {e.key for e in addresses if e.joinable} == {"10.0.0.5", "10.0.0.6"}, addresses
+    kept = [e.aliases for e in addresses if not e.joinable]
+    assert kept == [(spelling.casefold(),)], f"{spelling!r} was not kept as an alias: {kept}"
+
+
+@pytest.mark.security
+def test_a_non_address_in_an_address_field_cannot_link_two_accounts() -> None:
+    """Documented inputs, not an attacker's: a service name and a JSON boolean.
+
+    CloudTrail writes ``ec2.amazonaws.com`` as ``sourceIPAddress`` for a
+    service-initiated call. Before the fix it was a joinable address, and two
+    accounts' events sharing nothing but it became an incident. A JSON boolean
+    in a Zeek address field, rendered ``true`` at ingest, linked the same way.
+    """
+
+    def trail(user: str, account: str, index: int) -> dict[str, Any]:
+        return {
+            "eventVersion": "1.08",
+            "eventTime": f"2026-10-14T01:{index:02d}:00Z",
+            "eventSource": "ec2.amazonaws.com",
+            "eventName": "RunInstances",
+            "awsRegion": "eu-west-1",
+            "sourceIPAddress": "ec2.amazonaws.com",
+            "recipientAccountId": account,
+            "userIdentity": {"type": "IAMUser", "userName": user},
+        }
+
+    window = _stored((trail("alice", "1", 1), trail("bob", "2", 2)))
+    assert assemble(window) == (), "two accounts' events linked on a service name"
+    addresses = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "address"]
+    assert [(e.key, e.aliases) for e in addresses] == [("", ("ec2.amazonaws.com",))], addresses
+
+    first, second = _flow("x", "10.0.0.5", 1), _flow("x", "10.0.0.6", 2)
+    first["id.orig_h"] = second["id.orig_h"] = True
+    window = _stored((first, second))
+    assert window[0].event.src_endpoint.ip == "true", "the fixture no longer exercises the path"
+    assert assemble(window) == (), "a JSON boolean in an address field linked two flows"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "name", ["ip6-localhost", "ip6-loopback", "localhost6", "localhost6.localdomain6"]
+)
+def test_a_loopback_name_from_a_default_hosts_file_identifies_nothing(name: str) -> None:
+    """``localhost`` was refused; the IPv6 names beside it in ``/etc/hosts`` were not.
+
+    Measured through the auditd parser: ``node=ip6-localhost`` on two records
+    for different users linked them as one host.
+    """
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": name, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": name, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{name!r} in a hostname field linked two events"
+    assert [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"] == []
+
+
 @pytest.mark.security
 def test_an_ip_literal_in_the_hostname_field_cannot_merge_two_hosts() -> None:
     """A sender with no name logs its address where its hostname would go.

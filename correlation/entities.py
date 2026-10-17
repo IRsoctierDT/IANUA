@@ -92,6 +92,14 @@ NEVER_JOIN = frozenset(
         "(none)",
         "localhost",
         "localhost.localdomain",
+        # The IPv6 loopback *names* a default /etc/hosts gives the same
+        # address: Debian's `ip6-localhost ip6-loopback`, Red Hat's
+        # `localhost6 localhost6.localdomain6`. Measured through the auditd
+        # parser: `node=ip6-localhost` on two unrelated records linked them.
+        "localhost6",
+        "localhost6.localdomain6",
+        "ip6-localhost",
+        "ip6-loopback",
         "127.0.0.1",
         "::1",
         # Suppression justified: this literal is a value being REFUSED as an
@@ -289,9 +297,20 @@ def references(event: NormalizedEvent) -> tuple[EntityRef, ...]:
             # Refused on the parsed value and carried in canonical form; the
             # string set above still applies first, as defence in depth.
             literal = _address_literal(value)
-            if literal is not None:
-                if not literal:
-                    return
+            if literal is None:
+                # The field is declared to carry an address and this is not
+                # one: a service name (CloudTrail writes `ec2.amazonaws.com`
+                # as sourceIPAddress for a service-initiated call), a JSON
+                # boolean rendered `true`, or a spelling ipaddress refuses
+                # (`127.000.000.001`, `127.1`, `[::1]`, `127.0.0.1:443`).
+                # Measured: 19 such spellings and 3 such service names each
+                # linked two unrelated events as an opaque string. An alias
+                # for provenance, never a join key — the fail-closed branch
+                # the first version of this check did not have.
+                joinable = False
+            elif not literal:
+                return
+            else:
                 value = literal
         if (kind, value) in seen:
             return

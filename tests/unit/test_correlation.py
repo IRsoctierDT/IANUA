@@ -264,6 +264,14 @@ def test_an_address_written_two_ways_is_one_entity() -> None:
 
 
 @pytest.mark.unit
+def test_a_non_address_in_an_address_field_is_kept_for_provenance_only() -> None:
+    """The alias survives — an analyst should see what the source wrote — but keys nothing."""
+    event = normalize(dict(_CLOUD, sourceIPAddress="ec2.amazonaws.com"))
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "address"]
+    assert refs == [("ec2.amazonaws.com", False)], refs
+
+
+@pytest.mark.unit
 def test_an_ip_named_host_still_links_its_own_events() -> None:
     """Not shortened, but still a host: the same literal on two events is one host."""
     hosts = _of_kind(

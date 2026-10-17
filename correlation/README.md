@@ -75,6 +75,21 @@ set stays as defence in depth. Link-local and multicast are deliberately not
 refused here — widening the deny set is a decision for review, not a spelling
 fix.
 
+**A value in an address field that is not an address never joins.** The
+parsed-value rule above had a fall-through, and review measured it open: a
+spelling `ipaddress` refuses (`127.000.000.001`, `127.1`, `0x7f000001`, `[::1]`,
+`127.0.0.1:443`, `::1/128`, a trailing dot, a zero-width space — 19 in all) was
+carried as an opaque string and linked two flows on it, and so were two
+documented non-address values: CloudTrail's `sourceIPAddress` is a service name
+such as `ec2.amazonaws.com` for a service-initiated call, which linked two
+accounts' events, and a JSON boolean in a Zeek address field is rendered
+`true`. Such a value is kept as an alias for provenance and is never a join
+key. The cost is a missed link for an address written in a form the parser
+does not accept; the alternative is a confident incident about the wrong
+source. `NEVER_JOIN` also names the IPv6 loopback *names* a default
+`/etc/hosts` carries (`ip6-localhost`, `ip6-loopback`, `localhost6`,
+`localhost6.localdomain6`), measured linking two auditd records as one host.
+
 ## Fan-out suppression
 
 Grouping transitively on any shared entity merges everything the moment one
