@@ -31,7 +31,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.rename_to_ianua import EXCLUDED_PREFIXES, REPLACEMENTS, ROOT, eligible
+import scripts.rename_to_ianua as gate
+from scripts.rename_to_ianua import EXCLUDED_PREFIXES, REPLACEMENTS, ROOT, eligible, migrate
 
 # A legacy identifier taken from the script's own table rather than retyped, so
 # this cannot drift from what the gate actually looks for.
@@ -126,21 +127,64 @@ def test_the_script_still_skips_only_itself_among_its_own_copies() -> None:
 
 
 @pytest.mark.unit
-def test_the_documented_env_example_is_gated_and_the_real_env_is_not() -> None:
+def test_the_documented_env_example_is_gated_and_the_real_env_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`Path(".env.example").suffix` is `.example` and `Path(".env").suffix` is `""`.
 
     So the `.env` entry in `TEXT_SUFFIXES` reached neither file. The tracked,
     documented `.env.example` must be gated by name; the operator's gitignored
     `.env` holds secrets and must stay out, so it is probed as a real file
     carrying a legacy identifier at a location the gate otherwise scans.
+
+    The probe lives under a stand-in root. The first version wrote and then
+    unlinked `ROOT/.claude/.env`, which destroyed an operator's real file
+    there (measured by review) — the test broke the rule it pins.
     """
     assert (ROOT / ".env.example").is_file(), "the documented config is expected here"
     assert eligible(ROOT / ".env.example"), ".env.example is not gated — a legacy id there passes"
 
-    secrets_shaped = ROOT / ".claude" / ".env"
-    secrets_shaped.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    (tmp_path / ".claude").mkdir()
+    scanned = tmp_path / ".claude" / "probe.md"
+    scanned.write_text(f"{LEGACY}\n", encoding="utf-8")
+    secrets_shaped = tmp_path / ".claude" / ".env"
     secrets_shaped.write_text(f"LEGACY_NAME={LEGACY}\n", encoding="utf-8")
-    try:
-        assert not eligible(secrets_shaped), "a .env file must never be read or rewritten"
-    finally:
-        secrets_shaped.unlink()
+    assert eligible(scanned), "the probe location must be one the gate scans"
+    assert not eligible(secrets_shaped), "a .env file must never be read or rewritten"
+
+
+# Measured on 94700f6: each encoding hid a legacy id and `--check` exited 0.
+# The legacy id is ASCII, so it survives every one of these re-encodes intact.
+_NOT_TEXT_ENCODINGS = ("latin-1", "utf-16", "utf-16-le", "utf-32")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("encoding", _NOT_TEXT_ENCODINGS)
+def test_an_eligible_file_that_is_not_text_fails_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, encoding: str
+) -> None:
+    """Not NUL-free UTF-8 is reported as unscannable, never skipped."""
+    content = f"# caf\u00e9 note\nLEGACY_KEY={LEGACY}\n".encode(encoding)
+    assert LEGACY.encode() in content or b"\x00" in content, "the probe must carry the id"
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    (tmp_path / ".env.example").write_bytes(content)
+    monkeypatch.setattr("sys.argv", ["rename_to_ianua.py", "--check"])
+    assert migrate(apply=False) == ([], [(Path(".env.example"), gate.UNSCANNABLE)])
+    assert gate.main() == 1
+
+
+@pytest.mark.unit
+def test_a_checkout_beneath_an_excluded_name_is_still_scanned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`EXCLUDED_PARTS` is matched beneath ROOT, not on ROOT's ancestors.
+
+    Measured on 94700f6: a checkout at `.../build/ianua` made every file
+    ineligible, so `--check` passed a legacy id in `.env.example`.
+    """
+    root = tmp_path / "build" / "ianua"
+    root.mkdir(parents=True)
+    (root / ".env.example").write_text(f"LEGACY_KEY={LEGACY}\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "ROOT", root)
+    assert migrate(apply=False) == ([Path(".env.example")], [(Path(".env.example"), LEGACY)])

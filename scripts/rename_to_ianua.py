@@ -19,6 +19,18 @@ excludes itself (by inode) from rewriting — its ``REPLACEMENTS`` table
 intentionally contains the legacy identifiers, so rewriting or scanning it
 would corrupt the migration (the table would collapse to identity mappings and
 ``--check`` would then flag every occurrence of the *new* name as a leftover).
+
+Scope is by *name*, not content: a file is scanned only when :func:`eligible`
+admits its suffix or exact name. Measured on this tree, 12 tracked text files
+fall outside that (``NOTICE``, ``LICENSE``, ``.github/CODEOWNERS``,
+``.gitignore``, ``.gitleaksignore``, ``.secrets.baseline``, the AppArmor
+profile, two ``*.sha256`` digests and three placeholders), so a legacy
+identifier there passes ``--check``. Admitting files by content instead would
+also scan ``.hypothesis/constants/*`` (measured: +155 files in a worktree, 5
+carrying a legacy identifier), a local-only false red; which scope the gate
+should have is an open decision. Within scope it fails closed: an admitted
+file that is not NUL-free UTF-8 is reported as :data:`UNSCANNABLE` rather than
+skipped, since every UTF-16 or UTF-32 form of an ASCII identifier holds a NUL.
 """
 
 from __future__ import annotations
@@ -97,6 +109,12 @@ TEXT_SUFFIXES = {
     ".yml",
 }
 
+#: Reported in place of a legacy identifier for an eligible file the gate
+#: cannot read as text. The first version skipped it: measured, one Latin-1
+#: byte (or a UTF-16/UTF-32 re-encode) in ``.env.example`` hid a legacy
+#: identifier, and ``--check`` reported the tree clean with exit 0.
+UNSCANNABLE = "not NUL-free UTF-8, so not scanned"
+
 REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("AI_Operator_Cyber_Command_Center_Master_v1_STICHES", "IANUA"),
     ("ai-operator-cyber-command-center-master-v1-stiches", "ianua"),
@@ -141,7 +159,10 @@ def eligible(path: Path) -> bool:
         return False
     if relative and relative[0] in EXCLUDED_TOP_LEVEL:
         return False
-    if not path.is_file() or any(part in EXCLUDED_PARTS for part in path.parts):
+    # Matched on the parts beneath ROOT, never on ROOT's own ancestors: on the
+    # absolute parts, a checkout under any directory named ``build`` or
+    # ``dist`` made every file ineligible and ``--check`` vacuous (measured).
+    if not path.is_file() or any(part in EXCLUDED_PARTS for part in relative):
         return False
     if path.samefile(SELF):
         return False
@@ -248,6 +269,9 @@ def migrate(*, apply: bool) -> tuple[list[Path], list[tuple[Path, str]]]:
             try:
                 original = source.read()
             except UnicodeDecodeError:
+                original = None
+            if original is None or "\x00" in original:
+                remaining.append((path.relative_to(ROOT), UNSCANNABLE))
                 continue
 
             updated = original
