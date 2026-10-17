@@ -49,7 +49,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:  # script may run from anywhere
     sys.path.insert(0, str(_REPO_ROOT))
 
-from attack import load_corpus, load_pin, validate_reference  # noqa: E402
+from attack import AttackError, load_corpus, load_pin, validate_reference  # noqa: E402
 
 _SIGMA_DIR = _REPO_ROOT / "detections" / "sigma"
 _OUTPUT = _REPO_ROOT / "docs" / "attack-navigator-layer.json"
@@ -158,9 +158,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # yaml.YAMLError is not a ValueError and AttackError is not an OSError:
+    # measured, a rule with unbalanced brackets escaped this clause as a
+    # ParserError traceback — exit 1 by accident, not the documented 2.
     try:
         rendered = render(build_layer())
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, yaml.YAMLError, AttackError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

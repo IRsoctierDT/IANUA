@@ -198,9 +198,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # yaml.YAMLError is not a ValueError: measured, a rule with unbalanced
+    # brackets escaped this clause as a ParserError traceback.
     try:
         rendered = render(build_index())
-    except (BehaviorCorpusError, AttackError, ValueError, OSError) as exc:
+    except (BehaviorCorpusError, AttackError, ValueError, OSError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1 if isinstance(exc, BehaviorCorpusError) else 2
 
