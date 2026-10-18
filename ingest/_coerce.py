@@ -282,7 +282,7 @@ def epoch(value: Any) -> float | None:
         # Values past ~2286 in seconds are almost certainly milliseconds.
         if seconds > 1e11:
             seconds /= 1000.0
-        return seconds if 0 < seconds < 4e10 else None
+        return _plausible(seconds)
     if not isinstance(value, str):
         return None
     candidate = value.strip()
@@ -301,7 +301,24 @@ def epoch(value: Any) -> float | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.timestamp()
+    # The same window as the numeric path, which this path used to skip.
+    # Measured: "0001-01-01T00:00:00Z" gave -62135596800.0,
+    # "9999-12-31T23:59:59Z" gave 253402300799.0, and "1970-01-01T00:00:00Z"
+    # — a zeroed clock on a device with no RTC, the realistic one — gave 0.0,
+    # placing the event *at* the epoch instead of leaving it undated with a
+    # note, while the bare number 0 was already refused. Two spellings of one
+    # instant must not get two answers.
+    return _plausible(parsed.timestamp())
+
+
+def _plausible(seconds: float) -> float | None:
+    """Epoch seconds inside the one window both timestamp spellings share.
+
+    Zero and negatives are a clock that was never set; past ~3237 is not a
+    date any telemetry describes. Both are refused rather than carried,
+    because a fabricated ordering corrupts every correlation built on it.
+    """
+    return seconds if 0 < seconds < 4e10 else None
 
 
 def depth_within(value: Any, limit: int = MAX_NESTING_DEPTH) -> bool:

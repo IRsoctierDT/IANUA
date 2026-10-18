@@ -234,21 +234,46 @@ _AUDITD_TYPES = frozenset(
     }
 )
 
-#: auditd stamps its own clock into ``msg=audit(<epoch>.<ms>:<serial>)``.
-_AUDIT_MSG_CLOCK = re.compile(r"audit\((\d+\.\d+):(\d+)\)")
+#: auditd stamps its own clock into ``msg=audit(<epoch>.<ms>:<serial>)``, and
+#: the stamp is the *head* of the field, never a token inside it — so the
+#: pattern is anchored and both readers below use ``match``. Unanchored,
+#: review measured that a logger's prose quoting the token anywhere in
+#: ``msg`` (``login failed for user 'audit(1.0:1)'``) was claimed as auditd
+#: *and* dated from the prose, so whoever controlled an echoed string chose
+#: the event's timestamp. ``ausearch -i``'s date-form stamp is not this
+#: spelling and is not claimed; ``collect/`` reads raw ``audit.log``, which is.
+_AUDIT_MSG_CLOCK = re.compile(r"^audit\((\d+\.\d+):(\d+)\)")
 #: EXECVE splits a command line across a0, a1, a2 … in argv order.
 _EXECVE_ARG = re.compile(r"^a(\d+)$")
+
+
+#: Fields that corroborate ``type`` because only auditd writes them beside
+#: it. ``msg`` and ``key`` used to be on this list and neither is
+#: auditd-specific: ``{"type": "SERVICE_START", "msg": "starting worker
+#: pool"}`` is the shape of any structured application logger, and measured
+#: it was claimed as auditd, parsed as ``structured`` and labelled
+#: ``activity="service_start"`` — the confident, wrong analysis rule 1 exists
+#: to prevent, from a recognizer whose own comment promised "a corroborating
+#: auditd-specific field". ``msg`` still corroborates, below, but only in
+#: auditd's own spelling. ``key`` is gone outright: it appears on records
+#: that already carry ``syscall``, ``auid``, ``exe`` and ``comm``.
+_AUDITD_CORROBORATORS = ("exe", "comm", "syscall", "auid", "ses", "acct", "proctitle")
 
 
 def _recognizes_auditd(payload: Mapping[str, Any]) -> bool:
     record_type = text(payload.get("type"))
     if record_type is None or record_type.upper() not in _AUDITD_TYPES:
         return False
-    # A corroborating auditd-specific field. ``type`` alone is too generic.
-    return any(
-        payload.get(key) is not None
-        for key in ("exe", "comm", "syscall", "auid", "ses", "acct", "key", "proctitle", "msg")
-    )
+    if any(payload.get(key) is not None for key in _AUDITD_CORROBORATORS):
+        return True
+    # A ``PATH`` or ``EXECVE`` record carries none of those: beside ``type``
+    # the only auditd-shaped thing on it is ``msg=audit(<epoch>.<ms>:<serial>)``,
+    # the daemon's own clock stamp. So ``msg`` counts when it *begins* with
+    # that, and a logger's prose in the same field does not — including prose
+    # that quotes the token. The first version of this line used ``search``
+    # and, measured, five prose records carrying ``audit(1.0:1)`` mid-sentence
+    # were claimed: a string-shaped rule the thing it stops can spell around.
+    return _AUDIT_MSG_CLOCK.match(text(payload.get("msg")) or "") is not None
 
 
 def _execve_command(payload: Mapping[str, Any]) -> str | None:
@@ -283,7 +308,9 @@ def _parse_auditd(payload: Mapping[str, Any]) -> NormalizedEvent:
 
     timestamp = epoch(first(payload.get("@timestamp"), payload.get("timestamp")))
     if timestamp is None:
-        clock = _AUDIT_MSG_CLOCK.search(text(payload.get("msg")) or "")
+        # Anchored like the recognizer: a record claimed on ``comm`` whose
+        # ``msg`` is prose quoting a stamp must not be dated from the prose.
+        clock = _AUDIT_MSG_CLOCK.match(text(payload.get("msg")) or "")
         if clock:
             timestamp = epoch(float(clock.group(1)))
     if timestamp is None:

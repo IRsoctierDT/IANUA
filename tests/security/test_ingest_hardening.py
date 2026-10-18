@@ -62,7 +62,7 @@ from ingest._coerce import (
     project,
 )
 from ingest.errors import IngestError, MalformedProjectionError, UnsupportedInputError
-from ingest.normalize import detect_source
+from ingest.normalize import _EDGE_NOISE, detect_source
 from ingest.parsers.email import FORBIDDEN_CONTENT_FIELDS
 from store import DEFAULT_FILENAME, EventStore, Query
 
@@ -2826,3 +2826,331 @@ def test_the_excerpt_serializer_degrades_to_shape_when_it_cannot_render() -> Non
     # And the tier is a fallback, not the new behaviour: an ordinary mapping
     # still serializes with its values.
     assert _serialize({"a": "b"}) == '{"a": "b"}'
+
+
+# --------------------------------------------------------------------------
+# Encoding and recognition
+#
+# What stands between a line's bytes and the parser that should claim them.
+# A mark that is not content must not change which path a record takes, and
+# a recognizer must claim on fields only its own vendor writes.
+# --------------------------------------------------------------------------
+
+
+#: Where an encoding mark can sit around a record, as ``(prefix, suffix)``.
+#: The first fix stripped the mark at index 0 only; review found the rest.
+_MARK_EDGES = [
+    pytest.param("﻿", "", id="mark-at-index-0"),
+    pytest.param(" ﻿", "", id="space-then-mark"),
+    pytest.param("\t﻿", "", id="tab-then-mark"),
+    pytest.param("\xa0﻿", "", id="nbsp-then-mark"),
+    pytest.param("﻿ ﻿", "", id="mark-space-mark"),
+    pytest.param("", "﻿", id="trailing-mark"),
+    pytest.param("﻿", "﻿", id="mark-both-ends"),
+    pytest.param("", "\r\n﻿", id="crlf-then-trailing-mark"),
+]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("form", ["bytes", "str"])
+@pytest.mark.parametrize(("prefix", "suffix"), _MARK_EDGES)
+def test_a_byte_order_mark_does_not_turn_a_decodable_record_verbatim(
+    form: str, prefix: str, suffix: str
+) -> None:
+    """A UTF-8 BOM around well-formed JSON must not defeat the projection.
+
+    The residual pinned above is for records that *cannot* decode to a
+    mapping. This one can: only the mark stood between it and ``json.loads``,
+    which refuses U+FEFF at either end while ``str.strip()`` leaves it in
+    place. Measured before any fix: ``vendor="unrecognized"``,
+    ``parse_status="text"``, **no note at all**, the mail ``Body`` in both
+    ``message`` and ``raw_excerpt``, and five personal names from it stored
+    as observables, while the same bytes without the mark were claimed.
+
+    The first fix, ``raw.lstrip("\\ufeff").strip()``, was bypassed by review
+    with one leading space: it removed the mark at index 0 only, and the
+    ``strip()`` that ran second does not remove it. Every spelling in
+    ``_MARK_EDGES`` but the first reproduced the full pre-fix outcome on that
+    code, in str and in bytes — 14 of 16 cells. The assertion is equality
+    with the mark-free control, not merely the body's absence: the two
+    inputs describe one record.
+    """
+    whole = _undecodable("trailing-comma", _PROSE_BODY)[:-2] + "}"  # repair the comma
+    text = prefix + whole + suffix
+    marked: str | bytes = text if form == "str" else text.encode("utf-8")
+    control = normalize(whole)
+    assert control.vendor == "defender-o365", "the control is not even claimed; fix the fixture"
+    event = normalize(marked)
+    assert event.to_dict() == control.to_dict()
+    rendered = json.dumps(event.to_dict(), default=str)
+    assert _PROSE_BODY not in rendered
+    assert not set(_PROSE_NAMES) & set(event.observables)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("prefix", "suffix"), _MARK_EDGES)
+def test_a_byte_order_mark_does_not_hide_a_key_value_line_either(prefix: str, suffix: str) -> None:
+    """The same marks around an auditd line: decoded, equal to the control.
+
+    A *leading* mark held before any fix — ``keyvalue._PAIR`` is unanchored,
+    so it is one un-matched character ahead of the first pair. A *trailing*
+    one did not: measured, it became the tail of the last value, ``comm`` =
+    ``"bash\\ufeff"``. Pinned on every spelling the JSON test uses so the two
+    paths cannot drift apart on it.
+    """
+    line = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
+    control = normalize(line)
+    assert control.vendor == "auditd"
+    text = prefix + line + suffix
+    assert normalize(text).to_dict() == control.to_dict()
+    assert normalize(text.encode("utf-8")).to_dict() == control.to_dict()
+
+
+@pytest.mark.security
+def test_the_edge_strip_is_exactly_what_str_strip_removes_plus_the_mark() -> None:
+    """``_EDGE_NOISE`` is enumerated, so pin it to the interpreter's own set.
+
+    A hand-kept list is a rule the thing it stops can spell differently once
+    Python's notion of whitespace moves, so every code point is scanned here
+    (measured: 42 ms) and the list may not disagree with ``str.isspace()``.
+    """
+    whitespace = {chr(cp) for cp in range(sys.maxunicode + 1) if chr(cp).isspace()}
+    assert set(_EDGE_NOISE) == whitespace | {"﻿"}
+    assert len(_EDGE_NOISE) == len(whitespace) + 1, "a duplicate entry means the list was not read"
+
+
+@pytest.mark.security
+def test_a_mark_counts_against_the_ceiling_like_any_other_character() -> None:
+    """Pins a **limitation**: the ceiling measures the record as received.
+
+    ``MAX_RAW_BYTES`` is applied before the edge strip — on bytes before the
+    decode, deliberately — so a mark in front of a record at exactly the
+    ceiling carries it over, into the oversized path that carries an excerpt
+    verbatim (the residual ``test_a_record_that_never_decodes…`` pins). Review
+    found this one character wide and it is left so: a strip ahead of the
+    ceiling would run on unbounded input, and a byte-level one before the
+    decode would reopen the ordering hole the fix above closes. Each form is
+    over by its own unit — one character on text, three bytes on the wire.
+    """
+    record = _undecodable("trailing-comma", _PROSE_BODY)[:-2] + ', "pad": ""}'
+    exact = record[:-2] + "x" * (MAX_RAW_BYTES - len(record)) + '"}'
+    assert len(exact) == MAX_RAW_BYTES == len(exact.encode("utf-8"))
+    claimed = normalize(exact)
+    assert claimed.vendor == "defender-o365"
+    assert _PROSE_BODY not in json.dumps(claimed.to_dict(), default=str)
+    marked: list[tuple[str | bytes, str]] = [
+        ("﻿" + exact, f"character ceiling ({MAX_RAW_BYTES + 1} characters)"),
+        (b"\xef\xbb\xbf" + exact.encode("utf-8"), f"byte ceiling ({MAX_RAW_BYTES + 3} bytes)"),
+    ]
+    for raw, expected in marked:
+        event = normalize(raw)
+        assert event.vendor == "unrecognized"
+        assert any(expected in note for note in event.notes), event.notes
+        assert _PROSE_BODY in event.raw_excerpt, (
+            "the oversized residual no longer holds — if deliberate, update AGENTS.md §5 "
+            "and DESIGN.md boundary 9 with it"
+        )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param({"type": "SERVICE_START", "msg": "starting worker pool"}, id="type-and-msg"),
+        pytest.param({"type": "CONFIG_CHANGE", "msg": "reloaded", "user": "svc"}, id="with-a-user"),
+        pytest.param({"type": "path", "key": "x"}, id="type-and-key"),
+    ],
+)
+def test_a_generic_type_and_msg_record_is_not_claimed_as_auditd(record: dict[str, str]) -> None:
+    """``type`` + ``msg`` is every structured logger's shape, not auditd's.
+
+    Measured before the fix: all three were claimed by auditd, parsed as
+    ``structured``, labelled ``source_type="endpoint"`` and given the record
+    type as their ``activity`` — rule 1's "confident, wrong analysis", from a
+    recognizer whose own comment promised "a corroborating auditd-specific
+    field". ``msg`` and ``key`` were on that list, and neither is one.
+    """
+    assert not any(signature.recognizes(record) for signature in SIGNATURES)
+    assert detect_source(record) is None
+    event = normalize(record)
+    assert event.vendor == "unrecognized"
+    assert event.source_type == "unknown"
+    assert event.activity is None
+
+
+@pytest.mark.security
+def test_auditd_still_claims_on_its_own_clock_when_nothing_else_corroborates() -> None:
+    """The narrowing must not un-claim a real ``PATH`` or ``EXECVE`` record.
+
+    Those two types carry no ``auid``, ``exe`` or ``comm``: beside ``type``
+    the only auditd-shaped thing on them is ``msg=audit(<epoch>.<ms>:<serial>)``,
+    which is what ``msg`` now has to look like to count. Both the text form
+    ``collect/`` reads and the JSON form a shipper emits are covered.
+    """
+    lines = (
+        'type=PATH msg=audit(1760000000.123:42): item=0 name="/usr/bin/x" inode=1',
+        'type=EXECVE msg=audit(1760000002.300:3): argc=2 a0="curl" a1="-s"',
+    )
+    for line in lines:
+        event = normalize(line)
+        assert event.vendor == "auditd", (line, event.vendor, event.notes)
+        assert event.timestamp is not None, line
+    shipped = {"type": "PATH", "msg": "audit(1760000000.123:42): item=0 name=/usr/bin/x"}
+    signature = detect_source(shipped)
+    assert signature is not None and signature.vendor == "auditd"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(
+            {
+                "type": "USER_LOGIN",
+                "time": "2026-10-17T09:00:00Z",
+                "level": "warn",
+                "msg": "login failed for user 'audit(1.0:1)' from 198.51.100.7",
+            },
+            id="json-token-in-a-quoted-username",
+        ),
+        pytest.param(
+            {"type": "SERVICE_START", "msg": "worker pool started; see audit(1.0:1) for details"},
+            id="json-token-mid-sentence",
+        ),
+        pytest.param(
+            {"type": "CONFIG_CHANGE", "msg": "reload requested by audit(4070908800.000:1) handler"},
+            id="json-token-with-a-2099-epoch",
+        ),
+        pytest.param(
+            {"type": "PATH", "msg": "handler finished audit(1.0:1)"}, id="json-token-last"
+        ),
+        pytest.param(
+            'type=SERVICE_START msg="worker pool started audit(1.0:1) ok"', id="logfmt-token"
+        ),
+        # The same token routed around the anchor through keyvalue's nested
+        # re-scan, which used to mine any quoted value: the username *becomes*
+        # a msg whose head is the stamp, or supplies comm and a 2099 timestamp.
+        pytest.param(
+            'level=warn type=USER_LOGIN user="msg=audit(1.0:1)" ip=198.51.100.7',
+            id="logfmt-token-as-a-quoted-username",
+        ),
+        pytest.param(
+            'type=USER_LOGIN msg="login failed for user comm=sshd timestamp=4070908800"',
+            id="logfmt-comm-and-timestamp-inside-msg",
+        ),
+    ],
+)
+def test_a_stamp_quoted_inside_prose_does_not_make_a_record_auditd(
+    record: dict[str, str] | str,
+) -> None:
+    """The clock stamp is the *head* of ``msg``, not a token found anywhere in it.
+
+    77b3e3d let ``msg`` corroborate only in auditd's own spelling, then tested
+    that spelling with an unanchored ``search``. Measured before this fix:
+    every record here was claimed as auditd — ``structured``, ``endpoint``,
+    ``notes=()`` — and dated from the prose (``timestamp=1.0``, or a 2099
+    epoch), so whoever controls a string an application echoes into ``msg``
+    (a username, as in the first case) both re-opened the ING-02
+    misattribution and chose the event's timestamp. The string-shaped rule
+    AGENTS.md §5 keeps finding: the thing it stops can spell around it.
+    """
+    event = normalize(record)
+    assert event.vendor == "unrecognized", (event.vendor, event.notes)
+    assert event.source_type == "unknown"
+    assert event.activity is None
+    assert event.timestamp is None, "the timestamp was read out of prose"
+    if isinstance(record, dict):
+        assert not any(signature.recognizes(record) for signature in SIGNATURES)
+        assert detect_source(record) is None
+
+
+@pytest.mark.security
+def test_a_claimed_record_is_not_dated_from_prose_that_quotes_a_stamp() -> None:
+    """The timestamp read is anchored like the recognizer, for the same reason.
+
+    A record claimed on ``comm`` can still carry a prose ``msg``. Measured
+    before the fix: ``{"type": "SYSCALL", "comm": "bash", "msg": "see
+    audit(1.0:1) later"}`` parsed with ``timestamp=1.0`` and no note — an
+    attacker-chosen instant in the field correlation orders on. It is now
+    undated, says so, and is ``partial`` rather than ``structured``. The same
+    anchored read still dates every real shape, since on those the stamp
+    *is* the head of ``msg`` — after ``text()`` has stripped a shipper's
+    leading whitespace, so the anchor is on the cleaned value.
+    """
+    event = normalize({"type": "SYSCALL", "comm": "bash", "msg": "see audit(1.0:1) later"})
+    assert event.vendor == "auditd"
+    assert event.timestamp is None
+    assert event.parse_status == "partial"
+    assert any("no usable timestamp" in note for note in event.notes), event.notes
+
+    dated = {
+        "type=PROCTITLE msg=audit(1760000000.123:42): proctitle=2F7573722F62696E2F78": 1760000000.123,
+        "node=web-01 type=SYSCALL msg=audit(1760000001.200:2): auid=svc comm=bash": 1760000001.2,
+    }
+    for line, expected in dated.items():
+        real = normalize(line)
+        assert real.vendor == "auditd" and real.timestamp == expected, (line, real.notes)
+    padded = normalize({"type": "PATH", "msg": "  audit(1760000000.123:42): item=0"})
+    assert padded.vendor == "auditd" and padded.timestamp == 1760000000.123
+
+
+@pytest.mark.security
+def test_the_size_ceiling_is_measured_in_bytes_on_bytes() -> None:
+    """``MAX_RAW_BYTES`` bounded code points, not bytes, on the path collect/ uses.
+
+    Measured before the fix: 131072 four-byte code points — 524288 bytes,
+    twice the ceiling — were decoded in full and then passed the check as
+    under it, because the check ran on ``len()`` of the decoded text. The
+    constant is named in bytes and the note said "bytes" of a count that was
+    not one. On bytes the ceiling now applies before the decode; on text the
+    same constant bounds code points — the unit the regexes and ``json.loads``
+    work per — and the note names whichever it measured.
+    """
+    wide = chr(0x1F600) * (MAX_RAW_BYTES // 2)
+    encoded = wide.encode("utf-8")
+    assert len(wide) < MAX_RAW_BYTES < len(encoded), "the probe no longer straddles the ceiling"
+
+    event = normalize(encoded)
+    assert event.parse_status == "text"
+    assert len(event.raw_excerpt) <= MAX_RAW_EXCERPT
+    assert any(f"byte ceiling ({len(encoded)} bytes)" in note for note in event.notes), event.notes
+
+    # The same value as text is under the code-point ceiling, so it is read.
+    assert not any("ceiling" in note for note in normalize(wide).notes)
+    # And a text record over it is refused in the unit it was measured in.
+    over = normalize("x" * (MAX_RAW_BYTES + 1))
+    assert any(f"character ceiling ({MAX_RAW_BYTES + 1} characters)" in note for note in over.notes)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "iso",
+    [
+        pytest.param("1970-01-01T00:00:00Z", id="zeroed-clock"),
+        pytest.param("1969-12-31T23:59:59Z", id="before-the-epoch"),
+        pytest.param("0001-01-01T00:00:00Z", id="year-one"),
+        pytest.param("9999-12-31T23:59:59Z", id="year-9999"),
+    ],
+)
+def test_an_implausible_iso_timestamp_is_refused_like_a_bare_number(iso: str) -> None:
+    """Two spellings of one instant must not get two answers.
+
+    The numeric path refuses ``seconds <= 0`` and anything past ~3237 as a
+    fabricated ordering; the ISO path returned them. Measured before the fix:
+    ``"0001-01-01T00:00:00Z"`` gave -62135596800.0, ``"9999-12-31T23:59:59Z"``
+    gave 253402300799.0 and ``"1970-01-01T00:00:00Z"`` — a zeroed clock on a
+    device with no RTC, the realistic case — gave 0.0, placing the event at
+    the epoch while the bare number 0 was already refused. Refused means
+    ``None``, which every parser turns into a "no usable timestamp" note and
+    a ``partial`` parse, so the event is still kept and says it is undated.
+    """
+    assert _coerce.epoch(iso) is None
+    # The bare-number twin of the first two, already refused and still so.
+    assert _coerce.epoch(0) is None and _coerce.epoch(-1) is None
+    # A plausible instant still parses through both spellings to one value.
+    assert _coerce.epoch("2026-10-15T09:00:00Z") == _coerce.epoch(1792054800) == 1792054800.0
+    # And the whole event says so rather than inventing an instant.
+    event = normalize({"type": "SYSCALL", "auid": "svc", "comm": "bash", "@timestamp": iso})
+    assert event.timestamp is None
+    assert event.parse_status == "partial"
+    assert any("no usable timestamp" in note for note in event.notes)
