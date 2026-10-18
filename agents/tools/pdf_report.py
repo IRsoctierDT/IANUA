@@ -24,7 +24,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-_DIGEST_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}")
+# A table separator row is made only of pipes, colons, dashes and whitespace,
+# with at least one `--`. The previous rule looked at the leading cell alone,
+# so a content row whose first cell starts with two dashes — a command-line
+# flag, say — was skipped as a separator (measured: `| --no-verify | ran |`
+# matched and the row was dropped from the rendered table).
+_DIGEST_TABLE_SEP = re.compile(r"^(?=.*--)[\s|:-]+$")
 
 
 def _escape(text: str) -> str:

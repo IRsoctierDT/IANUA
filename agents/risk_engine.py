@@ -16,7 +16,23 @@ Design (DESIGN.md §5; AGENTS.md §3):
   are supplied by the caller (or fall back to arrival order), so runs are
   reproducible and testable.
 - **Fail-closed input validation.** Malformed contributions raise
-  ``ValueError`` at the boundary rather than silently scoring zero.
+  ``ValueError`` at the boundary rather than silently scoring zero. That
+  includes non-finite numbers: ``nan`` and ``inf`` both pass a ``< 0`` check,
+  and measured without this, each produced a finding whose ``total_score``
+  was ``nan`` / ``inf`` — a threshold crossing no analyst can read. Refusing
+  them at the input was not enough: measured, a finite ``1.7e308`` overflowed
+  to an ``inf`` total, and a ``nan``/``inf`` threshold, window or weight
+  silenced findings or made the total ``nan``. So a score must lie in the
+  documented 0-100, every config number must be finite (weights non-negative,
+  so no event type can cancel another's risk), bools are refused, and a total
+  that still overflows raises. A *finite* config value is trusted: a
+  threshold of ``1e300`` is as silent as ``inf`` was, and is the operator's.
+- **Timestamps are trusted caller input.** The window ends at an entity's
+  newest supplied timestamp, so one contribution stamped later than the rest
+  (any finite value, any score, ``0`` included) drops every timestamped
+  contribution more than ``window_seconds`` older (measured: one score-0 event
+  at ``1e18`` turned a 525.0 finding into none). No shipped caller supplies a
+  timestamp; peak-window scoring would close this and is the owner's decision.
 - **Explainable.** Every finding carries the exact contributing events and
   their weighted scores — an analyst can see *why* an entity crossed the line,
   never an opaque number.
@@ -24,6 +40,7 @@ Design (DESIGN.md §5; AGENTS.md §3):
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -35,6 +52,9 @@ DEFAULT_THRESHOLD = 90.0
 # Default sliding window (seconds): contributions older than this relative to
 # the newest contribution for an entity no longer count toward its score.
 DEFAULT_WINDOW_SECONDS = 3600
+
+# The documented score range; ``SocAnalystAgent`` clamps to it.
+MAX_SCORE = 100.0
 
 # Per-event-type multipliers. Repeated *recon* is less alarming than repeated
 # *evidence destruction*; the deterministic classifier's event_type drives this
@@ -54,14 +74,34 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 }
 
 
+def _finite(value: object) -> float | None:
+    """``value`` as a finite float; None for a bool, non-number or non-finite value."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:  # an int past float range (``math.isfinite`` raises it too)
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _config(value: object, name: str, *, positive: bool) -> float:
+    number = _finite(value)
+    if number is None or number < 0 or (positive and number == 0):
+        kind = "positive" if positive else "non-negative"
+        raise ValueError(f"{name} must be a finite, {kind} number.")
+    return number
+
+
 @dataclass(frozen=True)
 class RiskContribution:
     """One scored event's contribution to an entity's risk.
 
     ``entity`` is the risk object (e.g. a source IP, host, or user). ``score``
-    is the SOC severity score (0-100). ``timestamp`` is an epoch-seconds float
-    supplied by the caller; when omitted the engine uses arrival order so
-    behavior stays deterministic without reading a clock.
+    is the SOC severity score (0-100, enforced). ``timestamp`` is an
+    epoch-seconds float supplied, and trusted, by the caller (see the module
+    docstring); when omitted the engine uses arrival order so behavior stays
+    deterministic without reading a clock.
     """
 
     entity: str
@@ -98,14 +138,14 @@ class RiskEngine:
         weights: dict[str, float] | None = None,
         default_weight: float = 1.0,
     ) -> None:
-        if threshold <= 0:
-            raise ValueError("threshold must be positive.")
-        if window_seconds <= 0:
-            raise ValueError("window_seconds must be positive.")
-        self.threshold = float(threshold)
-        self.window_seconds = float(window_seconds)
-        self.weights = dict(DEFAULT_WEIGHTS if weights is None else weights)
-        self.default_weight = float(default_weight)
+        self.threshold = _config(threshold, "threshold", positive=True)
+        self.window_seconds = _config(window_seconds, "window_seconds", positive=True)
+        raw_weights = dict(DEFAULT_WEIGHTS if weights is None else weights)
+        self.weights = {
+            key: _config(value, f"weight {key!r}", positive=False)
+            for key, value in raw_weights.items()
+        }
+        self.default_weight = _config(default_weight, "default_weight", positive=False)
 
     def weight_for(self, event_type: str) -> float:
         """Return the multiplier for ``event_type`` (default when unlisted)."""
@@ -129,8 +169,14 @@ class RiskEngine:
             entity = contribution.entity
             if not isinstance(entity, str) or not entity.strip():
                 raise ValueError("contribution.entity must be a non-empty string.")
-            if not isinstance(contribution.score, (int, float)) or contribution.score < 0:
-                raise ValueError("contribution.score must be a non-negative number.")
+            if not isinstance(contribution.event_type, str):
+                raise ValueError("contribution.event_type must be a string.")
+            score = _finite(contribution.score)
+            if score is None or not 0 <= score <= MAX_SCORE:
+                raise ValueError("contribution.score must be a finite number in 0..100.")
+            stamp = contribution.timestamp
+            if stamp is not None and _finite(stamp) is None:
+                raise ValueError("contribution.timestamp must be a finite number or None.")
             by_entity.setdefault(entity, []).append((arrival, contribution))
 
         findings: list[RiskFinding] = []
@@ -177,6 +223,8 @@ class RiskEngine:
                 }
             )
 
+        if not math.isfinite(total):  # only reachable through enormous finite weights
+            raise ValueError(f"risk total for {entity!r} overflowed; check the weights.")
         if total < self.threshold:
             return None
 

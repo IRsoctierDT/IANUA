@@ -61,7 +61,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ParamSpec, Self, TypeVar
+from typing import Any, ParamSpec, Self, SupportsFloat, SupportsIndex, TypeVar
 
 from ingest.schema import NormalizedEvent
 from store.errors import (
@@ -78,6 +78,7 @@ from store.schema import (
     HIGH_WATER_KEY,
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
+    OBSERVABLES_DIGEST_PREFIX,
     SCHEMA_VERSION,
     VERSION_KEY,
     canonical_json,
@@ -88,6 +89,28 @@ from store.schema import (
 #: caller knob: an event store is lab data by definition (AGENTS.md §5), and
 #: letting a caller choose the directory is how evidence ends up committed.
 EVENTS_SUBDIR = Path("data") / "events"
+
+#: The statements :meth:`EventStore.attest` runs, named so the test that pins
+#: their query plans (``tests/unit/test_event_store.py``) reads the same text
+#: the method executes. Every one is a covering-index scan — that is a
+#: property the completeness control depends on, and a constant a test
+#: imports cannot drift from the code the way a docstring can.
+ATTEST_IDS_SQL = "SELECT event_id FROM events ORDER BY event_id"
+ATTEST_COUNTS_SQL = (
+    "SELECT (SELECT COUNT(*) FROM events) AS events, "
+    "(SELECT COUNT(*) FROM observables) AS observables"
+)
+# typeof() and CAST(... AS BLOB), not the columns themselves: SQLite is
+# dynamically typed, so a damaged or hostile copy can hold a BLOB in a TEXT
+# column, and str() of the bytes b"x" is the four-character text "b'x'" — two
+# different rows with one digest. Framing the storage class and the raw bytes
+# is injective over both. The aliases must not shadow the ORDER BY columns:
+# measured, `CAST(value AS BLOB) AS value` adds USE TEMP B-TREE to the plan.
+ATTEST_OBSERVABLES_SQL = (
+    "SELECT typeof(event_id) AS kind_id, CAST(event_id AS BLOB) AS raw_id, "
+    "typeof(value) AS kind_value, CAST(value AS BLOB) AS raw_value "
+    "FROM observables ORDER BY event_id, value"
+)
 
 DEFAULT_FILENAME = "events.sqlite3"
 
@@ -229,7 +252,18 @@ class Attestation:
     in. ``events`` and ``observables`` are carried alongside it because a
     digest that happens to match tells you less than a count that also does.
 
-    Both of those are read from covering indexes, which is why
+    ``digest`` does **not** cover the ``observables`` table, and a count is
+    not a commitment to contents: review of the promotion gate showed that
+    replacing observable rows one-for-one leaves the count, the event digest
+    and ``quick_check`` all satisfied while every indicator pivot joins on
+    substituted keys. ``observables_digest`` closes that — a sha256 over every
+    ``(event_id, value)`` row, sorted, each field framed as its SQLite storage
+    class, byte length and raw bytes, so neither a value nor a storage class
+    can be confused with a row boundary or with each other. ``digest``'s
+    definition is unchanged on purpose; this is a second field, not a
+    redefinition.
+
+    All of those are read from covering indexes, which is why
     :meth:`EventStore.attest` gates on ``PRAGMA quick_check`` before it
     computes them: ids and a count that agree prove the *indexes* are intact
     and, on their own, say nothing about whether a single row body is
@@ -243,6 +277,9 @@ class Attestation:
     observables: int
     #: sha256 over the sorted ``event_id`` sequence. See :meth:`EventStore.attest`.
     digest: str
+    #: sha256 over the sorted ``(event_id, value)`` rows of ``observables``.
+    #: Commits to contents, not only to the count above.
+    observables_digest: str
     #: The mark at the moment of attestation, or ``None`` for an empty store.
     high_water: float | None
     #: The schema the attestation was taken under. A copy restored onto a
@@ -255,6 +292,7 @@ class Attestation:
             "events": self.events,
             "observables": self.observables,
             "digest": self.digest,
+            "observables_digest": self.observables_digest,
             "high_water": self.high_water,
             "schema_version": self.schema_version,
         }
@@ -359,6 +397,41 @@ def _narrow(path: Path, mode: int) -> None:
             path.chmod(mode)
     except OSError:  # pragma: no cover - filesystem without mode support
         pass
+
+
+def _finite(value: object, what: str) -> float:
+    """Convert ``value`` to a float once and refuse a non-finite result.
+
+    The value checked is the value returned, so what a statement binds is
+    what passed the check. That is the whole point: :meth:`EventStore.prune`
+    used to run ``math.isfinite(before)`` and then ``float(before)`` — two
+    conversions of the same object — and an object whose ``__float__``
+    answered ``1.0`` on the first call and ``inf`` on the second passed the
+    check and the DELETE ran with ``inf``. Measured, three stored events to
+    zero. :meth:`EventStore.count_before` had the same shape (two conversions;
+    three for its keyset bound), so the report-then-apply parity it shares
+    with ``prune`` held only for stateless values. Not reachable from
+    ``scripts/run_retention.py``, which passes argparse floats, and no
+    deserialization path builds such an object; closed here because the store
+    is the boundary that outlives any one caller.
+
+    The protocol guard keeps the accepted domain exactly what ``math.isfinite``
+    accepted — ``__float__`` or ``__index__``. ``float()`` alone also parses
+    ``str``, ``bytes``, ``bytearray`` and ``memoryview`` (measured), and a fix
+    for a double conversion must not start reading text as a number. The
+    ``append`` path already had the safe shape (``float()`` once, the check on
+    the result) and is unchanged.
+
+    Raises:
+        TypeError: for a value that is not a real number.
+        ValueError: for a non-finite value.
+    """
+    if not isinstance(value, (SupportsFloat, SupportsIndex)):
+        raise TypeError(f"{what} must be a real number, not {type(value).__name__}")
+    coerced = float(value)
+    if not math.isfinite(coerced):
+        raise ValueError(f"{what} must be finite, got {coerced!r}")
+    return coerced
 
 
 class EventStore:
@@ -474,8 +547,19 @@ class EventStore:
             return
         # Fresh database: tables and version land in one transaction, so a
         # store can never exist with tables but no recorded version.
+        #
+        # The explicit BEGIN is what makes that sentence true. `executescript`
+        # COMMITs any pending transaction and then runs its script in
+        # autocommit mode — measured: `in_transaction` was False after it, and
+        # a second connection could see all three tables before the version
+        # row existed. A failure between the two statements therefore left a
+        # store the next open refused as "the version row was removed": a
+        # fail-closed misdiagnosis an operator could clear only by deleting
+        # the file. With BEGIN inside the script the DDL stays uncommitted
+        # until `with` commits it alongside the version row, and a failure
+        # rolls both back — measured, zero tables after a simulated crash.
         with conn:
-            conn.executescript(DDL)
+            conn.executescript("BEGIN;" + DDL)
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES (?, ?)",
                 (VERSION_KEY, str(SCHEMA_VERSION)),
@@ -841,10 +925,16 @@ class EventStore:
         holds whether or not the corrupt case is reachable.
 
         **It reads a table page before it attests, and it did not used to.**
-        Both statements below are covering-index scans — measured, with
-        ``EXPLAIN QUERY PLAN``: the id stream is ``SCAN events USING COVERING
-        INDEX sqlite_autoindex_events_1`` and the count is ``SCAN events USING
-        COVERING INDEX events_ingested_at``. Neither touches a row. Zeroing
+        All three statements below are covering-index scans — measured, with
+        ``EXPLAIN QUERY PLAN`` on SQLite 3.45.1: the id stream is ``SCAN events
+        USING COVERING INDEX sqlite_autoindex_events_1``, the counts are ``SCAN
+        events USING COVERING INDEX events_ingested_at`` and ``SCAN observables
+        USING COVERING INDEX observables_value``, and the observables stream
+        added for ``observables_digest`` is ``SCAN observables USING COVERING
+        INDEX sqlite_autoindex_observables_1`` (the primary key is
+        ``(event_id, value)``, so the index holds both columns). None touches
+        a row, and ``tests/unit/test_event_store.py`` pins all four plans
+        rather than leaving them as prose here. Zeroing
         all 134 table leaf pages of a 400-event store while leaving every
         index page intact produced a **bit-identical digest and count** while
         ``query()`` raised ``database disk image is malformed``: the only
@@ -872,22 +962,43 @@ class EventStore:
         others, measured both ways on one construction — are handled there, and
         the pricing is recorded there too.
 
+        **Everything below reads one snapshot.** The verdict, the counts, the
+        id stream, the observables stream and the mark are separate
+        statements, and without an enclosing transaction each took its own.
+        Measured through this method: a writer's commit landing between the
+        count statement and the first step of the id stream gave ``COUNT(*)``
+        200 against 201 streamed ids and raised the inconsistency error below
+        — a damage verdict on a healthy store, reachable by
+        ``scripts/run_backup.py --verify-restore`` on a live root, whose
+        ``backup.lock`` excludes no writer. The observables stream has the same
+        shape against its own count. A deferred ``BEGIN`` in WAL mode blocks
+        nobody: the snapshot opens at the first read and ends at the commit the
+        ``with`` performs.
+
         Raises:
             StoreCorruptionError: if the database file is damaged.
             StoreIntegrityError: if the count and the id stream disagree.
         """
+        with self._conn:
+            self._conn.execute("BEGIN")
+            return self._attest_in_snapshot()
+
+    def _attest_in_snapshot(self) -> Attestation:
+        """Every read :meth:`attest` makes, run inside the snapshot it opened.
+
+        Split out so the whole body sits in one transaction without
+        re-indenting it. Called only by :meth:`attest`, whose
+        ``_refuse_corruption`` boundary covers it.
+        """
         self.verify_integrity()
-        counts = self._conn.execute(
-            "SELECT (SELECT COUNT(*) FROM events) AS events, "
-            "(SELECT COUNT(*) FROM observables) AS observables"
-        ).fetchone()
+        counts = self._conn.execute(ATTEST_COUNTS_SQL).fetchone()
         events = int(counts["events"])
         running = hashlib.sha256()
         # The count goes into the preimage first, so a prefix of one store's
         # ids cannot digest the same as another store's whole set.
         running.update(f"{DIGEST_PREFIX}{events}\n".encode())
         streamed = 0
-        for row in self._conn.execute("SELECT event_id FROM events ORDER BY event_id"):
+        for row in self._conn.execute(ATTEST_IDS_SQL):
             running.update(str(row["event_id"]).encode("ascii"))
             running.update(b"\n")
             streamed += 1
@@ -897,10 +1008,45 @@ class EventStore:
                 f"but {streamed} id(s) were read. The count and the id scan are separate "
                 "statements and disagreed, so this store cannot be attested."
             )
+
+        # The observables, committed to by content and not only by count. Each
+        # field is framed as storage class, byte length and raw bytes: `value`
+        # is free text an indicator regex matched, so a separator could appear
+        # inside one; and the column is only TEXT by affinity, so a hostile or
+        # damaged copy can hold a BLOB there whose str() collides with a real
+        # value (found by independent review before this shipped). A digest
+        # whose row boundaries or storage classes a value can forge is not a
+        # commitment to the rows. Never decoded as text, so bytes that are not
+        # UTF-8 attest rather than abort. Sorted by the primary key so a copy
+        # that differs in layout attests identically.
+        observables = int(counts["observables"])
+        running_observables = hashlib.sha256()
+        running_observables.update(f"{OBSERVABLES_DIGEST_PREFIX}{observables}\n".encode())
+        streamed_observables = 0
+        for row in self._conn.execute(ATTEST_OBSERVABLES_SQL):
+            for kind, raw in (
+                (row["kind_id"], row["raw_id"]),
+                (row["kind_value"], row["raw_value"]),
+            ):
+                # kind is one of SQLite's five storage-class names, so it
+                # carries no digit or colon and cannot run into the length.
+                payload = b"" if raw is None else bytes(raw)
+                running_observables.update(f"{kind}:{len(payload)}:".encode("ascii"))
+                running_observables.update(payload)
+            running_observables.update(b"\n")
+            streamed_observables += 1
+        if streamed_observables != observables:
+            raise StoreIntegrityError(
+                f"attestation is inconsistent: the observables digest commits to "
+                f"{observables} row(s) but {streamed_observables} were read. The count and "
+                "the row scan are separate statements and disagreed, so this store cannot "
+                "be attested."
+            )
         return Attestation(
             events=events,
-            observables=int(counts["observables"]),
+            observables=observables,
             digest=running.hexdigest(),
+            observables_digest=running_observables.hexdigest(),
             high_water=self.high_water_mark(),
             schema_version=SCHEMA_VERSION,
         )
@@ -962,17 +1108,22 @@ class EventStore:
         ``+`` passed it, measured on exactly this method. The check asserts
         provenance at the ``execute`` call instead, so the ``+`` above is
         verified to join two module constants rather than merely intended to.
+
+        Raises:
+            TypeError: for a threshold or keyset bound that is not a real
+                number; ``ValueError`` for one that is not finite. Both come
+                from :func:`_finite`, which converts once and binds the value
+                it checked, and :meth:`prune` goes through the same function —
+                so report and apply refuse the same inputs by construction,
+                not by two checks kept in step.
         """
-        if not math.isfinite(before):
-            raise ValueError(f"retention threshold must be finite, got {before!r}")
         statement = _COUNT_BEFORE
-        params: list[float | str] = [float(before)]
+        params: list[float | str] = [_finite(before, "retention threshold")]
         if after is not None:
             at, identifier = after
-            if not math.isfinite(at):
-                raise ValueError(f"keyset bound must be finite, got {at!r}")
+            bound = _finite(at, "keyset bound")
             statement = _COUNT_BEFORE + _AND + _INGESTED_AFTER
-            params.extend((float(at), float(at), identifier))
+            params.extend((bound, bound, identifier))
         row = self._conn.execute(statement, tuple(params)).fetchone()
         return int(row["n"])
 
@@ -1063,11 +1214,30 @@ class EventStore:
 
         Observables cascade. The only sanctioned deletion path, and counted so
         a retention job can report what it removed.
+
+        Raises:
+            ValueError: for a non-finite threshold, exactly as
+                :meth:`count_before` does. Measured before this check, on
+                three stored events: ``prune(before=inf)`` deleted all three
+                and ``prune(before=nan)`` deleted none, both silently, after
+                ``count_before`` had raised for the same value — so the report
+                could refuse a threshold whose delete still went through.
+                Retention is report-then-apply, and the two halves must refuse
+                the same inputs. The write-side twin of a read-side bound: the
+                defect class :meth:`_project` already records.
+
+                "Exactly as" is by construction: both go through
+                :func:`_finite`, which converts once and binds the value it
+                checked. The first version of this check converted twice —
+                ``math.isfinite(before)`` and then ``float(before)`` — and an
+                object whose ``__float__`` answered ``1.0`` first and ``inf``
+                second passed it; the DELETE ran with ``inf``. Measured, three
+                events to zero. Found by review.
+            TypeError: for a threshold that is not a real number, as before.
         """
+        threshold = _finite(before, "retention threshold")
         with self._conn:
-            cursor = self._conn.execute(
-                "DELETE FROM events WHERE ingested_at < ?", (float(before),)
-            )
+            cursor = self._conn.execute("DELETE FROM events WHERE ingested_at < ?", (threshold,))
         return int(cursor.rowcount)
 
 

@@ -59,9 +59,10 @@ from __future__ import annotations
 
 import re
 
-#: How many quoted payloads one line may be re-scanned for nested pairs.
-#: auditd nests exactly one such payload (the second ``msg=``); the bound is
-#: here so a crafted line cannot turn one decode into many.
+#: How many nested payloads one line may be re-scanned for pairs. Only the
+#: single-quoted value of a *repeated* ``msg`` is one (see
+#: :func:`_merge_nested`); auditd writes exactly one, and the bound is here so
+#: a crafted line cannot turn one decode into many.
 MAX_NESTED_PAYLOADS = 4
 
 #: Smallest number of pairs that makes a line "structured" rather than prose
@@ -119,6 +120,19 @@ def decode(line: str) -> dict[str, str] | None:
     auditd's ``a0``/``a1`` argv keys are distinct names, so the EXECVE
     reassembly in ``parsers/endpoint.py`` is unaffected either way.
 
+    **Quoting follows auditd, which has no escapes, and that is a residual.**
+    A quoted value ends at the next matching quote whatever precedes it, so a
+    logfmt writer that escapes correctly (``\\"``) still lets the string it
+    escaped break out to top level; single quotes behave the same.
+    Measured: ``type=USER_LOGIN user="a\\" comm=sshd timestamp=1.0 x=\\""``
+    decodes ``comm`` and ``timestamp`` as top-level keys and is claimed as
+    auditd, ``structured``, dated ``1.0``. First-wins does not help — the keys
+    are new. Honoring ``\\"`` changes how every auditd value ending in a
+    backslash is read, and what auditd writes there was not measured, so which
+    convention wins is the owner's decision; a value the application did not
+    quote or escape at all is the same case and no decoder of this shape can
+    close it.
+
     Args:
         line: One decoded log line, newline already stripped.
 
@@ -136,17 +150,27 @@ def decode(line: str) -> dict[str, str] | None:
         # MAX_PAIRS and be rejected as prose, which is the opposite of the
         # intent. The cap bounds what is *kept*, not what is *measured*.
         covered += len(match.group(0).replace(" ", ""))
+        key = match.group("key")
         quoted = match.group("dq")
         if quoted is None:
             quoted = match.group("sq")
-        # Collected even when the pair itself is dropped just below, because the
-        # payload that matters is auditd's *second* ``msg=`` — precisely the one
-        # first-occurrence-wins discards.
-        if quoted is not None and "=" in quoted and len(payloads) < MAX_NESTED_PAYLOADS:
-            payloads.append(quoted)
+        # Only auditd's own nesting is re-scanned: a single-quoted ``msg`` that
+        # *repeats* an earlier one — precisely the pair first-occurrence-wins
+        # drops just below. Any other quoted value is an application's field
+        # (``user="…"``, ``detail="…"``), and mining it let a username holding
+        # ``msg=audit(1.0:1)`` or ``comm=sshd timestamp=1.0`` claim and date
+        # the line as auditd. See :func:`_merge_nested`.
+        nested = match.group("sq")
+        if (
+            key == "msg"
+            and key in pairs
+            and nested is not None
+            and "=" in nested
+            and len(payloads) < MAX_NESTED_PAYLOADS
+        ):
+            payloads.append(nested)
         if len(pairs) >= MAX_PAIRS:
             continue
-        key = match.group("key")
         if key in pairs:
             continue  # first occurrence wins — see the docstring
         value = quoted if quoted is not None else (match.group("bare") or "")
@@ -185,9 +209,25 @@ def _merge_nested(pairs: dict[str, str], payloads: list[str]) -> None:
     score-30 incident, the nested form produced none.
 
     Depth is fixed at one, which is all auditd uses, so this cannot recurse.
-    Only *quoted* values are re-scanned: a bare value cannot hold a space and so
-    cannot hold a second pair, and re-scanning bare values would mine
-    ``url=http://h/?a=1&b=2`` for pairs nobody wrote.
+    **Only the single-quoted value of a repeated ``msg`` is re-scanned** —
+    auditd's shape, ``msg=audit(…): … msg='…'``. The first version re-scanned
+    *every* quoted value containing ``=``, and review measured what that
+    synthesized: ``type=USER_LOGIN user="msg=audit(1.0:1)"`` gained a ``msg``
+    whose head is a clock stamp, ``msg="login failed comm=sshd
+    timestamp=1.0"`` gained ``comm`` and ``timestamp``, and ``level=warn
+    user="type=PATH msg=audit(1.0:1)"`` gained both ``type`` and ``msg`` —
+    each then claimed as auditd, ``structured``, dated from the
+    application's own field. A
+    bare value is never re-scanned either: it cannot hold a space, and mining
+    it would find ``a``/``b`` in ``url=http://h/?a=1&b=2``.
+
+    **The residual, stated.** The rule is on the line's shape, so a line that
+    itself carries a second, single-quoted ``msg`` is re-scanned whoever wrote
+    it. Producing one takes control of the line's *structure*, and that
+    control can already write the same keys at top level, which first-wins
+    ranks above anything nested — so nesting adds nothing to it. Note what
+    gives that control away: a quote the application did not escape, and also
+    one it *did* escape logfmt-style — see :func:`decode`.
 
     First-occurrence-wins holds across levels too: a top-level key is never
     overwritten by a nested one, so a payload an attacker influences cannot

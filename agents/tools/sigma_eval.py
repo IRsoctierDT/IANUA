@@ -12,7 +12,7 @@ closed, so an unsupported construct can never silently pass a rule).
 
 Supported per selection (the keys of ``_SUPPORTED_MODIFIERS``, which drives
 dispatch — an unlisted modifier raises):
-    <field>                  : exact match (string equality)
+    <field>                  : exact match (string equality; any of a list)
     <field>|contains         : substring match (any of a list)
     <field>|contains|all     : substring match (all of a list)
     <field>|startswith       : prefix match
@@ -45,7 +45,16 @@ from typing import Any
 
 
 def _match_exact(value: str, spec: Any) -> bool:
-    return value == str(spec).lower()
+    """``field: x`` or ``field: [x, y]`` — equality with any listed literal.
+
+    A list under a bare field is Sigma's OR of exact matches, and every other
+    matcher here already accepts one. This one stringified the whole list, so
+    a rule written that way could never fire — silently, which is the one
+    failure mode this module exists to refuse (measured: ``Image: [a.exe,
+    b.exe]`` matched neither ``a.exe`` nor ``b.exe``).
+    """
+    needles = spec if isinstance(spec, list) else [spec]
+    return any(value == str(n).lower() for n in needles)
 
 
 def _match_contains(value: str, spec: Any) -> bool:
@@ -117,7 +126,14 @@ def _match_selection(event: dict[str, Any], selection: Any) -> bool:
     """A selection matches when ALL of its field clauses match (Sigma AND)."""
     if not isinstance(selection, dict):
         raise ValueError(f"selection must be a mapping, got {type(selection).__name__}")
-    return all(_match_field(event, key, spec) for key, spec in selection.items())
+    # Every clause is evaluated before combining, for the same reason
+    # _parse_condition does not short-circuit: a generator inside all() stops
+    # at the first False, so an unsupported modifier in a later clause went
+    # unvalidated on every non-matching event and the rule silently evaluated
+    # False instead of raising (measured: `{"a": "x", "b|regex": "y"}` raised
+    # only when `a` matched).
+    results = [_match_field(event, key, spec) for key, spec in selection.items()]
+    return all(results)
 
 
 def _resolve_quantifier(quantifier: str, pattern: str, matched: dict[str, bool]) -> bool:

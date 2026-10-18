@@ -50,11 +50,16 @@ repository's Linux lab baseline.
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
 import signal
+import stat
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -84,6 +89,17 @@ _HOSTNAME_RE = re.compile(
 )
 _ACCOUNT_RE = re.compile(r"^[a-z_][a-z0-9._-]{0,31}$", re.IGNORECASE)
 _HEX_HASH_RE = re.compile(r"^[0-9a-f]{32}$|^[0-9a-f]{40}$|^[0-9a-f]{64}$", re.IGNORECASE)
+
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+@contextlib.contextmanager
+def _closing(fd: int) -> Iterator[int]:
+    """Close a raw descriptor on exit (the ``with`` form for ``os.open`` results)."""
+    try:
+        yield fd
+    finally:
+        os.close(fd)
 
 
 class ContainmentError(ValidationError):
@@ -250,6 +266,106 @@ class ContainmentToolkit:
             )
         return target
 
+    @staticmethod
+    def _is_regular_file(path: Path) -> bool:
+        """``Path.is_file`` that reports an unstat-able path (e.g. ``ENAMETOOLONG``) as not a file."""
+        try:
+            return path.is_file()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _open_nofollow(
+        path: Path, expected: os.stat_result | None = None, *, dir_fd: int | None = None
+    ) -> int:
+        """Open the regular file at ``path`` read-only, never through a link of either kind.
+
+        :meth:`_resolve_no_symlink` checks the path *before* the open, hash and
+        rename it guards, and ``Path.chmod`` follows symlinks — measured, a link
+        swapped in after validation took a file outside the root to ``0o400``
+        with the action reporting executed. Everything that acts on a quarantine
+        path therefore goes through this descriptor, refused unless it is: not
+        reached through a symlink (``O_NOFOLLOW`` fails instead of following); a
+        regular file, checked after an ``O_NONBLOCK`` open so a FIFO cannot block
+        the open before the check (the flag is cleared once the file is known
+        regular); the only name for its inode (``st_nlink == 1`` — a hard link
+        passes every symlink check, yet ``fchmod`` through it changes a file at
+        another path, possibly outside the root); and, when ``expected`` is
+        given, the inode that was hashed. Fails closed; the caller closes it.
+        ``path`` is relative to ``dir_fd`` when one is given (a directory
+        :meth:`_open_vault` or :meth:`_open_dir_within` has verified).
+        """
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        try:
+            fd = os.open(path, flags, dir_fd=dir_fd)
+        except OSError as exc:
+            why = (
+                "a symlink appeared at the path after validation"
+                if exc.errno == errno.ELOOP
+                else (exc.strerror or type(exc).__name__)
+            )
+            raise ContainmentError(f"refusing to act on {path.name!r}: {why}") from exc
+        actual = os.fstat(fd)
+        if not stat.S_ISREG(actual.st_mode):
+            why = "is not a regular file"
+        elif actual.st_nlink != 1:
+            why = f"has {actual.st_nlink} links; acting on it would change a file at another path"
+        elif expected is not None and (actual.st_dev, actual.st_ino) != (
+            expected.st_dev,
+            expected.st_ino,
+        ):
+            why = "is not the file that was validated and hashed"
+        else:
+            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
+            return fd
+        os.close(fd)
+        raise ContainmentError(f"{path.name!r} {why} — treat the target as NOT contained")
+
+    def _open_vault(self) -> int:
+        """Open the vault directory itself, never through a link, and verify it is ours.
+
+        ``mkdir(exist_ok=True)`` accepted a symlink or a world-writable directory at
+        the path. Created ``0o700`` if absent, opened ``O_DIRECTORY | O_NOFOLLOW``, must
+        be ours with no group/other bits; every write into it is relative to this fd.
+        """
+        try:
+            with contextlib.suppress(FileExistsError):
+                self._vault.mkdir(mode=0o700)
+            fd = os.open(self._vault, _DIR_FLAGS)
+        except OSError as exc:
+            raise ContainmentError(f"quarantine vault cannot be opened: {exc.strerror}") from exc
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            os.close(fd)
+            mode = stat.S_IMODE(info.st_mode)
+            raise ContainmentError(f"quarantine vault is not ours or not private (mode {mode:#o})")
+        return fd
+
+    def _open_dir_within(self, directory: Path, *, create: bool) -> int:
+        """Open ``directory`` (validated, under the root) one ``O_NOFOLLOW`` component at a time.
+
+        ``Path.mkdir`` and ``Path.rename`` resolve the whole path afresh when
+        called, so a component swapped to a link after validation was followed.
+        """
+        rel = directory.relative_to(self.root)
+        fd = -1
+        try:
+            fd = os.open(self.root, _DIR_FLAGS)
+            for part in rel.parts:
+                if create:
+                    with contextlib.suppress(FileExistsError):
+                        os.mkdir(part, dir_fd=fd)
+                child = os.open(part, _DIR_FLAGS, dir_fd=fd)
+                os.close(fd)
+                fd = child
+        except OSError as exc:
+            if fd >= 0:
+                os.close(fd)
+            raise ContainmentError(
+                f"{rel.as_posix()!r} is not a directory inside the root ({exc.strerror})"
+            ) from exc
+        return fd
+
     # --- file quarantine (stdlib, reversible) -------------------------------
 
     def quarantine_file(self, path: str) -> ContainmentAction:
@@ -259,38 +375,52 @@ class ContainmentToolkit:
         (``<root>/.quarantine/``, mode ``0o400`` — preserved for forensics, no
         longer executable) with a sidecar recording its origin for
         :meth:`release_file`. Validates ``path`` against traversal out of the
-        root; refuses non-files, files already in the vault, and duplicate
-        vault entries (fail closed).
+        root; refuses non-files, hard links, files already in the vault, and
+        duplicate vault entries (fail closed). Residual, stated: a descriptor
+        already open for writing on the payload survives the seal (a mode change
+        governs new opens only) — :meth:`stop_process` is the control for that.
         """
         self._gate("quarantine_file")
         target = self._resolve_no_symlink(self.root, path)
         if self._vault in (target, *target.parents):
             raise ContainmentError("file is already inside the quarantine vault")
-        if not target.is_file():
+        if not self._is_regular_file(target):
             raise ContainmentError(f"not a file: {path!r}")
 
         digest = hashlib.sha256()
-        with target.open("rb") as handle:
+        # The handle stays open through the rename: the hashed inode cannot be
+        # freed and its number reused before the identity check that seals it.
+        with (
+            _closing(self._open_dir_within(target.parent, create=False)) as source_fd,
+            os.fdopen(self._open_nofollow(Path(target.name), dir_fd=source_fd), "rb") as handle,
+        ):
+            hashed = os.fstat(handle.fileno())
             for chunk in iter(lambda: handle.read(_HASH_CHUNK), b""):
                 digest.update(chunk)
-        sha256 = digest.hexdigest()
-
-        self._vault.mkdir(mode=0o700, exist_ok=True)
-        entry = self._vault / f"{sha256[:12]}__{target.name}"
-        if entry.exists():
-            raise ContainmentError(f"vault entry already exists: {entry.name!r}")
-
-        meta = {
-            "original": target.relative_to(self.root).as_posix(),
-            "sha256": sha256,
-        }
-        # Sidecar first: a crash between the two steps leaves the original intact
-        # plus a stale sidecar — never a stranded payload with no way back.
-        entry.with_name(entry.name + ".meta.json").write_text(
-            json.dumps(meta, sort_keys=True), encoding="utf-8"
-        )
-        target.rename(entry)
-        entry.chmod(0o400)
+            sha256 = digest.hexdigest()
+            entry = Path(f"{sha256[:12]}__{target.name}")
+            meta = {"original": target.relative_to(self.root).as_posix(), "sha256": sha256}
+            with _closing(self._open_vault()) as vault_fd:
+                try:
+                    os.lstat(entry, dir_fd=vault_fd)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ContainmentError(f"vault entry already exists: {entry.name!r}")
+                # Sidecar first, O_EXCL and never through a link: a crash between the
+                # two steps leaves the original intact plus a stale sidecar — never a
+                # stranded payload with no way back.
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+                try:
+                    sidecar_fd = os.open(f"{entry.name}.meta.json", flags, 0o600, dir_fd=vault_fd)
+                except FileExistsError as exc:
+                    raise ContainmentError(f"vault entry already exists: {entry.name!r}") from exc
+                with os.fdopen(sidecar_fd, "w", encoding="utf-8") as sidecar:
+                    sidecar.write(json.dumps(meta, sort_keys=True))
+                os.rename(target.name, entry, src_dir_fd=source_fd, dst_dir_fd=vault_fd)
+                # What now sits at the vault path must be the hashed inode, not a link.
+                os.close(self._open_nofollow(entry, expected=hashed, dir_fd=vault_fd))
+            os.fchmod(handle.fileno(), 0o400)
         return self._action(
             "quarantine_file",
             meta["original"],
@@ -304,29 +434,38 @@ class ContainmentToolkit:
 
         The file is restored with mode ``0o600`` — never with execute
         permission; a human re-enables execution deliberately. Fails closed if
-        the vault entry or its sidecar is missing/invalid, or if a file now
-        exists at the original path.
+        the vault entry or its sidecar is missing/invalid, if the entry is not a
+        single-link regular file, or if a file now exists at the original path
+        (whose directory is opened component by component, never through a link).
         """
         self._gate("release_file")
         entry = self._resolve_no_symlink(self._vault, entry_name)
-        if entry.parent != self._vault or not entry.is_file():
+        if entry.parent != self._vault or not self._is_regular_file(entry):
             raise ContainmentError(f"no such vault entry: {entry_name!r}")
-        sidecar = entry.with_name(entry.name + ".meta.json")
-        try:
-            meta = json.loads(sidecar.read_text(encoding="utf-8"))
-            original_rel = meta["original"]
-            if not isinstance(original_rel, str):
-                raise TypeError("'original' must be a string")
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise ContainmentError(f"vault sidecar missing or invalid: {entry_name!r}") from exc
+        sidecar = f"{entry.name}.meta.json"
+        with _closing(self._open_vault()) as vault_fd:
+            try:
+                flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                with os.fdopen(os.open(sidecar, flags, dir_fd=vault_fd), "rb") as handle:
+                    meta = json.loads(handle.read().decode("utf-8"))
+                original_rel = meta["original"]
+                if not isinstance(original_rel, str):
+                    raise TypeError("'original' must be a string")
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise ContainmentError(f"vault sidecar missing or invalid: {entry_name!r}") from exc
 
-        original = self._resolve_no_symlink(self.root, original_rel)
-        if original.exists():
-            raise ContainmentError(f"refusing to overwrite existing file: {original_rel!r}")
-        original.parent.mkdir(parents=True, exist_ok=True)
-        entry.chmod(0o600)
-        entry.rename(original)
-        sidecar.unlink()
+            original = self._resolve_no_symlink(self.root, original_rel)
+            with _closing(self._open_dir_within(original.parent, create=True)) as parent_fd:
+                try:
+                    os.lstat(original.name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ContainmentError(f"refusing to overwrite existing file: {original_rel!r}")
+                with os.fdopen(self._open_nofollow(Path(entry.name), dir_fd=vault_fd), "rb") as vh:
+                    os.fchmod(vh.fileno(), 0o600)
+                    os.rename(entry.name, original.name, src_dir_fd=vault_fd, dst_dir_fd=parent_fd)
+            os.unlink(sidecar, dir_fd=vault_fd)
         return self._action(
             "release_file",
             original_rel,

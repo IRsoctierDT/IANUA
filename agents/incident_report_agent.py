@@ -7,8 +7,9 @@ Renders SOC, MITRE, threat-intel, knowledge-base, detection, and citation
 results into a reviewable Markdown incident report (optional PDF export).
 Deterministic and network-free; the only write is the report file itself.
 Cell content is escaped so untrusted log text cannot break table structure,
-and the "(verified)" citations heading renders only when the caller attests
-verification (see ``generate_report``).
+the AI narrative is escaped the same way (model output is untrusted text that
+a crafted log line can steer), and the "(verified)" citations heading renders
+only when the caller attests verification (see ``generate_report``).
 """
 
 from __future__ import annotations
@@ -35,15 +36,27 @@ _NARRATIVE_SYSTEM = (
 # balloon the report or the PDF renderer downstream.
 _MAX_INLINE_LEN = 500
 
-# C0 control characters (minus the newlines handled explicitly) and DEL:
+# Line breaks flattened to a space: CR/LF plus NEL, U+2028 and U+2029, which
+# ``str.splitlines()`` also splits on — and the PDF renderer splits the report
+# with it, so each one left in started a new PDF line (measured: "ok\u2028##
+# Severity" rendered a forged heading). The other splitlines() separators are
+# C0 controls, stripped below.
+_LINE_BREAKS_RE = re.compile("\r\n|[\r\n\x85\u2028\u2029]")
+
+# C0 and C1 control characters (minus the newlines handled above) and DEL:
 # stripped rather than escaped — they have no legitimate place in a report and
 # NUL in particular breaks downstream tooling.
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+# A value that begins its own line can open a block (heading, quote, list,
+# thematic break, HTML block) with its first ASCII punctuation mark, or with an
+# ordered list's digits and ``.``/``)``. A backslash makes that mark literal.
+_BLOCK_START_RE = re.compile(r"^(\d{1,9}(?=[.)]))?([!-/:-@\[\]^_`{-~])", re.ASCII)
 
 
 def _sanitize(text: str) -> str:
-    """Flatten newlines, strip control characters, and cap the length."""
-    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    """Flatten line breaks, strip control characters, and cap the length."""
+    text = _LINE_BREAKS_RE.sub(" ", text)
     text = _CONTROL_CHARS_RE.sub("", text)
     if len(text) > _MAX_INLINE_LEN:
         text = text[:_MAX_INLINE_LEN] + " …[truncated]"
@@ -54,10 +67,28 @@ def _md_cell(text: str) -> str:
     """Escape untrusted text for a Markdown table cell or inline position.
 
     Pipes and backticks are backslash-escaped (a raw backtick would open a
-    code span and swallow the rest of the line); newlines are flattened and
-    control characters stripped via ``_sanitize``.
+    code span and swallow the rest of the line), as are ``[`` and ``<``, so
+    under CommonMark no link, image beacon, ``<...>`` autolink or raw HTML is
+    live; the backslash itself is escaped first, so one in the input cannot
+    re-arm the mark after it. Line breaks are flattened and control characters
+    stripped via ``_sanitize``. Emphasis (``*``/``_``) stays live: it changes
+    styling, not structure.
+
+    Residual, not closed: GFM autolink literals need neither ``[`` nor ``<``,
+    so a bare ``http(s)://`` URL, a ``www.`` host or an email address passes
+    through unchanged and is a live link under a GFM renderer (measured with
+    pandoc's gfm reader; the dashboard renders reports with ``st.markdown``,
+    which was not measured). The link text is the URL itself and needs a click.
     """
-    return _sanitize(text).replace("|", "\\|").replace("`", "\\`")
+    text = _sanitize(text).replace("\\", "\\\\")
+    for mark in "|`[<":
+        text = text.replace(mark, "\\" + mark)
+    return text
+
+
+def _md_line(text: str) -> str:
+    """``_md_cell`` for a value that starts its own line: no leading block marker."""
+    return _BLOCK_START_RE.sub(r"\1\\\2", _md_cell(text).strip(), count=1)
 
 
 def _md_code(text: str) -> str:
@@ -76,6 +107,15 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
 
     Opt-in and fail-soft: with no generator the deterministic report is unchanged;
     if the local model errors, the section records that rather than failing the report.
+
+    Security consideration: model output is **untrusted** — the prompt carries
+    log-derived indicators, so a crafted log line can steer what comes back. Both
+    narrative paths therefore pass through ``_md_cell`` (see it for exactly what
+    is escaped; the cap is 500 characters *before* escaping, so the output is at
+    most about twice that), and the free-text narrative, which starts its own
+    line, through ``_md_line`` so its first character cannot open a block.
+    Measured before this: a generator returning a Markdown heading, an image
+    beacon, a NUL byte and 5,000 characters landed in the report verbatim.
     """
     if generator is None:
         return "_AI narrative not enabled (no local model configured)._"
@@ -90,7 +130,7 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
     try:
         if callable(generate_json):
             return _render_structured(generate_json(facts, system=_NARRATIVE_SYSTEM))
-        return generator.generate(facts, system=_NARRATIVE_SYSTEM).strip()
+        return _md_line(generator.generate(facts, system=_NARRATIVE_SYSTEM))
     except ValidationError as exc:
         # Analyst-facing taxonomy: a transport failure (model simply not
         # running — the generator chains URLError/TimeoutError/OSError as the
@@ -105,7 +145,7 @@ def _build_narrative(soc: dict, mitre: dict, generator: Generator | None) -> str
                 "this section; all findings above are deterministic and "
                 "unaffected._"
             )
-        return f"_AI narrative unavailable (generator error: {exc})._"
+        return f"_AI narrative unavailable (generator error: {_md_cell(str(exc))})._"
 
 
 def _render_structured(data: dict) -> str:

@@ -51,6 +51,9 @@ from store.errors import (
 )
 from store.events import (
     ALL,
+    ATTEST_COUNTS_SQL,
+    ATTEST_IDS_SQL,
+    ATTEST_OBSERVABLES_SQL,
     DEFAULT_FILENAME,
     EVENTS_SUBDIR,
     Attestation,
@@ -69,6 +72,9 @@ from store.schema import (
 
 __all__ = [
     "ALL",
+    "ATTEST_COUNTS_SQL",
+    "ATTEST_IDS_SQL",
+    "ATTEST_OBSERVABLES_SQL",
     "DEFAULT_FILENAME",
     "DIGEST_PREFIX",
     "EVENTS_SUBDIR",

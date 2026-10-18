@@ -231,6 +231,102 @@ def test_resolution_is_independent_of_event_order() -> None:
     assert forward == backward
 
 
+@pytest.mark.unit
+def test_an_address_written_two_ways_is_one_entity() -> None:
+    """Exact normalized equality, for addresses as it already is for hosts.
+
+    ``2001:db8:0:0:0:0:0:1`` and ``2001:db8::1`` are one address, and a
+    dual-stack socket reports the IPv4 peer ``203.0.113.9`` as
+    ``::ffff:203.0.113.9``. Compared as strings each pair was two entities
+    that never linked — an honest non-match, but one decided by the sender's
+    spelling rather than by the evidence.
+    """
+
+    def flow(orig: str, resp: str, index: int) -> dict[str, Any]:
+        return {
+            "ts": f"2026-10-14T01:{index:02d}:00Z",
+            "uid": f"C{index}",
+            "id.orig_h": orig,
+            "id.resp_h": resp,
+            "id.orig_p": 1000 + index,
+            "id.resp_p": 443,
+            "proto": "tcp",
+        }
+
+    addresses = _of_kind(
+        (
+            flow("2001:db8:0:0:0:0:0:1", "::ffff:203.0.113.9", 1),
+            flow("2001:DB8::1", "203.0.113.9", 2),
+        ),
+        "address",
+    )
+    assert sorted(key for key, _ in addresses) == ["2001:db8::1", "203.0.113.9"], addresses
+
+
+@pytest.mark.unit
+def test_a_non_address_in_an_address_field_is_kept_for_provenance_only() -> None:
+    """The alias survives — an analyst should see what the source wrote — but keys nothing."""
+    event = normalize(dict(_CLOUD, sourceIPAddress="ec2.amazonaws.com"))
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "address"]
+    assert refs == [("ec2.amazonaws.com", False)], refs
+
+
+@pytest.mark.unit
+def test_a_hostname_from_a_field_that_names_no_host_is_kept_whole_for_provenance() -> None:
+    """CloudTrail's ``userAgent`` lands in ``device.hostname``: an alias, not shortened."""
+    event = normalize(dict(_CLOUD, userAgent="ec2.amazonaws.com"))
+    assert event.device.hostname == "ec2.amazonaws.com"
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "host"]
+    assert refs == [("ec2.amazonaws.com", False)], refs
+
+
+@pytest.mark.unit
+def test_an_ip_named_host_still_links_its_own_events() -> None:
+    """Not shortened, but still a host: the same literal on two events is one host."""
+    hosts = _of_kind(
+        (
+            {"type": "SYSCALL", "node": "10.0.0.5", "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": "10.0.0.5", "auid": "bob", "comm": "b"},
+        ),
+        "host",
+    )
+    assert hosts == [("10.0.0.5", ("10.0.0.5",))], hosts
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("hostname", "short"),
+    [
+        ("web-01.corp.example", "web-01"),
+        ("web-01.corp.example.", "web-01"),
+        ("web_01.corp.example", "web_01"),
+        ("m\u00fcnchen.corp.example", "m\u00fcnchen"),
+        ("desktop-7f3a", "desktop-7f3a"),
+        ("web-01.10.corp.example", "web-01"),
+        ("0x7f-gw.corp.example", "0x7f-gw"),
+        ("0xg1.corp.example", "0xg1"),
+        ("xn--mnchen-3ya.corp.example", "xn--mnchen-3ya"),
+    ],
+)
+def test_a_dns_shaped_name_still_short_forms(hostname: str, short: str) -> None:
+    """The shape guard refuses octets and decorations, not names: LDH, underscore, IDN.
+
+    A numeric middle label is a name; a label is a hex number only when all of
+    it after ``0x`` is hex digits.
+    """
+    event = normalize({"type": "SYSCALL", "node": hostname, "auid": "alice", "comm": "a"})
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "host"]
+    assert refs == [(short, True)], refs
+
+
+@pytest.mark.unit
+def test_a_hostname_that_is_neither_a_name_nor_an_address_is_kept_for_provenance() -> None:
+    """``10.0.0.5:514`` is what a relay wrote; an analyst sees it, nothing joins on it."""
+    event = normalize({"type": "SYSCALL", "node": "10.0.0.5:514", "auid": "alice", "comm": "a"})
+    refs = [(r.value, r.joinable) for r in references(event) if r.kind == "host"]
+    assert refs == [("10.0.0.5:514", False)], refs
+
+
 # --------------------------------------------------------------------------
 # Assembly
 # --------------------------------------------------------------------------

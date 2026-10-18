@@ -99,3 +99,99 @@ def test_hostile_mitre_evidence_is_escaped(tmp_path: Path) -> None:
     assert "\x07" not in content
     # Indicator renders in a code span with backticks neutralized, not live.
     assert "203.0.113.5'whoami'" in content
+
+
+class _HostileFreeTextGenerator:
+    """A model whose output a crafted log line steered into active Markdown."""
+
+    def generate(self, prompt: str, *, system: str | None = None) -> str:
+        return (
+            "Root brute-force success.\n# INJECTED HEADING\n"
+            "![beacon](https://attacker.example/px)\n| a | b |\n`live`\x00\x07" + "Z" * 5_000
+        )
+
+
+@pytest.mark.security
+def test_free_text_narrative_is_escaped_like_any_untrusted_value(tmp_path: Path) -> None:
+    """Model output is untrusted: it must get the same treatment as log text.
+
+    Before the fix the free-text generator path was the one place the report
+    wrote text verbatim — a heading, an image beacon, a NUL byte and 5,000
+    characters all survived (measured). The structured path already escaped.
+    """
+    content = _report(
+        tmp_path,
+        "Failed password for root from 203.0.113.5 port 22 ssh2",
+        generator=_HostileFreeTextGenerator(),
+    )
+    narrative = content.split("## Analyst Narrative (AI-generated)")[1].split("## Severity")[0]
+    assert "brute-force success" in narrative  # the legitimate sentence survives
+    assert "\n# INJECTED HEADING" not in narrative, "newline + heading must be flattened"
+    assert "\x00" not in content and "\x07" not in content
+    assert "| a | b |" not in narrative and "\\| a \\| b \\|" in narrative
+    assert "`live`" not in narrative and "\\`live\\`" in narrative
+    assert "…\\[truncated]" in narrative and len(narrative) < 700
+
+
+@pytest.mark.security
+def test_generator_error_text_is_escaped(tmp_path: Path) -> None:
+    from agents.tools.validation import ValidationError
+
+    class _NoisyFailure:
+        def generate(self, prompt: str, *, system: str | None = None) -> str:
+            raise ValidationError("bad output\n# not a heading | `tick`\x00")
+
+    content = _report(tmp_path, "Failed password for root", generator=_NoisyFailure())
+    assert "AI narrative unavailable" in content
+    assert "\n# not a heading" not in content and "\x00" not in content
+    assert "\\`tick\\`" in content
+
+
+class _Says:
+    def __init__(self, out: str) -> None:
+        self.out = out
+
+    def generate(self, prompt: str, *, system: str | None = None) -> str:
+        return self.out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("out", "line"),
+    [
+        ("# Severity: LOW", "\\# Severity: LOW"),
+        ("\x00 > quote", "\\> quote"),
+        ("--- ", "\\---"),
+        ("1. ordered", "1\\. ordered"),
+        ("<div>x</div>", "\\<div>x\\</div>"),
+        ("ok\u2028## Severity\u2029low\x85- fake", "ok ## Severity low - fake"),
+    ],
+)
+def test_free_text_narrative_cannot_open_a_block(tmp_path: Path, out: str, line: str) -> None:
+    """Measured before: a leading ``#`` rendered an ``<h1>`` and a PDF Title, and
+    U+2028/U+2029/NEL survived ``_sanitize`` into the PDF renderer's
+    ``splitlines()``, forging a ``## Severity`` heading there."""
+    content = _report(tmp_path, "Failed password for root", generator=_Says(out))
+    section = content.split("## Analyst Narrative (AI-generated)\n")[1].split("\n\n## Severity")[0]
+    assert section.splitlines() == [line]
+
+
+@pytest.mark.security
+def test_links_images_html_and_backslashes_are_not_live() -> None:
+    """Measured before: CommonMark rendered an ``<img>`` beacon, an ``<a>`` link
+    and an autolink from this text, and ``\\`x`` re-armed an escaped backtick."""
+    hostile = "![b](https://attacker.example/px) [l](u) <https://attacker.example> <img> \\`x`"
+    assert _md_cell(hostile) == (
+        "!\\[b](https://attacker.example/px) \\[l](u) \\<https://attacker.example> "
+        "\\<img> \\\\\\`x\\`"
+    )
+
+
+@pytest.mark.security
+def test_gfm_autolink_literals_are_a_stated_residual() -> None:
+    """Bare URLs, ``www.`` hosts and emails pass through and are live links under
+    GFM (measured with pandoc gfm). Pinned so that closing the gap updates this
+    test and ``_md_cell``'s docstring together, never one of them silently."""
+    bare = "https://attacker.example/r www.attacker.example/r admin@attacker.example"
+    assert _md_cell(bare) == bare
+    assert "GFM autolink literals" in (_md_cell.__doc__ or "")

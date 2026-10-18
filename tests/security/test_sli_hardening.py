@@ -652,3 +652,142 @@ def test_the_diagnostic_names_the_stalled_source_and_compliance_does_not_read_it
         "a control calls sli.measure; its detail must summarise ids and numbers, "
         "never the indicator text, which names declared log sources"
     )
+
+
+@pytest.mark.security
+def test_a_symlinked_backup_is_neither_counted_nor_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``backup-present`` reached outside the root through a planted link.
+
+    Measured before the fix: ``data/backups/linked -> <directory outside the
+    root>`` holding a ``manifest.json`` graded ``1.0`` — a backup that is not
+    this node's — and the probe ``stat``ed the manifest on the far side, the
+    one reach :mod:`sli` promises never to make. ``scripts/run_backup.py``
+    confines the directory it writes with the same symlink walk the store and
+    the cursor use, so a link here was planted, not written. Two cases: a
+    linked entry is skipped before anything beyond it is touched, and a link
+    at ``data/backups`` itself is ``UNKNOWN`` with the reason.
+
+    The tracer labels any ``follow_symlinks=False`` call ``lstat``: on 3.12
+    ``Path.is_symlink`` reaches ``os.stat`` that way, and an ``lstat`` of the
+    link *is* inside the root even though resolving the link is not.
+    """
+    from sli.indicators import BACKUP_SUBDIR, MANIFEST_FILE, measure_backup_present
+
+    root = _root(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / MANIFEST_FILE).write_text("{}", encoding="utf-8")
+    (root / BACKUP_SUBDIR).mkdir(parents=True)
+    (root / BACKUP_SUBDIR / "linked").symlink_to(outside)
+
+    seen: list[str] = []
+    real_open, real_stat, real_scandir = builtins.open, os.stat, os.scandir
+    real_lstat = os.lstat
+
+    def record(fn: Any, label: str) -> Any:
+        def wrapper(path: Any, *args: Any, **kwargs: Any) -> Any:
+            tag = "lstat" if kwargs.get("follow_symlinks", True) is False else label
+            with contextlib.suppress(TypeError, ValueError):
+                seen.append(f"{tag}:{os.fspath(path)}")
+            return fn(path, *args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(builtins, "open", record(real_open, "open"))
+    monkeypatch.setattr(os, "stat", record(real_stat, "stat"))
+    monkeypatch.setattr(os, "lstat", record(real_lstat, "lstat"))
+    monkeypatch.setattr(os, "scandir", record(real_scandir, "scandir"))
+    measurement = measure_backup_present(root, now=1_760_000_000.0)
+    monkeypatch.undo()
+
+    assert measurement.value == 0.0, measurement.detail
+    assert "no backup manifest" in measurement.detail
+    allowed = {root.resolve(), *root.resolve().parents}
+    reached = sorted(
+        {
+            entry
+            for entry in seen
+            if not entry.startswith("lstat:")
+            and (resolved := Path(entry.split(":", 1)[1]).resolve()) not in allowed
+            and not resolved.is_relative_to(root.resolve())
+        }
+    )
+    assert not reached, f"the probe reached beyond the root through the link: {reached[:4]}"
+
+    elsewhere = tmp_path / "backups-elsewhere"
+    (elsewhere / "b1").mkdir(parents=True)
+    (elsewhere / "b1" / MANIFEST_FILE).write_text("{}", encoding="utf-8")
+    linked_root = tmp_path / "lab2"
+    (linked_root / "data").mkdir(parents=True)
+    (linked_root / BACKUP_SUBDIR).symlink_to(elsewhere)
+    measurement = measure_backup_present(linked_root, now=1_760_000_000.0)
+    assert measurement.value is None, measurement.detail
+    assert "symlink" in measurement.detail
+
+
+@pytest.mark.security
+def test_a_backup_entry_swapped_for_a_link_mid_probe_is_neither_counted_nor_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fix above checked each entry by path and then ``stat``ed it by path.
+
+    Measured against it: a thread flipping ``data/backups/victim`` between an
+    empty directory and a link to an outside directory holding a manifest made
+    the probe count that manifest 510 times in 29,581 probes, and follow-stat
+    the far side. The walk is now by descriptor with ``O_NOFOLLOW``, so the far
+    side is unreachable rather than unlikely: a count, or any ``open``/``stat``
+    whose result is the outside inode, fails here. One-directional by design —
+    a correct probe cannot trip it however the threads interleave.
+    """
+    import threading
+
+    from sli.indicators import BACKUP_SUBDIR, MANIFEST_FILE, measure_backup_present
+
+    root = _root(tmp_path)
+    backups = root / BACKUP_SUBDIR
+    (backups / "victim").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / MANIFEST_FILE).write_text("{}", encoding="utf-8")
+    far = {(st.st_dev, st.st_ino) for st in (outside.stat(), (outside / MANIFEST_FILE).stat())}
+    reached: list[str] = []
+    real_stat, real_open = os.stat, os.open
+
+    def stat_spy(path: Any, *args: Any, **kwargs: Any) -> Any:
+        result = real_stat(path, *args, **kwargs)
+        if (result.st_dev, result.st_ino) in far:
+            reached.append(f"stat:{path}")
+        return result
+
+    def open_spy(path: Any, *args: Any, **kwargs: Any) -> int:
+        fd = real_open(path, *args, **kwargs)
+        if (os.fstat(fd).st_dev, os.fstat(fd).st_ino) in far:
+            reached.append(f"open:{path}")
+        return fd
+
+    stop = threading.Event()
+
+    def flip() -> None:
+        victim, spare = backups / "victim", backups / ".spare"
+        while not stop.is_set():
+            with contextlib.suppress(OSError):
+                victim.rename(spare)
+                victim.symlink_to(outside)
+                victim.unlink()
+                spare.rename(victim)
+
+    monkeypatch.setattr(os, "stat", stat_spy)
+    monkeypatch.setattr(os, "open", open_spy)
+    flipper = threading.Thread(target=flip, daemon=True)
+    flipper.start()
+    try:
+        values = [measure_backup_present(root, now=1_760_000_000.0).value for _ in range(3000)]
+    finally:
+        stop.set()
+        flipper.join()
+    monkeypatch.undo()
+
+    assert 1.0 not in values, f"counted the far side's manifest {values.count(1.0)} times"
+    assert not reached, f"the probe reached beyond the root: {reached[:4]}"

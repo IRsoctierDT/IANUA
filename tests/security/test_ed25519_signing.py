@@ -127,3 +127,21 @@ def test_hmac_signer_still_works_via_signer_param(tmp_path: Path) -> None:
     _emit(AuditLogger(path, signer=HmacSigner(b"secret")), 2)
     assert AuditLogger(path, signer=HmacSigner(b"secret")).verify() is True
     assert AuditLogger(path, signer=HmacSigner(b"wrong")).verify() is False
+
+
+# ------------------------------------------ an unsignable record is never written
+def test_a_verify_only_signer_appends_nothing(tmp_path: Path, keypair: tuple[bytes, bytes]) -> None:
+    """Measured before the fix: ``record()`` appended the entry and THEN raised from
+    ``sign()``, leaving a chain whose head signature was missing and could never
+    become valid — and every retry appended one more such entry. The signature is
+    now computed before the append, so a signer that cannot sign leaves nothing."""
+    _, pub = keypair
+    path = tmp_path / "audit.log"
+    log = AuditLogger(path, signer=Ed25519Verifier(pub))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="verify-only"):
+            _emit(log, 1)
+    assert not path.exists(), "an entry was appended by a signer that could not sign it"
+    assert not (tmp_path / "audit.log.sig").exists()
+    report = log.verify_report()
+    assert report.entries == 0 and report.intact is True

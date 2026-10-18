@@ -111,6 +111,7 @@ import shutil
 import sqlite3
 import sys
 import time
+from dataclasses import fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -141,7 +142,13 @@ from scripts._locking import (  # noqa: E402
     prepare_lock,
     single_instance,
 )
-from store import DEFAULT_FILENAME, EVENTS_SUBDIR, EventStore, StoreError  # noqa: E402
+from store import (  # noqa: E402
+    DEFAULT_FILENAME,
+    EVENTS_SUBDIR,
+    Attestation,
+    EventStore,
+    StoreError,
+)
 from store.paths import confine, validated_root  # noqa: E402
 
 #: Where backups live: a sibling of the state they copy, inside the same
@@ -149,6 +156,34 @@ from store.paths import confine, validated_root  # noqa: E402
 BACKUP_SUBDIR = Path("data") / "backups"
 LOCK_FILE = "backup.lock"
 MANIFEST_FILE = "manifest.json"
+
+#: The manifest format this version writes and the only one it verifies.
+#: Bumped from v1 when the attestation gained ``observables_digest``: a v1
+#: attestation carried an observable COUNT and nothing over the rows, so
+#: replacing observable rows one-for-one verified green — equal count, equal
+#: event count, equal event digest, clean ``quick_check`` — while every
+#: indicator pivot joined on keys the backup never held. Found by review on
+#: the promotion gate; the owner chose a format bump over a second verdict
+#: class, so the digest is mandatory here rather than optional.
+MANIFEST_FORMAT = "ianua.backup.v2"
+
+#: Formats this verifier recognises and refuses, each with what an operator
+#: needs to read. Refused outright, not verified "as far as possible": a gate
+#: that passes a backup on the checks it happens to be able to run is how a
+#: substituted observables table reached a green verdict in the first place.
+SUPERSEDED_FORMATS: dict[str, str] = {
+    "ianua.backup.v1": (
+        "its attestation has no digest over the observables rows, so this verifier "
+        "cannot tell a faithful copy from one whose indicator table was substituted "
+        "row-for-row."
+    ),
+}
+
+#: Every field a manifest attestation must carry, read from the dataclass so
+#: this list cannot fall behind it. Both verifiers require all of them before
+#: comparing any: `_verify_backup` used to compare only the keys it found, so
+#: a manifest with a field deleted passed on what was left.
+ATTESTATION_FIELDS: tuple[str, ...] = tuple(field.name for field in fields(Attestation))
 #: The audit chain this CLI appends to. Beside the store it copies, like
 #: retention's, so one chain covers everything that touches the event store.
 AUDIT_SUBDIR = EVENTS_SUBDIR
@@ -524,7 +559,7 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
     _narrow_tree(destination)
 
     return {
-        "format": "ianua.backup.v1",
+        "format": MANIFEST_FORMAT,
         "taken_at": datetime.now(UTC).isoformat(),
         "store": {
             "path": str(EVENTS_SUBDIR / DEFAULT_FILENAME),
@@ -727,11 +762,23 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     :func:`_take_backup` writes), and the WAL sidecars it creates while open
     are removed on close. Content-neutral is the claim; metadata-neutral is not.
     """
-    manifest = _load_manifest(directory)
+    manifest_path = directory / MANIFEST_FILE
+    if not manifest_path.is_file():
+        raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _require_format(manifest)
 
     problems: list[str] = []
 
-    store_entry = manifest["store"]
+    store_entry = _require_shape(manifest)
+    # Bound before the branches below: the return reads it on every path, and
+    # only one of the three reaches the attestation comparison. Binding it inside
+    # that branch raised UnboundLocalError on a backup whose store was missing or
+    # whose store path escaped — a regression the base branch did not have, found
+    # by independent review; no test covered either input.
+    expected = store_entry.get("attestation", _MISSING)
+    gaps = _attestation_gaps(expected)
+    problems.extend(gaps)
     unsafe = _unsafe_path(directory, Path(str(store_entry["path"])), what="manifest store path")
     if unsafe is not None:
         # A path that escapes is a tamper indicator, so it is reported rather
@@ -751,19 +798,18 @@ def _verify_backup(directory: Path) -> dict[str, object]:
                 f"{store_entry['path']}: sha256 {actual} does not match the manifest's "
                 f"{store_entry['sha256']}"
             )
-        unopenable = _unsafe_to_open(db, what=str(store_entry["path"]))
-        if unopenable is not None:
-            problems.append(unopenable)
-        else:
-            with EventStore.open(directory) as copy:
-                attested = copy.attest().to_dict()
-            expected = store_entry["attestation"]
-            for key in sorted(expected):
-                if attested.get(key) != expected[key]:
-                    problems.append(
-                        f"store attestation {key}: {attested.get(key)!r} does not match "
-                        f"the manifest's {expected[key]!r}"
-                    )
+        with EventStore.open(directory) as copy:
+            attested = copy.attest().to_dict()
+        # Compared only when every field is there. The first version of this
+        # change still indexed `expected["events"]` below after reporting it
+        # missing, so the operator saw a bare KeyError on stderr and not the
+        # finding — exit 1 for the wrong reason, which a test caught.
+        for key in ATTESTATION_FIELDS if not gaps else ():
+            if attested.get(key) != expected[key]:
+                problems.append(
+                    f"store attestation {key}: {attested.get(key)!r} does not match the "
+                    f"manifest's {expected[key]!r}"
+                )
 
     for entry in manifest["files"]:
         unsafe = _unsafe_path(directory, Path(str(entry["path"])), what="manifest path")
@@ -801,7 +847,7 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     return {
         "backup": str(directory),
         "taken_at": manifest.get("taken_at"),
-        "events": manifest["store"]["attestation"]["events"],
+        "events": expected.get("events") if isinstance(expected, dict) else None,
         "verified": not problems,
         "problems": problems,
         "chains": chains,
@@ -853,12 +899,27 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     * The manifest was walked in one direction only, so a report written after
       the backup — which step 4's ``cp -a`` *merges* rather than replaces —
       survived unseen. See :func:`_live_tree_inventory`.
+
+    **And a fourth, found on the fix for the first.** An observable *count*
+    is not a commitment to contents: rows replaced one-for-one left the count,
+    the event count, the event digest and ``quick_check`` all satisfied. The
+    attestation now carries ``observables_digest`` and the manifest format is
+    :data:`MANIFEST_FORMAT`; a v1 manifest is refused by
+    :func:`_require_format` with the recourse named, and a v2 manifest missing
+    any attestation field is refused by :func:`_attestation_gaps` rather than
+    compared on what is left.
     """
-    manifest = _load_manifest(backup)
+    manifest_path = backup / MANIFEST_FILE
+    if not manifest_path.is_file():
+        raise StoreError(f"no {MANIFEST_FILE} in {backup}; this is not a backup")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _require_format(manifest)
 
     problems: list[str] = []
-    store_entry = manifest["store"]
-    expected = store_entry["attestation"]
+    store_entry = _require_shape(manifest)
+    expected = store_entry.get("attestation", _MISSING)
+    gaps = _attestation_gaps(expected)
+    problems.extend(gaps)
     live_events: int | None = None
 
     # The store. Existence is checked FIRST and deliberately: EventStore.open
@@ -869,7 +930,16 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # regardless (measured, 0 -> 61440 bytes with the schema), so whether
     # opening would write is checked next. See _unsafe_to_open.
     db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
-    if not db.is_file():
+    if gaps:
+        # Refused above, by name, per missing field. Not compared "as far as
+        # possible": passing a copy on the checks a verifier happens to be able
+        # to run is how a substituted observables table reached a green verdict.
+        problems.append(
+            "the store was not compared: the manifest's attestation is unusable (see the "
+            "findings above), and a comparison against part of it would be a verdict on "
+            "part of the evidence"
+        )
+    elif not db.is_file():
         problems.append(
             f"no store at {db}: the restore did not put one there, and this check will "
             "not create one to measure"
@@ -880,7 +950,9 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         with EventStore.open(root) as live:
             attested = live.attest().to_dict()
         live_events = int(attested.get("events", -1))
-        want_events = int(expected["events"])
+        # Not int(): coercion accepted "40" and 40.9 and raised a bare TypeError
+        # on null. _attestation_gaps guarantees an int here or the block is skipped.
+        want_events = expected["events"]
         if live_events < want_events:
             problems.append(
                 f"LOSS: the live store holds {live_events} event(s); the backup attested "
@@ -891,9 +963,11 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         elif live_events > want_events:
             problems.append(
                 f"ADDED: the live store holds {live_events} event(s); the backup attested "
-                f"{want_events}. This is what docs/RESTORE.md step 5 (re-collect) does, so "
-                "it is expected if you have already run it — this check belongs between "
-                "steps 4 and 5. It is NOT evidence loss"
+                f"{want_events}. Re-collection (docs/RESTORE.md step 5) does this and is "
+                "the expected cause — this check belongs between steps 4 and 5. It cannot, "
+                "however, tell re-collection from substitution plus addition: once rows were "
+                "added the digest necessarily differs. If you have NOT run step 5, treat "
+                "this as SUBSTITUTED"
             )
         elif attested.get("digest") != expected["digest"]:
             problems.append(
@@ -910,51 +984,67 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # restore that loses observable rows and no event rows satisfies
         # `quick_check`, the count and the digest together. Measured on merged
         # code: 20 observables deleted of 20, events untouched, digest equal,
-        # exit 0. Indicator pivots return nothing on a store this gate had just
-        # called verified, because `correlation/entities.py` joins on this table.
+        # exit 0. An indicator pivot (`query(observable=...)`) returns nothing on a
+        # store this gate had just called verified. (Not correlation: measured,
+        # `correlation/entities.py` never reads `observables`; an earlier version
+        # of this comment said it joined on this table.)
         #
         # The manifest already carried the number: `attestation.to_dict()` is
         # stored whole, so this reads a field that was sitting in the file.
-        live_observables = attested.get("observables")
-        want_observables = expected.get("observables")
-        # Fail CLOSED on a manifest that cannot answer. The first version of this
-        # block guarded with `isinstance(...) and isinstance(...)` and silently
-        # SKIPPED the check otherwise — measured, deleting `observables` from a
-        # v1 manifest and then deleting every live observable row gave exit 0, and
-        # so did a string `"20"`. `_verify_backup` compares only the keys it
-        # finds, so nothing else caught it either. The manifest is untrusted input
-        # here (`_unsafe_path` already treats its paths that way), and a guard that
-        # skips on malformed input is a fail-open inside a fix for a family of
-        # fail-opens. `bool` is excluded explicitly, being an `int` subclass.
-        counts_usable = True
-        for whose, value in (
-            ("the backup's manifest", want_observables),
-            ("the live store", live_observables),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int):
-                counts_usable = False
-                problems.append(
-                    f"{whose} does not state a usable observable count ({value!r}, type "
-                    f"{type(value).__name__}). An `ianua.backup.v1` attestation always "
-                    "carries one, so this is a damaged or edited manifest and the "
-                    "completeness check cannot run — refused rather than skipped"
-                )
-        if counts_usable:
-            if live_observables < want_observables:
-                problems.append(
-                    f"LOSS: the live store holds {live_observables} observable(s); the "
-                    f"backup attested {want_observables}. "
-                    f"{want_observables - live_observables} are missing. Every event-level "
-                    "check can pass while this is short — the completeness digest covers "
-                    "event_ids only — and indicator pivots will silently return nothing"
-                )
-            elif live_observables > want_observables:
-                problems.append(
-                    f"ADDED: the live store holds {live_observables} observable(s); the "
-                    f"backup attested {want_observables}. Re-collection (docs/RESTORE.md "
-                    "step 5) does this, so it is expected if you have already run it. It "
-                    "is NOT evidence loss"
-                )
+        live_observables = attested["observables"]
+        want_observables = expected["observables"]
+        want_digest = expected["observables_digest"]
+        # Types were checked by _attestation_gaps, in one place for both
+        # verifiers. This block used to check them here — the manifest side
+        # duplicating that, the live side vacuous (attest() returns a typed
+        # dataclass) — while `events` two blocks up went through int() and
+        # was never checked at all. Checked, not coerced, upstream.
+        if live_observables < want_observables:
+            problems.append(
+                f"LOSS: the live store holds {live_observables} observable(s); the "
+                f"backup attested {want_observables}. "
+                f"{want_observables - live_observables} are missing. Every event-level "
+                "check can pass while this is short — the completeness digest covers "
+                "event_ids only — and indicator pivots will silently return nothing"
+            )
+        elif live_observables > want_observables:
+            problems.append(
+                f"ADDED: the live store holds {live_observables} observable(s); the "
+                f"backup attested {want_observables}. Re-collection (docs/RESTORE.md "
+                "step 5) does this and is the expected cause. It cannot, however, tell "
+                "re-collection from substitution plus addition: once rows were added the "
+                "observables digest necessarily differs. If you have NOT run step 5, "
+                "treat this as SUBSTITUTED"
+            )
+        elif attested["observables_digest"] != want_digest:
+            # Equal count, different rows. The event count, the event digest
+            # and quick_check are all satisfied in this state; this digest is
+            # the only check that sees it.
+            problems.append(
+                f"SUBSTITUTED: the live store holds exactly {live_observables} "
+                "observable(s) as attested, but not the same rows — the observables "
+                "digest differs. An indicator pivot on this store returns events for "
+                "values the backup never held. This is not the store that was backed up"
+            )
+
+        # The two attestation fields this verifier never read while `--verify`
+        # compared all six (found by independent review). schema_version always:
+        # a copy restored onto a different schema is a migration question and is
+        # never expected between steps 4 and 5. high_water only when the event
+        # count matched: with rows added or lost the mark necessarily moved and
+        # LOSS/ADDED already names the cause.
+        if attested["schema_version"] != expected["schema_version"]:
+            problems.append(
+                f"store attestation schema_version: {attested['schema_version']!r} does not "
+                f"match the manifest's {expected['schema_version']!r} — a migration question, "
+                "not a completeness one, and not expected between docs/RESTORE.md steps 4 and 5"
+            )
+        if live_events == want_events and attested["high_water"] != expected["high_water"]:
+            problems.append(
+                f"store attestation high_water: {attested['high_water']!r} does not match "
+                f"the manifest's {expected['high_water']!r} while the event count does — the "
+                "mark moved without the count, which no restore step does"
+            )
 
     # Declared files. Prefix comparison for the append-only streams only; exact
     # equality for everything else. See _is_append_only for why the allow-list
@@ -1058,7 +1148,10 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         "root": str(root),
         "backup": str(backup),
         "taken_at": manifest.get("taken_at"),
-        "events": expected["events"],
+        # .get, not []: with a field missing the attestation was refused above
+        # by name, and indexing it here turned that finding into a bare
+        # `error: 'events'` on stderr — measured, exit 1 with an empty stdout.
+        "events": expected.get("events") if isinstance(expected, dict) else None,
         "live_events": live_events,
         "verified": not problems,
         "problems": problems,

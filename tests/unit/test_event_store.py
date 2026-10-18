@@ -16,6 +16,7 @@ stored.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,9 @@ from ingest import normalize
 from ingest.schema import NormalizedEvent
 from store import (
     ALL,
+    ATTEST_COUNTS_SQL,
+    ATTEST_IDS_SQL,
+    ATTEST_OBSERVABLES_SQL,
     SCHEMA_VERSION,
     EventStore,
     Query,
@@ -439,3 +443,230 @@ class _CountInflater:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
+
+    # Dunder lookups bypass ``__getattr__``, so the transaction ``attest`` now
+    # opens with ``with conn:`` has to be delegated by name. Measured: without
+    # these the proxy raised ``TypeError: '_CountInflater' object does not
+    # support the context manager protocol`` before the injected count was read.
+    def __enter__(self) -> Any:
+        return self._real.__enter__()
+
+    def __exit__(self, *exc: Any) -> Any:
+        return self._real.__exit__(*exc)
+
+
+@pytest.mark.unit
+def test_the_observables_digest_commits_to_values_and_not_only_to_their_count(
+    tmp_path: Path,
+) -> None:
+    """Replacing observable rows one-for-one must change the attestation.
+
+    The count cannot see it, the event digest cannot see it (observables are
+    not in its preimage), and ``quick_check`` cannot see it. This is the state
+    review found the promotion gate exiting 0 on. The substitution is made
+    through raw SQLite because the store's own API exposes no way to make it,
+    which is the point: this is what a damaged or hostile copy looks like, not
+    what a writer does.
+    """
+    with _seeded(tmp_path, 20) as store:
+        before = store.attest()
+    assert before.observables > 0, "the fixture produced no observables; the test is vacuous"
+
+    connection = sqlite3.connect(tmp_path / "data" / "events" / "events.sqlite3")
+    try:
+        event, value = connection.execute(
+            "SELECT event_id, value FROM observables ORDER BY event_id, value LIMIT 1"
+        ).fetchone()
+        connection.execute(
+            "DELETE FROM observables WHERE event_id = ? AND value = ?", (event, value)
+        )
+        connection.execute(
+            "INSERT INTO observables (event_id, value) VALUES (?, ?)",
+            (event, f"{value}.substituted"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with EventStore.open(tmp_path) as store:
+        after = store.attest()
+    # The premise: every other field is unchanged.
+    assert (after.events, after.observables, after.digest) == (
+        before.events,
+        before.observables,
+        before.digest,
+    )
+    assert after.observables_digest != before.observables_digest
+
+
+@pytest.mark.unit
+def test_the_observables_digest_frames_each_field_by_length(tmp_path: Path) -> None:
+    """Rows whose fields concatenate to the same bytes must digest differently.
+
+    ``(E, "abc")`` and ``(E + "a", "bc")`` are one row each, same count, and
+    their fields joined without framing are byte-identical — ``E + "abc"``.
+    A digest that separated fields with a character a value may contain would
+    give these two the same answer. Each field is length-prefixed so the row
+    boundary is unforgeable; this is the test that says so, built through raw
+    SQLite because no writer produces such rows (the second event_id does not
+    exist, and foreign keys are off on a raw connection, which is exactly the
+    kind of copy this digest has to be able to see).
+    """
+    digests = []
+    for index, (suffix, value) in enumerate((("", "abc"), ("a", "bc"))):
+        root = tmp_path / f"store{index}"
+        root.mkdir()
+        with _seeded(root, 1) as store:
+            (event,) = [str(row["event_id"]) for row in store._conn.execute(ATTEST_IDS_SQL)]
+        connection = sqlite3.connect(root / "data" / "events" / "events.sqlite3")
+        try:
+            connection.execute("DELETE FROM observables")
+            connection.execute(
+                "INSERT INTO observables (event_id, value) VALUES (?, ?)", (event + suffix, value)
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with EventStore.open(root) as store:
+            attested = store.attest()
+        assert attested.observables == 1, attested
+        digests.append(attested.observables_digest)
+    assert digests[0] != digests[1], "fields are not framed: a boundary shift was invisible"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("statement", "plans"),
+    [
+        pytest.param(
+            ATTEST_IDS_SQL,
+            ("SCAN events USING COVERING INDEX sqlite_autoindex_events_1",),
+            id="id-stream",
+        ),
+        pytest.param(
+            ATTEST_COUNTS_SQL,
+            (
+                "SCAN events USING COVERING INDEX events_ingested_at",
+                "SCAN observables USING COVERING INDEX observables_value",
+            ),
+            id="counts",
+        ),
+        pytest.param(
+            ATTEST_OBSERVABLES_SQL,
+            ("SCAN observables USING COVERING INDEX sqlite_autoindex_observables_1",),
+            id="observables-stream",
+        ),
+    ],
+)
+def test_every_attest_statement_is_a_covering_index_scan(
+    tmp_path: Path, statement: str, plans: tuple[str, ...]
+) -> None:
+    """``attest()`` never reads a table page; ``quick_check`` is what does.
+
+    That property used to live in a docstring ("both statements are
+    covering-index scans — measured"). A docstring measured once is a claim;
+    this is the measurement, run every time, against the same SQL text the
+    method executes (imported, not retyped). If an index is dropped or a
+    column added, this is what goes red.
+    """
+    with _seeded(tmp_path, 20) as store:
+        assert store.attest().observables > 0
+        plan = "\n".join(
+            str(row["detail"]) for row in store._conn.execute(f"EXPLAIN QUERY PLAN {statement}")
+        )
+    for expected in plans:
+        assert expected in plan, f"{statement!r} planned as:\n{plan}"
+    # Every line that touches a table must do so through a covering index. The
+    # first version checked only for a bare "SCAN <table>" line, which could not
+    # see "SCAN events USING INDEX x" — a non-covering scan that reads row pages
+    # — so its message claimed a reach it did not have (found by review).
+    table_lines = [line for line in plan.splitlines() if "events" in line or "observables" in line]
+    assert table_lines, f"no table access planned for {statement!r}:\n{plan}"
+    for line in table_lines:
+        assert "USING COVERING INDEX" in line, f"reads row pages: {line!r} in\n{plan}"
+
+
+@pytest.mark.unit
+def test_the_observables_digest_distinguishes_a_blob_from_the_text_of_its_repr(
+    tmp_path: Path,
+) -> None:
+    """A BLOB ``b"x"`` and the TEXT ``b'x'`` must not digest the same.
+
+    ``value`` is TEXT by affinity only; a damaged or hostile copy can hold a
+    BLOB there, and ``str()`` of Python bytes is the text of their repr — so a
+    digest over ``str(field)`` was not injective across storage classes (found
+    by independent review before this shipped). Each field is now framed with
+    its storage class and raw bytes, and never decoded, so bytes that are not
+    UTF-8 attest rather than abort. Built through raw SQLite because no writer
+    produces such rows, which is the point.
+    """
+    digests = []
+    for index, value in enumerate((b"evil.example", "b'evil.example'", b"\xff\xfe not utf-8")):
+        root = tmp_path / f"store{index}"
+        root.mkdir()
+        with _seeded(root, 1) as store:
+            (event,) = [str(row["event_id"]) for row in store._conn.execute(ATTEST_IDS_SQL)]
+        connection = sqlite3.connect(root / "data" / "events" / "events.sqlite3")
+        try:
+            connection.execute("DELETE FROM observables")
+            connection.execute(
+                "INSERT INTO observables (event_id, value) VALUES (?, ?)", (event, value)
+            )
+            connection.commit()
+            assert connection.execute("SELECT typeof(value) FROM observables").fetchone()[0] == (
+                "blob" if isinstance(value, bytes) else "text"
+            ), "the storage class did not land as intended; the test would be vacuous"
+        finally:
+            connection.close()
+        with EventStore.open(root) as store:
+            attested = store.attest()  # must not raise on the non-UTF-8 blob either
+        assert attested.observables == 1
+        digests.append(attested.observables_digest)
+    assert len(set(digests)) == 3, digests
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "statement",
+    [ATTEST_IDS_SQL, ATTEST_OBSERVABLES_SQL],
+    ids=["id-stream", "observables-stream"],
+)
+def test_an_attestation_describes_one_snapshot_under_a_concurrent_writer(
+    tmp_path: Path, statement: str
+) -> None:
+    """A commit landing mid-attestation must not read as damage.
+
+    Each stream is a separate statement from the counts, and without an
+    enclosing transaction each took its own snapshot. Measured through this
+    method on the parent commit: a writer's commit between the count and the
+    first step of the id stream gave ``COUNT(*)`` 200 against 201 streamed ids
+    and raised "attestation is inconsistent" — a damage verdict on a healthy
+    store, reachable by ``run_backup.py --verify-restore`` on a live root,
+    whose lock excludes no writer. The observables stream has the same shape
+    against its own count. The injection point is the trace callback, which
+    fires as a statement begins and before its first step would open a read
+    snapshot of its own.
+    """
+    with _seeded(tmp_path, 200) as reader, EventStore.open(tmp_path) as writer:
+        quiet = reader.attest()
+        fired = 0
+
+        def commit_mid_stream(sql: str) -> None:
+            nonlocal fired
+            if fired == 0 and sql == statement:
+                fired += 1
+                writer.append(
+                    normalize("Failed password for u200 from 10.0.0.251 port 22 ssh2"),
+                    ingested_at=1_760_000_000.0 + 200,
+                )
+
+        reader._conn.set_trace_callback(commit_mid_stream)
+        try:
+            racing = reader.attest()
+        finally:
+            reader._conn.set_trace_callback(None)
+        assert fired == 1, "the injection did not fire; the stream statement has moved"
+        assert racing == quiet, "the attestation mixed two snapshots"
+        # The write really landed, and the next attestation sees it whole.
+        assert reader.count() == 201
+        assert reader.attest().events == 201

@@ -9,9 +9,13 @@ to the store's newest ``retrieved`` date — deterministic either way).
 
 Poisoning containment at query time (defense in depth over the ingest
 checks): never-flag suppression runs again here, and network-observable
-indicator types require **two sources with distinct declared upstreams** for
-a ``malicious`` verdict — a single feed's word caps at ``suspicious``, so one
-poisoned source can never brand infrastructure malicious on its own.
+indicator types require **two sources with distinct declared upstreams, each
+asserting ``malicious``**, for a ``malicious`` verdict — a single feed's word
+caps at ``suspicious``, so one poisoned source can never brand infrastructure
+malicious on its own. A second feed's ``benign`` or ``suspicious`` record is
+a counter-signal or a weaker signal, not corroboration. A value escapes the
+cap only when the needle itself is shaped as a hash digest or an email
+address (``EXEMPT_SHAPES``), whatever type a feed declared for it.
 """
 
 from __future__ import annotations
@@ -19,10 +23,11 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal, cast
 
-from attack import Corpus
+from attack import Corpus, validate_reference
 from intel.decay import FLOOR, decayed_score, score_to_confidence
 from intel.model import (
     CORROBORATION_TYPES,
+    EXEMPT_SHAPES,
     AtomicVerdict,
     BehaviorMatch,
     BehaviorStatus,
@@ -98,12 +103,24 @@ def lookup_indicator(store: IntelStore, value: str, *, as_of: date) -> AtomicVer
         if ind.risk == "suspicious":
             worst_risk = "suspicious"
     source_ids = sorted({ind.source_id for ind, _ in live})
-    upstreams = {store.sources[sid].upstream for sid in source_ids}
+    # Corroboration is counted over the records that *assert* malicious. The
+    # first version counted every live record's upstream, so a benign (or
+    # suspicious) record from a second feed counted as a second word for
+    # "malicious": measured, feed A `benign` + feed B `malicious` returned
+    # `malicious` with no cap note, while feed B alone was capped — one
+    # poisoned feed branding infrastructure whenever any other feed had
+    # listed the value at all, which is the outcome the cap exists to stop.
+    malicious_upstreams = {
+        store.sources[ind.source_id].upstream for ind, _ in live if ind.risk == "malicious"
+    }
     notes: list[str] = []
     if (
         worst_risk == "malicious"
-        and any(ind.indicator_type in CORROBORATION_TYPES for ind, _ in live)
-        and len(upstreams) < 2
+        and len(malicious_upstreams) < 2
+        and (
+            any(ind.indicator_type in CORROBORATION_TYPES for ind, _ in live)
+            or not any(shape.fullmatch(needle) for shape in EXEMPT_SHAPES.values())
+        )
     ):
         worst_risk = "suspicious"
         notes.append(
@@ -130,18 +147,29 @@ def behavior_status(
     *,
     as_of: date,
 ) -> tuple[BehaviorStatus, tuple[str, ...]]:
-    """Compute a behavioral record's aging status (pure function)."""
+    """Compute a behavioral record's aging status (pure function).
+
+    Anchors go through ``attack.validate_reference`` so every non-active
+    verdict degrades the record: deprecated, revoked, and *unknown*. The
+    first version consulted ``corpus.techniques`` alone, so an anchor the
+    corpus did not know at all — a tombstone-only ID, or a store matched
+    against a different pin than it was loaded against — read as ``active``
+    with no note (measured on ``T9999``): a matcher vouching for an anchor
+    it could not resolve. A malformed ID raises ``AttackError``, as the
+    loader already rejects it at ingest.
+    """
     notes: list[str] = []
     for technique_id in techniques:
-        technique = corpus.techniques.get(technique_id)
-        if technique is not None and technique.status != "active":
-            tombstone = corpus.tombstones.get(technique_id)
-            successor = tombstone.successor if tombstone else None
-            notes.append(
-                f"ATT&CK anchor {technique_id} is {technique.status} in the pinned "
-                f"release{f' (successor: {successor})' if successor else ''} — "
-                "re-anchor this record."
-            )
+        verdict = validate_reference(technique_id, corpus)
+        if verdict.ok:
+            continue
+        state = (
+            "not in the pinned release"
+            if verdict.status == "unknown"
+            else f"{verdict.status} in the pinned release"
+        )
+        successor = f" (successor: {verdict.successor})" if verdict.successor else ""
+        notes.append(f"ATT&CK anchor {technique_id} is {state}{successor} — re-anchor this record.")
     if notes:
         return "stale-anchor", tuple(notes)
     reviewed = date.fromisoformat(record_last_reviewed)

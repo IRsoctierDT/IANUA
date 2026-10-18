@@ -15,6 +15,12 @@ validation encodes the safety properties rather than trusting the author:
   ones, which must say plainly that they cannot be undone;
 * any action that destroys or alters evidence must declare a prerequisite,
   so a plan can never order termination before memory capture.
+
+Every enumerated scalar is type-checked before its membership or equality
+test. Measured without that: ``tier: false`` loaded as tier 0 and ``2.0`` as
+tier 2 (``False == 0``, ``2.0 == 2``), ``schema: true`` as schema 1, and a
+list-typed ``verb`` or ``action_class`` raised ``TypeError`` instead of the
+one error type this loader promises.
 """
 
 from __future__ import annotations
@@ -86,7 +92,10 @@ def load_catalogue(path: Path | None = None) -> dict[str, dict[str, Any]]:
         document = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise _reject(f"catalogue is not valid JSON ({exc})") from exc
-    if not isinstance(document, dict) or document.get("schema") != 1:
+    if not isinstance(document, dict):
+        raise _reject("catalogue must be an object with schema 1")
+    schema = document.get("schema")
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema != 1:
         raise _reject("catalogue must be an object with schema 1")
     actions = document.get("actions")
     if not isinstance(actions, list) or not actions or len(actions) > _MAX_ACTIONS:
@@ -102,16 +111,18 @@ def load_catalogue(path: Path | None = None) -> dict[str, dict[str, Any]]:
         context = f"action {action_id!r}"
 
         verb = entry["verb"]
-        if verb not in RESTRICT_ONLY_VERBS:
+        if not isinstance(verb, str) or verb not in RESTRICT_ONLY_VERBS:
             raise _reject(
                 f"{context}: verb {verb!r} is not on the restrict-only allow-list "
                 f"{sorted(RESTRICT_ONLY_VERBS)} — this schema cannot express an action "
                 "that grants access or acts on a third party"
             )
-        if entry["tier"] not in _VALID_TIERS:
+        tier = entry["tier"]
+        if not isinstance(tier, int) or isinstance(tier, bool) or tier not in _VALID_TIERS:
             raise _reject(f"{context}: tier must be one of {sorted(_VALID_TIERS)}")
-        if entry["action_class"] not in _VALID_ACTION_CLASSES:
-            raise _reject(f"{context}: unknown action_class {entry['action_class']!r}")
+        action_class = entry["action_class"]
+        if not isinstance(action_class, str) or action_class not in _VALID_ACTION_CLASSES:
+            raise _reject(f"{context}: unknown action_class {action_class!r}")
 
         owner = _text(entry["owner"], f"{context} owner")
         if "ianua" in owner.lower() or "agent" in owner.lower():
@@ -143,9 +154,9 @@ def load_catalogue(path: Path | None = None) -> dict[str, dict[str, Any]]:
         parsed[action_id] = {
             "action_id": action_id,
             "title": _text(entry["title"], f"{context} title"),
-            "tier": entry["tier"],
+            "tier": tier,
             "verb": verb,
-            "action_class": entry["action_class"],
+            "action_class": action_class,
             "owner": owner,
             "rationale": _text(entry["rationale"], f"{context} rationale"),
             "steps": _text_list(entry["steps"], f"{context} steps"),

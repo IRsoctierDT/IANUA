@@ -354,6 +354,107 @@ def test_a_nested_payload_cannot_overwrite_what_the_record_head_declared() -> No
 
 @pytest.mark.security
 @pytest.mark.parametrize(
+    ("line", "keys"),
+    [
+        pytest.param(
+            'type=SERVICE_START detail="worker pool started msg=audit(1.0:1) ok"',
+            {"type", "detail"},
+            id="dq-detail-holds-a-stamp",
+        ),
+        pytest.param(
+            'level=warn type=USER_LOGIN user="msg=audit(1.0:1)" ip=198.51.100.7',
+            {"level", "type", "user", "ip"},
+            id="dq-username-is-a-stamp",
+        ),
+        pytest.param(
+            'type=USER_LOGIN msg="login failed for user comm=sshd timestamp=4070908800"',
+            {"type", "msg"},
+            id="dq-first-msg-holds-comm-and-timestamp",
+        ),
+        pytest.param(
+            'level=warn user="type=PATH msg=audit(1.0:1)" ip=198.51.100.7',
+            {"level", "user", "ip"},
+            id="dq-username-holds-type-and-stamp",
+        ),
+        pytest.param(
+            "level=warn type=USER_LOGIN user='msg=audit(1.0:1)' ip=198.51.100.7",
+            {"level", "type", "user", "ip"},
+            id="sq-username-is-a-stamp",
+        ),
+        pytest.param(
+            "type=USER_LOGIN msg='login failed comm=sshd timestamp=1.0' ip=198.51.100.7",
+            {"type", "msg", "ip"},
+            id="sq-first-msg-holds-comm-and-timestamp",
+        ),
+    ],
+)
+def test_only_a_repeated_single_quoted_msg_is_rescanned(line: str, keys: set[str]) -> None:
+    """An application's quoted field is a value, never a source of keys.
+
+    The re-scan used to mine *every* quoted value containing ``=``, so a
+    username or detail an attacker chose supplied the ``msg``, ``comm``,
+    ``timestamp`` or even ``type`` the line lacked, and the record was claimed
+    as auditd, ``structured``, dated from the username — measured on e93f004,
+    on the text and the bytes path alike. auditd's own nesting is a *second*,
+    single-quoted ``msg``, and that is now the only thing re-scanned. Found by
+    review.
+    """
+    decoded = decode(line)
+    assert decoded is not None
+    assert set(decoded) == keys, f"keys synthesized from a quoted value: {set(decoded) - keys}"
+    for record in (line, line.encode()):
+        event = normalize(record)
+        assert event.vendor == "unrecognized", (event.vendor, event.notes)
+        assert event.timestamp is None, "the timestamp was read out of an application's field"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("line", "nested"),
+    [
+        pytest.param(
+            "node=web-01 type=USER_CMD msg=audit(1760000001.500:9): pid=2 uid=1000 auid=1000 "
+            'ses=3 msg=\'cwd="/srv" cmd=6C73 exe="/usr/bin/sudo" terminal=pts/0 res=success\'',
+            {"cwd": "/srv", "cmd": "6C73", "exe": "/usr/bin/sudo", "res": "success"},
+            id="node-prefixed-user-cmd",
+        ),
+        pytest.param(
+            "type=SERVICE_START msg=audit(1760000002.000:10): pid=1 uid=0 auid=4294967295 "
+            "ses=4294967295 msg='unit=systemd-tmpfiles-clean comm=\"systemd\" res=success'",
+            {"unit": "systemd-tmpfiles-clean", "comm": "systemd", "res": "success"},
+            id="service-start",
+        ),
+    ],
+)
+def test_auditds_own_nesting_is_still_rescanned(line: str, nested: dict[str, str]) -> None:
+    """The narrowing must not cost the records the re-scan exists for."""
+    decoded = decode(line)
+    assert decoded is not None
+    assert {key: decoded.get(key) for key in nested} == nested
+    assert decoded["msg"].startswith("audit(")
+    assert normalize(line).vendor == "auditd"
+
+
+@pytest.mark.security
+def test_a_logfmt_escaped_quote_still_breaks_out_pinned_residual() -> None:
+    """A pinned residual, not a guarantee: quoting follows auditd, which has no escapes.
+
+    A logfmt writer escapes ``"`` as ``\\"``; this decoder ends a value at
+    the next ``"`` regardless, so the escaped string's tail decodes as
+    top-level pairs and claims the line. Which convention wins is the owner's
+    decision (``decode``'s docstring). Pinned so that statement is measured,
+    and so that closing it has to update both.
+    """
+    line = 'type=USER_LOGIN user="a\\" comm=sshd timestamp=1.0 x=\\""'
+    decoded = decode(line)
+    assert decoded is not None
+    assert (decoded.get("comm"), decoded.get("timestamp")) == ("sshd", "1.0")
+    event = normalize(line)
+    assert (event.vendor, event.parse_status, event.timestamp) == ("auditd", "structured", 1.0)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
     "line",
     [
         "the operator said 'count=3 limit=9' during the call at length this morning",
@@ -372,7 +473,7 @@ def test_nesting_cannot_promote_prose_into_an_event(line: str) -> None:
 
 
 @pytest.mark.security
-def test_only_quoted_values_are_rescanned() -> None:
+def test_a_bare_value_is_never_rescanned() -> None:
     """A bare value cannot hold a space, so it cannot hold a second pair.
 
     Re-scanning bare values would mine a URL's query string for pairs nobody

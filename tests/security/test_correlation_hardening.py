@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,19 @@ def _stored(records: tuple[str | Mapping[str, Any], ...]) -> tuple[StoredEvent, 
         StoredEvent(event_id=f"id{index}", ingested_at=1000.0 + index, event=normalize(record))
         for index, record in enumerate(records)
     )
+
+
+def _flow(orig: str, resp: str, index: int) -> dict[str, Any]:
+    """A Zeek conn record whose only content of interest is its two endpoints."""
+    return {
+        "ts": f"2026-10-14T01:{index:02d}:00Z",
+        "uid": f"C{index}",
+        "id.orig_h": orig,
+        "id.resp_h": resp,
+        "id.orig_p": 1000 + index,
+        "id.resp_p": 443,
+        "proto": "tcp",
+    }
 
 
 # --------------------------------------------------------------------------
@@ -222,6 +235,333 @@ def test_a_display_name_collision_cannot_merge_two_people() -> None:
     assert keys == {"alice.smith@corp.example", "john.smith@corp.example"}, (
         f"a shared display name merged two principals: {users}"
     )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "127.0.0.1",
+        "::1",
+        "::",
+        "0:0:0:0:0:0:0:1",
+        "::ffff:127.0.0.1",
+        "127.0.0.2",
+        "0000::1",
+        "::0",
+        "0:0:0:0:0:0:0:0",
+    ],
+)
+def test_a_loopback_or_unspecified_address_is_refused_in_every_spelling(spelling: str) -> None:
+    """``NEVER_JOIN`` names four spellings; the refusal must be on the parsed value.
+
+    Measured before the fix, through the Zeek parser: the last six spellings
+    here each became a *joinable* address entity, and two flows that shared
+    nothing but that placeholder became a two-event incident. The same defect
+    class AGENTS.md §5 records for the listener's bind address — a rule written
+    as a string that the thing it means to stop can simply spell differently.
+    The first three are the string set still doing its job, as defence in depth.
+    """
+    window = _stored((_flow(spelling, "10.0.0.5", 1), _flow(spelling, "10.0.0.6", 2)))
+    assert assemble(window) == (), f"{spelling!r} linked two unrelated flows"
+    joinable = {
+        entity.key
+        for entity in resolve(tuple(item.event for item in window))
+        if entity.kind == "address" and entity.joinable
+    }
+    assert joinable == {"10.0.0.5", "10.0.0.6"}, f"{spelling!r} survived as a join key"
+
+
+#: Loopback or unspecified under ``inet_aton`` or by decoration (port, brackets,
+#: CIDR, trailing dot, zero-width space, fullwidth digits) — and refused by
+#: ``ipaddress``, so none reaches the parsed-value check above.
+_UNPARSEABLE_PLACEHOLDERS = (
+    "127.000.000.001",
+    "0127.0.0.1",
+    "127.00.00.01",
+    "127.1",
+    "127.0.1",
+    "2130706433",
+    "0x7f000001",
+    "0177.0.0.1",
+    "0x7f.0.0.1",
+    "000.000.000.000",
+    "0.0.0.00",
+    "[::1]",
+    "127.0.0.1:443",
+    "[::1]:443",
+    "::1/128",
+    "127.0.0.1/32",
+    "127.0.0.1.",
+    "\uff11\uff12\uff17.0.0.1",
+    "::1\u200b",
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", _UNPARSEABLE_PLACEHOLDERS)
+def test_an_address_the_parser_refuses_is_an_alias_and_never_a_join_key(spelling: str) -> None:
+    """The parsed-value refusal had a fall-through, and review measured it open.
+
+    Before the fix every spelling here was carried as an opaque string and two
+    flows sharing nothing but it assembled into an incident: the strict parser
+    had become the string rule AGENTS.md §5 warns about, with everything it
+    rejects falling open. The value is kept as an alias — an analyst should
+    see what the source wrote — and keys nothing.
+    """
+    window = _stored((_flow(spelling, "10.0.0.5", 1), _flow(spelling, "10.0.0.6", 2)))
+    assert assemble(window) == (), f"{spelling!r} linked two unrelated flows"
+    addresses = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "address"]
+    assert {e.key for e in addresses if e.joinable} == {"10.0.0.5", "10.0.0.6"}, addresses
+    kept = [e.aliases for e in addresses if not e.joinable]
+    assert kept == [(spelling.casefold(),)], f"{spelling!r} was not kept as an alias: {kept}"
+
+
+@pytest.mark.security
+def test_a_non_address_in_an_address_field_cannot_link_two_accounts() -> None:
+    """Documented inputs, not an attacker's: a service name and a JSON boolean.
+
+    CloudTrail writes ``ec2.amazonaws.com`` as ``sourceIPAddress`` for a
+    service-initiated call. Before the fix it was a joinable address, and two
+    accounts' events sharing nothing but it became an incident. A JSON boolean
+    in a Zeek address field, rendered ``true`` at ingest, linked the same way.
+    """
+
+    def trail(user: str, account: str, index: int) -> dict[str, Any]:
+        return {
+            "eventVersion": "1.08",
+            "eventTime": f"2026-10-14T01:{index:02d}:00Z",
+            "eventSource": "ec2.amazonaws.com",
+            "eventName": "RunInstances",
+            "awsRegion": "eu-west-1",
+            "sourceIPAddress": "ec2.amazonaws.com",
+            "recipientAccountId": account,
+            "userIdentity": {"type": "IAMUser", "userName": user},
+        }
+
+    window = _stored((trail("alice", "1", 1), trail("bob", "2", 2)))
+    assert assemble(window) == (), "two accounts' events linked on a service name"
+    addresses = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "address"]
+    assert [(e.key, e.aliases) for e in addresses] == [("", ("ec2.amazonaws.com",))], addresses
+
+    first, second = _flow("x", "10.0.0.5", 1), _flow("x", "10.0.0.6", 2)
+    first["id.orig_h"] = second["id.orig_h"] = True
+    window = _stored((first, second))
+    assert window[0].event.src_endpoint.ip == "true", "the fixture no longer exercises the path"
+    assert assemble(window) == (), "a JSON boolean in an address field linked two flows"
+
+
+#: Two principals from two addresses: index 1 and index 2 share nothing else.
+_PRINCIPALS = {1: ("alice", "203.0.113.5"), 2: ("bob", "198.51.100.7")}
+
+
+def _trail_with_agent(index: int, agent: str) -> dict[str, Any]:
+    """A CloudTrail record for principal ``index``, its own account; ``userAgent`` as given."""
+    user, src = _PRINCIPALS[index]
+    return {
+        "eventVersion": "1.08",
+        "eventTime": f"2026-10-14T01:{index:02d}:00Z",
+        "eventSource": "ec2.amazonaws.com",
+        "eventName": "RunInstances",
+        "awsRegion": "eu-west-1",
+        "sourceIPAddress": src,
+        "userAgent": agent,
+        "recipientAccountId": str(index),
+        "userIdentity": {"type": "IAMUser", "userName": user},
+    }
+
+
+def _okta_with_device(index: int, device: str) -> dict[str, Any]:
+    """An Okta System Log record for principal ``index``; ``client.device`` as given."""
+    user, ip = _PRINCIPALS[index]
+    return {
+        "actor": {"alternateId": f"{user}@corp.example", "id": f"00u{index}", "type": "User"},
+        "client": {"device": device, "ipAddress": ip},
+        "eventType": "user.session.start",
+        "outcome": {"result": "SUCCESS"},
+        "published": f"2026-10-14T01:{index:02d}:00.000Z",
+        "uuid": f"u{index}",
+    }
+
+
+_NOT_A_HOST = [
+    *(
+        pytest.param(_trail_with_agent, agent, id=f"cloudtrail-userAgent-{agent}")
+        for agent in (
+            "console.amazonaws.com",
+            "signin.amazonaws.com",
+            "ec2.amazonaws.com",
+            "cloudformation.amazonaws.com",
+            "autoscaling.amazonaws.com",
+            "lambda.amazonaws.com",
+        )
+    ),
+    *(
+        pytest.param(_okta_with_device, device, id=f"okta-client.device-{device}")
+        for device in ("Computer", "Mobile", "Tablet", "Other")
+    ),
+]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("record", "value"), _NOT_A_HOST)
+def test_a_parser_field_that_names_no_host_cannot_link_two_principals(
+    record: Callable[[int, str], dict[str, Any]], value: str
+) -> None:
+    """Closing the service-name link in ``sourceIPAddress`` left it open one field over.
+
+    The CloudTrail parser maps ``userAgent`` into ``device.hostname`` and the
+    Okta parser maps ``client.device`` (a category; this repo's own ingest
+    fixture carries ``Computer``) there too. Both are well-formed hostnames,
+    so the shape guard admits them. Measured before the fix: two accounts, or
+    two users, from two addresses, sharing only that value — ``ec2`` /
+    ``computer`` — assembled into an incident.
+    """
+    window = _stored((record(1, value), record(2, value)))
+    assert window[0].event.device.hostname == value, "the fixture no longer exercises the path"
+    assert assemble(window) == (), f"two principals linked on {value!r}"
+    hosts = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"]
+    assert [(e.key, e.aliases) for e in hosts] == [("", (value.casefold(),))], hosts
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ip6-localhost",
+        "ip6-loopback",
+        "localhost6",
+        "localhost6.localdomain6",
+        "localhost4",
+        "localhost4.localdomain4",
+        "LOCALHOST4",
+    ],
+)
+def test_a_loopback_name_from_a_default_hosts_file_identifies_nothing(name: str) -> None:
+    """``localhost`` was refused; the other loopback names in ``/etc/hosts`` were not.
+
+    Measured through the auditd parser: ``node=ip6-localhost`` on two records
+    for different users linked them as one host. The fix covered the ``::1``
+    line only, and review measured the ``127.0.0.1`` line of the same Red Hat
+    file open: ``localhost4`` and ``localhost4.localdomain4`` linked the same way.
+    """
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": name, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": name, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{name!r} in a hostname field linked two events"
+    assert [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"] == []
+
+
+@pytest.mark.security
+def test_an_ip_literal_in_the_hostname_field_cannot_merge_two_hosts() -> None:
+    """A sender with no name logs its address where its hostname would go.
+
+    Measured before the fix, through the auditd parser: ``node=10.0.0.5`` and
+    ``node=10.0.0.7`` were short-formed at the first dot to one host ``10``,
+    and two events that shared nothing else assembled into a score-10 incident
+    linking both hosts and both their users — the attribution error boundary
+    11 exists to prevent, produced by a rule meant for ``web-01.corp.example``.
+    """
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": "10.0.0.5", "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": "10.0.0.7", "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), "two IP-named hosts merged into one"
+    hosts = {e.key for e in resolve(tuple(item.event for item in window)) if e.kind == "host"}
+    assert hosts == {"10.0.0.5", "10.0.0.7"}, hosts
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", ["127.0.0.1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "::"])
+def test_a_loopback_literal_in_the_hostname_field_identifies_nothing(spelling: str) -> None:
+    """The parsed-value refusal applies to a hostname field too, in every spelling."""
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": spelling, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": spelling, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{spelling!r} in a hostname field linked two events"
+    hosts = [e for e in resolve(tuple(item.event for item in window)) if e.kind == "host"]
+    assert hosts == [], hosts
+
+
+#: Two different hosts whose address is decorated so that ``ipaddress`` refuses
+#: it: none reaches the parsed-value check, and each pair shares a leading label.
+_DECORATED_HOST_PAIRS = (
+    ("10.0.0.5:514", "10.0.0.7:514"),
+    ("10.0.0.5.", "10.0.0.7."),
+    ("[10.0.0.5]", "[10.0.0.7]"),
+    ("010.0.0.5", "010.0.0.7"),
+    ("10.0.0.5/32", "10.0.0.7/32"),
+    ("10.0.0.5,10.0.0.9", "10.0.0.7,10.0.0.8"),
+    ("10.0.0.5\u200b", "10.0.0.7\u200b"),
+    ("127.1", "127.2"),
+    ("[::ffff:10.0.0.5]:22", "[::ffff:10.0.0.7]:22"),
+    ("sensor@10.0.0.5", "sensor@10.0.0.7"),
+    ("\uff11\uff10.0.0.5", "\uff11\uff10.0.0.7"),
+    # Only the leading label was checked: each of these passed it.
+    ("0x7f.0.0.1", "0x7f.0.0.2"),
+    ("0xa.0.0.5", "0xa.0.0.7"),
+    ("0x7f.0.0.1:514", "0x7f.0.0.2:514"),
+    ("web.10.0.0.5", "web.10.0.0.7"),
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("first", "second"), _DECORATED_HOST_PAIRS)
+def test_an_ip_literal_the_parser_refuses_cannot_merge_two_hosts(first: str, second: str) -> None:
+    """The no-shortening rule was enforced by a strict parser, and its fall-through was open.
+
+    A port, brackets, a trailing dot, leading zeros, a CIDR suffix, a list, a
+    zero-width space, a short form, a user prefix, fullwidth digits: each
+    makes ``ipaddress`` refuse the value, which then reached the dot split.
+    Measured through the auditd parser before the fix, every pair here
+    collapsed to one host (``10``, ``[10``, ``010``, ``127``, ``sensor@10``)
+    and both users into a score-10 incident. Such a value is neither a name
+    nor an address, so it is an alias that joins nothing. The fix checked the
+    leading label only, and review measured the hex ``inet_aton`` form open
+    (``0x7f.0.0.1`` and ``0x7f.0.0.2`` one host ``0x7f``), so the whole value
+    must now be DNS-shaped.
+    """
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": first, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": second, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{first!r} and {second!r} merged into one host"
+    hosts = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"]
+    assert all(not e.joinable for e in hosts), f"a decorated literal became a join key: {hosts}"
+    aliases = sorted(alias for e in hosts for alias in e.aliases)
+    assert aliases == sorted((first.casefold(), second.casefold())), hosts
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "spelling",
+    ["127.000.000.001", "127.1", "[::1]", "127.0.0.1:514", "0x7f000001", "0X7F000001", "0x7f.1"],
+)
+def test_a_loopback_literal_the_parser_refuses_identifies_no_host(spelling: str) -> None:
+    """``127.000.000.001`` in a hostname field short-formed to host ``127`` and linked two records.
+
+    ``0x7f000001`` (``inet_aton``'s hex spelling of 127.0.0.1) has the shape
+    of a hostname label and linked the same way until hex labels were refused.
+    """
+    window = _stored(
+        (
+            {"type": "SYSCALL", "node": spelling, "auid": "alice", "comm": "a"},
+            {"type": "SYSCALL", "node": spelling, "auid": "bob", "comm": "b"},
+        )
+    )
+    assert assemble(window) == (), f"{spelling!r} in a hostname field linked two events"
+    hosts = [e for e in resolve(tuple(i.event for i in window)) if e.kind == "host"]
+    assert all(not e.joinable for e in hosts), hosts
 
 
 # --------------------------------------------------------------------------

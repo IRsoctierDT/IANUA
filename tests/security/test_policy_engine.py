@@ -96,3 +96,59 @@ def test_returns_policy_decision_dataclass(engine: PolicyEngine) -> None:
 def test_empty_action_raises(engine: PolicyEngine, bad: str) -> None:
     with pytest.raises(ValueError):
         engine.evaluate(bad)
+
+
+# ------------------------------------------------ grant scope, pinned (task #28)
+_ALL_CLASSES = [
+    "read_only",
+    "collection",
+    "containment",
+    "destructive",
+    "external_network",
+    "deployment",
+    "dependency",
+    "secret_handling",
+    "boundary_crossing",
+    "unknown",
+]
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("action_class", _ALL_CLASSES)
+def test_allow_list_grant_is_label_scoped_not_class_scoped(action_class: str) -> None:
+    """Pins the measured decision table so a change to it shows up in a diff.
+
+    An allow-list entry matches on the label alone: one grant permits that label
+    in EVERY class except ``boundary_crossing``. So a grant written for one
+    capability also permits the same string re-declared under another class, and
+    an "egress grant" is a grant of that string anywhere. Whether grants should
+    carry a class is the owner's decision (#28); until it is made, this is the
+    behaviour, stated rather than incidental. The one row that must never move
+    is ``boundary_crossing``.
+    """
+    eng = PolicyEngine(allow=["ship_wal:apply"])
+    decision = eng.decide(action_class=action_class, label="ship_wal:apply").decision  # type: ignore[arg-type]
+    assert decision == ("deny" if action_class == "boundary_crossing" else "allow")
+
+
+@pytest.mark.security
+def test_deny_list_wins_over_allow_list_for_the_same_label() -> None:
+    eng = PolicyEngine(allow=["ship_wal:apply"], deny=["ship_wal:apply"])
+    assert eng.decide(action_class="destructive", label="ship_wal:apply").decision == "deny"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("decision", ["allow", "require_approval"])
+def test_boundary_crossing_table_override_is_refused_at_construction(decision: str) -> None:
+    """``decide`` denies ``boundary_crossing`` before reading the table, so a value
+    other than ``deny`` would be stored and never enforced. Measured before this
+    check: ``engine.policy["boundary_crossing"] == "allow"`` while ``decide`` denied."""
+    with pytest.raises(ValueError, match="boundary_crossing"):
+        PolicyEngine(policy={"boundary_crossing": decision})  # type: ignore[dict-item]
+
+
+@pytest.mark.security
+def test_boundary_crossing_cannot_be_downgraded_by_both_mechanisms_together() -> None:
+    """Explicit ``deny`` in the table plus an allow-list entry for the label: still denied."""
+    eng = PolicyEngine(policy={"boundary_crossing": "deny"}, allow=["exploit the target host"])
+    assert eng.evaluate("Exploit the target host").decision == "deny"

@@ -269,20 +269,73 @@ def check_sbom_present(root: Path) -> CheckResult:
     return CheckResult(ControlStatus.FAIL, "no SBOM documents under security/sbom/")
 
 
+def _own_attack_package() -> Path:
+    """The one ``attack`` package SUP-03 may load: the one beside ``compliance/``.
+
+    Located from this module's own file, never from ``sys.path`` or the working
+    directory, so the answer does not move with how the process was started.
+    """
+    return Path(__file__).resolve().parent.parent / "attack"
+
+
+def _attack_import_is_own_package() -> bool:
+    """Whether ``import attack`` would bind to :func:`_own_attack_package`.
+
+    :func:`importlib.util.find_spec` locates a top-level module without
+    executing it — measured: a planted ``attack/__init__.py`` in the working
+    directory was located and did not run. Fails closed: no spec, a namespace
+    package (no origin), an unreadable spec, or an origin anywhere other than
+    the sibling package all answer ``False``. The import is function-local for
+    the reason given in :func:`check_attack_corpus_integrity`.
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("attack")
+    except (ImportError, ValueError):
+        return False
+    if spec is None or spec.origin is None:
+        return False
+    return Path(spec.origin).resolve().parent == _own_attack_package()
+
+
 def check_attack_corpus_integrity(root: Path) -> CheckResult:
     """SUP-03: committed ATT&CK shards verify against the pin, offline.
 
     Read-only and fail closed: a missing pin, a hash mismatch, or a corpus
     that does not load is a FAIL — never a silent pass. Runs the same loader
     the platform uses, so the control is load-bearing, not decorative.
+
+    ``root`` is **data, never a code path** — enforced here, not inherited
+    from the interpreter. The loader is this installation's own :mod:`attack`
+    package, the one beside ``compliance/``; only the pin and the shards are
+    read from under ``root``. Before importing, the check asks the import
+    system *where* ``attack`` would come from, without running it, and
+    returns ``ERROR`` if the answer is anywhere else. Two earlier versions of
+    this function were measured short of that sentence: the first inserted
+    ``root`` at the front of ``sys.path`` and executed a planted
+    ``attack/__init__.py`` under any root; the second removed the insert but
+    still imported from ``sys.path`` as it stood, so with the graded tree as
+    the working directory under ``python -c``/``-m`` (where ``''`` is
+    ``sys.path[0]``) a planted package under ``root`` ran and forged a PASS.
+
+    What this does not hold: a shadowing ``attack`` that something *else*
+    imported before this check ran is detected and refused, but that code has
+    already run. Only this loader is guarded; nothing here changes how a
+    module-level import in this file resolves at import time.
+
+    The imports stay function-local on purpose: a module-level line above
+    ``Category.SECRETS`` shifts an accepted ``.secrets.baseline`` entry.
     """
-    import sys
+    if not _attack_import_is_own_package():
+        return CheckResult(
+            ControlStatus.ERROR,
+            "ATT&CK corpus not evaluated: `import attack` would not bind to this "
+            "installation's own package, so the loader was not imported.",
+        )
+    from attack import load_corpus, load_pin
 
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
     try:
-        from attack import load_corpus, load_pin
-
         pin = load_pin(root / "attack" / "pins" / "enterprise-attack.pin.json")
         corpus = load_corpus(pin=pin, data_dir=root / "attack" / "data")
     except Exception as exc:

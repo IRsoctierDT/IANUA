@@ -4,7 +4,65 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **`scripts/secret_gate.py` runs §7.1's secret gate end to end, including the re-scan
+  after staging.** The documented procedure for a baseline refresh ended at "verify, then
+  stage"; verifying proves the rewrite was a refresh and says nothing about whether the
+  gate then passes (the owner's point). The script invokes the hook without `xargs` —
+  through it a finding's exit 1 and a refresh's exit 3 both surface as 123 — refuses up
+  front what the hook misreports or runs over silently (a root that is not the repository
+  top level; a baseline that is missing, a symlink, untracked, unparseable, or carrying
+  unstaged edits — a staged edit is the ACCEPT procedure's own state and is gated), verifies
+  that a rewrite is a refresh, stages only that file, requires the post-staging re-scan to
+  exit 0, and on every other path restores the pre-run bytes and index entry. **One charter
+  claim fell while building it:** §7.1 said the hook's exit-3 rewrite "only ever moves a
+  line number". Measured, deleting an accepted literal exits 3 with the same message and
+  *retires* the entry, so a refresh is "move or retire" and the first version of the script
+  refused a retirement as an acceptance. A retirement cannot hide a relocation — a literal
+  moved to another tracked file is a new finding there, exit 1, and the refresh is
+  suppressed (measured). An independent four-lens review of the first commit then found the
+  symlink, untracked, unparseable, sub-directory and staged-then-failed cases, and Codex's
+  review of #242 found three more — a credential staged and then removed by an unstaged
+  edit scanned clean while the index still held it (the gate now refuses any tracked file
+  with unstaged changes: the hook scans the work tree, a commit records the index), a
+  hard-linked baseline the hook would rewrite through the shared inode, and a nonexistent
+  `--root` that exited with a traceback — each reproduced before it was fixed. `tests/security/test_secret_gate.py` pins every branch
+  in throwaway repositories with the real hook, drives the outcomes it cannot produce on
+  demand with a stand-in named as such, and its last test requires this repository's
+  committed baseline to pass the hook at exit 0 on every run (the hook's full run over the
+  tree, 41 s here; a gate that is not run is a claim).
+
 ### Changed
+- **Backup manifest format is `ianua.backup.v2`, and the attestation commits to observable
+  *contents*.** `EventStore.attest()` gains `observables_digest` — a sha256 over every sorted
+  `(event_id, value)` row, each field length-prefixed — beside the unchanged event digest.
+  Review of the promotion gate showed why: replacing observable rows one-for-one left the
+  count, the event count, the event digest and `quick_check` all satisfied, exit 0, while
+  every indicator pivot joined on values the backup never held. Every attestation field is
+  now mandatory in both `--verify` and `--verify-restore` (read from the dataclass, so the
+  list cannot lag it), a `SUBSTITUTED` finding names the observables case, and **a v1
+  manifest is refused outright** — exit 1, on stderr, stating that this is not a verdict
+  on the copy and that the revision which wrote it can still verify it. Route (a) over (b),
+  the owner's call; `docs/RESTORE.md` carries the recourse. Two fail-opens were caught by
+  the new tests while building it: `_verify_backup` compared only the attestation keys it
+  found, and the first fix still indexed a missing field after reporting it, turning the
+  finding into a bare `KeyError` on stderr. The covering-index property of `attest()`'s
+  statements moved from prose ("both") into a test that imports the SQL the method runs.
+  **An independent four-lens review before push then found eleven more**, all confirmed by
+  reproduction, among them: a **regression** this change introduced — `--verify` on a backup
+  whose store file is missing, or whose manifest `store.path` escapes, raised an
+  `UnboundLocalError` traceback where the base branch named the finding (the return dict
+  read a variable only one branch bound); `events` was *coerced* with `int()` in
+  `--verify-restore`, so a manifest saying `"40"` or `40.9` verified green and `null`
+  raised a `TypeError` traceback — every attestation field is now type-checked in one
+  place for both verifiers; the digest framed `str()` of each field, which is not injective
+  across SQLite storage classes (a `BLOB` `b"x"` and the text `b'x'` digested identically)
+  — it now frames storage class, length and raw bytes and never decodes; `--verify-restore`
+  never compared `high_water` or `schema_version`; the `ADDED` findings asserted "NOT
+  evidence loss", which a count plus whole-set digest cannot establish when rows were also
+  substituted; a manifest that is `null`, or lacks `store`/`files`/`chains`, surfaced as a
+  traceback; and the "both statements" prose survived in two more docstrings. The
+  review's 16 confirmations included the same regression four times, once per lens.
 - **Audit of `AGENTS.md`'s measured claims — six were wrong, every one re-measured
   on current code.** The charter is what other agents are told is binding, so a
   claim in it that the code does not hold is a defect. Corrected: (1) §5 said
@@ -180,8 +238,9 @@ All notable changes to this project. Versions correspond to git tags.
   **Observables were never compared.** The completeness digest is a sha256 over
   the `event_id` set only, so observables are not in the preimage. Measured: 20
   observable rows destroyed of 20, events untouched — `quick_check` ok, event
-  count equal, digest equal, **exit 0**. Indicator pivots return nothing on such
-  a store, because `correlation/entities.py` joins on that table. The number was
+  count equal, digest equal, **exit 0**. An indicator pivot (`query(observable=…)`) returns
+  nothing on such a store — the pivot and the attestation are what lose; `correlation/`
+  never reads `observables`, and an earlier version of this entry said it did. The number was
   sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
   it, with `ADDED` for the legitimate re-collection direction.
 

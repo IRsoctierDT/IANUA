@@ -11,13 +11,15 @@ executor is absent or does not confirm execution.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import os
 import signal
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -358,3 +360,310 @@ def test_successful_action_records_decision_and_outcome(tmp_path: Path) -> None:
 def test_root_must_be_a_directory(tmp_path: Path) -> None:
     with pytest.raises(ContainmentError, match="not a directory"):
         ContainmentToolkit(tmp_path / "missing")
+
+
+# --- validate-then-act races on quarantine paths ------------------------------
+
+
+@pytest.mark.security
+def test_quarantine_chmod_does_not_follow_a_symlink_swapped_in_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The symlink check runs before the rename; the chmod after it must not follow one.
+
+    Measured before the fix: a vault entry replaced by a link to a file outside
+    the root took that file from 0o644 to 0o400 and the action reported executed.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o644)
+    (root / "mal.bin").write_bytes(b"evil")
+    real_rename = os.rename
+
+    def swap_after_rename(src: str, dst: str, **dir_fds: int | None) -> None:
+        real_rename(src, dst, **dir_fds)
+        placed = root / QUARANTINE_DIRNAME / dst
+        placed.unlink()  # the race, made deterministic: the path now aliases `outside`
+        placed.symlink_to(outside)
+
+    monkeypatch.setattr(os, "rename", swap_after_rename)
+    with pytest.raises(ContainmentError, match="symlink"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+
+
+@pytest.mark.security
+def test_quarantine_refuses_an_entry_that_is_not_the_hashed_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different regular file swapped in after hashing must not be sealed under the digest."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "mal.bin").write_bytes(b"evil")
+    real_rename = os.rename
+
+    def swap_after_rename(src: str, dst: str, **dir_fds: int | None) -> None:
+        real_rename(src, dst, **dir_fds)
+        placed = root / QUARANTINE_DIRNAME / dst
+        placed.unlink()
+        placed.write_bytes(b"something else entirely")  # a new inode at the vault path
+
+    monkeypatch.setattr(os, "rename", swap_after_rename)
+    with pytest.raises(ContainmentError, match="NOT contained"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+
+
+@pytest.mark.security
+def test_release_chmod_does_not_follow_a_symlink_swapped_in_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured before the fix: the aliased outside file went from 0o444 to 0o600."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o444)
+    (root / "mal.bin").write_bytes(b"evil")
+    kit = ContainmentToolkit(root)
+    entry = root / QUARANTINE_DIRNAME / kit.quarantine_file("mal.bin").rollback.split("'")[1]
+    real_resolve = ContainmentToolkit._resolve_no_symlink
+
+    def swap(base: Path, candidate: str) -> Path:
+        result = real_resolve(base, candidate)
+        if candidate == "mal.bin":  # the restore path has just been validated
+            entry.unlink()
+            entry.symlink_to(outside)
+        return result
+
+    monkeypatch.setattr(ContainmentToolkit, "_resolve_no_symlink", staticmethod(swap))
+    with pytest.raises(ContainmentError, match="symlink"):
+        kit.release_file(entry.name)
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444
+
+
+@contextlib.contextmanager
+def _fail_if_blocked(seconds: int = 5) -> Iterator[None]:
+    """Fail instead of hanging when an open blocks; raises a BaseException, since a TimeoutError is an OSError."""
+
+    class Blocked(BaseException):
+        pass
+
+    def on_alarm(*_: object) -> None:
+        raise Blocked
+
+    previous = signal.signal(signal.SIGALRM, on_alarm)
+    signal.alarm(seconds)
+    try:
+        yield
+    except Blocked:
+        pytest.fail(f"blocked for {seconds}s in an open that must not block")
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _swap_after_is_file(
+    monkeypatch: pytest.MonkeyPatch, victim: Path, swap: Callable[[], None]
+) -> None:
+    """Run ``swap`` right after ``is_file()`` has said yes to ``victim`` (the race, deterministic)."""
+    real_is_file = Path.is_file
+
+    def hooked(self: Path) -> bool:
+        result = real_is_file(self)
+        if result and self == victim:
+            swap()
+        return result
+
+    monkeypatch.setattr(Path, "is_file", hooked)
+
+
+@pytest.mark.security
+def test_quarantine_refuses_a_hard_link_to_a_file_outside_the_root(tmp_path: Path) -> None:
+    """No symlink anywhere: measured before the fix, the outside file went 0o644 -> 0o400."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o644)
+    os.link(outside, root / "mal.bin")
+    with pytest.raises(ContainmentError, match="2 links"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+    assert (root / "mal.bin").exists()  # nothing moved
+
+
+@pytest.mark.security
+def test_release_refuses_a_vault_entry_that_is_a_hard_link(tmp_path: Path) -> None:
+    """Measured before the fix: the outside file went 0o444 -> 0o600 and was moved into the root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    outside.chmod(0o444)
+    (root / "mal.bin").write_bytes(b"evil")
+    kit = ContainmentToolkit(root)
+    entry = root / QUARANTINE_DIRNAME / kit.quarantine_file("mal.bin").rollback.split("'")[1]
+    entry.unlink()
+    os.link(outside, entry)
+    with pytest.raises(ContainmentError, match="2 links"):
+        kit.release_file(entry.name)
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444
+    assert not (root / "mal.bin").exists()
+
+
+@pytest.mark.security
+def test_a_fifo_swapped_in_after_validation_fails_closed_instead_of_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured before the fix: ``os.open`` blocked forever before the regular-file check ran — at
+    the target on quarantine (pre-existing) and at the vault entry on release (introduced)."""
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "mal.bin"
+    target.write_bytes(b"evil")
+    kit = ContainmentToolkit(root)
+
+    def to_fifo(victim: Path) -> Callable[[], None]:
+        def swap() -> None:
+            victim.unlink()
+            os.mkfifo(victim)
+
+        return swap
+
+    _swap_after_is_file(monkeypatch, target, to_fifo(target))
+    with _fail_if_blocked(), pytest.raises(ContainmentError, match="not a regular file"):
+        kit.quarantine_file("mal.bin")
+
+    monkeypatch.undo()  # the first hook would turn the recreated target into a FIFO again
+    target.unlink()
+    target.write_bytes(b"evil")
+    entry = root / QUARANTINE_DIRNAME / kit.quarantine_file("mal.bin").rollback.split("'")[1]
+    _swap_after_is_file(monkeypatch, entry, to_fifo(entry))
+    with _fail_if_blocked(), pytest.raises(ContainmentError, match="not a regular file"):
+        kit.release_file(entry.name)
+
+
+@pytest.mark.security
+def test_overlong_entry_name_is_a_containment_error_not_a_raw_oserror(tmp_path: Path) -> None:
+    """Measured before the fix: ``ENAMETOOLONG`` escaped ``is_file()`` unwrapped."""
+    (tmp_path / "x.bin").write_bytes(b"x")
+    kit = ContainmentToolkit(tmp_path)
+    kit.quarantine_file("x.bin")  # the vault exists, so the long name reaches the stat
+    with pytest.raises(ContainmentError, match="no such vault entry"):
+        kit.release_file("a" * 300)
+
+
+# --- the vault, the sidecar and the restore directory are acted on by descriptor --
+
+
+def _swap_after_validation(
+    monkeypatch: pytest.MonkeyPatch, candidate: str, swap: Callable[[], None]
+) -> None:
+    """Run ``swap`` right after ``_resolve_no_symlink`` has validated ``candidate``."""
+    real = ContainmentToolkit._resolve_no_symlink
+
+    def hooked(base: Path, cand: str) -> Path:
+        result = real(base, cand)
+        if cand == candidate:
+            swap()
+        return result
+
+    monkeypatch.setattr(ContainmentToolkit, "_resolve_no_symlink", staticmethod(hooked))
+
+
+@pytest.mark.security
+def test_quarantine_sidecar_is_created_exclusively_never_through_a_planted_link(
+    tmp_path: Path,
+) -> None:
+    """Measured before the fix: ``write_text`` followed the link; the JSON overwrote an outside file."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("victim", encoding="utf-8")
+    (root / "mal.bin").write_bytes(b"evil")
+    vault = root / QUARANTINE_DIRNAME
+    vault.mkdir(mode=0o700)
+    sha12 = hashlib.sha256(b"evil").hexdigest()[:12]
+    (vault / f"{sha12}__mal.bin.meta.json").symlink_to(outside)
+    with pytest.raises(ContainmentError, match="already exists"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+    assert outside.read_text(encoding="utf-8") == "victim"
+    assert (root / "mal.bin").exists()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("how", ["symlink", "world-writable"])
+def test_quarantine_refuses_a_vault_it_did_not_create_privately(tmp_path: Path, how: str) -> None:
+    """Measured before the fix, ``mkdir(exist_ok=True)`` accepted both: a symlink moved the payload
+    and its sidecar into a directory outside the root; a 0o777 directory served as the vault."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "mal.bin").write_bytes(b"evil")
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    vault = root / QUARANTINE_DIRNAME
+    if how == "symlink":
+        vault.symlink_to(outside_dir)
+    else:
+        vault.mkdir()
+        vault.chmod(0o777)
+    with pytest.raises(ContainmentError, match="vault"):
+        ContainmentToolkit(root).quarantine_file("mal.bin")
+    assert list(outside_dir.iterdir()) == []
+    assert (root / "mal.bin").exists()
+
+
+@pytest.mark.security
+def test_release_refuses_a_restore_parent_swapped_to_a_symlink_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured before the fix: ``mkdir``/``rename`` followed it; the payload landed outside, 0o600."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    (root / "sub").mkdir()
+    (root / "sub" / "tool.bin").write_bytes(b"evil")
+    kit = ContainmentToolkit(root)
+    entry_name = kit.quarantine_file("sub/tool.bin").rollback.split("'")[1]
+
+    def swap_parent() -> None:
+        (root / "sub").rmdir()
+        (root / "sub").symlink_to(outside_dir)
+
+    _swap_after_validation(monkeypatch, "sub/tool.bin", swap_parent)  # the restore path
+    with pytest.raises(ContainmentError, match="not a directory inside the root"):
+        kit.release_file(entry_name)
+    assert list(outside_dir.iterdir()) == []
+    assert (root / QUARANTINE_DIRNAME / entry_name).exists()  # still in the vault
+
+
+@pytest.mark.security
+def test_quarantine_refuses_a_source_parent_swapped_to_a_symlink_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same class, other side. Measured on the previous commit: the open, the hash and the move all
+    followed the link, and a decoy *outside* the root was quarantined with the action executed."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    decoy = outside_dir / "mal.bin"
+    decoy.write_bytes(b"decoy")
+    decoy.chmod(0o644)
+    (root / "sub").mkdir()
+    (root / "sub" / "mal.bin").write_bytes(b"evil")
+
+    def swap_parent() -> None:
+        (root / "sub" / "mal.bin").unlink()
+        (root / "sub").rmdir()
+        (root / "sub").symlink_to(outside_dir)
+
+    _swap_after_validation(monkeypatch, "sub/mal.bin", swap_parent)
+    with pytest.raises(ContainmentError, match="not a directory inside the root"):
+        ContainmentToolkit(root).quarantine_file("sub/mal.bin")
+    assert decoy.read_bytes() == b"decoy"
+    assert stat.S_IMODE(decoy.stat().st_mode) == 0o644
+    assert not (root / QUARANTINE_DIRNAME).exists()

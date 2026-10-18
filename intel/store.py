@@ -28,11 +28,22 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 from attack import AttackError, Corpus, load_corpus, validate_reference
-from intel.model import AtomicIndicator, BehavioralRecord, IntelStore, Source
+from intel.model import (
+    EXEMPT_SHAPES,
+    AtomicIndicator,
+    AtomicType,
+    BehavioralRecord,
+    Confidence,
+    IntelStore,
+    Risk,
+    Source,
+)
 
 INTEL_DIR = Path(__file__).resolve().parent
 
@@ -76,6 +87,10 @@ _BEHAVIOR_FIELDS = {
 _ATOMIC_TYPES = {"ipv4", "ipv6", "domain", "url", "sha256", "sha1", "md5", "email"}
 _RISKS = {"malicious", "suspicious", "benign"}
 _CONFIDENCES = {"low", "medium", "high"}
+#: Upstream identity is a string compare, so one spelling: measured, case, a
+#: trailing dot, a scheme or a U+200B each made a second "independent" word.
+#: A numeric or 0x final label is refused: inet_aton reads 198.51.100.07 as .7.
+_UPSTREAM = re.compile(r"(?:[a-z0-9-]+\.)*(?![0-9]+\Z|0x[0-9a-f]*\Z)[a-z0-9-]+")
 
 
 class IntelStoreError(ValueError):
@@ -86,15 +101,44 @@ def _reject(reason: str) -> IntelStoreError:
     return IntelStoreError(f"invalid intel store: {reason}")
 
 
-def _read_json(path: Path) -> object:
-    if not path.is_file():
-        raise _reject(f"missing file: {path.name}")
-    raw = path.read_bytes()
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document = dict(pairs)
+    if len(document) != len(pairs):  # json's default is last-wins
+        raise ValueError("an object repeats a key")
+    return document
+
+
+def _read_json(path: Path, *, literal: bool = False) -> object:
+    """Parse one data file, refusing these ways for a diff to omit what loads.
+
+    Refused: anything but strict UTF-8 (``json.loads`` on bytes also reads
+    UTF-16/32, which git diffs as "Binary files differ"), a repeated key
+    (json keeps the last), a CR that does not end a CRLF line (JSON reads it
+    as whitespace, and a terminal draws what follows it over the line), and
+    a symlink at the file itself, whose content a diff never shows (a
+    symlinked ``seed/`` or ``behaviors/`` directory is not checked).
+    ``literal`` (never_flag.json only) also refuses a backslash and any byte
+    but printable ASCII, LF and CRLF, so no ``\\u`` escape or tab spells an
+    entry the diff does not. Not refused in the other files: inside a
+    string, a ``\\u`` escape, or a non-ASCII character that renders otherwise
+    than it loads (invisible, a homoglyph or a bidi control). Not visible
+    here: a ``.gitattributes`` entry that diffs a data file as binary.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise _reject(f"missing file (or a symlink): {path.name}")
+    with path.open("rb") as handle:  # the read is bounded, not the whole file
+        raw = handle.read(MAX_FILE_BYTES + 1)
     if len(raw) > MAX_FILE_BYTES:
         raise _reject(f"{path.name} exceeds {MAX_FILE_BYTES} bytes")
+    if re.search(rb"\r(?!\n)", raw):
+        raise _reject(f"{path.name} has a carriage return that does not end a line")
+    if literal and (not re.fullmatch(rb"[\x20-\x7e\r\n]*", raw) or b"\\" in raw):
+        raise _reject(f"{path.name} must be plain ASCII with no control byte or escape")
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_keys)
+    except RecursionError as exc:  # depth bomb — not a ValueError subclass
+        raise _reject(f"{path.name}: nesting depth exceeds parser limits") from exc
+    except ValueError as exc:  # JSONDecodeError, UnicodeDecodeError, digits, duplicates
         raise _reject(f"{path.name} is not valid JSON ({exc})") from exc
 
 
@@ -102,9 +146,18 @@ def _iso(value: object, context: str) -> str:
     if not isinstance(value, str):
         raise _reject(f"{context} must be an ISO date string")
     try:
-        date.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise _reject(f"{context} is not a valid ISO date: {value!r}") from exc
+    # Extended form (YYYY-MM-DD) only. ``fromisoformat`` also accepts the
+    # basic ``20260821`` and week ``2026-W34-5`` forms, and dates are ordered
+    # as strings here (``expires < first_seen``) and in
+    # ``intel.match.default_as_of`` (``max``). Measured: ``"20260801" <
+    # "2026-09-01"`` is False, so an August expiry written in basic form
+    # passed the ordering check against a September first_seen, and one
+    # basic-form ``retrieved`` moved default_as_of back seven months.
+    if parsed.isoformat() != value:
+        raise _reject(f"{context} must be written YYYY-MM-DD, got {value!r}")
     return value
 
 
@@ -126,32 +179,64 @@ def _str_tuple(value: object, context: str, *, allow_empty: bool = False) -> tup
 
 
 def _load_never_flag(path: Path) -> tuple[str, ...]:
-    document = _read_json(path)
+    document = _read_json(path, literal=True)
     if not isinstance(document, dict) or set(document) != {"cidrs"}:
         raise _reject("never_flag.json must carry exactly a 'cidrs' list")
     cidrs = document["cidrs"]
     if not isinstance(cidrs, list) or not cidrs:
         raise _reject("never_flag.json cidrs must be a non-empty list")
     for cidr in cidrs:
+        # A JSON string only. ``ip_network`` also accepts an int (and a bool,
+        # an int subclass) and JSON carries both: measured, ``2886729729``
+        # loaded as ``172.16.0.1/32`` and ``true`` as ``0.0.0.1/32`` — a
+        # suppression entry no reviewer can read in a diff. Same rule as the
+        # egress allow-list (AGENTS.md §5).
+        if not isinstance(cidr, str):
+            raise _reject(f"never_flag cidr must be a string, got {cidr!r}")
         try:
-            ipaddress.ip_network(cidr)
+            network = ipaddress.ip_network(cidr)
         except ValueError as exc:
             raise _reject(f"never_flag cidr invalid: {cidr!r}") from exc
+        # One spelling, the one ``ipaddress`` prints. Measured: netmask and
+        # hostmask forms, ``/0015``, a bare address and uppercase or expanded
+        # IPv6 all loaded, and a scope id made ``::%10.0.0.0/8`` read as
+        # RFC 1918 while it loads as ``::/8``.
+        if "%" in cidr or str(network) != cidr:
+            raise _reject(f"never_flag cidr {cidr!r} is not canonical (or has a scope id)")
     return tuple(cidrs)
 
 
 def never_flagged(value: str, never_flag: tuple[str, ...]) -> bool:
-    """True when ``value`` is an IP address inside a never-flag CIDR."""
+    """True when ``value`` is an IP address inside a never-flag CIDR.
+
+    Judged on the parsed address — and, for an IPv4-mapped IPv6 spelling
+    (``::ffff:10.0.0.1``, what a dual-stack socket records for the IPv4 peer
+    ``10.0.0.1``), on the embedded IPv4 address as well. The mapped form
+    aliases the IPv4 address without being *contained* by any IPv4 network:
+    measured, ``::ffff:10.0.0.1 in 10.0.0.0/8`` is False, so before this
+    unwrap the spelling passed ingest as a malicious ``ipv6`` record and was
+    not suppressed at query. A literal the list means to stop must not pass
+    by being written differently (AGENTS.md §5, the egress allow-list's own
+    rule on aliasing forms).
+    """
     try:
         address = ipaddress.ip_address(value)
     except ValueError:
         return False
-    return any(address in ipaddress.ip_network(cidr) for cidr in never_flag)
+    candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [address]
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        candidates.append(address.ipv4_mapped)
+    networks = [ipaddress.ip_network(cidr) for cidr in never_flag]
+    return any(candidate in network for candidate in candidates for network in networks)
 
 
 def _load_sources(path: Path) -> dict[str, Source]:
     document = _read_json(path)
     if not isinstance(document, dict) or set(document) != {"sources"}:
+        raise _reject("sources.json must carry exactly a 'sources' list")
+    # The value's type, not only the key set: measured, null, 5, true and 1.5
+    # escaped the loop below as TypeError, which the agent's fail-soft misses.
+    if not isinstance(document["sources"], list):
         raise _reject("sources.json must carry exactly a 'sources' list")
     sources: dict[str, Source] = {}
     for raw in document["sources"]:
@@ -166,12 +251,15 @@ def _load_sources(path: Path) -> dict[str, Source]:
                 f"source {source_id!r} license {license_name!r} is not on the "
                 f"allow-list {sorted(ALLOWED_LICENSES)}"
             )
+        upstream = _bounded_str(raw["upstream"], f"source {source_id!r} upstream")
+        if not _UPSTREAM.fullmatch(upstream):
+            raise _reject(f"source {source_id!r} upstream must be a lowercase ASCII hostname")
         sources[source_id] = Source(
             source_id=source_id,
             name=_bounded_str(raw["name"], f"source {source_id!r} name"),
             url=_bounded_str(raw["url"], f"source {source_id!r} url"),
             license=license_name,
-            upstream=_bounded_str(raw["upstream"], f"source {source_id!r} upstream"),
+            upstream=upstream,
             retrieved=_iso(raw["retrieved"], f"source {source_id!r} retrieved"),
         )
     if not sources:
@@ -184,17 +272,26 @@ def _parse_atomic(
 ) -> AtomicIndicator:
     if not isinstance(raw, dict) or set(raw) != _ATOMIC_FIELDS:
         raise _reject(f"atomic indicator must carry exactly {sorted(_ATOMIC_FIELDS)}")
+    # Membership is tested on strings only: ``[] in {...}`` raises TypeError
+    # (unhashable), which is not an IntelStoreError and escapes every
+    # fail-closed caller. Measured on a list-valued type/risk/confidence/
+    # source_id before the isinstance guards.
     indicator_type = raw["type"]
-    if indicator_type not in _ATOMIC_TYPES:
+    if not isinstance(indicator_type, str) or indicator_type not in _ATOMIC_TYPES:
         raise _reject(f"unknown atomic type {indicator_type!r}")
     value = _bounded_str(raw["value"], "indicator value")
     context = f"indicator {value!r}"
-    if raw["risk"] not in _RISKS:
-        raise _reject(f"{context}: unknown risk {raw['risk']!r}")
-    if raw["confidence"] not in _CONFIDENCES:
-        raise _reject(f"{context}: unknown confidence {raw['confidence']!r}")
+    shape = EXEMPT_SHAPES.get(indicator_type)
+    if shape is not None and not shape.fullmatch(value.lower()):
+        raise _reject(f"{context}: not shaped like a {indicator_type} value")
+    risk = raw["risk"]
+    if not isinstance(risk, str) or risk not in _RISKS:
+        raise _reject(f"{context}: unknown risk {risk!r}")
+    confidence = raw["confidence"]
+    if not isinstance(confidence, str) or confidence not in _CONFIDENCES:
+        raise _reject(f"{context}: unknown confidence {confidence!r}")
     source_id = raw["source_id"]
-    if source_id not in sources:
+    if not isinstance(source_id, str) or source_id not in sources:
         raise _reject(f"{context}: source {source_id!r} is not registered in sources.json")
     tlp = raw["tlp"]
     if tlp != "clear":
@@ -220,10 +317,10 @@ def _parse_atomic(
                 "must never enter the indicator store"
             )
     return AtomicIndicator(
-        indicator_type=indicator_type,
+        indicator_type=cast(AtomicType, indicator_type),  # membership-checked above
         value=value.lower(),
-        risk=raw["risk"],
-        confidence=raw["confidence"],
+        risk=cast(Risk, risk),
+        confidence=cast(Confidence, confidence),
         source_id=source_id,
         first_seen=first_seen,
         retrieved=retrieved,
@@ -249,10 +346,11 @@ def _parse_behavior(raw: object, sources: dict[str, Source], corpus: Corpus) -> 
         # deprecated/revoked anchors are accepted here and degrade the record
         # to stale-anchor at match time (see module docstring).
     source_id = raw["source_id"]
-    if source_id not in sources:
+    if not isinstance(source_id, str) or source_id not in sources:
         raise _reject(f"{context}: source {source_id!r} is not registered in sources.json")
-    if raw["confidence"] not in _CONFIDENCES:
-        raise _reject(f"{context}: unknown confidence {raw['confidence']!r}")
+    confidence = raw["confidence"]
+    if not isinstance(confidence, str) or confidence not in _CONFIDENCES:
+        raise _reject(f"{context}: unknown confidence {confidence!r}")
     interval = raw["review_interval_days"]
     if not isinstance(interval, int) or isinstance(interval, bool) or not 0 < interval <= 730:
         raise _reject(f"{context}: review_interval_days must be an integer in 1..730")
@@ -264,7 +362,7 @@ def _parse_behavior(raw: object, sources: dict[str, Source], corpus: Corpus) -> 
         event_types=_str_tuple(raw["event_types"], f"{context} event_types"),
         markers=_str_tuple(raw["markers"], f"{context} markers"),
         false_positives=_str_tuple(raw["false_positives"], f"{context} false_positives"),
-        confidence=raw["confidence"],
+        confidence=cast(Confidence, confidence),  # membership-checked above
         source_id=source_id,
         last_reviewed=_iso(raw["last_reviewed"], f"{context} last_reviewed"),
         review_interval_days=interval,
@@ -299,6 +397,8 @@ def load_store(intel_dir: Path | None = None, *, corpus: Corpus | None = None) -
     for path in behavior_paths:
         document = _read_json(path)
         if not isinstance(document, dict) or set(document) != {"behaviors"}:
+            raise _reject(f"{path.name} must carry exactly a 'behaviors' list")
+        if not isinstance(document["behaviors"], list):  # {} loaded as zero records
             raise _reject(f"{path.name} must carry exactly a 'behaviors' list")
         for raw in document["behaviors"]:
             record = _parse_behavior(raw, sources, resolved_corpus)
