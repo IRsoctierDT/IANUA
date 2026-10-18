@@ -510,6 +510,15 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
         # `is_file()` only after the symlink check, because it follows them.
         if (root / relative).is_file():
             found.append(relative)
+        elif (root / relative).exists():
+            # A subdirectory or a special file in a copied tree used to be left
+            # out without a word, the blind spot this function names everywhere
+            # else (found by independent review). An absent declared chain is
+            # normal and stays silent.
+            refused.append(
+                f"source {_capped(str(relative))} is not a regular file, so it is not in "
+                "this backup"
+            )
     return found, sorted(refused)
 
 
@@ -572,8 +581,8 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
     sidecar = _sidecar_problem(source_db, what=f"the live store {source_db}")
     if sidecar is not None:
         # Before the backup directory is created, so a refused take leaves no
-        # partial copy (the gate's allow record is already in the chain, as for
-        # every take that fails). The type and link count only: a live writer
+        # partial copy; the gate's allow record is already in the chain, with no
+        # outcome record after it. The type and link count only: a live writer
         # legitimately has a non-empty -wal, which the online backup API copies.
         raise StoreError(sidecar)
 
@@ -1620,7 +1629,17 @@ def main(argv: list[str] | None = None) -> int:
         # gate record into that backup's chain, which then failed --verify for
         # good; a --verify of another backup did it at exit 0 (found by
         # independent review).
-        confine(root, AUDIT_SUBDIR, AUDIT_FILE, error=StoreError, what="audit log")
+        try:
+            confine(root, AUDIT_SUBDIR, AUDIT_FILE, error=StoreError, what="audit log")
+        except OSError as exc:
+            # Not a symlink but not checkable (an unsearchable data/events): the
+            # failure the AuditLogger line in _run reports, with its exit code,
+            # rather than a bare errno at the arguments' exit 2 (found by review).
+            print(
+                f"error: audit log unusable, refusing to run: {_printable(str(exc))}",
+                file=sys.stderr,
+            )
+            return 1
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
@@ -1651,6 +1670,24 @@ def main(argv: list[str] | None = None) -> int:
     except LockUnavailableError as exc:
         print(f"error: {_printable(str(exc))}", file=sys.stderr)
         return 2
+
+
+def _resolve_argument(path: Path) -> Path:
+    """The backup a ``--verify`` or ``--verify-restore`` argument names, resolved.
+
+    ``realpath`` rather than ``Path.resolve()``, which raises RuntimeError on a
+    symlink loop on 3.11 and 3.12, so a planted loop was a traceback. And guarded,
+    because ``realpath`` itself recurses once per link there: a chain of about a
+    thousand links raised RecursionError, also a RuntimeError, and also a
+    traceback (both found by independent review). Either becomes a refusal
+    beside the others, at exit 1.
+    """
+    try:
+        return Path(os.path.realpath(path))
+    except RecursionError:
+        raise StoreError(
+            f"{path} is a chain of more symbolic links than can be followed; this is not a backup"
+        ) from None
 
 
 def _run(
@@ -1696,12 +1733,9 @@ def _run(
 
     try:
         if mode == "verify":
-            # realpath, not resolve(): on 3.11 and 3.12 resolve() raises
-            # RuntimeError on a symlink loop, which nothing here catches, so a
-            # planted loop was a traceback (found by independent review).
-            payload = _verify_backup(Path(os.path.realpath(args.verify)))
+            payload = _verify_backup(_resolve_argument(args.verify))
         elif mode == "verify-restore":
-            payload = _verify_restore(root, Path(os.path.realpath(args.verify_restore)))
+            payload = _verify_restore(root, _resolve_argument(args.verify_restore))
         else:
             manifest = _take_backup(root, destination)
             manifest_path = destination / MANIFEST_FILE

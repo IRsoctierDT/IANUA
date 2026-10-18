@@ -59,15 +59,28 @@ blocks it, and `4` if another writer held the store's write lock — nothing was
 nothing was left behind, so retry rather than page. A second concurrent pass exits `0` and
 does nothing, like every other scheduled entry point here.
 
-A take refuses at exit `1`, before it creates the backup directory, when a `-wal`, `-journal` or `-shm`
-beside the live store is a special file or shares its file with another name (see the findings table
-under "Verifying a restore" for what each means; in the live root, never delete a sidecar to clear
-it). Every mode — a take, `--verify` and `--verify-restore` — refuses at exit `2`, before it
-writes anything, when `data/` or `data/events` is a symlink, because its first write is the gate
-decision in `data/events/audit.log`. Any other take that fails
-leaves the gate's `allow` record in that chain with no outcome record after it. A source that is a
-symlink — a file, or the `data/reports` tree itself — is not copied: the take still exits `0`, and
-names it under `warning: sources NOT in this backup` and in the manifest's `refused` list.
+A take refuses at exit `1`, before it creates the backup directory, when a `-wal`, `-journal` or
+`-shm` beside the live store is a special file or shares its file with another name; the findings
+table under "Verifying a restore" says what each means. In the live root, never delete a
+**regular** `-wal`, `-journal` or `-shm` to clear it: a `-wal` holds committed events. A special
+file at a sidecar name holds none; move it aside as its row says.
+
+Every mode — a take, `--verify` and `--verify-restore` — refuses at exit `2`, before it writes
+anything, when `data/`, `data/events` or `data/events/audit.log` is a symlink, because its first
+write is the gate decision in that chain. A `data/events` this account cannot search is exit `1`,
+`audit log unusable`, as before.
+
+What a failed take leaves in the chain depends on where it failed. Policy blocking it is exit `3`
+with a `deny` record. A gate decision that cannot be recorded is exit `1` with no record. A take
+that fails after its gate decision and before its outcome record — the store and sidecar checks,
+the copy, the attestation, the manifest write, or exit `4` — leaves the `allow` record with nothing
+after it. One whose report alone cannot be written exits `1` with the outcome already recorded and
+the backup complete.
+
+The store is the one source whose symlink is fatal (exit `1`, no backup written). Any other declared
+file, a rotated archive or signature, the `data/reports` tree, or anything in it that is a symlink
+or not a regular file (a subdirectory, a FIFO) is not copied: the take still exits `0`, and names it
+under `warning: sources NOT in this backup` and in the manifest's `refused` list.
 
 What lands in it:
 
@@ -137,10 +150,10 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `no store at …` | the restore put none there. The check will **not** create one to measure — a read-only pass must not write the thing it was asked to inspect |
 | `is 0 bytes` / `is not a SQLite database` / `is not in WAL mode` / `carries no event-store schema` | the store file is truncated, foreign or damaged, and was **not opened**: opening it would have written to it (SQLite initialises an empty file as a new database). Under `--verify`, take a fresh backup; under `--verify-restore`, repeat step 4 from a backup that passes `--verify` |
 | `has a N-byte -wal beside it` / `has a N-byte -journal beside it` | SQLite would checkpoint or replay that file into the store on open, so the store was **not opened**. A backup never carries one (the take uses the online backup API), so under `--verify` take a fresh backup. Under `--verify-restore`: if step 1b now shows a lock held, a pass ran during or after step 4 and the restored tree cannot be trusted. **Waiting does not fix it**: when that pass closes it checkpoints its WAL into the restored file, which leaves a damaged or a changed store, and a collector pass recreates `offsets.json`. Re-quiesce (steps 1 and 1b, until no lock is held), then repeat from step 3: remove the positions and the `-wal`, `-journal` and `-shm`, repeat step 4 from the backup that passed step 2, and re-run 4b. If no lock is held, the file is left over from the store step 4 overwrote: remove the `-wal`, `-journal` and `-shm`, then re-run |
-| `cannot be opened safely: its -wal is a FIFO, not a regular file` (or a socket, directory or symlink, at `-wal`, `-journal` or `-shm`) | a special file at a sidecar name. SQLite opens all three with the store, and this is never benign: no step creates one. Treat the tree as tampered, remove it, then re-run |
-| `cannot be opened safely: its -shm (N bytes) has 2 links` | a sidecar that shares its file with another name. SQLite writes its WAL index through a `-shm`, so whatever else is linked to it is overwritten — measured, a backup's own manifest and the live store — and the store was **not opened**. A hard-link copy of a tree that held sidecars makes one benignly (`cp -al`, `rsync --link-dest`, rsnapshot of a backup a killed or concurrent `--verify` left them in, or of a live root while a writer was open). Find the other names with `find <mount> -xdev -samefile <sidecar>`: rotation snapshots are benign; a manifest, a store, an audit log or anything you cannot explain is tampering. In a **backup** (`--verify`), `rm` the sidecar names, which removes the names and never the linked content, then re-run; the re-run still checks the store against the manifest. In the **live root** (a take, or `--verify-restore`), **never delete a live `-wal`, `-journal` or `-shm`**: a `-wal` holds committed events not yet in the store file. If the other name is your own copy, delete the copy, or wait for the writer to close (SQLite then unlinks the live sidecars), and retry |
+| `cannot be opened safely: its -wal is a FIFO, not a regular file` (or a socket, directory or symlink, at `-wal`, `-journal` or `-shm`) | a special file at a sidecar name, so the store was **not opened**. SQLite opens all three with the store, and this is never benign: no step creates one, and it holds no events (SQLite will not use a `-wal` that is a symlink, and a FIFO, socket or directory cannot be one). Treat it as tampering: move that one name out of the root (`mv <sidecar> <a directory outside the root>/`, which works for every kind) and keep it for investigation. Never remove the store or the tree. Then re-run; under `--verify` you may instead discard the backup and take a fresh one |
+| `cannot be opened safely: its -shm (N bytes) has 2 links` | a sidecar that shares its file with another name. SQLite writes its WAL index through a `-shm`, so whatever else is linked to it is overwritten — measured, a backup's own manifest and the live store — and the store was **not opened**. A hard-link copy of a tree that held sidecars makes one benignly (`cp -al`, `rsync --link-dest`, rsnapshot of a backup a killed or concurrent `--verify` left them in, or of a live root while a writer was open). Find the other names with `find <mount> -xdev -samefile <sidecar>`: rotation snapshots are benign; a manifest, a store, an audit log or anything you cannot explain is tampering. In a **backup** (`--verify`), `rm` the sidecar names, which removes the names and never the linked content, then re-run; the re-run still checks the store against the manifest. Under a **take**, never delete a live `-wal`, `-journal` or `-shm`: a `-wal` holds committed events not yet in the store file. If the other name is your own copy, delete the copy, or wait for the writer to close (SQLite then unlinks the live sidecars), and retry. Under **`--verify-restore`**, a writer with the restored store open means a pass ran during or after step 4, and waiting does not fix it: follow the lock-held sequence in the row above |
 | `contains a NUL byte` / `cannot be checked (…)` | a manifest path the verifier could not look up, reported beside the other findings rather than replacing the report. Read the name in parentheses: `contains a NUL byte`, `(UnicodeEncodeError)` (a lone surrogate) or `(OSError)` (an overlong name) mean a damaged or edited manifest. `(PermissionError)` means a directory on the path is not searchable by this account, so the manifest is probably fine: check the backup's or the live root's modes and ownership first |
-| `the live store data/events/events.sqlite3 passes through the symlink …` | under `--verify-restore`, the live store or its directory is a symlink, so it was not opened. A restore puts a real store at the real path: replace the link with the store from the backup (step 4, `cp -a` into a real directory), then re-run |
+| `the live store data/events/events.sqlite3 passes through the symlink …` | under `--verify-restore`, the live store file itself is a symlink, so it was not opened (a symlinked `data/` or `data/events` is refused earlier, at exit `2`: see "Taking a backup"). Step 4's `cp -a` wrote through the link, so its target outside the root now holds the backup's store and not what it held before. Repeating step 4 leaves the link in place, and this finding with it. Remove the link (`test -L <root>/data/events/events.sqlite3 && rm <root>/data/events/events.sqlite3`), repeat step 4, then re-run 4b |
 
 **Why `LOSS` covers observables separately.** The completeness digest is a sha256 over the
 `event_id` set only, so a restore that loses rows from `observables` and none from `events`
