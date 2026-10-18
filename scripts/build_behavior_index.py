@@ -48,6 +48,7 @@ except ModuleNotFoundError:  # pragma: no cover - yaml present in dev/CI
     raise SystemExit(2) from None
 
 from attack import AttackError, load_corpus, validate_reference  # noqa: E402
+from scripts._rule_yaml import load_rule  # noqa: E402
 
 BEHAVIORS_DIR = REPO_ROOT / "detections" / "behaviors"
 OUTPUT = REPO_ROOT / "detections" / "behaviors.index.json"
@@ -102,7 +103,7 @@ def build_index(behaviors_dir: Path = BEHAVIORS_DIR) -> dict[str, Any]:
     seen_ids: set[str] = set()
 
     for path in sorted(behaviors_dir.glob("*.yml")):
-        rule = yaml.safe_load(path.read_text(encoding="utf-8"))
+        rule = load_rule(path)
         if not isinstance(rule, dict):
             raise _reject(f"{path.name}: rule is not a mapping")
         context = path.name
@@ -198,14 +199,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # yaml.YAMLError is not a ValueError: measured, a rule with unbalanced
+    # brackets escaped this clause as a ParserError traceback. Rule input that
+    # would recurse or exhaust memory is refused by load_rule, and the
+    # committed index is read here so a non-UTF-8 one is an error line too.
     try:
         rendered = render(build_index())
-    except (BehaviorCorpusError, AttackError, ValueError, OSError) as exc:
+        current = OUTPUT.read_text(encoding="utf-8") if args.check and OUTPUT.exists() else ""
+    except (BehaviorCorpusError, AttackError, ValueError, OSError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1 if isinstance(exc, BehaviorCorpusError) else 2
 
     if args.check:
-        current = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
         if current != rendered:
             print(
                 "FAIL: behavioral index is stale - run `python scripts/build_behavior_index.py`",

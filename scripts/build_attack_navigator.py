@@ -50,6 +50,7 @@ if str(_REPO_ROOT) not in sys.path:  # script may run from anywhere
     sys.path.insert(0, str(_REPO_ROOT))
 
 from attack import load_corpus, load_pin, validate_reference  # noqa: E402
+from scripts._rule_yaml import load_rule  # noqa: E402
 
 _SIGMA_DIR = _REPO_ROOT / "detections" / "sigma"
 _OUTPUT = _REPO_ROOT / "docs" / "attack-navigator-layer.json"
@@ -85,7 +86,7 @@ def build_layer(sigma_dir: Path = _SIGMA_DIR) -> dict[str, Any]:
     # technique_id -> list of rule titles covering it
     coverage: dict[str, list[str]] = {}
     for path in sorted(sigma_dir.glob("*.yml")):
-        rule = yaml.safe_load(path.read_text(encoding="utf-8"))
+        rule = load_rule(path)
         if not isinstance(rule, dict):
             raise ValueError(f"{path.name}: rule is not a mapping")
         title = str(rule.get("title", path.stem))
@@ -158,14 +159,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # yaml.YAMLError is not a ValueError: measured, a rule with unbalanced
+    # brackets escaped this clause as a ParserError traceback, exit 1 by
+    # accident. AttackError is a ValueError, so it needs no entry. Rule input
+    # that would recurse or exhaust memory is refused by load_rule, and the
+    # committed layer is read here so a non-UTF-8 one is an error line too.
     try:
         rendered = render(build_layer())
-    except (ValueError, OSError) as exc:
+        current = _OUTPUT.read_text(encoding="utf-8") if args.check and _OUTPUT.exists() else ""
+    except (ValueError, OSError, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     if args.check:
-        current = _OUTPUT.read_text(encoding="utf-8") if _OUTPUT.exists() else ""
         if current != rendered:
             print(
                 "ATT&CK Navigator layer is stale — run scripts/build_attack_navigator.py",

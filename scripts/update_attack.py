@@ -28,7 +28,9 @@ Security considerations (AGENTS.md §5, DESIGN.md §5 boundary 5):
     * **Fail-closed integrity order** on build: size ceiling -> nesting-depth
       scan -> streaming SHA-256 -> parse. A rejected bundle gets a
       ``.REJECTED`` forensic marker and the previously committed shards stay
-      authoritative.
+      authoritative. The staged collection index (``index.json``) comes from
+      the same untrusted source and gets the same order, and **both** inputs
+      are validated before any shard or pin is written.
     * **--check verifies, never regenerates** — CI does not hold the 54 MB
       bundle and must not. It checks the pin schema, the Ed25519 pin
       signature (when present), per-shard hashes and ceilings, canonical
@@ -44,7 +46,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import io
 import json
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -66,6 +70,16 @@ COLLECTION_INDEX = REPO_ROOT / "attack" / "collection-index.json"
 # triple). Both bound memory before any parse.
 _FIRST_BUILD_MAX_BYTES = 120_000_000
 _MAX_NESTING_DEPTH = 100
+# Ceiling for the staged collection index: the upstream file is tens of
+# kilobytes, so anything near this is not it.
+_MAX_INDEX_BYTES = 1_000_000
+# What attack.freshness parses (dotted integers) and prints (`modified`), as
+# ASCII-only shapes: `[0-9]` is ASCII in a `re` class where `str.isdigit` and
+# `\d` are not, and a bounded width keeps every component under int()'s limit.
+_INDEX_VERSION = re.compile(r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}")
+_INDEX_MODIFIED = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9:.]{1,24}(?:Z|[+-][0-9]{2}:[0-9]{2})?)?"
+)
 # Target payload per shard part, under the hard MAX_SHARD_BYTES ceiling.
 _PART_BUDGET = 850_000
 
@@ -86,12 +100,20 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _scan_depth(path: Path, limit: int) -> None:
-    """Single streaming pass rejecting pathological nesting before json.loads."""
+def _scan_depth(source: Path | bytes, limit: int) -> None:
+    """Single streaming pass rejecting pathological nesting before json.loads.
+
+    Byte-level, so it measures the text the parser reads only when that text
+    is UTF-8 (no UTF-8 sequence for a non-ASCII character has a byte below
+    0x80). ``json.loads(bytes)`` also accepts UTF-16 and UTF-32, which
+    desynchronises the string tracking here; a caller that needs the bound to
+    hold decodes strict UTF-8 and parses that text, as ``_collection_snapshot``
+    does. The bundle path does not, and relies on the RecursionError backstop.
+    """
     depth = 0
     in_string = False
     escaped = False
-    with path.open("rb") as handle:
+    with source.open("rb") if isinstance(source, Path) else io.BytesIO(source) as handle:
         while chunk := handle.read(1024 * 1024):
             for byte in chunk:
                 if in_string:
@@ -107,7 +129,7 @@ def _scan_depth(path: Path, limit: int) -> None:
                 elif byte in (0x7B, 0x5B):  # { [
                     depth += 1
                     if depth > limit:
-                        raise AttackError(f"bundle nesting exceeds depth {limit} (rejected)")
+                        raise AttackError(f"nesting exceeds depth {limit} (rejected)")
                 elif byte in (0x7D, 0x5D):  # } ]
                     depth -= 1
 
@@ -384,6 +406,78 @@ def _merge_tombstones(new_entries: dict[str, Any], previous_path: Path) -> dict[
     }
 
 
+def _collection_snapshot(staged_index: Path) -> bytes | None:
+    """Render the staged collection index's snapshot, or ``None`` if none is staged.
+
+    Returns the exact canonical bytes ``build()`` commits, so the last step
+    that can fail on this input runs before any shard or the pin is written.
+
+    Same source and the same trust as the bundle (DESIGN.md §5 boundary 5),
+    so the same fail-closed order: size ceiling -> strict UTF-8 decode ->
+    nesting-depth scan -> parse -> shape check -> render. The first version
+    read this file last, with a bare ``json.loads`` and bare subscripts,
+    after every shard and the pin were already on disk. Measured: a 400 KB
+    index of nested arrays crashed ``--build`` with an uncaught
+    ``RecursionError``, leaving five new shards and a new pin written and no
+    ``.REJECTED`` marker; a well-formed index whose version row lacked
+    ``version`` crashed with ``KeyError``.
+
+    Review of that fix measured three more routes, each refused before a
+    write now. A ``modified`` of ``"\\ud800"`` (an escape, or raw bytes
+    ``ED A0 80``) validated and then raised ``UnicodeEncodeError`` at the
+    write, after five shards and the pin, with no marker. ``str.isdigit``
+    passed a superscript digit and a 5000-digit component, which
+    ``attack.freshness`` then failed on. A plain ``ValueError`` (invalid
+    UTF-8, an over-long integer literal) escaped the ``JSONDecodeError``
+    catch with no marker. So the file is read once, bounded by bytes read and
+    not by ``st_size``; it is decoded as strict UTF-8 (a leading BOM
+    tolerated) and parsed as that text, so the depth scan and the parser read
+    the same text, where ``json.loads(bytes)`` would guess UTF-16; and
+    ``version`` and ``modified`` must match the ASCII shapes above
+    (``modified`` absent renders as ``""``). Not validated: any collection
+    after the first Enterprise ATT&CK entry. An index with no such entry
+    keeps the committed snapshot unchanged.
+    """
+    if not staged_index.is_file():
+        return None
+    with staged_index.open("rb") as handle:
+        raw = handle.read(_MAX_INDEX_BYTES + 1)
+    if len(raw) > _MAX_INDEX_BYTES:
+        raise AttackError(f"index exceeds ceiling {_MAX_INDEX_BYTES} bytes")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise AttackError(f"index is not UTF-8: {exc}") from exc
+    _scan_depth(raw, _MAX_NESTING_DEPTH)
+    try:
+        index = json.loads(text)
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError is a ValueError
+        raise AttackError(f"index parse failure: {exc}") from exc
+    collections = index.get("collections") if isinstance(index, dict) else None
+    if not isinstance(collections, list):
+        raise AttackError("index has no collections list")
+    for collection in collections:
+        if not isinstance(collection, dict) or collection.get("name") != "Enterprise ATT&CK":
+            continue
+        versions = collection.get("versions")
+        if not isinstance(versions, list) or not versions:
+            raise AttackError("index: Enterprise ATT&CK collection has no versions list")
+        rows: list[dict[str, str]] = []
+        for row in versions:
+            version = row.get("version") if isinstance(row, dict) else None
+            modified = row.get("modified", "") if isinstance(row, dict) else None
+            if not (
+                isinstance(version, str)
+                and _INDEX_VERSION.fullmatch(version)
+                and isinstance(modified, str)
+                and (modified == "" or _INDEX_MODIFIED.fullmatch(modified))
+            ):
+                raise AttackError(f"index: malformed collection version row {row!r}"[:200])
+            rows.append({"version": version, "modified": modified})
+        return _canonical({"name": "Enterprise ATT&CK", "versions": rows})
+    return None
+
+
 def build(bundle_name: str, retrieved: str) -> int:
     bundle_path = STAGING_DIR / Path(bundle_name).name
     if not bundle_path.is_file():
@@ -425,6 +519,13 @@ def build(bundle_name: str, retrieved: str) -> int:
         _reject_bundle(bundle_path, str(exc))
         return 1
 
+    staged_index = STAGING_DIR / "index.json"
+    try:
+        snapshot = _collection_snapshot(staged_index)
+    except AttackError as exc:
+        _reject_bundle(staged_index, str(exc), kind="collection index")
+        return 1
+
     shards: dict[str, Any] = {
         "catalog.json": {
             "attack_version": distilled["version"],
@@ -464,19 +565,8 @@ def build(bundle_name: str, retrieved: str) -> int:
     DEFAULT_PIN_PATH.parent.mkdir(parents=True, exist_ok=True)
     DEFAULT_PIN_PATH.write_bytes(_canonical(pin_document))
 
-    staged_index = STAGING_DIR / "index.json"
-    if staged_index.is_file():
-        index = json.loads(staged_index.read_bytes())
-        for collection in index.get("collections", []):
-            if collection.get("name") == "Enterprise ATT&CK":
-                snapshot = {
-                    "name": collection["name"],
-                    "versions": [
-                        {"version": row["version"], "modified": row.get("modified", "")}
-                        for row in collection.get("versions", [])
-                    ],
-                }
-                COLLECTION_INDEX.write_bytes(_canonical(snapshot))
+    if snapshot is not None:
+        COLLECTION_INDEX.write_bytes(snapshot)
 
     load_corpus()  # prove the committed result loads fail-closed
     print(
@@ -488,8 +578,8 @@ def build(bundle_name: str, retrieved: str) -> int:
     return 0
 
 
-def _reject_bundle(bundle_path: Path, reason: str) -> None:
-    """Refuse the staged bundle, leaving a forensic marker; audit the denial."""
+def _reject_bundle(bundle_path: Path, reason: str, *, kind: str = "bundle") -> None:
+    """Refuse a staged input, leaving a forensic marker; audit the denial."""
     marker = bundle_path.with_suffix(bundle_path.suffix + ".REJECTED")
     marker.write_text(f"{reason}\n", encoding="utf-8")
     print(f"REJECTED: {reason} (marker: {marker})", file=sys.stderr)
@@ -500,7 +590,7 @@ def _reject_bundle(bundle_path: Path, reason: str) -> None:
         audit_dir.mkdir(parents=True, exist_ok=True)
         AuditLogger(audit_dir / "update_attack_audit.jsonl").record(
             actor="scripts/update_attack.py",
-            action=f"reject staged bundle {bundle_path.name}",
+            action=f"reject staged {kind} {bundle_path.name}",
             action_class="read_only",
             decision="deny",
             reason=reason,
