@@ -728,3 +728,35 @@ def test_importing_the_cli_runs_no_cycle() -> None:
             check=False,
         ).stdout
     )
+
+
+_STRANDED = {"type": "SYSCALL", "node": "web-01", "auid": "svc-deploy", "comm": "bash"}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_cursor_is_refused_rather_than_read_as_a_position(
+    tmp_path: Path, literal: str
+) -> None:
+    """``json.loads`` accepts what RFC 8259 does not, and the store binds it.
+
+    Measured before the fix, on a store holding events: a cursor whose
+    ``ingested_at`` was ``NaN`` loaded, ``run_cycle`` read **0** events and
+    reported idle — and because an idle cycle returns no cursor, the file was
+    never rewritten, so every later cycle did the same. SQLite stores NaN as
+    NULL and ``ingested_at > NULL`` matches nothing. ``detection-backlog``
+    graded that state ``met`` with "0 event(s) not yet processed".
+    ``Infinity`` read nothing the same way; ``-Infinity`` reprocessed the
+    whole store once. The module docstring promises that a cursor which will
+    not parse raises rather than defaulting; this was the parse that did not.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append_many((normalize(_STRANDED),), ingested_at=1_760_000_000.0)
+        assert run_cycle(store).events_read == 1, "the store must hold an event to strand"
+    path = cursor_path(tmp_path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(
+        '{"version": 1, "ingested_at": ' + literal + ', "event_id": "x"}\n', encoding="utf-8"
+    )
+    with pytest.raises(CursorError, match="finite"):
+        load_cursor(path)

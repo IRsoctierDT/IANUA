@@ -124,3 +124,22 @@ def test_record_refuses_automated_or_unknown_controls(tmp_path: Path) -> None:
         record(path, **_entry(control_id="POL-01"))
     with pytest.raises(AttestationError):
         record(path, **_entry(control_id="NOPE-99"))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"expires": "2026-99-99"},  # outlived every real day of its year, lexicographically
+        {"expires": "2026-13-01"},
+        {"date": "2026-02-30"},
+    ],
+)
+def test_a_calendar_invalid_date_fails_closed(tmp_path: Path, mutation: dict[str, str]) -> None:
+    """The regex checked the shape and nothing checked the calendar.
+
+    Measured before the fix: all three entries loaded, and
+    ``valid_on("2026-12-31")`` was ``True`` for an ``expires`` of
+    ``2026-99-99`` because the window is a lexicographic string comparison.
+    """
+    with pytest.raises(AttestationError, match="calendar"):
+        load(_store(tmp_path, _entry(**mutation)))
