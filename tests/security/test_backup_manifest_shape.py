@@ -21,19 +21,25 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from ingest import normalize
+from scripts.run_backup import MANIFEST_FORMAT
 from scripts.run_backup import main as backup_main
 from store import EventStore
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
-_FORMAT = "ianua.backup.v1"
+# The current format, so each hostile manifest reaches the shape check it names
+# rather than being refused one step earlier as superseded.
+_FORMAT = MANIFEST_FORMAT
 
 
 def _backup(tmp_path: Path) -> tuple[Path, Path]:
@@ -65,6 +71,7 @@ def _fingerprint(path: Path) -> tuple[int, int, str]:
     return stat.st_size, stat.st_ino, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORE = Path("data") / "events" / "events.sqlite3"
 _CHAIN = "data/events/audit.log"
 
@@ -86,7 +93,8 @@ def test_verify_does_not_create_a_store_inside_the_backup(
 
     assert _verify(root, backup, "--verify") == 1
     assert _tree(backup) == before, "a read-only verification wrote into the backup"
-    assert "only path a backup writes" in capsys.readouterr().err
+    # A finding beside the rest, not a refusal: #241 settled that for an escaping path.
+    assert "only path a backup writes" in capsys.readouterr().out
 
 
 @pytest.mark.security
@@ -212,15 +220,11 @@ def _store(events: object) -> dict[str, object]:
     }
 
 
+# A null or mis-typed attestation is not here: it is a finding on stdout, not a
+# refusal, and test_promotion_verify.py pins that for every attestation field.
 _MALFORMED: dict[str, object] = {
     "array": [],
     "store-is-string": {"format": _FORMAT, "store": "x", "files": [], "chains": {}},
-    "attestation-events-null": {
-        "format": _FORMAT,
-        "store": _store(None),
-        "files": [],
-        "chains": {},
-    },
     "files-entry-string": {"format": _FORMAT, "store": _store(1), "files": ["x"], "chains": {}},
     "chains-is-list": {"format": _FORMAT, "store": _store(1), "files": [], "chains": []},
     "chains-empty": {"format": _FORMAT, "store": _store(1), "files": [], "chains": {}},
@@ -254,5 +258,217 @@ def test_a_malformed_manifest_is_a_message_and_exit_1_not_a_traceback(
     # An exception propagating out of main() fails this line on its own.
     assert _verify(root, hostile, mode) == 1
     err = capsys.readouterr().err
-    assert "manifest.json" in err and "refusing to verify" in err, err
+    assert "manifest.json" in err, err
+    assert any(
+        reason in err
+        for reason in (
+            "refusing to verify",
+            "nothing in it can be compared",
+            "unknown backup format",
+        )
+    ), err
+    assert "Traceback" not in err, err
     assert len(err) < 2048, "the refusal echoed the manifest's content"
+
+
+def _edit_attestation(backup: Path, key: str, value: object) -> None:
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["store"]["attestation"][key] = value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+def test_a_hot_journal_beside_the_store_is_refused_rather_than_replayed(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ``-wal`` hazard spelled ``-journal``, found by review of the merge.
+
+    Measured: a hot rollback journal beside an intact WAL-mode store was replayed into
+    it by ``EventStore.open``, the sha256 changed, the journal was deleted and the run
+    exited 0, so the next ``--verify`` failed against the manifest it had just passed.
+    """
+    root, backup = _backup(tmp_path)
+    target = (backup if mode == "--verify" else root) / _STORE
+    target.with_name(target.name + "-journal").write_bytes(b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7" * 64)
+    before = _fingerprint(target)
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    out = capsys.readouterr().out
+    assert "-journal beside it" in out and "was not opened" in out, out
+    assert _fingerprint(target) == before, "the verifier replayed a planted journal"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+@pytest.mark.parametrize(
+    "path",
+    ["data/events/\x00x", "data/events/" + "x" * 300, "/" + "A" * 200_000],
+    ids=["nul", "overlong-component", "huge-absolute"],
+)
+def test_an_unwalkable_store_path_is_a_bounded_finding_not_an_os_error(
+    tmp_path: Path, mode: str, path: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Walking these paths raised ``embedded null byte`` or ``File name too long`` in
+    place of the whole report; the absolute one echoed 2 MB. Found by review of the merge.
+    """
+    root, backup = _backup(tmp_path)
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["store"]["path"] = path
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    captured = capsys.readouterr()
+    assert "only path a backup writes" in captured.out, captured
+    assert captured.err == "", captured.err
+    assert len(captured.out) < 8192, "the finding echoed the manifest's content"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+@pytest.mark.parametrize("events", ["1|forged", "E" * 100_000], ids=["delimiter", "huge"])
+def test_an_unchecked_event_count_never_reaches_the_audit_chain(
+    tmp_path: Path, mode: str, events: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The manifest's ``events`` went into the audit record's action unchecked.
+
+    Measured on the merge: ``'1|forged'`` made the record refuse the delimiter, so the
+    findings were never printed; 2,000,000 characters grew the live chain by 4 MB.
+    """
+    root, backup = _backup(tmp_path)
+    _edit_attestation(backup, "events", events)
+    chain = root / _CHAIN
+    before = chain.stat().st_size
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    captured = capsys.readouterr()
+    assert "'events' is not an integer" in captured.out, captured
+    assert captured.err == "", captured.err
+    assert len(captured.out) < 8192, "the finding echoed the manifest's content"
+    assert chain.stat().st_size - before < 4096, "the manifest's value reached the chain"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+@pytest.mark.parametrize("field", ["events", "observables"])
+def test_a_negative_count_is_a_damaged_manifest_not_re_collection(
+    tmp_path: Path, mode: str, field: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured on the merge: ``events: -1`` read as ``ADDED`` under ``--verify-restore``,
+    whose text names re-collection as the expected cause."""
+    root, backup = _backup(tmp_path)
+    _edit_attestation(backup, field, -1)
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    out = capsys.readouterr().out
+    assert f"{field!r} is negative" in out and "ADDED" not in out, out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+def test_an_unknown_attestation_field_is_refused(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured on the merge: an added ``injected`` field verified at exit 0."""
+    root, backup = _backup(tmp_path)
+    _edit_attestation(backup, "injected", 1)
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    out = capsys.readouterr().out
+    assert "never does ('injected')" in out, out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+@pytest.mark.parametrize("suffix", ["-journal", "-wal"])
+def test_a_fifo_sidecar_is_refused_rather_than_opened(
+    tmp_path: Path, mode: str, suffix: str
+) -> None:
+    """Measured, found by review of the merge: a FIFO ``-journal`` hung both verifiers
+    inside ``EventStore.open`` while they held the backup lock, so a scheduled take
+    skipped at exit 0.
+
+    The verifier runs in a subprocess with a timeout, as in ``test_audit_lock_path.py``,
+    because the failure under test is a hang. An alarm does not do it: measured on the
+    pre-fix verifier, a 30s ``SIGALRM`` never raised while the open blocked inside
+    SQLite, and the suite hung rather than failed.
+    """
+    root, backup = _backup(tmp_path)
+    target = (backup if mode == "--verify" else root) / _STORE
+    side = target.with_name(target.name + suffix)
+    os.mkfifo(side, 0o600)
+    argv = ["--root", str(root), "--caller", "test", mode, str(backup)]
+    code = f"import sys\nfrom scripts.run_backup import main\nsys.exit(main({argv!r}))\n"
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed interpreter, literal code, test paths
+            [sys.executable, "-c", code],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"the verifier opened a FIFO {suffix} and blocked")
+    assert result.returncode == 1, result.stdout[-400:] + result.stderr[-400:]
+    out = result.stdout
+    assert f"{suffix} beside it that is not a regular file" in out, out
+    assert side.exists() and not side.is_file(), "the verifier removed the FIFO"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+@pytest.mark.parametrize(
+    "path", ["data/reports/\x00x", "data/" + "z" * 300], ids=["nul", "overlong-component"]
+)
+def test_an_unwalkable_file_path_is_a_finding_not_an_os_error(
+    tmp_path: Path, mode: str, path: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The store-path fix, for ``files[]``: these raised a bare error in place of the
+    whole report, so a genuine mismatch beside them was never shown."""
+    root, backup = _backup(tmp_path)
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"].append({"path": path, "size": 1, "sha256": "0" * 64})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    captured = capsys.readouterr()
+    assert "cannot be checked" in captured.out, captured
+    assert captured.err == "", captured.err
+
+
+@pytest.mark.security
+def test_a_mismatched_digest_is_echoed_capped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured on the merge: a 2,000,000-character digest became 2 MB of output."""
+    root, backup = _backup(tmp_path)
+    _edit_attestation(backup, "digest", "a" * 2_000_000)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    out = capsys.readouterr().out
+    assert "store attestation digest" in out and len(out) < 8192, len(out)
+
+
+@pytest.mark.security
+def test_an_unknown_attestation_key_cannot_write_control_sequences(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review of the merge: the unknown-field finding printed keys raw."""
+    root, backup = _backup(tmp_path)
+    _edit_attestation(backup, "\x1b[2J\x1b[Hrestore verified: OK\n", 1)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "never does" in out, out
