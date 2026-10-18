@@ -9,12 +9,24 @@ is resolved against the pinned ATT&CK corpus at load — an unknown ID rejects
 the store; a revoked ID rejects it **naming the successor**; a deprecated ID
 rejects it too (a mapping rule is operational content and must re-anchor
 deliberately, unlike intel records which merely degrade).
+
+Every enumerated scalar is type-checked before its membership test. A bare
+``x in SET`` raises ``TypeError`` on an unhashable value (measured: a list in
+``field``, ``op`` or ``confidence``), which is still a failure but not the
+:class:`MappingStoreError` the gate script and callers catch — so the
+whole-store contract is "one error type for every anomaly", not "some
+exception". Reading and decoding are held to it too, under one
+``MAX_STORE_BYTES`` budget for all files together (see ``_read_document``).
+Not covered: the directory listing, whose size nothing bounds, and a file
+whose open or read blocks (a FIFO, with or without a writer, or a symlink to
+``/dev/ptmx``), which hangs rather than raising (measured).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 from agents.mapping.schema import (
     MAX_CLAUSES_PER_RULE,
@@ -26,9 +38,12 @@ from agents.mapping.schema import (
     MAX_VALUE_LEN,
     MAX_VALUES_PER_CLAUSE,
     Clause,
+    Confidence,
+    FieldName,
     LegacyBlock,
     MappingRule,
     MappingStoreError,
+    Operator,
     RuleStore,
     RuleTechnique,
 )
@@ -51,6 +66,51 @@ def _reject(reason: str) -> MappingStoreError:
     return MappingStoreError(f"invalid mapping ruleset: {reason}")
 
 
+def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError(f"duplicate key {key!r}")
+        document[key] = value
+    return document
+
+
+def _read_document(path: Path, limit: int = MAX_STORE_BYTES) -> tuple[object, int]:
+    """Read at most ``limit`` bytes of one file and decode them; return (document, size).
+
+    Every failure is a rejection. ``limit`` is what is left of the whole-store
+    budget, so files bounded one at a time cannot add up: measured before, 400
+    files of 256 KiB each raised ``MemoryError`` out of ``load_store`` under a
+    2 GB address-space cap.
+
+    Measured on both load paths before this: invalid UTF-8, an over-long
+    integer and over-deep nesting escaped ``json.loads`` as
+    ``UnicodeDecodeError``/``ValueError``/``RecursionError``, a directory named
+    ``*.json`` as ``IsADirectoryError``, and a symlink to ``/dev/zero`` as
+    ``MemoryError`` because the whole file was read before the size check.
+    A repeated key is refused too: ``json.loads`` keeps the last one, so a file
+    could read one way in review and load another (measured: a second
+    ``"rules"`` key cut the committed 15 rules to 1 and still loaded).
+    """
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(limit + 1)
+    except OSError as exc:
+        raise _reject(f"{path.name} is unreadable ({type(exc).__name__})") from exc
+    if len(raw) > limit:
+        raise _reject(f"{path.name}: the ruleset exceeds {MAX_STORE_BYTES} bytes in all")
+    try:
+        return json.loads(raw, object_pairs_hook=_unique_keys), len(raw)
+    except (ValueError, RecursionError) as exc:
+        raise _reject(f"{path.name} is not valid JSON ({type(exc).__name__}: {exc})") from exc
+
+
+def _check_schema(value: object, context: str) -> None:
+    # Strictly the integer 1: ``True == 1`` and ``1.0 == 1`` both passed before.
+    if not isinstance(value, int) or isinstance(value, bool) or value != 1:
+        raise _reject(f"{context}unsupported schema: {value!r}")
+
+
 def _string_list(value: object, context: str, *, max_len: int = MAX_STRING_LEN) -> tuple[str, ...]:
     if (
         not isinstance(value, list)
@@ -68,10 +128,10 @@ def _parse_clause(raw: object, context: str) -> Clause:
     if not isinstance(raw, dict) or set(raw) != _CLAUSE_FIELDS:
         raise _reject(f"{context}: clause must carry exactly field/op/values")
     field = raw["field"]
-    if field not in _FIELDS:
+    if not isinstance(field, str) or field not in _FIELDS:
         raise _reject(f"{context}: unknown field {field!r}")
     op = raw["op"]
-    if op not in _OPS:
+    if not isinstance(op, str) or op not in _OPS:
         raise _reject(f"{context}: unknown operator {op!r} (predicates are literal-only)")
     values = raw["values"]
     if (
@@ -81,7 +141,11 @@ def _parse_clause(raw: object, context: str) -> Clause:
         or not all(isinstance(item, str) and 0 < len(item) <= MAX_VALUE_LEN for item in values)
     ):
         raise _reject(f"{context}: values must be 1..{MAX_VALUES_PER_CLAUSE} bounded strings")
-    return Clause(field=field, op=op, values=tuple(item.lower() for item in values))
+    return Clause(
+        field=cast(FieldName, field),
+        op=cast(Operator, op),
+        values=tuple(item.lower() for item in values),
+    )
 
 
 def _parse_technique(raw: object, context: str, corpus: Corpus) -> RuleTechnique:
@@ -108,20 +172,20 @@ def _parse_technique(raw: object, context: str, corpus: Corpus) -> RuleTechnique
         )
     technique = corpus.techniques[technique_id]
     tactic_shortname = raw["tactic"]
-    if tactic_shortname not in technique.tactics:
+    if not isinstance(tactic_shortname, str) or tactic_shortname not in technique.tactics:
         raise _reject(
             f"{context}: tactic {tactic_shortname!r} is not one of {technique_id}'s "
             f"tactics {list(technique.tactics)} in the pinned release"
         )
     confidence = raw["confidence"]
-    if confidence not in _CONFIDENCES:
+    if not isinstance(confidence, str) or confidence not in _CONFIDENCES:
         raise _reject(f"{context}: unknown confidence {confidence!r}")
     return RuleTechnique(
         technique_id=technique_id,
         name=technique.name,
         tactic_shortname=tactic_shortname,
         tactic=corpus.tactics[tactic_shortname].name,
-        confidence=confidence,
+        confidence=cast(Confidence, confidence),
         evidence=_string_list(raw["evidence"], f"{context} evidence"),
         investigation=_string_list(raw["investigation"], f"{context} investigation"),
         url=technique.url,
@@ -134,13 +198,13 @@ def _parse_legacy(raw: object, context: str) -> LegacyBlock:
     for key in ("tactic", "technique", "technique_id"):
         if not isinstance(raw[key], str) or not raw[key]:
             raise _reject(f"{context}: legacy {key} must be a non-empty string")
-    if raw["confidence"] not in _CONFIDENCES:
+    if not isinstance(raw["confidence"], str) or raw["confidence"] not in _CONFIDENCES:
         raise _reject(f"{context}: unknown legacy confidence {raw['confidence']!r}")
     return LegacyBlock(
         tactic=raw["tactic"],
         technique=raw["technique"],
         technique_id=raw["technique_id"],
-        confidence=raw["confidence"],
+        confidence=cast(Confidence, raw["confidence"]),
         evidence=_string_list(raw["evidence"], f"{context} legacy evidence"),
         investigation=_string_list(raw["investigation"], f"{context} legacy investigation"),
     )
@@ -150,8 +214,7 @@ def parse_store(document: object, *, corpus: Corpus) -> RuleStore:
     """Validate one parsed ruleset document fail-closed; return the store."""
     if not isinstance(document, dict) or set(document) != _TOP_FIELDS:
         raise _reject(f"top level must carry exactly {sorted(_TOP_FIELDS)}")
-    if document["schema"] != 1:
-        raise _reject(f"unsupported schema: {document['schema']!r}")
+    _check_schema(document["schema"], "")
     raw_rules = document["rules"]
     if not isinstance(raw_rules, list) or not raw_rules or len(raw_rules) > MAX_RULES:
         raise _reject(f"rules must be a list of 1..{MAX_RULES} entries")
@@ -201,7 +264,14 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
     """Load and validate every ruleset file (sorted, deterministic order).
 
     Multiple files concatenate their ``rules`` in filename order; exactly one
-    file must declare the ``fallback``. Whole-store rejection on any anomaly.
+    file must declare the ``fallback``. Whole-store rejection on any anomaly —
+    including a file's own top level: measured before this check, a second
+    file carrying ``schema: 2``, a typo'd ``rule`` key and an unknown key
+    loaded silently and contributed nothing, which the single-file path
+    rejects on every count. "Exactly one" counts files whose top level carries
+    the key, whatever its value: a ``"fallback": null`` used to count as
+    absent, so a null in an earlier file loaded beside a real one in a later
+    file and was rejected only in the reverse order (measured).
     """
     directory = RULES_DIR if rules_dir is None else rules_dir
     resolved_corpus = load_corpus() if corpus is None else corpus
@@ -209,34 +279,26 @@ def load_store(rules_dir: Path | None = None, *, corpus: Corpus | None = None) -
     if not paths:
         raise _reject(f"no ruleset files under {directory}")
     if len(paths) == 1:
-        raw = paths[0].read_bytes()
-        if len(raw) > MAX_STORE_BYTES:
-            raise _reject(f"{paths[0].name} exceeds {MAX_STORE_BYTES} bytes")
-        try:
-            document = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise _reject(f"{paths[0].name} is not valid JSON ({exc})") from exc
-        return parse_store(document, corpus=resolved_corpus)
+        return parse_store(_read_document(paths[0])[0], corpus=resolved_corpus)
     # Multi-file: merge rules in filename order; exactly one fallback.
     merged_rules: list[object] = []
-    fallback: object | None = None
+    fallbacks: list[object] = []
+    budget = MAX_STORE_BYTES
     for path in paths:
-        raw = path.read_bytes()
-        if len(raw) > MAX_STORE_BYTES:
-            raise _reject(f"{path.name} exceeds {MAX_STORE_BYTES} bytes")
-        try:
-            document = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise _reject(f"{path.name} is not valid JSON ({exc})") from exc
-        if not isinstance(document, dict):
-            raise _reject(f"{path.name}: top level must be an object")
-        merged_rules.extend(document.get("rules", []))
+        document, size = _read_document(path, budget)
+        budget -= size
+        if not isinstance(document, dict) or not set(document) <= _TOP_FIELDS:
+            raise _reject(f"{path.name}: top level must be an object of {sorted(_TOP_FIELDS)}")
+        if "schema" not in document or "rules" not in document:
+            raise _reject(f"{path.name}: top level must carry schema and rules")
+        _check_schema(document["schema"], f"{path.name}: ")
+        if not isinstance(document["rules"], list):
+            raise _reject(f"{path.name}: rules must be a list")
+        merged_rules.extend(document["rules"])
         if "fallback" in document:
-            if fallback is not None:
-                raise _reject("multiple ruleset files declare a fallback")
-            fallback = document["fallback"]
-    if fallback is None:
-        raise _reject("no ruleset file declares the fallback")
+            fallbacks.append(document["fallback"])
+    if len(fallbacks) != 1:
+        raise _reject(f"exactly one ruleset file must declare the fallback ({len(fallbacks)} do)")
     return parse_store(
-        {"schema": 1, "rules": merged_rules, "fallback": fallback}, corpus=resolved_corpus
+        {"schema": 1, "rules": merged_rules, "fallback": fallbacks[0]}, corpus=resolved_corpus
     )

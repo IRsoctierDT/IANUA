@@ -12,14 +12,24 @@ evidence-affecting action's prerequisite is pulled in ahead of it.
 
 No clock, no network, no filesystem beyond reading the committed catalogue,
 and no execution of any kind.
+
+Security consideration: besides the sanitized target, the only caller-supplied
+strings a plan serializes are the technique ids and the ATT&CK version label.
+Both are held to identifier shapes here rather than trusted — a mapping result
+is reviewed data today, but the planner is the last gate before a
+client-deliverable artifact, and DESIGN.md §5 boundary 7 says nothing but the
+committed ruleset may author a technique id. Measured before this check: a
+355-character "technique id" carrying a Markdown heading and an image beacon,
+and a 225-character version label, both rode into ``ResponsePlan.to_dict()``.
 """
 
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+import re
+from typing import Any, TypeGuard
 
-from agents.response.catalogue import build_action, load_catalogue
+from agents.response.catalogue import ResponseCatalogueError, build_action, load_catalogue
 from agents.response.plan import ResponseAction, ResponsePlan
 
 #: Technique -> containment actions worth *proposing*. Deliberately narrow:
@@ -55,6 +65,31 @@ _TECHNIQUE_ACTIONS: dict[str, tuple[str, ...]] = {
 #: Collection actions every plan opens with — capture precedes disruption.
 _ALWAYS_FIRST: tuple[str, ...] = ("capture-volatile-memory",)
 
+#: Every action id the selection above can name. Resolved against the
+#: catalogue when a planner is built, so a catalogue entry renamed or removed
+#: in a reviewed PR fails closed at construction — measured before this, it
+#: surfaced as a bare ``KeyError`` the first time that technique was planned.
+_SELECTABLE_ACTIONS: frozenset[str] = frozenset(_ALWAYS_FIRST).union(*_TECHNIQUE_ACTIONS.values())
+
+#: ATT&CK technique identifier shape (``T1110``, ``T1059.001``) — the only
+#: form the pinned corpus emits, so anything else is not a technique. ASCII
+#: digits only: ``\d`` matches every Unicode decimal digit, and measured, a
+#: fullwidth ``T\uff11\uff14\uff18\uff16`` passed, rendering like ``T1486`` and comparing
+#: unequal to it.
+_TECHNIQUE_ID = re.compile(r"T[0-9]{4}(?:\.[0-9]{3})?")
+#: The pinned release label (``"19.2"``): a short identifier, never prose.
+_ATTACK_VERSION = re.compile(r"[A-Za-z0-9._-]{0,32}")
+
+
+# Exact ``str`` only: a subclass can override ``__str__``/``__format__``, so
+# what it renders as need not be the buffer the pattern checked.
+def _is_technique_id(value: object) -> TypeGuard[str]:
+    return type(value) is str and _TECHNIQUE_ID.fullmatch(value) is not None
+
+
+def _is_attack_version(value: object) -> TypeGuard[str]:
+    return type(value) is str and _ATTACK_VERSION.fullmatch(value) is not None
+
 
 def _plan_id(techniques: tuple[str, ...], targets: tuple[str, ...]) -> str:
     """Deterministic id from the plan's identity — never a clock or a counter."""
@@ -70,6 +105,12 @@ class ResponsePlanner:
 
     def __init__(self, catalogue: dict[str, dict[str, Any]] | None = None) -> None:
         self.catalogue = load_catalogue() if catalogue is None else catalogue
+        missing = sorted(_SELECTABLE_ACTIONS - set(self.catalogue))
+        if missing:
+            raise ResponseCatalogueError(
+                "invalid response catalogue: the planner's selection table names "
+                f"action(s) the catalogue does not carry: {missing}"
+            )
 
     def plan_for_techniques(
         self,
@@ -78,13 +119,21 @@ class ResponsePlanner:
         *,
         attack_version: str = "",
     ) -> ResponsePlan:
-        """Build the draft plan for a set of attributed techniques and targets."""
+        """Build the draft plan for a set of attributed techniques and targets.
+
+        Fail-closed on shape: every technique must be an ATT&CK id and the
+        version label a bounded identifier, since both serialize verbatim.
+        """
         if not isinstance(techniques, (list, tuple)):
             raise ValueError("techniques must be a list or tuple.")
+        technique_ids = tuple(techniques)  # copy once, then check the copy
+        if not all(_is_technique_id(t) for t in technique_ids):
+            raise ValueError("techniques must be ATT&CK technique ids (T1234 or T1234.001).")
         if not isinstance(targets, (list, tuple)) or not targets:
             raise ValueError("targets must be a non-empty list or tuple.")
+        if not _is_attack_version(attack_version):
+            raise ValueError("attack_version must be a bounded identifier (<= 32 chars).")
 
-        technique_ids = tuple(str(t) for t in techniques)
         selected: list[str] = list(_ALWAYS_FIRST)
         for technique_id in technique_ids:
             for action_id in _TECHNIQUE_ACTIONS.get(technique_id, ()):
@@ -128,15 +177,18 @@ class ResponsePlanner:
         alert) — proposing action on weak signal is how false positives turn
         into outages.
         """
+        # Anything that is not technique-id-shaped is skipped the way a
+        # non-string already was; the legacy ``"UNKNOWN"`` sentinel falls out
+        # of the same check.
         technique_ids: list[str] = []
         for attribution in mitre_result.get("techniques", []) or []:
             if isinstance(attribution, dict):
                 technique_id = attribution.get("technique_id")
-                if isinstance(technique_id, str):
+                if _is_technique_id(technique_id):
                     technique_ids.append(technique_id)
         if not technique_ids:
             legacy = mitre_result.get("technique_id")
-            if isinstance(legacy, str) and legacy != "UNKNOWN":
+            if _is_technique_id(legacy):
                 technique_ids.append(legacy)
 
         if not any(tid in _TECHNIQUE_ACTIONS for tid in technique_ids):
@@ -149,8 +201,9 @@ class ResponsePlanner:
         if not targets:
             targets = ["affected-host"]
 
+        version = mitre_result.get("attack_version", "")
         return self.plan_for_techniques(
             technique_ids,
             targets,
-            attack_version=str(mitre_result.get("attack_version", "")),
+            attack_version=version if _is_attack_version(version) else "",
         )
