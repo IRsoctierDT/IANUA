@@ -3,12 +3,20 @@
 
 """Unit + security tests for the RAG ingestion/retrieval skeleton."""
 
+import os
 from pathlib import Path
 
 import pytest
 
 from agents.tools.validation import ValidationError
-from rag.ingest import Chunk, chunk_text, discover_documents, embed_chunks, ingest
+from rag.ingest import (
+    Chunk,
+    chunk_text,
+    discover_documents,
+    embed_chunks,
+    ingest,
+    read_documents,
+)
 from rag.retrieve import InMemoryVectorStore
 
 
@@ -59,3 +67,34 @@ def test_discover_rejects_non_directory(tmp_path: Path) -> None:
     f.write_text("x", encoding="utf-8")
     with pytest.raises(ValidationError):
         discover_documents(f)
+
+
+@pytest.mark.security
+def test_undecodable_document_fails_in_module_taxonomy(tmp_path: Path) -> None:
+    """A corpus file that is not UTF-8 raises ValidationError, not UnicodeDecodeError.
+
+    Callers fail soft on ``ValidationError`` only; measured before the fix, a
+    single undecodable file escaped ``ingest``, ``read_documents`` and
+    ``KnowledgeBaseAgent.cite`` as a ``UnicodeDecodeError`` traceback.
+    """
+    (tmp_path / "ok.md").write_text("fine", encoding="utf-8")
+    (tmp_path / "bad.md").write_bytes(b"\xff\xfe not utf-8 \x80\x81")
+    with pytest.raises(ValidationError, match=r"bad\.md"):
+        ingest(tmp_path)
+    with pytest.raises(ValidationError, match=r"bad\.md"):
+        read_documents(tmp_path)
+
+
+@pytest.mark.security
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses the DAC check this asserts")
+def test_unreadable_document_fails_in_module_taxonomy(tmp_path: Path) -> None:
+    """An unreadable corpus file raises ValidationError, naming the file not the path."""
+    locked = tmp_path / "locked.md"
+    locked.write_text("hidden", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(ValidationError, match=r"locked\.md") as info:
+            ingest(tmp_path)
+        assert str(tmp_path) not in str(info.value)
+    finally:
+        locked.chmod(0o600)

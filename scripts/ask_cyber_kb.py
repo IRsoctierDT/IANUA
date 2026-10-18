@@ -22,8 +22,12 @@ results = client.query_points(
 print("\n# Cybersecurity Knowledge Base Answer\n")
 
 for point in results.points:
-    text = point.payload.get("text", "")
-    source = point.payload.get("source", "unknown")
+    # Same rule as search_cyber_kb.py: a non-dict payload, or a ``text`` that is
+    # absent, null or not a str, prints as empty instead of a TypeError.
+    payload = point.payload if isinstance(point.payload, dict) else {}
+    text = payload.get("text")
+    text = text if isinstance(text, str) else ""
+    source = payload.get("source", "unknown")
 
     print("## Retrieved Source")
     print(f"Source: {source}")

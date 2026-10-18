@@ -20,7 +20,12 @@ results = client.query_points(
 )
 
 for point in results.points:
+    # A payload is whatever wrote the collection: a non-dict payload, or a ``text``
+    # that is absent, null or not a str, prints as empty instead of a TypeError
+    # that would end the search and lose every later result.
+    payload = point.payload if isinstance(point.payload, dict) else {}
+    text = payload.get("text")
     print("\n--- RESULT ---")
     print("Score:", point.score)
-    print("Source:", point.payload.get("source"))
-    print(point.payload.get("text")[:1000])
+    print("Source:", payload.get("source"))
+    print((text if isinstance(text, str) else "")[:1000])
