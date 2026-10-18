@@ -221,6 +221,10 @@ DEFAULT_KEEP_DAYS = 90
 #: an analyst sees is still an incident — just a quieter, smaller, wrong one.
 DEFAULT_LOOKBACK_MARGIN = DEFAULT_LOOKBACK
 
+#: ``--keep-days`` is converted to seconds once, here and in the startup
+#: check that the product is finite — see :func:`main`.
+_SECONDS_PER_DAY = 86_400.0
+
 #: Where the lock lives: beside the store it guards.
 LOCK_SUBDIR = Path("data") / "events"
 LOCK_FILE = "retention.lock"
@@ -683,6 +687,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not math.isfinite(args.keep_days) or args.keep_days < 0:
             raise ValueError(f"--keep-days must be finite and >= 0, got {args.keep_days!r}")
+        # The flag can be finite while the window is not: `1e305 * 86_400.0`
+        # overflows to `inf` and the threshold became `-inf`. That was refused
+        # — but by `count_before` inside the pass, at exit 1 ("damage, page
+        # someone") with the gate decision already in the chain (measured). A
+        # bad argument is exit 2 before anything is recorded, so the product
+        # is checked where its operand is.
+        if not math.isfinite(args.keep_days * _SECONDS_PER_DAY):
+            raise ValueError(
+                f"--keep-days {args.keep_days!r} is too large to express as a window in seconds"
+            )
         if not math.isfinite(args.lookback_margin) or args.lookback_margin < 0:
             raise ValueError(
                 f"--lookback-margin must be finite and >= 0, got {args.lookback_margin!r}"
@@ -777,7 +791,7 @@ def _run(
         return 1
 
     # The one clock read, and only after the gate permitted the pass.
-    clock_threshold = time.time() - args.keep_days * 86_400.0
+    clock_threshold = time.time() - args.keep_days * _SECONDS_PER_DAY
     # `min`, so `--before` is a ceiling on the window and never a widening of
     # it: the flag exists to make an --apply delete no more than a dry run
     # reported, and a flag that could reach *past* --keep-days would be a

@@ -167,6 +167,10 @@ def test_failed_verification_restores_every_file(
         ("9.0.0", "<script>", "2026-11-02"),
         ("9.0.0", "x", "2026-11-02"),  # too short
         ("9.0.0", "Valid Title", "02/11/2026"),
+        # `fromisoformat` accepts both of these; the heading they would write
+        # is one `release_notes.py` cannot find, so the release fails at the tag.
+        ("9.0.0", "Valid Title", "20261102"),  # ISO basic form
+        ("9.0.0", "Valid Title", "2026-W44-1"),  # ISO week date
     ],
 )
 def test_invalid_input_is_rejected(sandbox: Path, version: str, title: str, date: str) -> None:

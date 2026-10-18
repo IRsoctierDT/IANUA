@@ -253,18 +253,32 @@ def _unsafe_path(base: Path, relative: Path, *, what: str) -> str | None:
     ``store/paths.py::confine`` already applies, in the shape it does not
     cover.
     """
+    # Capped: a manifest path is untrusted, and a 2 MB one was echoed whole.
+    shown = _capped(str(relative))
     if relative.is_absolute():
-        return f"{what} {relative} is absolute; it must be relative to its root"
+        return f"{what} {shown} is absolute; it must be relative to its root"
     if any(part in {"..", ""} for part in relative.parts):
-        return f"{what} {relative} contains a traversal component"
+        return f"{what} {shown} contains a traversal component"
+    if "\x00" in str(relative):
+        # No filesystem call accepts it: is_symlink() quietly answers False and
+        # resolve() raises, which replaced the verifier's whole report (found by
+        # independent review).
+        return f"{what} {_capped(repr(str(relative)))} contains a NUL byte and cannot be checked"
     walked = base
-    for part in relative.parts:
-        walked = walked / part
-        if walked.is_symlink():
-            return (
-                f"{what} {relative} passes through the symlink {walked} "
-                f"(-> {walked.readlink()}); refusing to follow it out of the root"
-            )
+    try:
+        for part in relative.parts:
+            walked = walked / part
+            if walked.is_symlink():
+                return (
+                    f"{what} {shown} passes through the symlink {_capped(str(walked))} "
+                    f"(-> {_capped(str(walked.readlink()))}); refusing to follow it out "
+                    "of the root"
+                )
+    except OSError as exc:
+        # An overlong name (ENAMETOOLONG) raised out of here and replaced the
+        # verifier's whole report (found by independent review). Not walkable is
+        # not safe, so it is a reason like the others.
+        return f"{what} {_capped(repr(str(relative)))} cannot be checked ({type(exc).__name__})"
     # Defence in depth, and deliberately not test-covered: given the two
     # checks above — no absolute path, no `..`, no symlinked component — a
     # relative path cannot resolve outside its base, so four plants could not
@@ -275,7 +289,7 @@ def _unsafe_path(base: Path, relative: Path, *, what: str) -> str | None:
     # it would be the overstatement this file exists to avoid.
     resolved = (base / relative).resolve()
     if not resolved.is_relative_to(base.resolve()):
-        return f"{what} {relative} resolves to {resolved}, outside {base}"
+        return f"{what} {shown} resolves to {_capped(str(resolved))}, outside {base}"
     return None
 
 
@@ -600,13 +614,29 @@ def _require_format(manifest: object) -> None:
             "with this version as soon as a live store exists — a backup in this format can "
             "never satisfy this gate"
         )
-    raise StoreError(f"unknown backup format {found!r}; this version verifies {MANIFEST_FORMAT!r}")
+    # Capped: the repr of a 2 MB format string was 2,000,032 bytes of stderr.
+    raise StoreError(
+        f"unknown backup format {_capped(repr(found))}; this version verifies {MANIFEST_FORMAT!r}"
+    )
 
 
 #: Stands for "the manifest's store entry has no attestation at all", which is a
 #: different finding from "the attestation is not an object" and must not become
 #: a bare ``KeyError`` on the way to either.
 _MISSING: object = object()
+
+#: The attestation fields that count rows, and so are never negative.
+_COUNTS: frozenset[str] = frozenset({"events", "observables"})
+
+
+def _capped(text: str, limit: int = 80) -> str:
+    """``text`` cut to ``limit`` characters: manifest content echoed into a report.
+
+    Measured, a 2 MB manifest field became 2 MB of output and 4 MB of audit chain
+    before anything bounded it.
+    """
+    return text if len(text) <= limit else text[:limit] + "..."
+
 
 #: How each attestation field must be typed to be comparable. ``bool`` is an
 #: ``int`` subclass and is refused wherever an int is required.
@@ -676,6 +706,16 @@ def _attestation_gaps(expected: object) -> list[str]:
             "one, so this is a damaged or edited manifest and nothing in it can be compared"
         ]
     gaps: list[str] = []
+    # A field this version does not write is an edit, and --verify used to
+    # flag one by comparing every key it found; comparing only the known
+    # fields let an added one through at exit 0 (found by independent review).
+    unknown = sorted(repr(key) for key in expected if key not in ATTESTATION_FIELDS)
+    if unknown:
+        gaps.append(
+            f"the manifest's store attestation carries {len(unknown)} field(s) a "
+            f"{MANIFEST_FORMAT} attestation never does ({_capped(', '.join(unknown))}), "
+            "so this is a damaged or edited manifest"
+        )
     for name in ATTESTATION_FIELDS:
         if name not in expected:
             gaps.append(
@@ -695,11 +735,228 @@ def _attestation_gaps(expected: object) -> list[str]:
                 else "a number or null"
             )
             gaps.append(
-                f"the manifest's store attestation {name!r} is not {want} ({value!r}, type "
-                f"{type(value).__name__}); it cannot be compared and the check is refused "
-                "rather than coerced or skipped"
+                f"the manifest's store attestation {name!r} is not {want} "
+                f"({_capped(repr(value))}, type {type(value).__name__}); it cannot be "
+                "compared and the check is refused rather than coerced or skipped"
+            )
+        elif name in _COUNTS and isinstance(value, int) and value < 0:
+            # A count is never negative; read as one, --verify-restore called the
+            # live store's surplus expected re-collection (found by review).
+            gaps.append(
+                f"the manifest's store attestation {name!r} is negative ({value}); a "
+                "count never is, so this is a damaged or edited manifest"
             )
     return gaps
+
+
+#: The one path :func:`_take_backup` writes the store to, and so the only one
+#: a manifest may name. See :func:`_load_manifest`.
+_STORE_PATH = str(EVENTS_SUBDIR / DEFAULT_FILENAME)
+
+
+def _is_count(value: object) -> bool:
+    """A non-negative ``int`` that is not a ``bool`` (an ``int`` subclass)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _malformed(directory: Path, what: str) -> StoreError:
+    """The refusal for a manifest whose shape cannot be verified against."""
+    return StoreError(
+        f"{MANIFEST_FILE} in {directory}: {what}; refusing to verify against a "
+        "damaged or edited manifest"
+    )
+
+
+def _store_path_problem(backup: Path, store_entry: dict[str, Any]) -> str | None:
+    """Why the manifest's store path must not be opened, or ``None`` if it may be.
+
+    Any path but :data:`_STORE_PATH` is this one's finding, escaping included;
+    the canonical path is then walked by :func:`_unsafe_path` for a symlinked
+    component. Both are findings rather than refusals,
+    so an operator deciding whether to restore sees them beside everything
+    else, and a verifier never opens a path this names a reason for: a store
+    path naming another file in the backup sent ``--verify`` on to
+    ``EventStore.open``, which created a store inside the backup under
+    inspection (measured, found by independent review). ``path`` is a string;
+    :func:`_load_manifest` checked that.
+    """
+    path = store_entry["path"]
+    # The string first: walking a NUL-bearing or overlong path raised a bare
+    # OSError that replaced the whole report (found by independent review).
+    if path != _STORE_PATH:
+        return (
+            f"manifest store path {_capped(repr(path))} is not {_STORE_PATH!r}, the only "
+            "path a backup writes, so it was not opened"
+        )
+    return _unsafe_path(backup, Path(path), what="manifest store path")
+
+
+def _load_manifest(directory: Path) -> dict[str, Any]:
+    """Read ``directory``'s manifest and check its **shape**, or raise ``StoreError``.
+
+    A manifest is data inside the artifact being verified (see
+    :func:`_unsafe_path`), and both verifiers used its fields as though they
+    were well-formed. Measured through the CLI on the code this replaces: a
+    JSON array, a string ``store``, a string ``files`` entry and a list
+    ``chains`` each ended in a ``TypeError``/``AttributeError`` traceback under
+    ``--verify`` and ``--verify-restore`` alike — exit 1 by accident, no message.
+
+    **The sharper defect was a write.** A ``store.path`` naming any *other*
+    existing file in the backup passed ``is_file()``, so :func:`_verify_backup`
+    went on to ``EventStore.open(directory)`` — which ``mkdir``s and
+    ``connect``s — and **created** ``data/events/events.sqlite3`` inside the
+    backup under inspection (measured). That is the hazard
+    :func:`_verify_restore` already guards against, so a ``store.path`` that is
+    not the one :func:`_take_backup` writes is never opened — reported as a
+    finding by :func:`_store_path_problem`, not raised here, because #241
+    settled that an escaping path is a finding an operator reads beside
+    everything else. This function checks only that it is a string. Shape
+    only: every digest, size and count is still compared by the callers, and
+    the escape checks still run.
+
+    **Format and containers are #241's checks**, :func:`_require_format` and
+    :func:`_require_shape`, run here so both verifiers get them from one place,
+    with the file named. The attestation is deliberately *not* checked here:
+    :func:`_attestation_gaps` reports it as findings beside everything else
+    wrong with the copy, which a raise from this function would hide.
+    """
+    manifest_path = directory / MANIFEST_FILE
+    if not manifest_path.is_file():
+        raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError) as exc:
+        # ValueError covers JSONDecodeError and UnicodeDecodeError; RecursionError
+        # is json's own — measured, 100,000 nested `[` was a traceback in both modes.
+        raise _malformed(directory, f"cannot be decoded as JSON ({type(exc).__name__})") from exc
+    try:
+        _require_format(manifest)
+        store_entry = _require_shape(manifest)
+    except StoreError as exc:
+        raise StoreError(f"{MANIFEST_FILE} in {directory}: {exc}") from exc
+    if not isinstance(store_entry.get("path"), str) or not isinstance(
+        store_entry.get("sha256"), str
+    ):
+        raise _malformed(directory, "store path and sha256 must be strings")
+    for entry in manifest["files"]:
+        if not (
+            isinstance(entry, dict)
+            and isinstance(entry.get("path"), str)
+            and isinstance(entry.get("sha256"), str)
+            and _is_count(entry.get("size"))
+        ):
+            raise _malformed(
+                directory,
+                f"file entry {str(entry)[:80]!r} needs a string path, a string sha256 and an "
+                "integer size",
+            )
+    chains = manifest["chains"]
+    for relative in CHAIN_FILES:
+        # A backup records a verdict for every chain, so an absent or non-object
+        # one is an edit — and both verifiers used to `continue` past it, which
+        # let removing a chain's record (or `chains: {}`) silence the one check
+        # made independently of the manifest: measured, exit 0 over intact=False.
+        recorded = chains.get(str(relative))
+        if not (
+            isinstance(recorded, dict)
+            and isinstance(recorded.get("present"), bool)
+            and (not recorded["present"] or _is_count(recorded.get("entries")))
+        ):
+            raise _malformed(
+                directory,
+                f"chains[{str(relative)!r}] must record a boolean present and, when "
+                "present, an integer entries",
+            )
+    checked: dict[str, Any] = manifest  # a dict: _require_format refused anything else
+    return checked
+
+
+#: SQLite's file header begins with this magic; bytes 18 and 19 are the write
+#: and read format versions, both ``2`` for a WAL-mode database.
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _unsafe_to_open(db: Path, *, what: str) -> str | None:
+    """Why ``EventStore.open`` must not be handed ``db``, or ``None`` if it may be.
+
+    ``EventStore.open`` is the store's only constructor and it **initialises**:
+    it sets ``journal_mode=WAL``, applies the schema to any file without a
+    ``meta`` table, and on close checkpoints whatever ``-wal`` sits beside the
+    file. Right for the collector; a write for a verifier. Measured through the
+    CLI before this check, manifest untouched and the store at the canonical
+    path: a 0-byte backup store (the module docstring's "truncated transfer")
+    went 0 -> 61440 bytes with ``events``/``meta``/``observables`` created
+    *inside the backup under inspection*, same inode, and a second ``--verify``
+    then reported a different digest — the evidence that it was a truncated
+    copy was gone; a foreign SQLite file holding one table gained the three
+    and went 0o644 -> 0o600; a 0-byte file *outside* the backup, hard-linked
+    to the store path (which :func:`_unsafe_path` cannot see), was initialised
+    in place; a 0-byte **live** store under ``--verify-restore`` likewise; and
+    a hot ``-wal`` planted beside an intact backup store was checkpointed into
+    it at **exit 0**, "every file digest match the manifest", sha256 changed.
+
+    So the facts ``open`` would act on are read first, without a connection
+    that can write: size, the sidecar, the header bytes, and the schema
+    catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
+    ``-wal`` and ``-shm`` behind in the backup after close; ``immutable=1``
+    touched nothing. It ignores a WAL, which is why a non-empty one is refused
+    on its own rather than read through. A reason is a reported problem and
+    not a raise, so the rest of the report still runs.
+    """
+    size = db.stat().st_size
+    if size == 0:
+        return (
+            f"{what} is 0 bytes, a truncated transfer; SQLite treats an empty file as a "
+            "new database and opening it would initialise it, so it was not opened"
+        )
+    for suffix in ("-wal", "-journal"):
+        side = db.with_name(db.name + suffix)
+        if side.is_symlink() or (side.exists() and not side.is_file()):
+            # Measured, found by independent review: a FIFO -journal hung both
+            # verifiers inside EventStore.open while they held the backup lock,
+            # so a scheduled take skipped at exit 0; a FIFO -wal was deleted.
+            return (
+                f"{what} has a {suffix} beside it that is not a regular file; SQLite "
+                "would open it with the store, so the store was not opened"
+            )
+    wal = db.with_name(db.name + "-wal")
+    if wal.is_file() and wal.stat().st_size:
+        return (
+            f"{what} has a {wal.stat().st_size}-byte -wal beside it that was never "
+            "checkpointed; opening it would checkpoint those frames into the file, so it "
+            "was not opened"
+        )
+    journal = db.with_name(db.name + "-journal")
+    if journal.is_file() and journal.stat().st_size:
+        # Measured, found by independent review: a hot rollback journal planted
+        # beside a WAL-mode store was replayed into it on open, the store's
+        # sha256 changed, the journal was deleted and the run exited 0.
+        return (
+            f"{what} has a {journal.stat().st_size}-byte -journal beside it; opening it "
+            "would replay that journal into the file, so it was not opened"
+        )
+    with db.open("rb") as handle:
+        head = handle.read(20)
+    if head[:16] != _SQLITE_MAGIC:
+        return f"{what} is not a SQLite database ({size} bytes)"
+    if head[18:20] != b"\x02\x02":
+        return (
+            f"{what} is not in WAL mode (header bytes 18-19 are {head[18:20].hex()}); "
+            "opening it would rewrite its header, so it was not opened"
+        )
+    try:
+        with contextlib.closing(sqlite3.connect(f"{db.as_uri()}?immutable=1", uri=True)) as conn:
+            schema = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'"
+            ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        return f"{what} cannot be read as a SQLite database: {exc}"
+    if schema is None:
+        return (
+            f"{what} carries no event-store schema (no meta table); opening it would "
+            "create one, so it was not opened"
+        )
+    return None
 
 
 def _verify_backup(directory: Path) -> dict[str, object]:
@@ -708,16 +965,20 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     Collects findings rather than raising on the first, because an operator
     deciding whether to restore from this copy needs to know everything that
     is wrong with it, not the first thing.
+
+    **What this writes, stated exactly.** The *bytes* of every file it reads,
+    the store included, are left as found — :func:`_unsafe_to_open` names the
+    cases that used to be initialised in place. Two things still change under
+    it: ``EventStore.open`` narrows the store and its directory to owner-only
+    if a transfer left them wider (a mode change, in the direction
+    :func:`_take_backup` writes), and the WAL sidecars it creates while open
+    are removed on close. Content-neutral is the claim; metadata-neutral is not.
     """
-    manifest_path = directory / MANIFEST_FILE
-    if not manifest_path.is_file():
-        raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    _require_format(manifest)
+    manifest = _load_manifest(directory)
 
     problems: list[str] = []
 
-    store_entry = _require_shape(manifest)
+    store_entry: dict[str, Any] = manifest["store"]  # shape-checked by _load_manifest
     # Bound before the branches below: the return reads it on every path, and
     # only one of the three reaches the attestation comparison. Binding it inside
     # that branch raised UnboundLocalError on a backup whose store was missing or
@@ -726,11 +987,12 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     expected = store_entry.get("attestation", _MISSING)
     gaps = _attestation_gaps(expected)
     problems.extend(gaps)
-    unsafe = _unsafe_path(directory, Path(str(store_entry["path"])), what="manifest store path")
+    unsafe = _store_path_problem(directory, store_entry)
     if unsafe is not None:
-        # A path that escapes is a tamper indicator, so it is reported rather
-        # than followed — and reported as a problem rather than raised, so an
-        # operator deciding whether to restore sees everything at once.
+        # A path that escapes, or names any file but the store, is a tamper
+        # indicator, so it is reported rather than followed — and reported as a
+        # problem rather than raised, so an operator deciding whether to restore
+        # sees everything at once.
         problems.append(unsafe)
         store_entry = {**store_entry, "path": None}
     db = directory / str(store_entry["path"]) if store_entry["path"] else None
@@ -743,20 +1005,24 @@ def _verify_backup(directory: Path) -> dict[str, object]:
         if actual != store_entry["sha256"]:
             problems.append(
                 f"{store_entry['path']}: sha256 {actual} does not match the manifest's "
-                f"{store_entry['sha256']}"
+                f"{_capped(store_entry['sha256'])}"
             )
-        with EventStore.open(directory) as copy:
-            attested = copy.attest().to_dict()
-        # Compared only when every field is there. The first version of this
-        # change still indexed `expected["events"]` below after reporting it
-        # missing, so the operator saw a bare KeyError on stderr and not the
-        # finding — exit 1 for the wrong reason, which a test caught.
-        for key in ATTESTATION_FIELDS if not gaps else ():
-            if attested.get(key) != expected[key]:
-                problems.append(
-                    f"store attestation {key}: {attested.get(key)!r} does not match the "
-                    f"manifest's {expected[key]!r}"
-                )
+        unopenable = _unsafe_to_open(db, what=str(store_entry["path"]))
+        if unopenable is not None:
+            problems.append(unopenable)
+        else:
+            with EventStore.open(directory) as copy:
+                attested = copy.attest().to_dict()
+            # Compared only when every field is there. The first version of this
+            # change still indexed `expected["events"]` below after reporting it
+            # missing, so the operator saw a bare KeyError on stderr and not the
+            # finding — exit 1 for the wrong reason, which a test caught.
+            for key in ATTESTATION_FIELDS if not gaps else ():
+                if attested.get(key) != expected[key]:
+                    problems.append(
+                        f"store attestation {key}: {attested.get(key)!r} does not match "
+                        f"the manifest's {_capped(repr(expected[key]))}"
+                    )
 
     for entry in manifest["files"]:
         unsafe = _unsafe_path(directory, Path(str(entry["path"])), what="manifest path")
@@ -771,28 +1037,32 @@ def _verify_backup(directory: Path) -> dict[str, object]:
             problems.append(f"{entry['path']}: size {path.stat().st_size} != {entry['size']}")
         actual = _digest_file(path)
         if actual != entry["sha256"]:
-            problems.append(f"{entry['path']}: sha256 {actual} != {entry['sha256']}")
+            problems.append(f"{entry['path']}: sha256 {actual} != {_capped(entry['sha256'])}")
 
     # The chains are re-verified now, not trusted from the manifest: a chain
     # recorded intact at backup time and broken since is exactly what this is
     # for.
     chains = _verify_chains(directory)
     for name, state in sorted(chains.items()):
-        recorded = manifest["chains"].get(name)
-        if not isinstance(state, dict) or not isinstance(recorded, dict):
+        if not isinstance(state, dict):
             continue
+        recorded = manifest["chains"][name]  # shape-checked by _load_manifest
         if state.get("present") != recorded.get("present"):
             problems.append(
                 f"{name}: present={state.get('present')!r} at backup time was "
                 f"{recorded.get('present')!r}"
             )
-        elif state.get("present") and not state.get("intact"):
+        # Independent of the record on purpose: this is the one check the
+        # manifest cannot answer, so nothing in the manifest may silence it.
+        if state.get("present") and not state.get("intact"):
             problems.append(f"{name}: chain no longer verifies: {state.get('failure')}")
 
     return {
         "backup": str(directory),
         "taken_at": manifest.get("taken_at"),
-        "events": expected.get("events") if isinstance(expected, dict) else None,
+        # Only a checked value: this lands in the audit record's action, where a
+        # manifest's '|' suppressed the whole report (found by independent review).
+        "events": expected["events"] if not gaps else None,
         "verified": not problems,
         "problems": problems,
         "chains": chains,
@@ -854,23 +1124,26 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     any attestation field is refused by :func:`_attestation_gaps` rather than
     compared on what is left.
     """
-    manifest_path = backup / MANIFEST_FILE
-    if not manifest_path.is_file():
-        raise StoreError(f"no {MANIFEST_FILE} in {backup}; this is not a backup")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    _require_format(manifest)
+    manifest = _load_manifest(backup)
 
     problems: list[str] = []
-    store_entry = _require_shape(manifest)
+    store_entry: dict[str, Any] = manifest["store"]  # shape-checked by _load_manifest
     expected = store_entry.get("attestation", _MISSING)
     gaps = _attestation_gaps(expected)
     problems.extend(gaps)
+    # Never opened here (the live store is), but a tamper indicator all the same.
+    store_path = _store_path_problem(backup, store_entry)
+    if store_path is not None:
+        problems.append(store_path)
     live_events: int | None = None
 
     # The store. Existence is checked FIRST and deliberately: EventStore.open
     # CREATES the database if absent, so opening it blind would have this
     # verification manufacture an empty store and then report the loss of every
     # event — a read-only check that writes the thing it was asked to inspect.
+    # And existence is not enough: an existing EMPTY file was created into
+    # regardless (measured, 0 -> 61440 bytes with the schema), so whether
+    # opening would write is checked next. See _unsafe_to_open.
     db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
     if gaps:
         # Refused above, by name, per missing field. Not compared "as far as
@@ -886,6 +1159,8 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             f"no store at {db}: the restore did not put one there, and this check will "
             "not create one to measure"
         )
+    elif (unopenable := _unsafe_to_open(db, what=f"the live store {db}")) is not None:
+        problems.append(unopenable)
     else:
         with EventStore.open(root) as live:
             attested = live.attest().to_dict()
@@ -1066,9 +1341,9 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # Chains: entries may only GROW, and must still verify.
     chains = _verify_chains(root)
     for name, state in sorted(chains.items()):
-        recorded = manifest["chains"].get(name)
-        if not isinstance(state, dict) or not isinstance(recorded, dict):
+        if not isinstance(state, dict):
             continue
+        recorded = manifest["chains"][name]  # shape-checked by _load_manifest
         if recorded.get("present") and not state.get("present"):
             problems.append(f"{name}: present in the backup, absent from the live root")
             continue
@@ -1091,7 +1366,9 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # .get, not []: with a field missing the attestation was refused above
         # by name, and indexing it here turned that finding into a bare
         # `error: 'events'` on stderr — measured, exit 1 with an empty stdout.
-        "events": expected.get("events") if isinstance(expected, dict) else None,
+        # Only a checked value: this lands in the audit record's action, where a
+        # manifest's '|' suppressed the whole report (found by independent review).
+        "events": expected["events"] if not gaps else None,
         "live_events": live_events,
         "verified": not problems,
         "problems": problems,

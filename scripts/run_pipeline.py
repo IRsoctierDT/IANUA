@@ -111,6 +111,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import sqlite3
 import sys
 import time
@@ -381,8 +382,16 @@ def main(argv: list[str] | None = None) -> int:
         # shadow tree the comment above describes was reachable through the
         # likeliest misconfiguration of all, an unset shell variable.
         args.root = validated_root(args.root, error=ValueError, what="--root")
-        if args.lookback < 0:
-            raise ValueError(f"lookback must be >= 0 seconds, got {args.lookback}")
+        # Finite as well as non-negative. `run_cycle` gates its context read on
+        # `lookback > 0`, which NaN fails, so `--lookback nan` ran as
+        # `--lookback 0`: measured with a cursor present and ten new events
+        # inside the default window, the default correlated 50 and `nan`
+        # correlated 10 — the partitioning the overlap exists to prevent, at
+        # exit 0 with `context_limited` false. `inf` is refused with it: an
+        # unbounded window is not a configuration, and `run_retention.py`
+        # already refuses both for its own float flags.
+        if not math.isfinite(args.lookback) or args.lookback < 0:
+            raise ValueError(f"lookback must be finite and >= 0 seconds, got {args.lookback}")
         if args.batch < 1:
             # Validated here as well as in run_cycle: a scheduler misconfigured
             # with a batch of zero is a bad argument, not a failed cycle, and
