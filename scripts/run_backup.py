@@ -474,9 +474,17 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
     it is the control.
     """
     candidates = list(COPIED_FILES)
+    refused: list[str] = []
     for tree in COPIED_TREES:
         base = root / tree
-        if base.is_dir() and not base.is_symlink():
+        # By the same rule as a file. A symlinked tree root used to be skipped
+        # without a word, so a take over one exited 0 with every report
+        # silently absent (found by independent review).
+        unsafe = _unsafe_path(root, tree, what="tree")
+        if unsafe is not None:
+            refused.append(f"{unsafe}; none of its files are in this backup")
+            continue
+        if base.is_dir():
             candidates.extend(sorted(child.relative_to(root) for child in base.iterdir()))
     # Rotated archives, checkpoints and head signatures sit beside their
     # chain; they are part of the same evidence and are copied with it.
@@ -494,7 +502,6 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
         )
 
     found: list[Path] = []
-    refused: list[str] = []
     for relative in sorted(set(candidates)):
         reason = _unsafe_path(root, relative, what="source")
         if reason is not None:
@@ -564,9 +571,10 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
         )
     sidecar = _sidecar_problem(source_db, what=f"the live store {source_db}")
     if sidecar is not None:
-        # Before anything is created, so a refused take leaves nothing behind.
-        # The type and link count only: a live writer legitimately has a
-        # non-empty -wal, which the online backup API copies correctly.
+        # Before the backup directory is created, so a refused take leaves no
+        # partial copy (the gate's allow record is already in the chain, as for
+        # every take that fails). The type and link count only: a live writer
+        # legitimately has a non-empty -wal, which the online backup API copies.
         raise StoreError(sidecar)
 
     destination.mkdir(mode=DIR_MODE, parents=True, exist_ok=False)
@@ -924,6 +932,16 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
 #: The files SQLite opens beside a database, and reads or writes through.
 _SIDECARS = ("-wal", "-journal", "-shm")
 
+#: How a non-regular sidecar is named in a finding.
+_KINDS = (
+    (stat.S_ISLNK, "a symlink"),
+    (stat.S_ISDIR, "a directory"),
+    (stat.S_ISFIFO, "a FIFO"),
+    (stat.S_ISSOCK, "a socket"),
+    (stat.S_ISCHR, "a character device"),
+    (stat.S_ISBLK, "a block device"),
+)
+
 
 def _sidecar_problem(db: Path, *, what: str) -> str | None:
     """Why a file beside ``db`` makes it unsafe to hand to SQLite, or ``None``.
@@ -947,7 +965,15 @@ def _sidecar_problem(db: Path, *, what: str) -> str | None:
     the path, so a sidecar swapped in between it and the open is not caught:
     that needs write access to the directory, the same window
     :func:`_unsafe_to_open` already leaves.
+
+    Every offending sidecar is named, with what is wrong with it, because the
+    remedies differ: a FIFO or a symlink is never benign, while a second link
+    can come from a hard-link copy of the tree (``cp -al``, ``rsync
+    --link-dest``) and the size says whether a ``-wal`` holds frames (found by
+    review: the first version named only the first sidecar, and only as "not a
+    regular file with a single link").
     """
+    reasons: list[str] = []
     for suffix in _SIDECARS:
         side = db.with_name(db.name + suffix)
         try:
@@ -955,16 +981,22 @@ def _sidecar_problem(db: Path, *, what: str) -> str | None:
         except FileNotFoundError:
             continue
         except OSError as exc:
-            return (
-                f"{what}'s {suffix} cannot be checked ({type(exc).__name__}), so the "
-                "store was not opened"
+            reasons.append(f"its {suffix} cannot be checked ({type(exc).__name__})")
+            continue
+        if not stat.S_ISREG(found.st_mode):
+            kind = next((name for test, name in _KINDS if test(found.st_mode)), "unrecognised")
+            reasons.append(f"its {suffix} is {kind}, not a regular file")
+        elif found.st_nlink != 1:
+            reasons.append(
+                f"its {suffix} ({found.st_size} bytes) has {found.st_nlink} links: another "
+                "name shares the file, and SQLite would write through both"
             )
-        if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1:
-            return (
-                f"{what} has a {suffix} beside it that is not a regular file with a single "
-                "link; SQLite would open it with the store, so the store was not opened"
-            )
-    return None
+    if not reasons:
+        return None
+    return (
+        f"{what} cannot be opened safely: {'; '.join(reasons)}. SQLite opens every "
+        "sidecar with the store, so the store was not opened"
+    )
 
 
 #: SQLite's file header begins with this magic; bytes 18 and 19 are the write
@@ -1243,6 +1275,16 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             "findings above), and a comparison against part of it would be a verdict on "
             "part of the evidence"
         )
+    elif (
+        live_path := _unsafe_manifest_path(
+            root, EVENTS_SUBDIR / DEFAULT_FILENAME, what="the live store"
+        )
+    ) is not None:
+        # Walked as the backup side's store path is. A symlinked live store
+        # reached EventStore.open, whose confine() raised and replaced the whole
+        # report with a bare error (found by independent review); and SQLite
+        # looks for the sidecars beside the target, not beside the link.
+        problems.append(live_path)
     elif not db.is_file():
         problems.append(
             f"no store at {db}: the restore did not put one there, and this check will "
@@ -1556,6 +1598,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A character the terminal's encoding cannot represent is escaped, not
+    # raised: measured, an accented letter in a manifest path under a
+    # non-UTF-8 stdout cut the report off with a traceback (found by independent
+    # review). _printable handles control characters; this handles the encoding.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
     args = _parse_args(argv)
     started_at = time.monotonic()
 
@@ -1564,12 +1614,19 @@ def main(argv: list[str] | None = None) -> int:
         principal = Principal("backup", args.caller)
         name = args.name or f"backup-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
         destination = confine(root, BACKUP_SUBDIR, name, error=StoreError, what="backup")
+        # The gate decision is the first write of every mode, so its path is
+        # confined before anything is written. AuditLogger refuses a symlink only
+        # at the leaf, and measured, a data/events linked into a backup took the
+        # gate record into that backup's chain, which then failed --verify for
+        # good; a --verify of another backup did it at exit 0 (found by
+        # independent review).
+        confine(root, AUDIT_SUBDIR, AUDIT_FILE, error=StoreError, what="audit log")
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
         lock = prepare_lock(root / BACKUP_SUBDIR, LOCK_FILE)
     except (PrincipalError, PolicyBundleError, StoreError, ValueError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_printable(str(exc))}", file=sys.stderr)
         return 2
 
     # Wrapped because the startup `try` has already closed by here, and a
@@ -1592,7 +1649,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     except LockUnavailableError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_printable(str(exc))}", file=sys.stderr)
         return 2
 
 
@@ -1617,7 +1674,9 @@ def _run(
     try:
         audit = AuditLogger(root / AUDIT_SUBDIR / AUDIT_FILE, signing_key=signing_key_from_env())
     except (OSError, ValueError) as exc:
-        print(f"error: audit log unusable, refusing to run: {exc}", file=sys.stderr)
+        print(
+            f"error: audit log unusable, refusing to run: {_printable(str(exc))}", file=sys.stderr
+        )
         return 1
 
     try:
@@ -1632,14 +1691,17 @@ def _run(
         print(f"blocked: {exc}", file=sys.stderr)
         return 3
     except (AuditFieldError, OSError, ValueError) as exc:
-        print(f"error: could not record the gate decision: {exc}", file=sys.stderr)
+        print(f"error: could not record the gate decision: {_printable(str(exc))}", file=sys.stderr)
         return 1
 
     try:
         if mode == "verify":
-            payload = _verify_backup(args.verify.resolve())
+            # realpath, not resolve(): on 3.11 and 3.12 resolve() raises
+            # RuntimeError on a symlink loop, which nothing here catches, so a
+            # planted loop was a traceback (found by independent review).
+            payload = _verify_backup(Path(os.path.realpath(args.verify)))
         elif mode == "verify-restore":
-            payload = _verify_restore(root, args.verify_restore.resolve())
+            payload = _verify_restore(root, Path(os.path.realpath(args.verify_restore)))
         else:
             manifest = _take_backup(root, destination)
             manifest_path = destination / MANIFEST_FILE
@@ -1666,7 +1728,10 @@ def _run(
         # could not get a read snapshot has taken nothing and left nothing,
         # which is the retryable case and not the damaged one.
         if is_retryable_contention(exc):
-            print(f"error: the store is busy, no backup was taken: {exc}", file=sys.stderr)
+            print(
+                f"error: the store is busy, no backup was taken: {_printable(str(exc))}",
+                file=sys.stderr,
+            )
             return EXIT_RETRYABLE
         print(f"error: {_printable(str(exc))}", file=sys.stderr)
         return 1
@@ -1693,7 +1758,7 @@ def _run(
             ),
         )
     except (AuditFieldError, OSError, ValueError) as exc:
-        print(f"error: pass ran but could not be recorded: {exc}", file=sys.stderr)
+        print(f"error: pass ran but could not be recorded: {_printable(str(exc))}", file=sys.stderr)
         return 1
 
     try:
@@ -1703,7 +1768,10 @@ def _run(
         else:
             _print_text(payload, mode=mode)
     except OSError as exc:
-        print(f"error: pass ran but its report could not be written: {exc}", file=sys.stderr)
+        print(
+            f"error: pass ran but its report could not be written: {_printable(str(exc))}",
+            file=sys.stderr,
+        )
         return 1
 
     if verifying and not payload["verified"]:
@@ -1712,6 +1780,12 @@ def _run(
 
 
 def _print_text(payload: dict[str, object], *, mode: str) -> None:
+    def say(line: str) -> None:
+        # Every line, not only those known to carry manifest text: the subject
+        # and success lines carry a resolved path, which a planted symlink can
+        # make anything (found by independent review).
+        print(_printable(line))
+
     if mode != "take":
         raw = payload["problems"]
         problems = raw if isinstance(raw, list) else []
@@ -1723,7 +1797,7 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
         )
         if payload["verified"]:
             if restored:
-                print(
+                say(
                     f"restore verified: {payload['root']} holds the "
                     f"{payload['events']} event(s) {payload['backup']} attested, every "
                     "declared file carries the backed-up history as a prefix, and every "
@@ -1732,40 +1806,40 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
                 # Said on success, not only in the docs, because a green line
                 # here is exactly what an operator will quote as justification
                 # for promoting — and it does not justify that.
-                print(
+                say(
                     "  NOTE: this verifies the COPY. It says nothing about the fence — "
                     "whether the former active node's timers are stopped. That is "
                     "procedural; see DESIGN.md's active/passive row and docs/RESTORE.md."
                 )
                 return
-            print(
+            say(
                 f"verified {payload['backup']}: {payload['events']} event(s), "
                 f"attestation and every file digest match the manifest."
             )
             return
-        print(f"FAILED to verify {subject}: {len(problems)} problem(s)")
+        say(f"FAILED to verify {subject}: {len(problems)} problem(s)")
         for problem in problems:
-            print(f"  - {_printable(str(problem))}")
+            say(f"  - {problem}")
         return
-    print(
+    say(
         f"wrote {payload['backup']}: {payload['events']} event(s), "
         f"{payload['files']} file(s) beside the store."
     )
-    print(f"  completeness digest {payload['digest']}")
-    print(
+    say(f"  completeness digest {payload['digest']}")
+    say(
         "  positions are not in this backup by design "
         f"({', '.join(sorted(EXCLUDED))}); see docs/RESTORE.md."
     )
     refused = payload.get("refused")
     if isinstance(refused, list) and refused:
-        print("  warning: sources NOT in this backup, refused as unsafe to read:")
+        say("  warning: sources NOT in this backup, refused as unsafe to read:")
         for entry in refused:
-            print(f"    {_printable(str(entry))}")
+            say(f"    {entry}")
     wide = payload.get("wide_paths")
     if isinstance(wide, list) and wide:
-        print("  warning: lab-data paths readable or writable beyond their owner:")
+        say("  warning: lab-data paths readable or writable beyond their owner:")
         for entry in wide:
-            print(f"    {_printable(str(entry))}")
+            say(f"    {entry}")
 
 
 if __name__ == "__main__":  # pragma: no cover

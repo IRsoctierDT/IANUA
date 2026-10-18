@@ -82,7 +82,9 @@ _CHAIN = "data/events/audit.log"
 _REPORT = Path("data") / "reports" / "r.md"
 
 
-def _run_isolated(argv: list[str], *, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+def _run_isolated(
+    argv: list[str], *, timeout: float = 30.0, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run the CLI in a child, for the cases whose failure is a hang.
 
     A subprocess with a timeout, as in ``test_audit_lock_path.py``: measured on the
@@ -103,6 +105,7 @@ def _run_isolated(argv: list[str], *, timeout: float = 30.0) -> subprocess.Compl
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         pytest.fail(f"the CLI blocked for {timeout}s instead of refusing: {argv}")
@@ -141,6 +144,20 @@ def _plant(side: Path, shape: str, victim: Path) -> None:
 
 
 _SHAPES = ["fifo", "socket", "directory", "dangling-symlink", "symlink-to-file", "hard-link"]
+
+
+def _named(suffix: str, shape: str, victim: Path) -> str:
+    """The words the finding must use for ``shape``: what is wrong, not only that it is."""
+    kind = {
+        "fifo": "a FIFO",
+        "socket": "a socket",
+        "directory": "a directory",
+        "dangling-symlink": "a symlink",
+        "symlink-to-file": "a symlink",
+    }.get(shape)
+    if kind is None:
+        return f"its {suffix} ({victim.stat().st_size} bytes) has 2 links"
+    return f"its {suffix} is {kind}, not a regular file"
 
 
 @pytest.mark.security
@@ -482,13 +499,12 @@ def test_a_sidecar_that_is_not_a_plain_file_is_refused_rather_than_opened(
         target.with_name(target.name + s) for s in ("-wal", "-journal", "-shm") if s != suffix
     ]
     planted, store, manifest = _kind(side), _fingerprint(target), _fingerprint(victim)
+    named = _named(suffix, shape, victim)
 
     result = _run_isolated(["--root", str(root), "--caller", "test", mode, str(backup)])
 
     assert result.returncode == 1, result.stdout[-400:] + result.stderr[-400:]
-    assert f"{suffix} beside it that is not a regular file" in result.stdout, (
-        result.stdout[-400:] + result.stderr[-400:]
-    )
+    assert named in result.stdout, result.stdout[-400:] + result.stderr[-400:]
     assert result.stderr == "", result.stderr[-400:]
     assert _kind(side) == planted, "the verifier replaced or removed the planted sidecar"
     assert _fingerprint(target) == store, "the store under inspection changed"
@@ -510,7 +526,7 @@ def test_a_backup_shm_hard_linked_to_the_live_store_cannot_destroy_it(
     capsys.readouterr()
 
     assert _verify(root, backup, "--verify") == 1
-    assert "-shm beside it that is not a regular file" in capsys.readouterr().out
+    assert f"its -shm ({before[0]} bytes) has 2 links" in capsys.readouterr().out
     assert _fingerprint(live) == before
     with EventStore.open(root) as store:
         assert store.count() == 12
@@ -534,11 +550,12 @@ def test_a_take_refuses_a_sidecar_before_it_writes_anything(
     victim.write_text("not the store's to write\n", encoding="utf-8")
     _plant(side, shape, victim)
     planted, store, untouched = _kind(side), _fingerprint(live), _fingerprint(victim)
+    named = _named(suffix, shape, victim)
 
     result = _run_isolated(["--root", str(root), "--name", "second", "--caller", "test"])
 
     assert result.returncode == 1, result.stdout[-400:] + result.stderr[-400:]
-    assert f"{suffix} beside it that is not a regular file" in result.stderr, result.stderr
+    assert named in result.stderr, result.stderr
     assert "Traceback" not in result.stderr, result.stderr[-800:]
     assert not (root / "data" / "backups" / "second").exists(), "a refused take left a tree"
     assert _kind(side) == planted
@@ -672,7 +689,15 @@ def test_an_unknown_attestation_key_cannot_write_control_sequences(
     assert "\x1b" not in out and "never does" in out, out
 
 
-_FORGED = "\x1b[2J\x1b[Hrestore verified: OK\r\n"
+#: C0 (ESC, LF, CR, BEL), C1 (the single-character CSI, NEL), a bidi override and a
+#: line separator: an escaper that knew only C0 passed the first version of the test
+#: below (found by review).
+_FORGED = "\x1b[2J\x1b[H\nrestore verified: OK\r\n\x9b2J\x07\u202e\u2028\x85"
+
+
+def _all_printable(text: str) -> bool:
+    """Every character shows as itself; a newline only ever ends a line."""
+    return all(char.isprintable() or char == "\n" for char in text)
 
 
 @pytest.mark.security
@@ -709,8 +734,7 @@ def test_manifest_text_reaches_the_terminal_escaped(
     assert _verify(root, backup, mode) == 1
     captured = capsys.readouterr()
     assert captured.err == "", captured.err[-400:]
-    for raw in ("\x1b", "\r", "\ud800"):
-        assert raw not in captured.out, repr(captured.out[-400:])
+    assert _all_printable(captured.out), repr(captured.out[-400:])
     assert "restore verified: OK" not in captured.out.splitlines(), captured.out
     assert "\\x1b[2J" in captured.out, "the finding was dropped rather than escaped"
 
@@ -733,3 +757,231 @@ def test_a_symlinked_component_is_named_relative_to_the_root(
     out = capsys.readouterr().out
     assert f"passes through the symlink {_REPORT.parent} (->" in out, out
     assert "deep-deep-/elsewhere); refusing" in out, out
+
+
+def _lab(tmp_path: Path) -> Path:
+    """A root holding one event and nothing else, for the take tests."""
+    root = tmp_path / "lab"
+    root.mkdir()
+    with EventStore.open(root) as store:
+        store.append(normalize(_RECORD % 0), ingested_at=store.next_stamp(time.time()))
+    return root
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "name", [("x" + _FORGED).encode(), b"\x80evil.md"], ids=["control-sequences", "undecodable"]
+)
+def test_a_take_warning_reaches_the_terminal_escaped(
+    tmp_path: Path, name: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: nothing pinned the escaping on the take's "sources NOT in this
+    backup" warnings, where a planted link's name is printed: raw control sequences at
+    exit 0, or, for a name that is not UTF-8, a traceback after the backup was written."""
+    root = _lab(tmp_path)
+    reports = root / "data" / "reports"
+    reports.mkdir()
+    Path(os.fsdecode(os.fsencode(reports) + b"/" + name)).symlink_to("/nowhere")
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--name", "b", "--caller", "test"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "", captured.err[-400:]
+    assert "sources NOT in this backup" in captured.out, captured.out
+    assert _all_printable(captured.out), repr(captured.out[-400:])
+    assert ("\\x1b[2J" if b"\x1b" in name else "\\udc80evil.md") in captured.out
+    assert (root / "data" / "backups" / "b" / "manifest.json").is_file()
+
+
+@pytest.mark.security
+def test_a_pass_error_reaches_the_terminal_escaped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the pass's ``error:`` line was escaped in the code and pinned by
+    nothing. A SchemaVersionError quotes the store's own ``meta`` value, which is the
+    backup's content."""
+    root, backup = _backup(tmp_path)
+    db = backup / _STORE
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", ("9" + _FORGED,))
+        conn.commit()
+    for suffix in ("-wal", "-shm"):
+        db.with_name(db.name + suffix).unlink(missing_ok=True)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    err = capsys.readouterr().err
+    assert "schema version" in err and "\\x1b[2J" in err, err
+    assert _all_printable(err), repr(err[-400:])
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["take", "--verify", "--verify-restore", "--verify-another"])
+def test_the_gate_record_cannot_follow_a_symlinked_events_directory(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the gate decision is every mode's first write, and AuditLogger
+    refuses a symlink only at the leaf. With ``data/events`` linked into a backup the
+    record landed in that backup's chain, which then failed ``--verify`` for good; a
+    ``--verify`` of a *different* backup did it at exit 0."""
+    root, backup = _backup(tmp_path)
+    other = root / "data" / "backups" / "other"
+    assert backup_main(["--root", str(root), "--name", "other", "--caller", "test"]) == 0
+    events = root / "data" / "events"
+    events.rename(events.with_name("events.real"))
+    events.symlink_to(other / "data" / "events", target_is_directory=True)
+    chain = other / _CHAIN
+    before = _fingerprint(chain)
+    tail = {
+        "take": ["--name", "third"],
+        "--verify": ["--verify", str(other)],
+        "--verify-restore": ["--verify-restore", str(other)],
+        "--verify-another": ["--verify", str(backup)],
+    }[mode]
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--caller", "test", *tail]) == 2
+    assert "is a symlink" in capsys.readouterr().err
+    assert _fingerprint(chain) == before, "the gate record was written into the backup's chain"
+    assert not (root / "data" / "backups" / "third").exists()
+
+
+@pytest.mark.security
+def test_the_gate_record_cannot_be_written_outside_the_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same hole pointed outside: measured, a ``--verify`` exited 0 "verified" and
+    created ``audit.log`` in a directory outside the lab root. The refusal quotes the
+    link target, so its name is escaped too."""
+    root, backup = _backup(tmp_path)
+    outside = tmp_path / ("outside" + _FORGED.replace("\n", ""))
+    outside.mkdir()
+    events = root / "data" / "events"
+    events.rename(events.with_name("events.real"))
+    events.symlink_to(outside, target_is_directory=True)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 2
+    err = capsys.readouterr().err
+    assert _all_printable(err) and "\\x1b[2J" in err, repr(err[-400:])
+    assert list(outside.iterdir()) == [], "the verifier wrote outside the lab root"
+
+
+@pytest.mark.security
+def test_a_symlinked_live_store_is_a_finding_and_the_report_survives(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: ``--verify-restore`` never walked the live store's path, so
+    ``EventStore.open``'s confine raised and the bare error replaced the whole report.
+    It is now walked as the backup side's is, and the other findings still print."""
+    root, backup = _backup(tmp_path, report=True)
+    live = root / _STORE
+    real = tmp_path / "elsewhere" / "store.sqlite3"
+    real.parent.mkdir()
+    live.rename(real)
+    live.symlink_to(real)
+    (root / _REPORT).write_text("# a different incident\n", encoding="utf-8")
+    before = _fingerprint(real)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify-restore") == 1
+    captured = capsys.readouterr()
+    assert captured.err == "", captured.err[-400:]
+    assert f"the live store {_STORE} passes through the symlink {_STORE}" in captured.out
+    assert f"ALTERED: {_REPORT}" in captured.out, "the rest of the report was lost"
+    assert _fingerprint(real) == before
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("shape", ["outside-the-root", "inside-the-root", "dangling"])
+def test_a_take_names_a_symlinked_tree_it_did_not_copy(
+    tmp_path: Path, shape: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: a symlinked ``data/reports`` was skipped without a word, so a take
+    exited 0 with every report absent and nothing in ``refused``. Three shapes, each of
+    which a narrower check would miss: a containment-only check passes the link inside
+    the root, and one gated on ``is_dir()`` skips the dangling link."""
+    root = _lab(tmp_path)
+    target = {
+        "outside-the-root": tmp_path / "outside",
+        "inside-the-root": root / "data" / "elsewhere",
+        "dangling": tmp_path / "nowhere",
+    }[shape]
+    if shape != "dangling":
+        target.mkdir()
+        (target / "r.md").write_text("# incident\n", encoding="utf-8")
+    (root / "data" / "reports").symlink_to(target, target_is_directory=True)
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--name", "b", "--caller", "test"]) == 0
+    out = capsys.readouterr().out
+    manifest = json.loads((root / "data/backups/b/manifest.json").read_text(encoding="utf-8"))
+    named = "tree data/reports passes through the symlink data/reports"
+    assert any(entry.startswith(named) for entry in manifest["refused"]), manifest["refused"]
+    assert not any(entry["path"].startswith("data/reports/") for entry in manifest["files"])
+    assert named in out, out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+def test_a_symlink_loop_at_the_backup_path_is_a_refusal_not_a_traceback(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: ``Path.resolve()`` raises RuntimeError on a loop on 3.11 and 3.12,
+    and nothing caught it, so a planted ``data/backups/latest -> latest`` was a traceback
+    after the gate decision was recorded."""
+    root, _backup_dir = _backup(tmp_path)
+    loop = root / "data" / "backups" / "loop"
+    loop.symlink_to(loop)
+    capsys.readouterr()
+
+    assert _verify(root, loop, mode) == 1
+    assert "this is not a backup" in capsys.readouterr().err
+
+
+@pytest.mark.security
+def test_an_unencodable_character_does_not_cut_the_report_short(tmp_path: Path) -> None:
+    """Found by review: escaping control characters left the encoding. Under a non-UTF-8
+    stdout an accented letter in a manifest path raised partway through the report. The
+    child runs with an ASCII stdout, which ``capsys`` cannot reproduce."""
+    root, backup = _backup(tmp_path, report=True)
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"].insert(
+        0, {"path": "data/reports/r\u00e9sum\u00e9.md", "size": 1, "sha256": "0" * 64}
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (backup / _REPORT).write_text("# a different incident\n", encoding="utf-8")
+
+    result = _run_isolated(
+        ["--root", str(root), "--caller", "test", "--verify", str(backup)],
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+    )
+
+    assert result.returncode == 1, result.stdout[-400:] + result.stderr[-400:]
+    assert "Traceback" not in result.stderr, result.stderr[-800:]
+    assert "r\\xe9sum\\xe9.md is missing" in result.stdout, result.stdout[-400:]
+    assert str(_REPORT) in result.stdout, "the finding after the entry was lost"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("suffix", ["-wal", "-journal", "-shm"])
+def test_a_sidecar_that_cannot_be_checked_is_refused_not_taken_as_absent(
+    tmp_path: Path, suffix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by review: nothing pinned this branch, so treating any ``lstat`` error as
+    "absent" passed every test. Not walkable is not safe."""
+    import scripts.run_backup as run_backup
+
+    db = tmp_path / "events.sqlite3"
+    db.write_bytes(b"x")
+    real_lstat = os.lstat
+
+    def refusing(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if os.fspath(path).endswith(suffix):  # type: ignore[call-overload]
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[call-overload]
+        return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(run_backup.os, "lstat", refusing)
+    reason = run_backup._sidecar_problem(db, what="the store")
+    assert reason is not None and f"its {suffix} cannot be checked (PermissionError)" in reason
