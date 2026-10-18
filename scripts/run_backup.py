@@ -107,8 +107,10 @@ import argparse
 import contextlib
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
+import stat
 import sys
 import time
 from dataclasses import fields
@@ -252,6 +254,11 @@ def _unsafe_path(base: Path, relative: Path, *, what: str) -> str | None:
     *directory* escapes just as well — the reasoning
     ``store/paths.py::confine`` already applies, in the shape it does not
     cover.
+
+    A path the filesystem cannot look up **raises** here, as an I/O error
+    does: on the take, where every path came from the filesystem, that is a
+    real failure and the take must fail. The verifiers call
+    :func:`_unsafe_manifest_path`, which turns it into a finding.
     """
     # Capped: a manifest path is untrusted, and a 2 MB one was echoed whole.
     shown = _capped(str(relative))
@@ -259,26 +266,19 @@ def _unsafe_path(base: Path, relative: Path, *, what: str) -> str | None:
         return f"{what} {shown} is absolute; it must be relative to its root"
     if any(part in {"..", ""} for part in relative.parts):
         return f"{what} {shown} contains a traversal component"
-    if "\x00" in str(relative):
-        # No filesystem call accepts it: is_symlink() quietly answers False and
-        # resolve() raises, which replaced the verifier's whole report (found by
-        # independent review).
-        return f"{what} {_capped(repr(str(relative)))} contains a NUL byte and cannot be checked"
     walked = base
-    try:
-        for part in relative.parts:
-            walked = walked / part
-            if walked.is_symlink():
-                return (
-                    f"{what} {shown} passes through the symlink {_capped(str(walked))} "
-                    f"(-> {_capped(str(walked.readlink()))}); refusing to follow it out "
-                    "of the root"
-                )
-    except OSError as exc:
-        # An overlong name (ENAMETOOLONG) raised out of here and replaced the
-        # verifier's whole report (found by independent review). Not walkable is
-        # not safe, so it is a reason like the others.
-        return f"{what} {_capped(repr(str(relative)))} cannot be checked ({type(exc).__name__})"
+    for part in relative.parts:
+        walked = walked / part
+        if walked.is_symlink():
+            # The component relative to the root, and the target's tail: capping
+            # the absolute path cut both to the root's own prefix, which named
+            # neither (found by independent review).
+            return (
+                f"{what} {shown} passes through the symlink "
+                f"{_capped(str(walked.relative_to(base)))} "
+                f"(-> {_capped_tail(str(walked.readlink()))}); refusing to follow it out "
+                "of the root"
+            )
     # Defence in depth, and deliberately not test-covered: given the two
     # checks above — no absolute path, no `..`, no symlinked component — a
     # relative path cannot resolve outside its base, so four plants could not
@@ -289,8 +289,33 @@ def _unsafe_path(base: Path, relative: Path, *, what: str) -> str | None:
     # it would be the overstatement this file exists to avoid.
     resolved = (base / relative).resolve()
     if not resolved.is_relative_to(base.resolve()):
-        return f"{what} {shown} resolves to {_capped(str(resolved))}, outside {base}"
+        return f"{what} {shown} resolves to {_capped_tail(str(resolved))}, outside {base}"
     return None
+
+
+def _unsafe_manifest_path(base: Path, relative: Path, *, what: str) -> str | None:
+    """:func:`_unsafe_path` for a path a manifest supplied, where one the
+    filesystem cannot even look up is a finding rather than an error.
+
+    Measured, found by independent review: a NUL byte, a lone surrogate (a
+    JSON ``\\ud800`` escape) and an overlong component each raised out of the
+    walk, and the bare error replaced the verifier's whole report, hiding a
+    genuine mismatch beside the entry. Not walkable is not safe, so it is a
+    reason like the others.
+
+    Only the verifiers call this. The first version put the catch in
+    :func:`_unsafe_path` itself, which the take shares, and review of that
+    measured the cost: a take over an unsearchable ``data/reports`` then exited
+    0 without the reports, where it had failed closed.
+    """
+    text = str(relative)
+    if "\x00" in text:
+        # is_symlink() quietly answers False for it and resolve() raises.
+        return f"{what} {_capped(repr(text))} contains a NUL byte and cannot be checked"
+    try:
+        return _unsafe_path(base, relative, what=what)
+    except (OSError, ValueError) as exc:
+        return f"{what} {_capped(repr(text))} cannot be checked ({type(exc).__name__})"
 
 
 def _narrow_tree(root: Path) -> None:
@@ -537,6 +562,12 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
             f"no event store at {source_db}; refusing to write a backup that "
             "would restore as an empty store indistinguishable from a real one"
         )
+    sidecar = _sidecar_problem(source_db, what=f"the live store {source_db}")
+    if sidecar is not None:
+        # Before anything is created, so a refused take leaves nothing behind.
+        # The type and link count only: a live writer legitimately has a
+        # non-empty -wal, which the online backup API copies correctly.
+        raise StoreError(sidecar)
 
     destination.mkdir(mode=DIR_MODE, parents=True, exist_ok=False)
     destination.chmod(DIR_MODE)
@@ -636,6 +667,25 @@ def _capped(text: str, limit: int = 80) -> str:
     before anything bounded it.
     """
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _capped_tail(text: str, limit: int = 80) -> str:
+    """``text`` cut to its last ``limit`` characters: a path whose end is the news."""
+    return text if len(text) <= limit else "..." + text[-limit:]
+
+
+def _printable(text: str) -> str:
+    """``text`` with every non-printable character escaped, for a terminal.
+
+    A report line can carry manifest content, and :func:`_capped` bounds its
+    length but not what it does. Measured, found by independent review: a
+    ``files[]`` path of ``"/\\x1b[2J\\x1b[Hrestore verified: OK\\r\\n"`` cleared
+    the operator's terminal and wrote a forged line, and a lone surrogate
+    crashed the text report with a traceback partway through. Escaping where a
+    line reaches the terminal covers every echo site at once; ``--json`` is
+    already escaped by ``json.dumps``.
+    """
+    return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
 
 
 #: How each attestation field must be typed to be comparable. ``bool`` is an
@@ -788,7 +838,7 @@ def _store_path_problem(backup: Path, store_entry: dict[str, Any]) -> str | None
             f"manifest store path {_capped(repr(path))} is not {_STORE_PATH!r}, the only "
             "path a backup writes, so it was not opened"
         )
-    return _unsafe_path(backup, Path(path), what="manifest store path")
+    return _unsafe_manifest_path(backup, Path(path), what="manifest store path")
 
 
 def _load_manifest(directory: Path) -> dict[str, Any]:
@@ -871,6 +921,52 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
     return checked
 
 
+#: The files SQLite opens beside a database, and reads or writes through.
+_SIDECARS = ("-wal", "-journal", "-shm")
+
+
+def _sidecar_problem(db: Path, *, what: str) -> str | None:
+    """Why a file beside ``db`` makes it unsafe to hand to SQLite, or ``None``.
+
+    SQLite opens every sidecar with the database: it checkpoints a ``-wal``,
+    replays a ``-journal``, and truncates and rewrites a ``-shm`` as its WAL
+    index. Each must therefore be absent or a regular file with a single link.
+    Measured, found by independent review:
+
+    - a FIFO ``-journal`` hung both verifiers, and a plain take, inside the
+      open while they held the backup lock, so every later pass skipped at
+      exit 0; a FIFO ``-wal`` was deleted;
+    - a symlinked, FIFO or directory ``-shm`` replaced the report with a bare
+      SQLite error and left a new ``-wal`` in the tree under inspection;
+    - a ``-shm`` **hard-linked** to another file had that file overwritten
+      with 32 KiB of WAL index: the backup's own manifest, and the live
+      store, were each destroyed under a run that exited 0 "verified".
+
+    A hard link is a regular file, which is why the link count is checked
+    with the type, and why this is one ``lstat`` per name. It is a check on
+    the path, so a sidecar swapped in between it and the open is not caught:
+    that needs write access to the directory, the same window
+    :func:`_unsafe_to_open` already leaves.
+    """
+    for suffix in _SIDECARS:
+        side = db.with_name(db.name + suffix)
+        try:
+            found = os.lstat(side)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return (
+                f"{what}'s {suffix} cannot be checked ({type(exc).__name__}), so the "
+                "store was not opened"
+            )
+        if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1:
+            return (
+                f"{what} has a {suffix} beside it that is not a regular file with a single "
+                "link; SQLite would open it with the store, so the store was not opened"
+            )
+    return None
+
+
 #: SQLite's file header begins with this magic; bytes 18 and 19 are the write
 #: and read format versions, both ``2`` for a WAL-mode database.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
@@ -896,8 +992,8 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
     it at **exit 0**, "every file digest match the manifest", sha256 changed.
 
     So the facts ``open`` would act on are read first, without a connection
-    that can write: size, the sidecar, the header bytes, and the schema
-    catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
+    that can write: size, the sidecars (:func:`_sidecar_problem`), the header
+    bytes, and the schema catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
     ``-wal`` and ``-shm`` behind in the backup after close; ``immutable=1``
     touched nothing. It ignores a WAL, which is why a non-empty one is refused
     on its own rather than read through. A reason is a reported problem and
@@ -909,16 +1005,9 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
             f"{what} is 0 bytes, a truncated transfer; SQLite treats an empty file as a "
             "new database and opening it would initialise it, so it was not opened"
         )
-    for suffix in ("-wal", "-journal"):
-        side = db.with_name(db.name + suffix)
-        if side.is_symlink() or (side.exists() and not side.is_file()):
-            # Measured, found by independent review: a FIFO -journal hung both
-            # verifiers inside EventStore.open while they held the backup lock,
-            # so a scheduled take skipped at exit 0; a FIFO -wal was deleted.
-            return (
-                f"{what} has a {suffix} beside it that is not a regular file; SQLite "
-                "would open it with the store, so the store was not opened"
-            )
+    sidecar = _sidecar_problem(db, what=what)
+    if sidecar is not None:
+        return sidecar
     wal = db.with_name(db.name + "-wal")
     if wal.is_file() and wal.stat().st_size:
         return (
@@ -1025,7 +1114,7 @@ def _verify_backup(directory: Path) -> dict[str, object]:
                     )
 
     for entry in manifest["files"]:
-        unsafe = _unsafe_path(directory, Path(str(entry["path"])), what="manifest path")
+        unsafe = _unsafe_manifest_path(directory, Path(str(entry["path"])), what="manifest path")
         if unsafe is not None:
             problems.append(unsafe)
             continue
@@ -1267,7 +1356,7 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     declared: set[Path] = set()
     for entry in manifest["files"]:
         entry_path = Path(str(entry["path"]))
-        unsafe = _unsafe_path(root, entry_path, what="manifest path")
+        unsafe = _unsafe_manifest_path(root, entry_path, what="manifest path")
         if unsafe is not None:
             problems.append(unsafe)
             continue
@@ -1579,7 +1668,7 @@ def _run(
         if is_retryable_contention(exc):
             print(f"error: the store is busy, no backup was taken: {exc}", file=sys.stderr)
             return EXIT_RETRYABLE
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_printable(str(exc))}", file=sys.stderr)
         return 1
 
     # Audited before the report: the copy already exists by this point, so a
@@ -1656,7 +1745,7 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
             return
         print(f"FAILED to verify {subject}: {len(problems)} problem(s)")
         for problem in problems:
-            print(f"  - {problem}")
+            print(f"  - {_printable(str(problem))}")
         return
     print(
         f"wrote {payload['backup']}: {payload['events']} event(s), "
@@ -1671,12 +1760,12 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
     if isinstance(refused, list) and refused:
         print("  warning: sources NOT in this backup, refused as unsafe to read:")
         for entry in refused:
-            print(f"    {entry}")
+            print(f"    {_printable(str(entry))}")
     wide = payload.get("wide_paths")
     if isinstance(wide, list) and wide:
         print("  warning: lab-data paths readable or writable beyond their owner:")
         for entry in wide:
-            print(f"    {entry}")
+            print(f"    {_printable(str(entry))}")
 
 
 if __name__ == "__main__":  # pragma: no cover
