@@ -150,6 +150,8 @@ from store import (  # noqa: E402
     Attestation,
     EventStore,
     StoreError,
+    StoreFileError,
+    refuse_unsafe_database,
 )
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -663,6 +665,12 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
         # real one, so there is no safe way to proceed without it.
         raise StoreError(unsafe)
     source_db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
+    database = _database_problem(source_db, what=f"the live store {source_db}")
+    if database is not None:
+        # Before is_file(), which reads a FIFO as "no event store", and before the
+        # destination exists, so a refused take leaves no partial copy. The take
+        # never reaches EventStore.open on the source, so this is its only check.
+        raise StoreError(database)
     if not source_db.is_file():
         raise StoreError(
             f"no event store at {source_db}; refusing to write a backup that "
@@ -1042,6 +1050,41 @@ _KINDS = (
 )
 
 
+def _database_problem(db: Path, *, what: str) -> str | None:
+    """Why ``db`` itself is unsafe to hand to SQLite, or ``None`` if absent or safe.
+
+    The store's rule, not a copy of it: :func:`store.refuse_unsafe_database`
+    decides, and this phrases its ``problem`` as a finding, because the
+    verifiers report rather than raise. (:func:`_sidecar_problem` is a copy, from
+    before the store had a check, and a test pins that the two name the same
+    files; here ``tests/security/test_store_database_file.py`` pins that the
+    finding carries the store's ``problem`` word for word.) Absent is ``None``: each caller says
+    "missing" in its own terms after this has ruled out a file that is present
+    but not usable.
+
+    Called before ``is_file()`` everywhere it matters, because ``is_file()``
+    follows the type: measured on the tree before this check, a FIFO at the
+    store path read as "no event store" under the take, "is missing" under
+    ``--verify`` and "no store at …" under ``--verify-restore``, all at exit 1
+    and all naming the wrong thing. And a hard link is a regular file, so
+    ``is_file()`` passed it: the take and both verifiers exited 0 over a store
+    that shares its inode with another name, so a backup restored with
+    ``cp -al`` would have verified clean and then changed with every write to
+    the live store. The take's own source connection can write, too: after a
+    killed writer it checkpoints the WAL into the file (see the module
+    docstring), which through a link is a write to the other name.
+    """
+    try:
+        refuse_unsafe_database(db)
+    except StoreFileError as exc:
+        return (
+            f"{what} cannot be opened safely: it {exc.problem}. SQLite opens the store "
+            "by name and writes it in place, so a FIFO would block it and a second link "
+            "would receive its writes; the store was not opened"
+        )
+    return None
+
+
 def _sidecar_problem(db: Path, *, what: str) -> str | None:
     """Why a file beside ``db`` makes it unsafe to hand to SQLite, or ``None``.
 
@@ -1123,13 +1166,25 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
     it at **exit 0**, "every file digest match the manifest", sha256 changed.
 
     So the facts ``open`` would act on are read first, without a connection
-    that can write: size, the sidecars (:func:`_sidecar_problem`), the header
-    bytes, and the schema catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
+    that can write: the file's own type and link count
+    (:func:`_database_problem`), size, the sidecars (:func:`_sidecar_problem`),
+    the header bytes, and the schema catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
     ``-wal`` and ``-shm`` behind in the backup after close; ``immutable=1``
     touched nothing. It ignores a WAL, which is why a non-empty one is refused
     on its own rather than read through. A reason is a reported problem and
     not a raise, so the rest of the report still runs.
+
+    The link count is checked first, and that is what now covers the hard-linked
+    0-byte case above, not only the size: a *non-empty* store hard-linked to a
+    name outside the backup passed every check here and verified clean at exit 0,
+    measured, and ``EventStore.open`` itself now refuses it, which would have
+    replaced this report with a bare error. Callers have already confirmed
+    ``is_file()``, so a FIFO cannot reach this function; they ask
+    :func:`_database_problem` themselves when ``is_file()`` fails.
     """
+    database = _database_problem(db, what=what)
+    if database is not None:
+        return database
     size = db.stat().st_size
     if size == 0:
         return (
@@ -1219,7 +1274,11 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     if db is None:
         pass
     elif not db.is_file():
-        problems.append(f"{store_entry['path']} is missing")
+        # A FIFO or a directory fails is_file() and is not missing: name what is there.
+        problems.append(
+            _database_problem(db, what=str(store_entry["path"]))
+            or f"{store_entry['path']} is missing"
+        )
     else:
         actual = _digest_file(db)
         if actual != store_entry["sha256"]:
@@ -1397,8 +1456,10 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # looks for the sidecars beside the target, not beside the link.
         problems.append(live_path)
     elif not db.is_file():
+        # As in _verify_backup: a FIFO or a directory here is a finding, not an absence.
         problems.append(
-            f"no store at {db}: the restore did not put one there, and this check will "
+            _database_problem(db, what=f"the live store {db}")
+            or f"no store at {db}: the restore did not put one there, and this check will "
             "not create one to measure"
         )
     elif (unopenable := _unsafe_to_open(db, what=f"the live store {db}")) is not None:
