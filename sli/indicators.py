@@ -55,6 +55,7 @@ from store import (
     EventStore,
     Query,
     StoreError,
+    StoreIntegrityError,
 )
 
 #: The hash chains under the lab-data root, relative to it.
@@ -311,6 +312,46 @@ def measure_detection_backlog(root: Path, now: float) -> Measurement:
     return Measurement(float(pending), f"{pending} event(s) not yet processed")
 
 
+class _OpenRefused(Exception):
+    """``EventStore.open`` refused the store; a reason, not a verdict on its pages."""
+
+
+def _open_store(root: Path) -> EventStore:
+    """Open the store for a measurement, telling a refusal apart from damage.
+
+    ``EventStore.open`` raises two kinds of :class:`StoreError`, and they
+    belong to different runbook branches. :class:`StoreIntegrityError` — on
+    this path always :class:`store.StoreCorruptionError`, which ``open`` raises
+    when SQLite reads the file and calls it malformed — is the file itself
+    reporting damage, and propagates unchanged. Everything else is a refusal
+    that says nothing about whether the file's pages are sound:
+    :class:`store.StorePathError` for a path that leaves the root (a symlinked
+    ``data/``), its subclass :class:`store.StoreSidecarError` for a FIFO,
+    linked or non-regular ``-journal``/``-wal``/``-shm``, and
+    :class:`store.SchemaVersionError` for a version this build does not speak.
+    Each is re-raised as :class:`_OpenRefused`, which a store measurer grades
+    ``UNKNOWN``.
+
+    Measured before this split: all four refusals — a FIFO ``-journal``
+    included, refused before SQLite read a byte — read ``store-intact:
+    breached`` and "the store's database is damaged". That sentence sends an
+    operator to ``docs/RESTORE.md``, and a restore "replaces the SOC's memory"
+    with an older copy, which is the wrong response to an intact file. So the
+    damage verdict is an allow-list of one class, and a :class:`StoreError`
+    added later lands on the refusal side until someone decides otherwise.
+
+    Only the open is classified. A :class:`StoreError` raised by what a
+    measurer then runs on the open store is that measurer's to grade, and is
+    never relabelled "could not be opened".
+    """
+    try:
+        return EventStore.open(root)
+    except StoreIntegrityError:
+        raise
+    except StoreError as exc:
+        raise _OpenRefused(f"{type(exc).__name__}: {exc}") from exc
+
+
 def measure_store_intact(root: Path, now: float) -> Measurement:
     """Whether the database file itself is structurally sound.
 
@@ -327,6 +368,15 @@ def measure_store_intact(root: Path, now: float) -> Measurement:
     a store that is not there or will not open, which is a different
     conversation with the operator.
 
+    "Will not open" was not what this function did with it until the open was
+    classified. Every :class:`StoreError` read ``0.0`` and "damaged", so a
+    symlinked ``data/``, a schema version this build does not speak and a FIFO
+    ``-journal`` were each reported as a damaged database. :func:`_open_store`
+    now separates them: SQLite calling the file malformed during the open is
+    still ``0.0``, and the rest is ``None`` with the store's own reason. Both
+    grade not-passing, so the exit code of ``scripts/report_sli.py`` is
+    unchanged; what changed is which runbook branch the sentence points at.
+
     Cost is why this is affordable at the documented ``*/5`` cadence:
     ``quick_check`` is roughly linear at 1.1-1.5 ms/MiB (24 ms at 16.7 MiB,
     90 ms at 67.1 MiB, 220 ms at 202.2 MiB), while ``integrity_check`` is
@@ -340,9 +390,13 @@ def measure_store_intact(root: Path, now: float) -> Measurement:
     if not path.is_file():
         return Measurement(None, f"no event store at {path.relative_to(root)}")
     try:
-        with EventStore.open(root) as store:
+        with _open_store(root) as store:
             store.verify_integrity()
-    except StoreError as exc:
+    except _OpenRefused as refused:
+        return Measurement(
+            None, f"the store could not be opened, so its pages were not checked: {refused}"
+        )
+    except StoreIntegrityError as exc:
         return Measurement(0.0, f"the store's database is damaged: {exc}")
     except OSError as exc:
         return Measurement(None, f"the store could not be opened ({type(exc).__name__})")
@@ -371,6 +425,17 @@ def measure_store_readable(root: Path, now: float) -> Measurement:
     wrong shape, and the leak was on seven of ten store entry points rather
     than only this one.
 
+    It does **not** include a store that refused to open, which read ``0.0``
+    here until the open was classified by :func:`_open_store`. "Accepts writes
+    and cannot be read" is false of a refused open: every writer runs the same
+    ``EventStore.open`` and is refused with it, so a FIFO ``-journal`` or a
+    symlinked ``data/`` stops collection too, and this objective's runbook
+    branch — prune the unreadable projection — does not apply to a store
+    nothing can open. Those are ``None`` with the reason, as they are for
+    :func:`measure_store_intact`, so the two store objectives give one cause
+    one grade. A ``StoreError`` from either query is still ``0.0``: a query
+    that raises is exactly what this measures.
+
     **The sample is still a sample, and ``store-intact`` is what covers it.**
     Measured on a 1200-event / 525-page store: 116 of 524 single-page losses
     leave this probe reading ``1.0`` and the sentence "read 50 newest and 50
@@ -386,9 +451,11 @@ def measure_store_readable(root: Path, now: float) -> Measurement:
     if not path.is_file():
         return Measurement(None, f"no event store at {path.relative_to(root)}")
     try:
-        with EventStore.open(root) as store:
+        with _open_store(root) as store:
             newest = store.query(Query(limit=READABILITY_SAMPLE))
             oldest = store.query(Query(limit=READABILITY_SAMPLE, newest_first=False))
+    except _OpenRefused as refused:
+        return Measurement(None, f"the store could not be opened, so no row was read: {refused}")
     except StoreError as exc:
         return Measurement(0.0, f"the store cannot be read: {type(exc).__name__}: {exc}")
     except OSError as exc:

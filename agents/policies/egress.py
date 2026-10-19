@@ -106,9 +106,11 @@ def parse_address(value: Any) -> _AddressType:
     * **Unspecified, in either family.** Measured, six spellings are unspecified and
       a literal rule catches one: ``0.0.0.0``, ``::``, ``::0``,
       ``0:0:0:0:0:0:0:0``, the fully expanded ``0000:…:0000``, and the IPv4-mapped
-      ``::ffff:0.0.0.0``. As a *destination* it is also not a host — on Linux a
-      connect to ``0.0.0.0`` reaches loopback, so it reads as "nowhere" and means
-      "here".
+      ``::ffff:0.0.0.0``. The last is caught on every interpreter only because the
+      check reads the address a mapped form *denotes* — on CPython 3.12.3 the IPv6
+      object's own ``is_unspecified`` is False (see the comment at the check). As a
+      *destination* it is also not a host — on Linux a connect to ``0.0.0.0``
+      reaches loopback, so it reads as "nowhere" and means "here".
     * **Multicast.** One send reaches every subscriber, which contradicts "a single
       host" by construction. Note that a positive shape test would not catch it:
       measured, ``224.0.0.1`` is ``is_multicast`` *and* ``is_global``, so a rule
@@ -118,12 +120,16 @@ def parse_address(value: Any) -> _AddressType:
     * **Link-local.** ``169.254.169.254`` is the cloud instance-metadata address and
       the canonical SSRF target; ``fe80::/10`` is its IPv6 counterpart. Neither is
       ever a declared peer, and the mapped form ``::ffff:169.254.169.254`` is
-      link-local too (measured), so this catches that spelling as well.
+      refused as link-local too, because the check reads the denoted IPv4 address.
+      An earlier version of this bullet said the mapped form "is link-local too
+      (measured)", which holds on 3.11.17 and 3.13.16 and is **False** on 3.12.3.
     * **An IPv4-mapped IPv6 address.** It aliases: measured,
       ``ip_address("::ffff:127.0.0.1") == ip_address("127.0.0.1")`` is **False**,
       and the two have different versions. Allowing both spellings would mean a
       declared host silently not matching the same host written the other way.
-      Write the native form.
+      Write the native form. Every mapped form is refused here, so for a mapped
+      spelling of a shape refused above this rule is the second layer, not the
+      only one — on every interpreter.
     * **A scope ID.** ``ip_address("::1%eth0")`` parses, and measured,
       ``ip_address("fe80::1%2") == ip_address("fe80::1")`` is **False** with
       unequal hashes. A scoped entry would therefore refuse the same address
@@ -163,7 +169,7 @@ def parse_address(value: Any) -> _AddressType:
     classified = native if native is not None else address
     if classified.is_unspecified:
         raise EgressAllowlistError(
-            f"refused: {value!r} parses as the unspecified address ({address}), which "
+            f"refused: {value!r} parses as the unspecified address ({denoted}), which "
             "is not a host — on Linux a connect to it reaches loopback"
         )
     if classified.is_multicast:
@@ -182,10 +188,10 @@ def parse_address(value: Any) -> _AddressType:
             "neither is ever a declared peer"
         )
     if isinstance(address, ipaddress.IPv6Address):
-        if address.ipv4_mapped is not None:
+        if mapped is not None:
             raise EgressAllowlistError(
                 f"refused: {value!r} is an IPv4-mapped IPv6 address, which does not "
-                f"compare equal to {address.ipv4_mapped} — declare the native form"
+                f"compare equal to {mapped} — declare the native form"
             )
         if address.scope_id is not None:
             raise EgressAllowlistError(

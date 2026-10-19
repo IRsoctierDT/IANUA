@@ -46,6 +46,7 @@ from store.errors import (
     SchemaVersionError,
     StoreCorruptionError,
     StoreError,
+    StoreFileError,
     StoreIntegrityError,
     StorePathError,
     StoreSidecarError,
@@ -62,6 +63,7 @@ from store.events import (
     EventStore,
     Query,
     StoredEvent,
+    refuse_unsafe_database,
     refuse_unsafe_sidecars,
 )
 from store.schema import (
@@ -92,11 +94,13 @@ __all__ = [
     "SchemaVersionError",
     "StoreCorruptionError",
     "StoreError",
+    "StoreFileError",
     "StoreIntegrityError",
     "StorePathError",
     "StoreSidecarError",
     "StoredEvent",
     "canonical_json",
     "event_id",
+    "refuse_unsafe_database",
     "refuse_unsafe_sidecars",
 ]

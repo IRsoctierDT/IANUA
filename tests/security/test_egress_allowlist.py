@@ -48,10 +48,12 @@ _MODULE = Path(__file__).resolve().parents[2] / "agents" / "policies" / "egress.
 #: A plausible authorization basis, in the shape a real entry would carry.
 _BASIS = "lab pair: passive node B pulls node A's health channel; owner approved"
 
-#: The six spellings of the unspecified address, measured with
-#: ``ipaddress.ip_address(x).is_unspecified`` — all six are True. The charter
-#: amendment's first draft refused the literal string ``"0.0.0.0"``, which is one
-#: of them, and ``::`` binds every IPv6 interface.
+#: The six spellings of the unspecified address. The charter amendment's first draft
+#: refused the literal string ``"0.0.0.0"``, which is one of them, and ``::`` binds
+#: every IPv6 interface. An earlier version of this comment said all six measure True
+#: under ``ipaddress.ip_address(x).is_unspecified``; on CPython 3.12.3 the mapped one
+#: measures **False** (True on 3.11.17 and 3.13.16), so the premise below reads the
+#: address a mapped spelling denotes, as the control does.
 _UNSPECIFIED = (
     "0.0.0.0",  # noqa: S104 - refused by the control under test, not a bind address
     "::",
@@ -302,6 +304,11 @@ def test_shapes_that_cannot_mean_one_peer_are_refused(
     Note what a *positive* shape test would do here: measured, ``224.0.0.1`` is
     ``is_multicast`` **and** ``is_global``, so a rule phrased "allow if global"
     would allow multicast. The rules are refusals for that reason.
+
+    The reason is pinned, not only the refusal. ``why`` used to be decoration, and
+    that hid a drift: on CPython 3.12.3 ``::ffff:169.254.169.254`` was refused as
+    IPv4-mapped rather than link-local, so the metadata address rested on one rule
+    there while this test stayed green.
     """
     path = _write(tmp_path, {"version": 1, "hosts": [_one_host(address=address)]})
     with pytest.raises(EgressAllowlistError, match=why):
