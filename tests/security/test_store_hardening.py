@@ -32,6 +32,7 @@ import dataclasses
 import json
 import sqlite3
 import typing
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,7 @@ from store import (
     EventStore,
     Query,
     SchemaVersionError,
+    StoreCorruptionError,
     StoreError,
     StoreIntegrityError,
     StorePathError,
@@ -1349,6 +1351,124 @@ def test_the_reflection_above_covers_every_field_it_can() -> None:
             _one_overfilled_field(name)
 
 
+def _plant(store: EventStore, projection: str, *, ingested_at: float) -> str:
+    """Write a row the API would refuse, under an ``event_id`` that matches it.
+
+    The hash is recomputed on purpose. ``event_id`` is an unkeyed sha256, so a
+    matching hash is what a row from an earlier build and a forged row both
+    carry, and the hash check is not what stops either of them.
+    """
+    identifier = event_id(projection)
+    with store._conn:
+        store._conn.execute(
+            "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+            "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+            "VALUES (?, ?, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+            (identifier, ingested_at, projection),
+        )
+    return identifier
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_UNREADABLE), ids=lambda value: value)
+def test_query_refuses_what_append_refuses_and_as_a_store_error(tmp_path: Path, case: str) -> None:
+    """The symmetry, checked through ``query`` itself and with the class it raises.
+
+    ``test_append_refuses_exactly_what_query_would_refuse`` asserts the read
+    side through ``from_dict`` directly. That is why it stayed green while the
+    read path's refusal escaped every ``except StoreError``: ``query`` raised
+    the reader's ``MalformedProjectionError``, an ``IngestError``, and
+    ``sli`` graded ``store-readable``'s own headline failure "the probe
+    raised". This test plants the projection ``append`` refuses, under a
+    matching hash, and reads it back through the store.
+    """
+    event = _hand_built(**_UNREADABLE[case])
+    projection = canonical_json(event.to_dict())
+    with EventStore.open(tmp_path) as store:
+        with pytest.raises(MalformedProjectionError) as refused:
+            store.append(event, ingested_at=1.0)
+        identifier = _plant(store, projection, ingested_at=2.0)
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    assert not isinstance(raised.value, StoreCorruptionError), "a row, not a damaged file"
+    assert isinstance(raised.value.__cause__, MalformedProjectionError)
+    assert str(raised.value.__cause__) == str(refused.value), "one refusal, read on both sides"
+    assert identifier in str(raised.value)
+    assert str(refused.value) in str(raised.value), "the cause must be named, not only typed"
+
+
+#: Hash-valid projections that fail to rebuild by a route other than a field
+#: bound, with what the decoder or reader raises on each. Each one was measured
+#: escaping ``query`` as something other than a ``StoreError``.
+_UNREBUILDABLE: dict[str, tuple[Callable[[dict[str, Any]], str], type[BaseException]]] = {
+    "integer_timestamp_past_float": (
+        lambda base: canonical_json({**base, "timestamp": 10**400}),
+        MalformedProjectionError,
+    ),
+    "not_a_mapping": (lambda base: json.dumps(sorted(base)), MalformedProjectionError),
+    "nesting_past_the_decoder": (lambda base: "[" * 100_000 + "]" * 100_000, RecursionError),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_UNREBUILDABLE), ids=lambda value: value)
+def test_every_route_to_an_unrebuildable_row_is_a_store_error(tmp_path: Path, case: str) -> None:
+    """The routes other than a bound, which a fix catching only the bound would miss.
+
+    Before this change, ``10**400`` raised ``OverflowError`` from the reader's
+    ``float()``, which a mapping of ``MalformedProjectionError`` alone would not
+    catch. And 100,000 nested brackets raised json's own ``RecursionError``,
+    which is not the ``ValueError`` the decode branch caught. The precondition
+    is asserted first. Otherwise a future decoder that accepted the nesting, or
+    a reader that went back to raising ``OverflowError``, would leave this test
+    checking nothing.
+    """
+    build, cause = _UNREBUILDABLE[case]
+    projection = build(normalize(_RECORD).to_dict())
+    with pytest.raises(cause):
+        NormalizedEvent.from_dict(json.loads(projection))
+    with EventStore.open(tmp_path) as store:
+        identifier = _plant(store, projection, ingested_at=1.0)
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    assert isinstance(raised.value.__cause__, cause)
+    assert identifier in str(raised.value)
+
+
+#: A forged row chooses what two of the reader's sentences quote: the stored
+#: value of a closed-vocabulary field, and the names of undeclared keys.
+_QUOTING: dict[str, Callable[[dict[str, Any], str], dict[str, Any]]] = {
+    "literal_value": lambda base, planted: {**base, "source_type": planted},
+    "undeclared_key": lambda base, planted: {**base, planted: 1},
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_QUOTING), ids=lambda value: value)
+def test_a_forged_row_cannot_write_its_content_into_the_refusal(tmp_path: Path, case: str) -> None:
+    """The reader's sentence is carried, but bounded, because it quotes the row.
+
+    Measured: a 50,000-character ``source_type`` made a 50,107-character
+    ``MalformedProjectionError``. ``sli.measure_store_readable`` puts the
+    store's message into its detail, so an unbounded copy would let a forged
+    row write 50 KB into the SLI report an operator records for ``AUD-03``.
+    Pinned against literals rather than the module's constant, because an
+    assertion scaled from the constant under test cannot fail.
+    """
+    planted = "PLANTED-" + "q" * 50_000
+    projection = canonical_json(_QUOTING[case](normalize(_RECORD).to_dict(), planted))
+    with EventStore.open(tmp_path) as store:
+        _plant(store, projection, ingested_at=1.0)
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    reader = str(raised.value.__cause__)
+    assert len(reader) > 50_000, "the reader no longer quotes the row; this tests nothing"
+    message = str(raised.value)
+    assert len(message) < 500, f"{len(message)} chars of a forged row's refusal"
+    assert "q" * 300 not in message
+    assert f"({len(reader)} chars, cut)" in message, "a cut must say that it is one"
+
+
 @pytest.mark.security
 def test_a_query_limit_cannot_exceed_the_ceiling(tmp_path: Path) -> None:
     with EventStore.open(tmp_path) as store:
@@ -1510,7 +1630,7 @@ def test_a_projection_that_is_not_json_is_refused(tmp_path: Path) -> None:
                 "VALUES (?, ?, NULL, 'unknown', 'forged', 'text', NULL, NULL, NULL, NULL, ?)",
                 (event_id(forged), 1.0, forged),
             )
-        with pytest.raises(StoreIntegrityError, match="not JSON"):
+        with pytest.raises(StoreIntegrityError, match="does not decode as JSON"):
             store.query()
 
 

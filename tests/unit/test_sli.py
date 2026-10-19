@@ -36,7 +36,7 @@ from sli import (
 )
 from sli.indicators import BACKUP_SUBDIR, MANIFEST_FILE
 from sli.report import Indicator, SliReport
-from store import EventStore
+from store import EventStore, canonical_json, event_id
 
 _AUDITD = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
 _CLOUD = json.dumps(
@@ -550,6 +550,61 @@ def test_store_intact_catches_the_damage_the_readability_sample_cannot(
         "no page's loss escaped the readability sample, so this fixture cannot "
         "distinguish the two objectives"
     )
+
+
+@pytest.mark.unit
+def test_a_hash_valid_row_past_its_bound_breaches_store_readable(tmp_path: Path) -> None:
+    """The objective's own derivation, graded as measured rather than unmeasurable.
+
+    ``store-readable``'s rationale is DESIGN.md §11's over-long ``message``:
+    one row that a query cannot rebuild, which stops every later cycle. That
+    row used to reach this probe as the reader's ``MalformedProjectionError``,
+    which is not a ``StoreError``. The probe's ``except`` missed it, and the
+    report read ``unknown ... the probe raised MalformedProjectionError``.
+    That is fail closed, but it said "could not measure" for the one failure
+    the objective exists to measure.
+
+    The row is written with raw ``sqlite3`` under a recomputed ``event_id``,
+    the way an earlier build or a write outside the API leaves it: today's
+    ``append`` refuses it. ``store-intact`` must still read ``met``, because
+    ``quick_check`` walks pages and not projections. That is the half of the
+    pair it cannot see.
+    """
+    root = _root(tmp_path)
+    with EventStore.open(root) as store:
+        store.append(normalize(_AUDITD), ingested_at=1_760_000_000.0)
+        payload = store.query()[0].event.to_dict()
+    payload["message"] = "x" * 100_000
+    projection = canonical_json(payload)
+    connection = sqlite3.connect(root / "data" / "events" / "events.sqlite3")
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+                "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+                "VALUES (?, ?, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+                (event_id(projection), 1_760_000_001.0, projection),
+            )
+    finally:
+        connection.close()
+
+    report = measure(root, now=1_760_000_100.0)
+    by_id = {indicator.objective.id: indicator for indicator in report.indicators}
+    readable = by_id["store-readable"]
+    assert readable.status is Status.BREACHED, readable.detail
+    assert readable.value == 0.0
+    assert readable.detail.startswith("the store cannot be read: StoreIntegrityError: "), (
+        readable.detail
+    )
+    assert "event.message: 100000 chars exceeds the 2048-char bound" in readable.detail
+    assert by_id["store-intact"].status is Status.MET, by_id["store-intact"].detail
+    # The backlog cannot be counted through an unreadable window, so UNKNOWN is
+    # right. What changed is that it now says why instead of "the probe raised".
+    backlog = by_id["detection-backlog"]
+    assert backlog.status is Status.UNKNOWN, backlog.detail
+    assert "could not be queried (StoreIntegrityError)" in backlog.detail
+    escaped = [i.objective.id for i in report.indicators if i.detail.startswith("the probe raised")]
+    assert not escaped, f"a store refusal escaped its measurer in {escaped}"
 
 
 @pytest.mark.unit

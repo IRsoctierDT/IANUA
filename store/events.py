@@ -64,6 +64,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, ParamSpec, Self, SupportsFloat, SupportsIndex, TypeVar
 
+from ingest.errors import MalformedProjectionError
 from ingest.schema import NormalizedEvent
 from store.errors import (
     IngestionOrderError,
@@ -235,6 +236,33 @@ def _verdict_reason(verdict: str) -> str:
     """
     lines = [line.strip() for line in verdict.splitlines() if line.strip()]
     return " / ".join(lines[:3]) if lines else "no verdict"
+
+
+#: How much of the reader's refusal a read-path error carries. See
+#: :func:`_rebuild_reason`.
+_REASON_CHARS = 200
+
+
+def _rebuild_reason(exc: MalformedProjectionError) -> str:
+    """The reader's refusal of a stored row, bounded.
+
+    The reader's own sentence rather than a second description of its bounds,
+    because a second description is what drifts. Bounded because two of its
+    sentences quote the row: ``_literal`` renders the stored value and
+    ``_require_exact_keys`` the undeclared key names, and a forged row chooses
+    both. Measured: a 50,000-character ``source_type`` made a 50,107-character
+    refusal, which ``sli.measure_store_readable`` would carry verbatim into the
+    detail ``AUD-03`` tells an operator to record. The sentences that name a
+    bound quote nothing (``event.message: 100000 chars exceeds the 2048-char
+    bound`` is 55 characters), and those are the ones the defects recorded in
+    ``DESIGN.md`` §11 wrote, so the cut costs nothing on the case it exists
+    for. Both quoting shapes go through ``repr``, which escapes control
+    characters, so what survives the cut cannot steer a terminal.
+    """
+    text = str(exc)
+    if len(text) <= _REASON_CHARS:
+        return text
+    return f"{text[:_REASON_CHARS]}... ({len(text)} chars, cut)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -888,8 +916,16 @@ class EventStore:
             StoreIntegrityError: the projection exceeds the size ceiling.
             MalformedProjectionError: the projection is within the ceiling but
                 some field is not, so a later ``query`` would refuse it. The
-                same error the read path raises, so "append refuses exactly
-                what query refuses" is one assertion rather than two.
+                read path refuses the same projections and carries this same
+                error as its ``__cause__``, so "append refuses exactly what
+                query refuses" is still one assertion. What differs is the
+                class around it. On write, the fault is the caller's event,
+                which is a value error. On read, it is a row the store holds,
+                which :func:`_rebuild` raises as :class:`StoreIntegrityError`
+                because every ``query`` caller already handles a
+                ``StoreError``, and a reader error escaping from a store call
+                is how ``store-readable`` graded its own headline failure
+                ``UNKNOWN``.
         """
         projection = canonical_json(event.to_dict())
         size = len(projection.encode("utf-8"))
@@ -1404,7 +1440,32 @@ def _has_meta(conn: sqlite3.Connection) -> bool:
 
 
 def _rebuild(row: sqlite3.Row) -> StoredEvent:
-    """Rebuild one row, verifying it is what this store wrote."""
+    """Rebuild one row, verifying it is what this store wrote.
+
+    A projection that will not rebuild is a :class:`StoreIntegrityError`,
+    including one that hashes to its ``event_id`` and still fails the reader.
+    That case used to escape as the reader's own ``MalformedProjectionError``
+    — an ``IngestError``, not a ``StoreError`` — so
+    ``sli.measure_store_readable``, whose objective exists for exactly this
+    row, missed it in its ``except``, and the report graded the store
+    ``UNKNOWN`` with "the probe raised MalformedProjectionError": fail closed,
+    but "could not measure" where the truth was "measured and failing".
+    Mapped here and not in the monitor, for the reason ``StoreCorruptionError``
+    was: a monitor catching a lower layer's error type through the store is
+    the wrong shape, and ``measure_detection_backlog`` and ``run_cycle`` read
+    through the same ``query``.
+
+    A matching hash does not prove the row is this platform's. ``event_id`` is
+    an unkeyed sha256, so anyone who can write the file can recompute it. A row
+    that passes the hash and fails the reader was written by an earlier build
+    that lacked :meth:`EventStore._project`'s read-back, or written outside the
+    API. The reader's error is kept as ``__cause__``, and its sentence goes into
+    the message, bounded by :func:`_rebuild_reason`.
+
+    Only ``MalformedProjectionError`` is mapped, because it is the one refusal
+    ``from_dict`` documents. Anything else it raises is a defect in the reader
+    and surfaces as itself.
+    """
     projection = str(row["projection"])
     identifier = str(row["event_id"])
     if event_id(projection) != identifier:
@@ -1414,10 +1475,24 @@ def _rebuild(row: sqlite3.Row) -> StoredEvent:
         )
     try:
         payload = json.loads(projection)
-    except ValueError as exc:
-        raise StoreIntegrityError(f"event {identifier}: projection is not JSON") from exc
+    except (ValueError, RecursionError) as exc:
+        # RecursionError is json's own and not a ValueError. Measured: a
+        # hash-valid projection of 100,000 nested `[` escaped as one on 3.11,
+        # 3.12 and 3.13, which the report graded "the probe raised". "Does not
+        # decode" rather than "is not JSON", because that projection is JSON:
+        # RFC 8259 lets a parser limit nesting, and this one does.
+        raise StoreIntegrityError(
+            f"event {identifier}: projection does not decode as JSON ({type(exc).__name__})"
+        ) from exc
+    try:
+        event = NormalizedEvent.from_dict(payload)
+    except MalformedProjectionError as exc:
+        raise StoreIntegrityError(
+            f"event {identifier}: projection hashes to its event_id but does not "
+            f"rebuild: {_rebuild_reason(exc)}"
+        ) from exc
     return StoredEvent(
         event_id=identifier,
         ingested_at=float(row["ingested_at"]),
-        event=NormalizedEvent.from_dict(payload),
+        event=event,
     )

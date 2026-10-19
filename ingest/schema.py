@@ -487,6 +487,14 @@ def _optional_epoch(payload: Mapping[str, Any], key: str, where: str) -> float |
     ``bool`` is excluded explicitly because it is a subclass of ``int``, so an
     unguarded numeric check would accept ``True`` as the timestamp ``1.0`` and
     silently place the event one second after the epoch.
+
+    An ``int`` past ~1.8e308 has no ``float``, and the conversion raised
+    ``OverflowError`` out of :meth:`NormalizedEvent.from_dict`. That breaks the
+    one refusal it documents. Measured: a hash-valid stored row whose
+    ``timestamp`` was ``10**400`` escaped ``store``'s read path as that error,
+    and ``sli`` graded it "the probe raised OverflowError". It is now refused
+    like any other malformed field. ``ingest/_coerce.py::epoch`` already
+    guards the same conversion on the parse side.
     """
     value = payload[key]
     if value is None:
@@ -495,7 +503,12 @@ def _optional_epoch(payload: Mapping[str, Any], key: str, where: str) -> float |
         raise MalformedProjectionError(
             f"{where}.{key}: expected epoch seconds, got {type(value).__name__}"
         )
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError as exc:
+        raise MalformedProjectionError(
+            f"{where}.{key}: an integer too large for epoch seconds"
+        ) from exc
 
 
 def _literal(payload: Mapping[str, Any], key: str, allowed: frozenset[str], where: str) -> str:
