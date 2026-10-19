@@ -148,6 +148,8 @@ from store import (  # noqa: E402
     Attestation,
     EventStore,
     StoreError,
+    StoreSidecarError,
+    refuse_unsafe_sidecars,
 )
 from store.paths import confine, validated_root  # noqa: E402
 
@@ -537,6 +539,13 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
             f"no event store at {source_db}; refusing to write a backup that "
             "would restore as an empty store indistinguishable from a real one"
         )
+    # The take reads the live store through `sqlite3.connect` in
+    # _copy_database, not EventStore.open, so it does not inherit the store's
+    # sidecar check and runs it here. Measured before this line: a FIFO
+    # -journal hung the take holding backup.lock (every later pass "skipped",
+    # exit 0), and a hard-linked -shm or -wal had its other name overwritten.
+    # Before the destination exists, so a refusal leaves no partial backup.
+    refuse_unsafe_sidecars(source_db)
 
     destination.mkdir(mode=DIR_MODE, parents=True, exist_ok=False)
     destination.chmod(DIR_MODE)
@@ -909,16 +918,19 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
             f"{what} is 0 bytes, a truncated transfer; SQLite treats an empty file as a "
             "new database and opening it would initialise it, so it was not opened"
         )
-    for suffix in ("-wal", "-journal"):
-        side = db.with_name(db.name + suffix)
-        if side.is_symlink() or (side.exists() and not side.is_file()):
-            # Measured, found by independent review: a FIFO -journal hung both
-            # verifiers inside EventStore.open while they held the backup lock,
-            # so a scheduled take skipped at exit 0; a FIFO -wal was deleted.
-            return (
-                f"{what} has a {suffix} beside it that is not a regular file; SQLite "
-                "would open it with the store, so the store was not opened"
-            )
+    try:
+        # The store's own check, which EventStore.open also runs: a FIFO
+        # -journal hung both verifiers inside EventStore.open while they held
+        # the backup lock, so a scheduled take skipped at exit 0, and a -shm
+        # hard-linked to another file had that file rewritten under --verify
+        # at exit 0. Called here as well so the verdict is a reported problem
+        # beside the others rather than a raise that replaces the report.
+        refuse_unsafe_sidecars(db)
+    except StoreSidecarError as exc:
+        return (
+            f"{what} has a {exc.suffix} beside it that {exc.problem}; SQLite would open "
+            "it with the store, so the store was not opened"
+        )
     wal = db.with_name(db.name + "-wal")
     if wal.is_file() and wal.stat().st_size:
         return (

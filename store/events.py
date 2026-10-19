@@ -57,6 +57,7 @@ import json
 import math
 import re
 import sqlite3
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +71,7 @@ from store.errors import (
     StoreCorruptionError,
     StoreIntegrityError,
     StorePathError,
+    StoreSidecarError,
 )
 from store.paths import confine
 from store.schema import (
@@ -379,9 +381,104 @@ _DIR_MODE = 0o700
 _FILE_MODE = 0o600
 
 
+#: Every file SQLite opens by name beside the database, in the order its open
+#: reaches them. ``-journal`` is read even in WAL mode: the hot-journal probe
+#: on open is what blocked on a FIFO.
+SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
+
+#: A noun for each file type that is not a regular file, for the refusal.
+_FILE_KINDS = {
+    stat.S_IFLNK: "a symlink",
+    stat.S_IFIFO: "a FIFO",
+    stat.S_IFDIR: "a directory",
+    stat.S_IFSOCK: "a socket",
+    stat.S_IFCHR: "a character device",
+    stat.S_IFBLK: "a block device",
+}
+
+
 def _sidecar(path: Path, suffix: str) -> Path:
     """The ``-wal``/``-shm`` companion SQLite creates beside the database."""
     return path.with_name(path.name + suffix)
+
+
+def refuse_unsafe_sidecars(database: Path) -> None:
+    """Refuse a sidecar SQLite would open beside ``database`` unless it is safe to.
+
+    One ``lstat`` per name in :data:`SIDECAR_SUFFIXES`, never following a
+    link. Absent is the normal case and is accepted. Present must be a
+    regular file with exactly one link, and nothing else is examined: a live
+    writer legitimately leaves a non-empty ``-wal`` and a ``-shm`` behind, so
+    size and content are not this check's business (``scripts/run_backup.py``
+    refuses a non-empty ``-wal`` and ``-journal`` for its own reasons).
+
+    Why each rule, all measured through the CLIs before this existed:
+
+    * **Not a FIFO, socket or device.** SQLite's hot-journal probe opens and
+      reads ``-journal`` on every open, WAL mode included, and a FIFO with no
+      writer blocks there forever; ``SIGALRM`` does not interrupt it. A FIFO
+      ``-wal`` was deleted, at exit 0 from the pipeline, retention and the
+      backup take.
+    * **Not a symlink or directory.** A symlinked ``-shm`` or ``-wal``
+      replaced the caller's output with a bare "unable to open database
+      file". A directory ``-shm`` did the same in the collector ("attempt to
+      write a readonly database") and let the pipeline, retention, the backup
+      take and both backup verifiers exit 0 as though nothing were wrong.
+    * **One link.** SQLite truncates and rewrites ``-shm`` and writes frames
+      into ``-wal`` in place, so a second name for either is a second file
+      overwritten. Measured: a 64 KiB file hard-linked as ``-shm`` came back
+      as 32 KiB of WAL index through every CLI that opens the store, the
+      read-only ``--verify`` included, which still reported every digest
+      matching at exit 0.
+
+    **What this does not close, stated rather than implied.** The check and
+    SQLite's open are separate syscalls, and SQLite creates and recreates its
+    sidecars after it. Winning that race requires creating names in the
+    events directory, which :meth:`EventStore.open` keeps at ``0o700``; with
+    that access the database itself can be rewritten, the same argument
+    AGENTS.md §5 makes for the collector's symlink check. What this catches
+    is a sidecar that is already wrong when the store is opened: a mistake,
+    a leftover, a hard-link snapshot of ``data/``, or a planted file.
+
+    Args:
+        database: The database path. Not opened or stated itself; only the
+            three names beside it are.
+
+    Raises:
+        StoreSidecarError: naming the first sidecar that is not a regular,
+            singly linked file, or that cannot be stated at all. A ``stat``
+            failure other than "absent" is refused rather than read as
+            absent, because the open it precedes would fail on it anyway:
+            measured, a database name long enough that ``-journal`` passes
+            ``NAME_MAX`` (248 bytes and up) already failed SQLite's own open
+            with a bare "unable to open database file".
+    """
+    for suffix in SIDECAR_SUFFIXES:
+        side = _sidecar(database, suffix)
+        try:
+            found = side.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            # ENOTDIR: an ancestor is not a directory, so the sidecar cannot
+            # exist. Read as absent, so the mkdir in open() raises the honest
+            # error rather than this check blaming a sidecar.
+            continue
+        except OSError as exc:
+            problem = f"cannot be stated ({exc.strerror or exc})"
+        else:
+            kind = stat.S_IFMT(found.st_mode)
+            if kind != stat.S_IFREG:
+                problem = f"is not a regular file ({_FILE_KINDS.get(kind, 'an unrecognised type')})"
+            elif found.st_nlink != 1:
+                problem = f"has {found.st_nlink} hard links"
+            else:
+                continue
+        raise StoreSidecarError(
+            f"{database} has a {suffix} beside it that {problem}; SQLite opens {side.name} "
+            "by name with the store and would block on, follow or write through it, so the "
+            "store was not opened (see store/README.md, 'Sidecars')",
+            suffix=suffix,
+            problem=problem,
+        )
 
 
 def _narrow(path: Path, mode: int) -> None:
@@ -458,11 +555,17 @@ class EventStore:
         """Open (creating if absent) the store under ``root/data/events/``.
 
         Raises :class:`StorePathError` for a filename that is not a plain
-        filename or that resolves outside the events directory, and
+        filename or that resolves outside the events directory,
+        :class:`StoreSidecarError` (a subclass) for a ``-journal``, ``-wal``
+        or ``-shm`` beside it that is not a regular, singly linked file, and
         :class:`SchemaVersionError` if the database was written by a different
         schema version.
         """
         path = cls._resolve(root, filename)
+        # Before anything is created or narrowed, so a refusal leaves the tree
+        # as it found it, and before `connect`, which is where SQLite would
+        # block on a FIFO or write through a link. See refuse_unsafe_sidecars.
+        refuse_unsafe_sidecars(path)
         # Owner-only, matching the cursor, the offsets and the audit log. The
         # database holding every collected event was the ONE piece of state
         # under the lab-data root created at the process umask and never

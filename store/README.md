@@ -34,6 +34,7 @@ line once, between `ingest/` (normalize) and `correlation/` (resolve).
 | **Tamper-evident** | Every row is re-hashed on read; a projection that does not match its `event_id` raises `StoreIntegrityError`. |
 | **No ambient clock** | `ingested_at` is a required keyword argument. The store never asks the host what time it is. |
 | **Contained** | The database lives under gitignored `data/events/`. A filename with a separator, a traversal, or a leading dot is refused. |
+| **No hostile sidecar** | Before SQLite opens the database, each `-journal`, `-wal` and `-shm` beside it must be absent or a regular file with one link (`lstat`, never followed). Anything else raises `StoreSidecarError`. See [Sidecars](#sidecars). |
 | **Bounded** | Projections over 64 KiB are refused; every query is clamped to 10,000 rows. |
 | **Versioned** | A database written by another schema version is refused, never implicitly migrated. |
 | **Damage is a `StoreError`** | SQLite's two corruption verdicts (`SQLITE_CORRUPT`, `SQLITE_NOTADB`) are mapped to `StoreCorruptionError` at every public method, so a damaged file cannot reach a caller as a raw driver exception. A lock (`SQLITE_BUSY`), a trigger refusal (`IntegrityError`) and a caller bug (`ProgrammingError`) keep their own meaning. |
@@ -76,6 +77,47 @@ They remain reachable without a time filter; they are excluded, never lost.
 always present and is the only one of the two this platform controls. Keying
 retention on source-reported time would let a host with a skewed clock keep
 its events forever, or have them pruned the moment they arrived.
+
+## Sidecars
+
+SQLite opens three files *by name* beside the database: `-journal` (its hot-journal
+probe reads it on every open, WAL mode included), `-wal` and `-shm`. So whoever can
+create a name in `data/events/` chooses what the store's own open touches.
+`EventStore.open` therefore runs `refuse_unsafe_sidecars` before `sqlite3.connect`:
+each name must be absent, or a regular file with exactly one link. Size and content
+are not checked, because a live writer legitimately leaves a non-empty `-wal` and a
+`-shm` behind. `scripts/run_backup.py` runs the same check before its take, which
+reads the live store through `sqlite3.connect` rather than `EventStore.open`.
+
+What happened before the check, measured through the collector, the pipeline,
+retention, the backup take, both backup verifiers and the SLI reporter. The SLI
+reporter's exit code reflects all of its objectives, so its rows below describe what
+happened to the files rather than an exit code.
+
+| Planted beside `events.sqlite3` | Before | After |
+|---|---|---|
+| FIFO `-journal` | Hung inside SQLite's open (collector, pipeline, retention, take, SLI). The four with a lock held it, so every later pass printed "skipped" at exit 0. | Exit 1, `StoreSidecarError` naming the file |
+| `-shm` hard-linked to another file | The other file was truncated and rewritten as 32 KiB of WAL index by every one of them. All but the SLI reporter exited 0, `--verify` reporting every digest matching. | Exit 1, nothing written |
+| `-wal` hard-linked to another file | Overwritten with WAL frames by the collector, the take (both exit 0) and the SLI reporter. The pipeline and retention deleted the name. | Exit 1, nothing written |
+| FIFO `-wal` | Deleted by every CLI without a verifier check, at exit 0 from the pipeline, retention and the take | Exit 1, left in place |
+| Symlink or FIFO `-shm` | A bare SQLite error in place of the output | Exit 1, `StoreSidecarError` |
+| Directory `-shm` | Exit 0 from the pipeline, retention, the take and both verifiers | Exit 1, `StoreSidecarError` |
+
+**If you see the refusal.** None of these is something SQLite creates. Stop the
+timers so nothing holds the store open, then find out how the file got there before
+you remove it. A FIFO, socket, device, directory or symlink can be deleted, and SQLite
+recreates its sidecars. A hard link means a second name shares the inode, often a
+hard-link snapshot of `data/` (`cp -al`, `rsync --link-dest`). `find / -xdev -samefile
+<sidecar>` names the other one. Removing the sidecar's name unlinks it from the store
+and leaves the other copy intact. For a non-empty `-wal`, take a copy first: it can
+hold frames that were never checkpointed.
+
+**What it does not close.** The check and SQLite's open are separate syscalls, and
+SQLite recreates its sidecars later. Winning that race needs write access to
+`data/events/`, which the store keeps at `0o700`, and with that access the database
+itself can be rewritten. This catches a sidecar that is already wrong at open. The
+database file itself is not link-checked; `store.paths.confine` refuses a symlink
+there, but not a hard link or a FIFO.
 
 ## Attesting what is held
 

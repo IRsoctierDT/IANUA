@@ -30,6 +30,37 @@ class StorePathError(StoreError):
     """
 
 
+class StoreSidecarError(StorePathError):
+    """A file SQLite would open beside the database is not one it may open.
+
+    SQLite opens ``-journal``, ``-wal`` and ``-shm`` *by name* beside the
+    database, so whoever can create a name in the events directory chooses
+    what the store's own open reads and writes. Measured through every CLI
+    that opens the live store, before this check existed: a FIFO
+    ``-journal`` hung the collector, the pipeline, retention, the backup take
+    and the SLI reporter inside SQLite's open, and the four that hold a
+    single-instance lock held it while blocked, so every later scheduled pass
+    printed "skipped" at exit 0. A ``-shm`` hard-linked to another file had
+    that file truncated and rewritten as 32 KiB of WAL index by every one of
+    them and by the read-only backup verifier, which still reported every
+    digest matching at exit 0. A hard-linked ``-wal`` had its other name
+    overwritten with WAL frames by the collector and the take, both at exit 0.
+    A FIFO ``-wal`` was deleted.
+
+    A subclass of :class:`StorePathError` because it is the same refusal:
+    raised before any file is opened, and every first-party handler catches
+    :class:`StoreError`, so no caller changes. ``suffix`` and ``problem`` are
+    kept separately so a caller that reports rather than raises
+    (``scripts/run_backup.py``'s verifiers) can phrase the finding in its own
+    terms without parsing the message.
+    """
+
+    def __init__(self, message: str, *, suffix: str, problem: str) -> None:
+        super().__init__(message)
+        self.suffix = suffix
+        self.problem = problem
+
+
 class SchemaVersionError(StoreError):
     """The database was written by a different schema version.
 
