@@ -151,7 +151,9 @@ python scripts/run_retention.py --root /srv/ianua --caller soc-op --apply     --
 
 Offset the retention timer from the cycle and the backup. The four entry points take four
 **different** locks (`data/collect/collect.lock`, `data/pipeline/cycle.lock`,
-`data/events/retention.lock`, `data/backups/backup.lock`) and do not exclude each other:
+`data/events/retention.lock`, `data/backups/backup.lock`; `run_backup.py --verify` takes a
+fifth, `data/backups/verify.lock`, so a slow verify cannot starve a take) and do not exclude
+each other:
 measured, with `cycle.lock` held, a retention pass ran normally and reported "would remove 9
 of 35 event(s)". **Do not add a shared lock** — `AGENTS.md` §5 records that framing as
 refuted by measurement; the `--lookback-margin` is the safety property. Offsetting is for

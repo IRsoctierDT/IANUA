@@ -116,7 +116,7 @@ import time
 from dataclasses import fields
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:  # script may run from anywhere
@@ -157,6 +157,15 @@ from store.paths import confine, validated_root  # noqa: E402
 #: gitignored root, so a backup can never be the thing that commits evidence.
 BACKUP_SUBDIR = Path("data") / "backups"
 LOCK_FILE = "backup.lock"
+#: ``--verify`` serialises with other verifies only. It held ``backup.lock``, and
+#: measured, a 1 TiB sparse file planted in a backup kept it reading at about
+#: 200 MiB/s, roughly an hour and a half, while every scheduled take printed
+#: "skipped" at exit 0 (found by independent review). It reads one backup and
+#: writes only the audit chain, whose own lock serialises it with a take.
+VERIFY_LOCK_FILE = "verify.lock"
+#: Far above any real manifest (about 375,000 file entries at the measured 179
+#: bytes each); a manifest is read whole, so it is bounded before it is parsed.
+MANIFEST_CAP = 64 * 1024 * 1024
 MANIFEST_FILE = "manifest.json"
 
 #: The manifest format this version writes and the only one it verifies.
@@ -342,6 +351,85 @@ def _digest_file(path: Path) -> str:
     return running.hexdigest()
 
 
+def _open_regular(path: Path) -> BinaryIO:
+    """``path`` opened for reading, refusing anything but a regular file.
+
+    One descriptor, checked by ``fstat``: ``O_NOFOLLOW`` refuses a symlink at
+    the leaf and ``O_NONBLOCK`` keeps a FIFO swapped in after an ``is_file()``
+    check from blocking the open, so what is checked is what is read.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path} is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb")
+
+
+def _digest_exact(path: Path, size: int) -> tuple[int, str | None]:
+    """``path``'s size and, only if it is exactly ``size`` bytes, its sha256.
+
+    The size comes first and from the descriptor that is read, because a
+    digest reads to the end: measured, a ``files[]`` entry the manifest
+    recorded as 34 bytes, planted as a 1 TiB sparse file, was digested in full
+    after the size mismatch was already known, and the store's size was never
+    compared at all (found by independent review). At most ``size`` bytes are
+    read, and a file that grows while it is read is a mismatch too.
+    """
+    with _open_regular(path) as handle:
+        actual = os.fstat(handle.fileno()).st_size
+        if actual != size:
+            return actual, None
+        running = hashlib.sha256()
+        remaining = size
+        while remaining:
+            block = handle.read(min(1024 * 1024, remaining))
+            if not block:
+                return size - remaining, None
+            running.update(block)
+            remaining -= len(block)
+        if handle.read(1):
+            return size + 1, None
+    return actual, running.hexdigest()
+
+
+def _unbounded_chain(directory: Path, chain: Path, sizes: dict[str, int]) -> str | None:
+    """Why ``chain`` in ``directory`` must not be verified, or ``None``.
+
+    Verifying a chain reads every file of its family whole into memory, and
+    finds the archives and checkpoint by listing the directory, so a manifest
+    check alone never bounded it: measured, a 1 TiB sparse ``audit.log.99``
+    planted beside a backup's chain, with the manifest untouched, ended
+    ``--verify`` in a MemoryError traceback (found by independent review). A
+    take declares every file of the family, so each must be in the manifest at
+    the size it has; anything else is reported and not read.
+    """
+    parent = directory / chain.parent
+    if not parent.is_dir() or parent.is_symlink():
+        return None
+    for child in sorted(parent.iterdir()):
+        if not child.name.startswith(chain.name):
+            continue
+        relative = str(child.relative_to(directory))
+        try:
+            held = child.lstat().st_size
+        except OSError as exc:
+            return f"{chain}: not verified: {relative} cannot be checked ({type(exc).__name__})"
+        if relative not in sizes:
+            return (
+                f"{chain}: not verified: {_capped(relative)} is beside it but not in the "
+                "manifest, and verifying the chain would read it"
+            )
+        if held != sizes[relative]:
+            return (
+                f"{chain}: not verified: {relative} is {held} bytes and the manifest "
+                f"records {sizes[relative]}, so reading it is not bounded by the manifest"
+            )
+    return None
+
+
 def _digest_prefix(path: Path, length: int) -> str:
     """sha256 of the FIRST ``length`` bytes of a file.
 
@@ -479,7 +567,7 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
             held = backup / relative
             if not held.is_file():
                 problems.append(f"{entry['path']} is missing from the backup")
-            elif held.stat().st_size != entry["size"] or _digest_file(held) != entry["sha256"]:
+            elif _digest_exact(held, entry["size"])[1] != entry["sha256"]:
                 problems.append(
                     f"{entry['path']}: the backup's copy is not what its manifest recorded, "
                     "so the live chain cannot be traced to the history the take signed"
@@ -495,7 +583,17 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
                     "head unsigned. Re-run with the key"
                 )
             continue
-        report = AuditLogger(backup / chain, signer=verifier).verify_report()
+        unbounded = _unbounded_chain(
+            backup, chain, {str(entry["path"]): entry["size"] for entry in manifest["files"]}
+        )
+        if unbounded is not None:
+            problems.append(unbounded)
+            continue
+        try:
+            report = AuditLogger(backup / chain, signer=verifier).verify_report()
+        except MemoryError:
+            problems.append(f"{chain}: a file of the backed-up chain is too large to verify")
+            continue
         if not report.intact:
             problems.append(
                 f"{chain}: the backed-up chain does not authenticate (signature "
@@ -656,7 +754,7 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
     return found, sorted(refused)
 
 
-def _verify_chains(root: Path) -> dict[str, object]:
+def _verify_chains(root: Path, *, skip: dict[Path, str] | None = None) -> dict[str, object]:
     """Verify each hash chain under ``root``, naming what is missing.
 
     A chain that is absent is reported as absent, never as intact: a monitor
@@ -681,7 +779,20 @@ def _verify_chains(root: Path) -> dict[str, object]:
         if not logger.exists():
             chains[str(relative)] = {"present": False}
             continue
-        report = logger.verify_report()
+        reason = (skip or {}).get(relative)
+        if reason is not None:
+            chains[str(relative)] = {"present": True, "intact": False, "failure": reason}
+            continue
+        try:
+            report = logger.verify_report()
+        except MemoryError:
+            # A chain file larger than memory, read whole by verify_report.
+            chains[str(relative)] = {
+                "present": True,
+                "intact": False,
+                "failure": "a file of this chain is too large to verify in memory",
+            }
+            continue
         chains[str(relative)] = {
             "present": True,
             "intact": bool(report.intact),
@@ -1024,8 +1135,18 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
     manifest_path = directory / MANIFEST_FILE
     if not manifest_path.is_file():
         raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
+    # Bounded before it is parsed. Measured, a manifest extended to 1 TiB ended
+    # both verifiers in a MemoryError traceback, and one of 2 GiB took 55 s and
+    # 4.2 GB of memory before failing to decode (found by independent review).
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        with _open_regular(manifest_path) as handle:
+            raw = handle.read(MANIFEST_CAP + 1)
+    except OSError as exc:
+        raise _malformed(directory, f"cannot be read ({type(exc).__name__})") from exc
+    if len(raw) > MANIFEST_CAP:
+        raise _malformed(directory, f"is larger than {MANIFEST_CAP} bytes")
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
     except (ValueError, RecursionError) as exc:
         # ValueError covers JSONDecodeError and UnicodeDecodeError; RecursionError
         # is json's own — measured, 100,000 nested `[` was a traceback in both modes.
@@ -1039,6 +1160,10 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
         store_entry.get("sha256"), str
     ):
         raise _malformed(directory, "store path and sha256 must be strings")
+    if not _is_count(store_entry.get("size")):
+        # Required, because it is what bounds the store's digest; every v2
+        # manifest a take writes carries it.
+        raise _malformed(directory, "store size must be a non-negative integer")
     for entry in manifest["files"]:
         if not (
             isinstance(entry, dict)
@@ -1265,8 +1390,13 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     elif not db.is_file():
         problems.append(f"{store_entry['path']} is missing")
     else:
-        actual = _digest_file(db)
-        if actual != store_entry["sha256"]:
+        size, actual = _digest_exact(db, store_entry["size"])
+        if actual is None:
+            problems.append(
+                f"{store_entry['path']}: size {size} != the manifest's {store_entry['size']}, "
+                "so it is not the backed-up store and was not read further"
+            )
+        elif actual != store_entry["sha256"]:
             problems.append(
                 f"{store_entry['path']}: sha256 {actual} does not match the manifest's "
                 f"{_capped(store_entry['sha256'])}"
@@ -1274,6 +1404,10 @@ def _verify_backup(directory: Path) -> dict[str, object]:
         unopenable = _unsafe_to_open(db, what=str(store_entry["path"]))
         if unopenable is not None:
             problems.append(unopenable)
+        elif actual is None:
+            # Not opened: attest runs quick_check, which reads every page, and
+            # the size already says this is not the store that was backed up.
+            pass
         else:
             with EventStore.open(directory) as copy:
                 attested = copy.attest().to_dict()
@@ -1297,16 +1431,22 @@ def _verify_backup(directory: Path) -> dict[str, object]:
         if not path.is_file():
             problems.append(f"{entry['path']} is missing")
             continue
-        if path.stat().st_size != entry["size"]:
-            problems.append(f"{entry['path']}: size {path.stat().st_size} != {entry['size']}")
-        actual = _digest_file(path)
-        if actual != entry["sha256"]:
+        size, actual = _digest_exact(path, entry["size"])
+        if actual is None:
+            problems.append(f"{entry['path']}: size {size} != {entry['size']}")
+        elif actual != entry["sha256"]:
             problems.append(f"{entry['path']}: sha256 {actual} != {_capped(entry['sha256'])}")
 
     # The chains are re-verified now, not trusted from the manifest: a chain
     # recorded intact at backup time and broken since is exactly what this is
-    # for.
-    chains = _verify_chains(directory)
+    # for. Only where the manifest bounds the read; see _unbounded_chain.
+    sizes = {str(entry["path"]): entry["size"] for entry in manifest["files"]}
+    unbounded = {
+        chain: reason
+        for chain in CHAIN_FILES
+        if (reason := _unbounded_chain(directory, chain, sizes)) is not None
+    }
+    chains = _verify_chains(directory, skip=unbounded)
     for name, state in sorted(chains.items()):
         if not isinstance(state, dict):
             continue
@@ -1795,7 +1935,9 @@ def main(argv: list[str] | None = None) -> int:
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
-        lock = prepare_lock(root / BACKUP_SUBDIR, LOCK_FILE)
+        lock = prepare_lock(
+            root / BACKUP_SUBDIR, VERIFY_LOCK_FILE if args.verify is not None else LOCK_FILE
+        )
     except (PrincipalError, PolicyBundleError, StoreError, ValueError, OSError) as exc:
         print(f"error: {_printable(str(exc))}", file=sys.stderr)
         return 2
@@ -1808,7 +1950,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with single_instance(lock) as acquired:
             if not acquired:
-                print("skipped: another backup pass holds the lock; this invocation did nothing.")
+                which = "verify" if args.verify is not None else "backup"
+                print(f"skipped: another {which} pass holds the lock; this invocation did nothing.")
                 return 0
             return _run(
                 args,
@@ -1897,10 +2040,15 @@ def _run(
         else:
             manifest = _take_backup(root, destination)
             manifest_path = destination / MANIFEST_FILE
-            manifest_path.write_text(
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-            )
-            manifest_path.chmod(FILE_MODE)
+            # Written whole under a temporary name and renamed into place, so a
+            # --verify, which no longer waits for a take, sees either no
+            # manifest or a complete one; and hashed from the bytes written,
+            # not re-read.
+            serialized = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+            staging = destination / f".{MANIFEST_FILE}.tmp"
+            staging.write_bytes(serialized)
+            staging.chmod(FILE_MODE)
+            staging.replace(manifest_path)
             attestation = manifest["store"]["attestation"]  # type: ignore[index]
             payload = {
                 "backup": str(destination),
@@ -1908,7 +2056,7 @@ def _run(
                 "events": attestation["events"],
                 "digest": attestation["digest"],
                 "files": len(manifest["files"]),  # type: ignore[arg-type]
-                "manifest_sha256": _digest_file(manifest_path),
+                "manifest_sha256": hashlib.sha256(serialized).hexdigest(),
                 "excluded": sorted(EXCLUDED),
                 "refused": manifest["refused"],
                 "wide_paths": _wide_paths(root),

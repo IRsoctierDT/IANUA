@@ -116,6 +116,26 @@ Re-attests the store, re-hashes every file, and re-verifies every chain against 
 manifest. Exit `1` and a list of problems on any mismatch. **Verify before you need it** —
 on the schedule, not during the incident.
 
+A backup is data an attacker with write access to `data/backups` chose, so `--verify`
+reads only what the manifest bounds. A file whose size differs from its entry is reported
+by size and never hashed (`size N != M`), and a store whose size differs is not opened
+either (`was not read further`). A manifest over 64 MiB is refused unread (`is larger than`),
+and a manifest without the store's size is refused (`store size must be a non-negative
+integer`); every manifest a take writes carries it. A chain is not verified
+(`<chain>: not verified: …`) when any file of its family is missing from the manifest or
+differs from its recorded size, because the chain verifier lists the directory and reads
+each file whole. Measured before this, a 1 TiB sparse file planted in a backup kept
+`--verify` reading for about an hour and a half, and one planted beside a chain was a
+`MemoryError` traceback. Each of these is a backup that was changed after the take: take a
+fresh one.
+
+`--verify` takes `data/backups/verify.lock`, not the take's `backup.lock`, so a slow verify
+no longer makes every scheduled take print "skipped". Two verifies still exclude each other
+("skipped: another verify pass holds the lock"). The take writes its manifest last, whole,
+under a temporary name renamed into place, so a verify that overlaps a take of the same
+backup sees no manifest ("this is not a backup") and never half of one. `--verify-restore`
+keeps `backup.lock`, because it reads and writes the live root a take reads.
+
 ### Verifying a restore (the promotion gate)
 
 ```bash
