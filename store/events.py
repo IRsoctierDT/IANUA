@@ -159,8 +159,9 @@ def _is_corruption(exc: sqlite3.Error) -> bool:
       contention. Measured on the blocked connection at that very moment,
       ``PRAGMA quick_check`` returns ``ok`` — so calling it corruption is a
       claim the engine contradicts in the same breath, and
-      ``sli.measure_store_readable`` grades any ``StoreError`` as ``0.0``, a
-      breach. A second writer must not breach the store's health indicator.
+      ``sli.measure_store_readable`` grades a corruption error as ``0.0``, a
+      breach, whether ``open`` or a query raises it. A second writer must not
+      breach the store's health indicator.
 
     Gated on the error *name* rather than the class alone for exactly that
     reason: the class hierarchy does not carry the distinction.
