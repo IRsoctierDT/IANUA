@@ -252,9 +252,14 @@ a more-trusted one. Crossing one requires validation and (often) an approval gat
     refuse `UPDATE` outright, because append-only enforced only in the Python API is not a
     control when anything holding the file could rewrite history. **Containment:** the
     database lives under gitignored `data/events/`, a filename that escapes it is refused
-    rather than normalized, and the package imports no socket, subprocess, or dynamic
-    execution — asserted over its AST like `ingest/` and `intel/`. **Honesty:** `ingested_at`
-    is injected rather than read from a clock, so the storage timeline is reproducible;
+    rather than normalized, each `-journal`, `-wal` and `-shm` SQLite would open beside it
+    must be absent or a regular, singly linked file before `connect` (a FIFO `-journal`
+    hung the collector, pipeline, retention, backup take and SLI reporter, and a
+    hard-linked `-shm` had its other name rewritten even by the read-only `--verify`;
+    `store/README.md` "Sidecars"), and the package imports no socket, subprocess, or
+    dynamic execution — asserted over its AST like `ingest/` and `intel/`. **Honesty:**
+    `ingested_at` is injected rather than read from a clock, so the storage timeline is
+    reproducible;
     retention prunes on it rather than on source-reported time, so a host with a wrong clock
     cannot control its own retention; and an event carrying no source timestamp is excluded
     from every time window rather than treated as in-range, because an unknown position in

@@ -48,6 +48,7 @@ from store.errors import (
     StoreError,
     StoreIntegrityError,
     StorePathError,
+    StoreSidecarError,
 )
 from store.events import (
     ALL,
@@ -56,10 +57,12 @@ from store.events import (
     ATTEST_OBSERVABLES_SQL,
     DEFAULT_FILENAME,
     EVENTS_SUBDIR,
+    SIDECAR_SUFFIXES,
     Attestation,
     EventStore,
     Query,
     StoredEvent,
+    refuse_unsafe_sidecars,
 )
 from store.schema import (
     DIGEST_PREFIX,
@@ -81,6 +84,7 @@ __all__ = [
     "MAX_PROJECTION_BYTES",
     "MAX_QUERY_LIMIT",
     "SCHEMA_VERSION",
+    "SIDECAR_SUFFIXES",
     "Attestation",
     "EventStore",
     "IngestionOrderError",
@@ -90,7 +94,9 @@ __all__ = [
     "StoreError",
     "StoreIntegrityError",
     "StorePathError",
+    "StoreSidecarError",
     "StoredEvent",
     "canonical_json",
     "event_id",
+    "refuse_unsafe_sidecars",
 ]
