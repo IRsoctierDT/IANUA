@@ -48,10 +48,12 @@ _MODULE = Path(__file__).resolve().parents[2] / "agents" / "policies" / "egress.
 #: A plausible authorization basis, in the shape a real entry would carry.
 _BASIS = "lab pair: passive node B pulls node A's health channel; owner approved"
 
-#: The six spellings of the unspecified address, measured with
-#: ``ipaddress.ip_address(x).is_unspecified`` — all six are True. The charter
-#: amendment's first draft refused the literal string ``"0.0.0.0"``, which is one
-#: of them, and ``::`` binds every IPv6 interface.
+#: The six spellings of the unspecified address. The charter amendment's first draft
+#: refused the literal string ``"0.0.0.0"``, which is one of them, and ``::`` binds
+#: every IPv6 interface. An earlier version of this comment said all six measure True
+#: under ``ipaddress.ip_address(x).is_unspecified``; on CPython 3.12.3 the mapped one
+#: measures **False** (True on 3.11.17 and 3.13.16), so the premise below reads the
+#: address a mapped spelling denotes, as the control does.
 _UNSPECIFIED = (
     "0.0.0.0",  # noqa: S104 - refused by the control under test, not a bind address
     "::",
@@ -260,9 +262,21 @@ def test_every_spelling_of_unspecified_is_refused(spelling: str, tmp_path: Path)
     code so it cannot regress into prose again. The refusal reads the **parsed**
     value's ``is_unspecified``, which is why all six fail rather than only the one
     anybody thinks to type.
+
+    The premise reads the address a mapped spelling *denotes*, because the
+    stdlib's answer for the IPv6 object is interpreter-dependent: measured,
+    ``ip_address("::ffff:0.0.0.0").is_unspecified`` is False on CPython 3.12.3 and
+    True on 3.11.17 and 3.13.16. Asking the object made this case red on Ubuntu
+    24.04's system Python while the product refused the address anyway. The refusal
+    reason is still pinned to "unspecified" on every interpreter:
+    :func:`test_a_mapped_shape_is_refused_for_its_own_reason_without_delegation`
+    proves that holds where the stdlib does not delegate.
     """
-    assert ipaddress.ip_address(spelling).is_unspecified, (
-        f"{spelling} is not actually unspecified — this test's premise is wrong"
+    parsed = ipaddress.ip_address(spelling)
+    mapped = parsed.ipv4_mapped if isinstance(parsed, ipaddress.IPv6Address) else None
+    denoted = parsed if mapped is None else mapped
+    assert denoted.is_unspecified, (
+        f"{spelling} does not denote the unspecified address — this test's premise is wrong"
     )
     path = _write(tmp_path, {"version": 1, "hosts": [_one_host(address=spelling)]})
     with pytest.raises(EgressAllowlistError, match="unspecified"):
@@ -297,11 +311,70 @@ def test_shapes_that_cannot_mean_one_peer_are_refused(
     Note what a *positive* shape test would do here: measured, ``224.0.0.1`` is
     ``is_multicast`` **and** ``is_global``, so a rule phrased "allow if global"
     would allow multicast. The rules are refusals for that reason.
+
+    The reason is pinned, not only the refusal. ``why`` used to be decoration, and
+    that hid a drift: on CPython 3.12.3 ``::ffff:169.254.169.254`` was refused as
+    IPv4-mapped rather than link-local, so the metadata address rested on one rule
+    there while this test stayed green.
     """
     path = _write(tmp_path, {"version": 1, "hosts": [_one_host(address=address)]})
-    with pytest.raises(EgressAllowlistError):
+    with pytest.raises(EgressAllowlistError, match=why):
         EgressAllowlist.load(path)
-    assert why  # names the case in a failure
+
+
+# Stand-ins for CPython 3.12.3's ``IPv6Address`` properties, named as such. That
+# release answers from the IPv6 bits alone and never consults the mapped IPv4
+# address, so for any ``::ffff:a.b.c.d`` all three are False. Later releases
+# delegate. CI's interpreters all delegate, so without these the 3.12.3 path is one
+# CI cannot reach.
+def _v6_unspecified_stand_in(self: ipaddress.IPv6Address) -> bool:
+    return int(self) == 0
+
+
+def _v6_multicast_stand_in(self: ipaddress.IPv6Address) -> bool:
+    return self in ipaddress.IPv6Network("ff00::/8")
+
+
+def _v6_link_local_stand_in(self: ipaddress.IPv6Address) -> bool:
+    return self in ipaddress.IPv6Network("fe80::/10")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("spelling", "why"),
+    [
+        ("::ffff:0.0.0.0", "unspecified"),
+        ("::ffff:224.0.0.1", "multicast"),
+        ("::ffff:255.255.255.255", "limited-broadcast"),
+        ("::ffff:169.254.169.254", "link-local"),
+    ],
+)
+def test_a_mapped_shape_is_refused_for_its_own_reason_without_delegation(
+    spelling: str, why: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Each mapped shape is refused for its own reason where the stdlib does not delegate.
+
+    Measured: ``is_unspecified``, ``is_link_local`` and ``is_multicast`` on the
+    mapped object are True on 3.11.17 and 3.13.16 and False on 3.12.3. The control
+    reads the denoted IPv4 address, so the shape refusal fires either way and the
+    IPv4-mapped rule stays a *second* layer. Remove the unwrap and this test goes red
+    on every interpreter. The mapped rows of the parametrized tests above cannot
+    catch that on CI, because there the stdlib quietly does the unwrapping.
+
+    The premise check is load-bearing: if the stand-ins delegated, this would prove
+    nothing.
+    """
+    monkeypatch.setattr(ipaddress.IPv6Address, "is_unspecified", property(_v6_unspecified_stand_in))
+    monkeypatch.setattr(ipaddress.IPv6Address, "is_multicast", property(_v6_multicast_stand_in))
+    monkeypatch.setattr(ipaddress.IPv6Address, "is_link_local", property(_v6_link_local_stand_in))
+    parsed = ipaddress.ip_address(spelling)
+    assert not (parsed.is_unspecified or parsed.is_multicast or parsed.is_link_local), (
+        f"the stand-ins still delegate for {spelling}, so this case proves nothing"
+    )
+
+    path = _write(tmp_path, {"version": 1, "hosts": [_one_host(address=spelling)]})
+    with pytest.raises(EgressAllowlistError, match=why):
+        EgressAllowlist.load(path)
 
 
 @pytest.mark.security

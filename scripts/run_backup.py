@@ -156,15 +156,10 @@ from store import (  # noqa: E402
     Attestation,
     EventStore,
     StoreError,
+    StoreFileError,
+    refuse_unsafe_database,
 )
-from store.paths import (  # noqa: E402
-    SIDECARS,
-    confine,
-    kind_of,
-    linked_database_problem,
-    sidecar_problem,
-    validated_root,
-)
+from store.paths import confine, validated_root  # noqa: E402
 
 #: Where backups live: a sibling of the state they copy, inside the same
 #: gitignored root, so a backup can never be the thing that commits evidence.
@@ -255,6 +250,32 @@ COPIED_TREES: tuple[Path, ...] = (Path("data") / "reports",)
 #: an incident. Note an unsigned chain cannot detect *end* truncation — set
 #: ``AUDIT_HMAC_KEY`` and the head signature does.
 CHAIN_FILES: tuple[Path, ...] = COPIED_FILES[:4]
+
+#: The detached head signature beside each chain (``AuditLogger``'s
+#: ``<chain>.sig``), mapped to the chain it signs. Copied and declared like any
+#: other sibling, and not append-only: every signed ``record()`` replaces it whole.
+HEAD_SIGNATURES: dict[Path, Path] = {
+    chain.with_name(chain.name + ".sig"): chain for chain in CHAIN_FILES
+}
+
+#: The one chain this CLI writes — ``_run`` records each pass's gate decision
+#: here before anything is verified — and so the one head signature that
+#: legitimately differs from the backup's after a correct restore. Nothing else
+#: writes a chain between ``docs/RESTORE.md`` steps 4 and 5, so every other
+#: signature must be byte-identical to the backup's, key or not. Excusing any
+#: other ``valid`` one would excuse every field the signature check does not read
+#: (``algo``, or a key nobody declared) — measured, an edited ``algo`` verified at
+#: exit 0 (found by review). See :func:`_verify_restore`.
+GATE_CHAIN: Path = AUDIT_SUBDIR / AUDIT_FILE
+GATE_SIGNATURE: Path = GATE_CHAIN.with_name(AUDIT_FILE + ".sig")
+
+#: ``AuditLogger``'s lock sidecar beside each declared file. Never copied:
+#: ``docs/RESTORE.md`` has always said ``*.lock`` does not land in a backup, and
+#: :func:`_copied_paths`' sibling rule copied ``audit.log.lock`` anyway once the
+#: logger gained one. The lock is the open descriptor, not the file.
+LOCK_SIDECARS: frozenset[Path] = frozenset(
+    declared.with_name(declared.name + ".lock") for declared in COPIED_FILES
+)
 
 #: Never copied, and the reason is load-bearing. See the module docstring.
 EXCLUDED: dict[str, str] = {
@@ -577,32 +598,81 @@ def _is_append_only(relative: Path) -> bool:
     legitimately grow hides a rewrite, while demanding equality of something
     that does grow produces a loud, obvious finding an operator can read.
 
-    Append-only means the four hash chains in :data:`COPIED_FILES`, the
-    evidence stream beside them, and their rotation siblings — ``audit.log.1``,
-    a checkpoint — which is the same rule :func:`_copied_paths` uses to pick
-    them up, expressed once so the backup side and the verify side cannot
-    disagree about what may grow.
+    **Append-only means the five streams in :data:`COPIED_FILES` themselves,
+    and nothing beside them.** This used to grant growth to every sibling whose
+    name starts with a declared one — "``audit.log.1``, a checkpoint, a head
+    signature" — on the theory that it was the rule :func:`_copied_paths` copies
+    them by, so the two sides could not disagree. But *which files to copy* and
+    *which files may grow* are different questions, and none of the three grows:
 
-    **Not the head signature**, which an earlier version of this docstring
-    listed, although this function returns ``True`` for it too, since it
-    matches by prefix: :func:`_verify_restore` takes the head signature out
-    before it asks. ``audit.log.sig`` is not appended to: every keyed record *replaces*
-    it (a new inode through ``os.replace``), including this CLI's own gate
-    record, which is written before :func:`_verify_restore` runs. Measured with
-    ``AUDIT_HMAC_KEY`` set: every correct restore failed ``REWRITTEN`` on it
-    (found by independent review). It is authenticated by meaning instead, in
-    :func:`_backed_up_chain_problems`; see :func:`_head_signature_chain`.
+    * a rotated archive is frozen once ``AuditLogger._rotate`` renames it;
+    * a checkpoint is rewritten whole, and only by ``_prune``, which nothing runs
+      within the step-4-to-step-5 window of :func:`_verify_restore`;
+    * a head signature is rewritten whole by every signed ``record()`` — see
+      :data:`HEAD_SIGNATURES` and :func:`_verify_restore` for how it is judged.
 
-    ``data/reports/`` is not append-only: a report is rewritten whole, and
-    within the step-4-to-step-5 window of :func:`_verify_restore` nothing
-    writes one at all.
+    Measured on the old rule: with ``AUDIT_HMAC_KEY`` set, **every correct
+    restore failed** ``REWRITTEN: data/events/audit.log.sig``, because this
+    command's own gate decision re-signs that chain before the check reads it;
+    and blank lines appended to a rotated archive, or whitespace to a
+    checkpoint, verified green, since chain verification skips blank lines and
+    ``json.loads`` accepts trailing whitespace. The two sides still cannot
+    disagree in the direction that matters: every file a backup copies has a
+    manifest entry, and every entry is compared, strictly unless named here.
+
+    ``data/reports/`` is not append-only either: a report is rewritten whole, and
+    within that window nothing writes one at all.
     """
-    if relative in COPIED_FILES:
-        return True
-    return any(
-        relative.parent == declared.parent and relative.name.startswith(declared.name)
-        for declared in COPIED_FILES
-    )
+    return relative in COPIED_FILES
+
+
+def _signature_judged(state: object) -> bool:
+    """May :data:`GATE_SIGNATURE` go byte-uncompared, because its chain report covers it?
+
+    Asked of that one signature only: every other is compared exactly, because
+    nothing rewrites its chain in this window. In exactly two states, and in both
+    the verdict stays honest without the
+    bytes: the signature verified (``valid`` — under a key, present and covering
+    the current head), or the chain is already a finding (``intact`` false), so
+    the pass is red whatever the bytes say and comparing them would only add a
+    misleading second finding, since the gate decision re-signs the events chain.
+
+    Everything else falls through to the exact comparison, and the first version
+    of this predicate got one of them wrong. ``unsigned`` means no verifier, so
+    nothing read the signature. But a key in hand is not the same as the
+    signature having been checked: a chain pruned to its checkpoint
+    (``--retain-segments 0``) has no entry to sign, ``verify_report`` reports
+    ``empty`` without reading the sidecar, and treating that as judged let a
+    same-length forgery verify at exit 0 (found by review). A chain absent from
+    the live root has no state, so its signature is compared too.
+    """
+    if not isinstance(state, dict) or state.get("present") is not True:
+        return False
+    return state.get("signature") == "valid" or state.get("intact") is False
+
+
+def _altered(entry: dict[str, Any], path: Path) -> str | None:
+    """The ``ALTERED`` finding for a declared file that may not change, or ``None``.
+
+    Everything :func:`_is_append_only` does not name, and a head signature that
+    :func:`_signature_judged` does not excuse, must be byte-identical to the backup.
+    """
+    backed_up = int(entry["size"])
+    live_size = path.stat().st_size
+    if live_size != backed_up:
+        return (
+            f"ALTERED: {entry['path']} is {live_size} bytes; the backup holds "
+            f"{backed_up}. Only the declared streams may grow, and nothing in this "
+            "window rewrites anything else — a report, a rotated archive, a checkpoint, "
+            "or a head signature nothing re-signed — so any size difference means the "
+            "live copy is not the backed-up one"
+        )
+    if _digest_file(path) != entry["sha256"]:
+        return (
+            f"ALTERED: {entry['path']} is {backed_up} bytes as attested but hashes "
+            "differently, so its contents were changed without changing its length"
+        )
+    return None
 
 
 def _head_signature_chain(relative: Path) -> Path | None:
@@ -631,10 +701,9 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
     manifest's digests, gave ``--verify-restore`` exit 0 under a key (found by
     independent review).
 
-    With no key configured nothing can authenticate a signed chain, so a
-    backup that carries one is a finding rather than a pass, as
-    ``scripts/audit_verify.py --require-signature`` treats it. An unsigned
-    backup verified without a key passes on the chain alone, as before.
+    With no key configured nothing can authenticate a signed chain, so the
+    backed-up chain is checked by its manifest digests alone, and #256's exact
+    comparison of the live head signature is what stands in for the key.
     """
     problems: list[str] = list(_events_chain_problems(manifest))
     problems.extend(_backup_inventory_problems(backup, manifest))
@@ -673,16 +742,9 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
                     f"{entry['path']}: the backup's copy is not what its manifest recorded, "
                     "so the live chain cannot be traced to the history the take signed"
                 )
-        signed = any(_head_signature_chain(Path(str(e["path"]))) == chain for e in family)
         if verifier is None:
-            if signed:
-                problems.append(
-                    f"SIGNATURE UNCHECKED: {chain} in the backup carries a head signature and "
-                    "no verification key is configured (AUDIT_HMAC_KEY or "
-                    "AUDIT_ED25519_PUBLIC_KEY), so whether this is the history that was "
-                    "signed cannot be checked; this run's own records also left the live "
-                    "head unsigned. Re-run with the key"
-                )
+            # Nothing can authenticate a signed chain without the key; #256 compares
+            # the live head signature's bytes exactly instead (see GATE_SIGNATURE).
             continue
         unbounded = _unbounded_chain(
             backup, chain, {str(entry["path"]): entry["size"] for entry in manifest["files"]}
@@ -870,7 +932,7 @@ def _backup_inventory_problems(backup: Path, manifest: dict[str, Any]) -> list[s
     """
     store = str(manifest["store"]["path"])  # shape-checked: a string
     allowed = {str(entry["path"]) for entry in manifest["files"]} | {store}
-    allowed |= {store + suffix for suffix in SIDECARS}
+    allowed |= {store + suffix for suffix in _SIDECARS}
     base = backup / "data"
     if base.is_symlink() or not base.is_dir():
         return []  # the path walks name a symlinked data/; an absent one is a missing store
@@ -890,7 +952,7 @@ def _backup_inventory_problems(backup: Path, manifest: dict[str, Any]) -> list[s
             if stat.S_ISDIR(found.st_mode):
                 continue
             if relative not in allowed:
-                kind = "a file" if stat.S_ISREG(found.st_mode) else kind_of(found.st_mode)
+                kind = "a file" if stat.S_ISREG(found.st_mode) else _kind_of(found.st_mode)
                 problems.append(
                     f"UNDECLARED: {_capped(relative)} is {kind} in the backup that its manifest "
                     "does not list. A take writes only the files it declares, and step 4's "
@@ -906,29 +968,6 @@ def _backup_inventory_problems(backup: Path, manifest: dict[str, Any]) -> list[s
                 )
             seen.setdefault(key, relative)
     return problems
-
-
-def _special_store(db: Path, *, what: str) -> str | None:
-    """Why ``db`` is present but is not a file a store could be, or ``None``.
-
-    ``None`` for absent and for a regular file, which the callers' own
-    ``is_file()`` checks then handle. Without this, ``is_file()`` read a FIFO,
-    a directory or a socket at the store path as no store at all, and under
-    ``--verify-restore`` that sent an operator back to step 4, which does not
-    reliably replace one: ``cp -a`` onto a FIFO blocks (measured; found by
-    independent review).
-    """
-    try:
-        found = os.lstat(db)
-    except OSError:
-        return None
-    if stat.S_ISREG(found.st_mode) or stat.S_ISLNK(found.st_mode):
-        # A symlink is the path walk's to name, and every caller runs it first.
-        return None
-    return (
-        f"{what} is {kind_of(found.st_mode)}, not a regular file, so it was not opened. "
-        "Move it out of the root (mv) and keep it for investigation; see docs/RESTORE.md"
-    )
 
 
 def _same_file(left: Path, right: Path) -> bool:
@@ -1058,7 +1097,10 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
         if base.is_dir():
             candidates.extend(sorted(child.relative_to(root) for child in base.iterdir()))
     # Rotated archives, checkpoints and head signatures sit beside their
-    # chain; they are part of the same evidence and are copied with it.
+    # chain; they are part of the same evidence and are copied with it. The
+    # lock sidecar sits there too and is not evidence (see LOCK_SIDECARS). This
+    # rule says what to COPY and nothing about what may grow: _is_append_only
+    # answers that, and the two questions have different answers.
     for relative in COPIED_FILES:
         parent = (root / relative).parent
         if not parent.is_dir() or parent.is_symlink():
@@ -1070,10 +1112,7 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
                 for child in parent.iterdir()
                 if child.name != stem
                 and child.name.startswith(stem)
-                # Never a lock: nothing is ever held in a backup, and a copied
-                # lock is the shape a planted link took to reach the live root
-                # (found by review). Backups taken before this declare theirs.
-                and not child.name.endswith(".lock")
+                and child.relative_to(root) not in LOCK_SIDECARS
             )
         )
 
@@ -1172,25 +1211,18 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
         # real one, so there is no safe way to proceed without it.
         raise StoreError(unsafe)
     source_db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
-    special = _special_store(source_db, what=f"the live store {source_db}")
-    if special is not None:
-        raise StoreError(special)
+    database = _database_problem(source_db, what=f"the live store {source_db}")
+    if database is not None:
+        # Before is_file(), which reads a FIFO as "no event store", and before the
+        # destination exists, so a refused take leaves no partial copy. The take
+        # never reaches EventStore.open on the source, so this is its only check.
+        raise StoreError(database)
     if not source_db.is_file():
         raise StoreError(
             f"no event store at {source_db}; refusing to write a backup that "
             "would restore as an empty store indistinguishable from a real one"
         )
-    links = source_db.stat().st_nlink
-    if links > 1:
-        # The online backup API opens the source with a plain connection, which
-        # EventStore.open's refusal never sees: measured, a take of a hard-link
-        # copy's root replayed the copy's stale -wal into the file the live
-        # store shares and rolled it back from 60 events to 40, at exit 0
-        # (found by independent review).
-        raise StoreError(
-            linked_database_problem(source_db, links, what=f"the live store {source_db}")
-        )
-    sidecar = sidecar_problem(source_db, what=f"the live store {source_db}")
+    sidecar = _sidecar_problem(source_db, what=f"the live store {source_db}")
     if sidecar is not None:
         # Before the backup directory is created, so a refused take leaves no
         # partial copy; the gate's allow record is already in the chain, with no
@@ -1587,6 +1619,116 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
     return checked
 
 
+#: The files SQLite opens beside a database, and reads or writes through.
+_SIDECARS = ("-wal", "-journal", "-shm")
+
+#: How a non-regular sidecar is named in a finding.
+_KINDS = (
+    (stat.S_ISLNK, "a symlink"),
+    (stat.S_ISDIR, "a directory"),
+    (stat.S_ISFIFO, "a FIFO"),
+    (stat.S_ISSOCK, "a socket"),
+    (stat.S_ISCHR, "a character device"),
+    (stat.S_ISBLK, "a block device"),
+)
+
+
+def _database_problem(db: Path, *, what: str) -> str | None:
+    """Why ``db`` itself is unsafe to hand to SQLite, or ``None`` if absent or safe.
+
+    The store's rule, not a copy of it: :func:`store.refuse_unsafe_database`
+    decides, and this phrases its ``problem`` as a finding, because the
+    verifiers report rather than raise. (:func:`_sidecar_problem` is a copy, from
+    before the store had a check, and a test pins that the two name the same
+    files; here ``tests/security/test_store_database_file.py`` pins that the
+    finding carries the store's ``problem`` word for word.) Absent is ``None``: each caller says
+    "missing" in its own terms after this has ruled out a file that is present
+    but not usable.
+
+    Called before ``is_file()`` everywhere it matters, because ``is_file()``
+    follows the type: measured on the tree before this check, a FIFO at the
+    store path read as "no event store" under the take, "is missing" under
+    ``--verify`` and "no store at …" under ``--verify-restore``, all at exit 1
+    and all naming the wrong thing. And a hard link is a regular file, so
+    ``is_file()`` passed it: the take and both verifiers exited 0 over a store
+    that shares its inode with another name, so a backup restored with
+    ``cp -al`` would have verified clean and then changed with every write to
+    the live store. The take's own source connection can write, too: after a
+    killed writer it checkpoints the WAL into the file (see the module
+    docstring), which through a link is a write to the other name.
+    """
+    try:
+        refuse_unsafe_database(db)
+    except StoreFileError as exc:
+        return (
+            f"{what} cannot be opened safely: it {exc.problem}. SQLite opens the store "
+            "by name and writes it in place, so a FIFO would block it and a second link "
+            "would receive its writes; the store was not opened"
+        )
+    return None
+
+
+def _kind_of(mode: int) -> str:
+    """How a file of ``mode`` that is not a regular file is named in a finding."""
+    return next((name for test, name in _KINDS if test(mode)), "unrecognised")
+
+
+def _sidecar_problem(db: Path, *, what: str) -> str | None:
+    """Why a file beside ``db`` makes it unsafe to hand to SQLite, or ``None``.
+
+    SQLite opens every sidecar with the database: it checkpoints a ``-wal``,
+    replays a ``-journal``, and truncates and rewrites a ``-shm`` as its WAL
+    index. Each must therefore be absent or a regular file with a single link.
+    Measured, found by independent review:
+
+    - a FIFO ``-journal`` hung both verifiers, and a plain take, inside the
+      open while they held the backup lock, so every later pass skipped at
+      exit 0; a FIFO ``-wal`` was deleted;
+    - a symlinked, FIFO or directory ``-shm`` replaced the report with a bare
+      SQLite error and left a new ``-wal`` in the tree under inspection;
+    - a ``-shm`` **hard-linked** to another file had that file overwritten
+      with 32 KiB of WAL index: the backup's own manifest, and the live
+      store, were each destroyed under a run that exited 0 "verified".
+
+    A hard link is a regular file, which is why the link count is checked
+    with the type, and why this is one ``lstat`` per name. It is a check on
+    the path, so a sidecar swapped in between it and the open is not caught:
+    that needs write access to the directory, the same window
+    :func:`_unsafe_to_open` already leaves.
+
+    Every offending sidecar is named, with what is wrong with it, because the
+    remedies differ: a FIFO or a symlink is never benign, while a second link
+    can come from a hard-link copy of the tree (``cp -al``, ``rsync
+    --link-dest``) and the size says whether a ``-wal`` holds frames (found by
+    review: the first version named only the first sidecar, and only as "not a
+    regular file with a single link").
+    """
+    reasons: list[str] = []
+    for suffix in _SIDECARS:
+        side = db.with_name(db.name + suffix)
+        try:
+            found = os.lstat(side)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            reasons.append(f"its {suffix} cannot be checked ({type(exc).__name__})")
+            continue
+        if not stat.S_ISREG(found.st_mode):
+            kind = next((name for test, name in _KINDS if test(found.st_mode)), "unrecognised")
+            reasons.append(f"its {suffix} is {kind}, not a regular file")
+        elif found.st_nlink != 1:
+            reasons.append(
+                f"its {suffix} ({found.st_size} bytes) has {found.st_nlink} links: another "
+                "name shares the file, and SQLite would write through both"
+            )
+    if not reasons:
+        return None
+    return (
+        f"{what} cannot be opened safely: {'; '.join(reasons)}. SQLite opens every "
+        "sidecar with the store, so the store was not opened"
+    )
+
+
 #: SQLite's file header begins with this magic; bytes 18 and 19 are the write
 #: and read format versions, both ``2`` for a WAL-mode database.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
@@ -1612,20 +1754,32 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
     it at **exit 0**, "every file digest match the manifest", sha256 changed.
 
     So the facts ``open`` would act on are read first, without a connection
-    that can write: size, the sidecars (:func:`store.paths.sidecar_problem`), the header
-    bytes, and the schema catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
+    that can write: the file's own type and link count
+    (:func:`_database_problem`), size, the sidecars (:func:`_sidecar_problem`),
+    the header bytes, and the schema catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
     ``-wal`` and ``-shm`` behind in the backup after close; ``immutable=1``
     touched nothing. It ignores a WAL, which is why a non-empty one is refused
     on its own rather than read through. A reason is a reported problem and
     not a raise, so the rest of the report still runs.
+
+    The link count is checked first, and that is what now covers the hard-linked
+    0-byte case above, not only the size: a *non-empty* store hard-linked to a
+    name outside the backup passed every check here and verified clean at exit 0,
+    measured, and ``EventStore.open`` itself now refuses it, which would have
+    replaced this report with a bare error. Callers have already confirmed
+    ``is_file()``, so a FIFO cannot reach this function; they ask
+    :func:`_database_problem` themselves when ``is_file()`` fails.
     """
+    database = _database_problem(db, what=what)
+    if database is not None:
+        return database
     size = db.stat().st_size
     if size == 0:
         return (
             f"{what} is 0 bytes, a truncated transfer; SQLite treats an empty file as a "
             "new database and opening it would initialise it, so it was not opened"
         )
-    sidecar = sidecar_problem(db, what=what)
+    sidecar = _sidecar_problem(db, what=what)
     if sidecar is not None:
         return sidecar
     wal = db.with_name(db.name + "-wal")
@@ -1707,10 +1861,12 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     db = directory / str(store_entry["path"]) if store_entry["path"] else None
     if db is None:
         pass
-    elif (special := _special_store(db, what=str(store_entry["path"]))) is not None:
-        problems.append(special)
     elif not db.is_file():
-        problems.append(f"{store_entry['path']} is missing")
+        # A FIFO or a directory fails is_file() and is not missing: name what is there.
+        problems.append(
+            _database_problem(db, what=str(store_entry["path"]))
+            or f"{store_entry['path']} is missing"
+        )
     else:
         size, actual = _digest_exact(db, store_entry["size"])
         if actual is None:
@@ -1732,9 +1888,7 @@ def _verify_backup(directory: Path) -> dict[str, object]:
             # write SQLite's -wal and -shm into the backup for no verdict.
             pass
         else:
-            # A hard-link snapshot farm of data/backups links every backup's
-            # store, and this only reads it: the one caller that may opt out.
-            with EventStore.open(directory, allow_linked=True) as copy:
+            with EventStore.open(directory) as copy:
                 attested = copy.attest().to_dict()
             # Compared only when every field is there. The first version of this
             # change still indexed `expected["events"]` below after reporting it
@@ -1863,6 +2017,18 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     :func:`_require_format` with the recourse named, and a v2 manifest missing
     any attestation field is refused by :func:`_attestation_gaps` rather than
     compared on what is left.
+
+    **The gate's own head signature is judged by its chain, not by its bytes,
+    when a key is set** — and that is a fix, not a relaxation. The old classifier
+    prefix-compared it, so with ``AUDIT_HMAC_KEY`` set this gate failed every
+    correct restore: the gate decision re-signs ``data/events/audit.log`` before
+    the comparison reads its ``.sig``. That one signature
+    (:data:`GATE_SIGNATURE`) must still be present, and is excused its bytes only
+    where :func:`_verify_chains` found it valid for the current head (or the
+    chain is already a finding) — see :func:`_signature_judged`. With no key
+    nothing re-signed it, so it is compared exactly. **Every other signature is
+    compared exactly, key or not**: nothing rewrites its chain in this window, and
+    the signature check reads three fields of the sidecar and no others.
     """
     manifest = _load_manifest(backup)
 
@@ -1904,11 +2070,11 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # report with a bare error (found by independent review); and SQLite
         # looks for the sidecars beside the target, not beside the link.
         problems.append(live_path)
-    elif (special := _special_store(db, what=f"the live store {db}")) is not None:
-        problems.append(special)
     elif not db.is_file():
+        # As in _verify_backup: a FIFO or a directory here is a finding, not an absence.
         problems.append(
-            f"no store at {db}: the restore did not put one there, and this check will "
+            _database_problem(db, what=f"the live store {db}")
+            or f"no store at {db}: the restore did not put one there, and this check will "
             "not create one to measure"
         )
     elif _same_file(db, backup / EVENTS_SUBDIR / DEFAULT_FILENAME):
@@ -1916,10 +2082,6 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # equal to itself. Not opened, so nothing here touches the backup's own
         # file. See _linked_to_backup.
         problems.append(_linked(EVENTS_SUBDIR / DEFAULT_FILENAME))
-    elif (links := db.stat().st_nlink) > 1:
-        # Linked to something other than this backup: the live store is still
-        # shared, and EventStore.open below would refuse it with a bare error.
-        problems.append(linked_database_problem(db, links, what=f"the live store {db}"))
     elif (unopenable := _unsafe_to_open(db, what=f"the live store {db}")) is not None:
         problems.append(unopenable)
     else:
@@ -2026,6 +2188,7 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # equality for everything else. See _is_append_only for why the allow-list
     # is on the growing side.
     declared: set[Path] = set()
+    gate_signature: str | None = None
     for entry in manifest["files"]:
         entry_path = Path(str(entry["path"]))
         unsafe = _unsafe_manifest_path(root, entry_path, what="manifest path")
@@ -2052,33 +2215,28 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             # independent review). A copied restore leaves one link.
             problems.append(_shared_live_file(entry_path, links))
             continue
-        live_size = path.stat().st_size
-        if _head_signature_chain(entry_path) is not None:
-            # Replaced by every keyed record, this run's gate record included,
-            # so its bytes say nothing; authenticated in the backup below.
+        if entry_path == GATE_SIGNATURE:
+            # The one signature this command re-signs (see GATE_SIGNATURE); every
+            # other falls through to the exact comparison below. Its bytes are
+            # compared NOW, so the chain report is the last read this pass makes,
+            # and whether the finding stands is decided from that report without
+            # touching the disk again (a second review round found reads after it).
+            gate_signature = _altered(entry, path)
             continue
-        if _is_append_only(entry_path):
-            if live_size < backed_up:
-                problems.append(
-                    f"TRUNCATED: {entry['path']} is {live_size} bytes; the backup holds "
-                    f"{backed_up}. An append-only artifact cannot legitimately shrink"
-                )
-            elif _digest_prefix(path, backed_up) != entry["sha256"]:
-                problems.append(
-                    f"REWRITTEN: {entry['path']}'s first {backed_up} bytes do not match the "
-                    "backup, so its history was not appended to — it was replaced"
-                )
-        elif live_size != backed_up:
+        if not _is_append_only(entry_path):
+            if (altered := _altered(entry, path)) is not None:
+                problems.append(altered)
+            continue
+        live_size = path.stat().st_size
+        if live_size < backed_up:
             problems.append(
-                f"ALTERED: {entry['path']} is {live_size} bytes; the backup holds "
-                f"{backed_up}. This is not an append-only stream — a report is rewritten "
-                "whole and nothing writes one during this window — so any size difference "
-                "means the live copy is not the backed-up one"
+                f"TRUNCATED: {entry['path']} is {live_size} bytes; the backup holds "
+                f"{backed_up}. An append-only artifact cannot legitimately shrink"
             )
-        elif _digest_file(path) != entry["sha256"]:
+        elif _digest_prefix(path, backed_up) != entry["sha256"]:
             problems.append(
-                f"ALTERED: {entry['path']} is {backed_up} bytes as attested but hashes "
-                "differently, so its contents were changed without changing its length"
+                f"REWRITTEN: {entry['path']}'s first {backed_up} bytes do not match the "
+                "backup, so its history was not appended to — it was replaced"
             )
 
     # The reverse direction, which nothing did: a live file the manifest never
@@ -2121,9 +2279,9 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # something; the live ones below show only that each continues cleanly.
     problems.extend(_backed_up_chain_problems(backup, manifest))
 
-    # Chains: entries may only GROW, and must still verify. Not through a
-    # symlinked chain directory: measured, data/compliance pointed outside the
-    # root passed at exit 0 "every chain still verifies" (found by review).
+    # Not through a symlinked chain directory: measured, data/compliance
+    # pointed outside the root passed at exit 0 "every chain still verifies"
+    # (found by review).
     unsafe_chains = {
         chain: f"{chain}: not verified: {reason}"
         for chain in CHAIN_FILES
@@ -2131,7 +2289,24 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         is not None
     }
     problems.extend(unsafe_chains.values())
+
+    # Chains, verified LAST: after every stream, report and signature above was
+    # read. A prefix comparison allows any growth, so a chain report taken before
+    # any of those reads missed whatever an unquiesced writer appended during
+    # them (found by review, twice). What lands after this read is unseen in any
+    # order; nothing below touches the disk.
     chains = _verify_chains(root, skip=unsafe_chains)
+
+    # The gate's own signature, from that same report. Where it verified the
+    # signature — present, under the key, covering the current head — or already
+    # reports the chain broken, the byte finding is dropped: this command's gate
+    # decision replaced data/events/audit.log.sig whole before any of this ran,
+    # which failed every correct signed restore as REWRITTEN. Otherwise (no key)
+    # nothing re-signed it, so it must be the backed-up file.
+    if gate_signature is not None and not _signature_judged(chains.get(str(GATE_CHAIN))):
+        problems.append(gate_signature)
+
+    # Chains: entries may only GROW, and must still verify.
     for name, state in sorted(chains.items()):
         if not isinstance(state, dict) or state.get("skipped"):
             continue
@@ -2564,8 +2739,9 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
                 say(
                     f"restore verified: {payload['root']} holds the "
                     f"{payload['events']} event(s) {payload['backup']} attested, every "
-                    "declared file carries the backed-up history as a prefix, and every "
-                    "chain still verifies."
+                    "declared stream carries the backed-up history as a prefix, every "
+                    "other declared file is unchanged, and every chain still verifies "
+                    "(head signatures included, when a key is set)."
                 )
                 # Said on success, not only in the docs, because a green line
                 # here is exactly what an operator will quote as justification

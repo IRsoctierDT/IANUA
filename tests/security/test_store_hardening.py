@@ -2164,7 +2164,7 @@ def test_the_corruption_mapping_lets_three_other_sqlite_errors_keep_their_meanin
 
     All three are ``sqlite3.DatabaseError`` subclasses, so a mapping written on
     the class alone relabels every one of them as evidence damage — and
-    ``sli.measure_store_readable`` grades any ``StoreError`` as ``0.0``, a
+    ``sli.measure_store_readable`` grades evidence damage as ``0.0``, a
     breach. This asserts the predicate discriminates, which the class hierarchy
     cannot do for it.
     """

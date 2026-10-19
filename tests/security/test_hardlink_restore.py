@@ -87,7 +87,10 @@ def test_a_hard_link_restore_is_refused_before_the_gate_writes(
     err = capsys.readouterr().err
     assert "is the backup's own file (a hard link)" in err, err
     assert _fingerprint(backup / _CHAIN) == chain, "the gate record was written into the backup"
-    # And the backup is still a backup: a later --verify from a clean root passes.
+    # And the backup is still a backup once the linked tree is gone. While it exists
+    # the backup's store has a second name, which --verify refuses (#259).
+    assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 1
+    shutil.rmtree(live)
     assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 0
 
 
@@ -113,12 +116,14 @@ def test_a_hard_linked_file_in_a_copied_restore_is_a_finding(
 
 
 @pytest.mark.security
-def test_a_hard_link_snapshot_farm_of_the_backups_still_verifies(
+def test_a_hard_link_snapshot_farm_of_the_backups_restores_by_copy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The acceptance side: rsnapshot-style snapshots hard-link every backup file into
-    a second tree. Neither copy is a live root, nothing writes to either, and both
-    must keep verifying, as must a correct copied restore."""
+    """rsnapshot-style snapshots hard-link every backup file into a second tree. Under
+    #259 a store file with a second name is refused wherever it is opened, so --verify
+    of either copy names the store's link; the identity check here adds nothing to that.
+    What must still hold is the acceptance side of this change: a correct copied restore
+    from such a backup passes the promotion gate, because no live file is linked."""
     source, backup = _source_with_backup(tmp_path)
     snapshot = source / "data" / "backups" / "probe-snapshot"
     _link_tree(backup, snapshot)
@@ -127,6 +132,6 @@ def test_a_hard_link_snapshot_farm_of_the_backups_still_verifies(
     _copy_restore(backup, live)
     capsys.readouterr()
 
-    assert backup_main(["--root", str(source), "--caller", "test", "--verify", str(backup)]) == 0
-    assert backup_main(["--root", str(source), "--caller", "test", "--verify", str(snapshot)]) == 0
+    assert backup_main(["--root", str(source), "--caller", "test", "--verify", str(snapshot)]) == 1
+    assert "has 2 hard links" in capsys.readouterr().out
     assert _verify_restore(live, backup) == 0, capsys.readouterr().out

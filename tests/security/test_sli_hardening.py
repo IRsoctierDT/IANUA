@@ -22,8 +22,14 @@ import ast
 import builtins
 import contextlib
 import io
+import json
 import os
+import shutil
+import sqlite3
+import subprocess
+import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +37,12 @@ import pytest
 
 from compliance.controls import check_self_monitoring_defined
 from compliance.engine import run_controls
+from ingest import normalize
 from pipeline import Cursor, cursor_path, save_cursor
-from sli import CHAIN_FILES, OBJECTIVES, Status, measure
-from store import EventStore
+from sli import CHAIN_FILES, OBJECTIVES, Indicator, Status, measure
+from sli.indicators import READABILITY_SAMPLE
+from store import SIDECAR_SUFFIXES, EventStore, Query, StoreCorruptionError
+from store.schema import VERSION_KEY
 from tests.security.test_cli_startup_failclosed import RELATIVE_ROOTS
 
 _SLI_ROOT = Path(__file__).resolve().parents[2] / "sli"
@@ -791,3 +800,288 @@ def test_a_backup_entry_swapped_for_a_link_mid_probe_is_neither_counted_nor_foll
 
     assert 1.0 not in values, f"counted the far side's manifest {values.count(1.0)} times"
     assert not reached, f"the probe reached beyond the root: {reached[:4]}"
+
+
+# ------------------------------------------------ a refused open is not damage
+
+_RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
+_STORE = Path("data") / "events" / "events.sqlite3"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+#: ``store-intact``'s damage sentence and the refusal sentence both store
+#: measurers use. Matched as phrases rather than bare words, so no temporary
+#: path can satisfy or defeat an assertion by containing one.
+_DAMAGED = "database is damaged"
+_REFUSED = "the store could not be opened"
+#: Generous for a loaded runner. What it bounds is a hang, not a slow run.
+_CLI_TIMEOUT = 60.0
+
+
+def _stored(tmp_path: Path) -> Path:
+    """A root holding a closed 12-event store and nothing else, so no sidecar is left."""
+    root = _root(tmp_path)
+    now = time.time() - 3600
+    with EventStore.open(root) as store:
+        for index in range(12):
+            store.append(normalize(_RECORD % index), ingested_at=store.next_stamp(now + index))
+    return root
+
+
+def _store_objectives(root: Path) -> dict[str, Indicator]:
+    """The two store objectives from one full measurement, by id."""
+    report = measure(root, now=time.time())
+    return {
+        item.objective.id: item
+        for item in report.indicators
+        if item.objective.id in ("store-intact", "store-readable")
+    }
+
+
+def _symlinked_data(root: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "elsewhere"
+    shutil.move(root / "data", outside)
+    (root / "data").symlink_to(outside, target_is_directory=True)
+
+
+def _hardlinked_shm(root: Path, tmp_path: Path) -> None:
+    # In-process is safe here: the sidecar check refuses before ``connect``, and
+    # the FIFO case, which would hang if that regressed, runs in a subprocess below.
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"\x01" * 4096)
+    os.link(victim, (root / _STORE).with_name(_STORE.name + "-shm"))
+
+
+def _rewrite_meta(sql: str, *params: str) -> Callable[[Path, Path], None]:
+    def plant(root: Path, _tmp_path: Path) -> None:
+        conn = sqlite3.connect(root / _STORE)
+        try:
+            with conn:
+                conn.execute(sql, params)
+        finally:
+            conn.close()
+
+    return plant
+
+
+#: Each refusal ``EventStore.open`` makes without judging a page: the plant,
+#: the class it raises, and a fragment of the store's own reason, which the
+#: detail must carry because it is what tells an operator what to do instead.
+_REFUSALS: dict[str, tuple[Callable[[Path, Path], None], str, str]] = {
+    "symlinked-data": (_symlinked_data, "StorePathError", "is a symlink"),
+    "hardlinked-shm": (
+        _hardlinked_shm,
+        "StoreSidecarError",
+        "-shm beside it that has 2 hard links",
+    ),
+    "schema-version": (
+        _rewrite_meta("UPDATE meta SET value = ? WHERE key = ?", "999", VERSION_KEY),
+        "SchemaVersionError",
+        "schema version 999",
+    ),
+    "version-row-removed": (
+        _rewrite_meta("DELETE FROM meta WHERE key = ?", VERSION_KEY),
+        "SchemaVersionError",
+        "no recorded schema version",
+    ),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("refusal", sorted(_REFUSALS))
+def test_a_refused_open_is_unmeasured_on_both_store_objectives(
+    tmp_path: Path, refusal: str
+) -> None:
+    """A store that will not open is ``UNKNOWN`` with its reason, never "damaged".
+
+    Measured before the open was classified: every one of these read
+    ``store-intact: breached`` with "the store's database is damaged", and
+    ``store-readable: breached`` with "the store cannot be read". None of them is
+    damage — the path and sidecar refusals come before SQLite reads a byte, and
+    a schema refusal reads a sound file of another version — while "damaged"
+    sends an operator to restore from a backup, which replaces the SOC's memory
+    with an older copy. Still not a pass: ``UNKNOWN`` is unhealthy, so the CLI
+    must still exit ``1``, and that is asserted rather than assumed.
+    """
+    from scripts.report_sli import main
+
+    plant, raised, reason = _REFUSALS[refusal]
+    root = _stored(tmp_path)
+    plant(root, tmp_path)
+
+    by_id = _store_objectives(root)
+
+    for objective in ("store-intact", "store-readable"):
+        indicator = by_id[objective]
+        assert indicator.status is Status.UNKNOWN, indicator.summary()
+        assert indicator.value is None
+        assert indicator.detail.startswith(_REFUSED), indicator.detail
+        assert f"{raised}: " in indicator.detail, indicator.detail
+        assert reason in indicator.detail, indicator.detail
+        assert _DAMAGED not in indicator.detail, indicator.detail
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(["--root", str(root), "--caller", "soc-test"])
+    assert code == 1, out.getvalue()
+    assert "DEGRADED" in out.getvalue()
+
+
+def _report_json(root: Path) -> tuple[int, dict[str, Any]]:
+    """``scripts/report_sli.py --json`` as a scheduler runs it: a subprocess with a timeout.
+
+    A subprocess because the case it serves plants a FIFO, and what a FIFO
+    ``-journal`` did before ``EventStore.open`` refused it was hang inside
+    SQLite's open, where ``SIGALRM`` does not reach (``test_store_sidecars.py``).
+    In-process, a regression there would hang the suite rather than fail it.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed interpreter, literal argv, test paths
+            [
+                sys.executable,
+                "scripts/report_sli.py",
+                "--root",
+                str(root),
+                "--caller",
+                "soc-test",
+                "--json",
+            ],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=_CLI_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("report_sli.py blocked on the store instead of reporting it")
+    assert result.stdout.strip(), result.stderr[-600:]
+    return result.returncode, json.loads(result.stdout)
+
+
+@pytest.mark.security
+def test_a_fifo_journal_reads_unknown_not_damaged_and_still_exits_1(tmp_path: Path) -> None:
+    """The case that surfaced this: since #257 a FIFO ``-journal`` is refused, not hung on.
+
+    The refusal was right and the reporter mislabelled it — "the store's
+    database is damaged: ... has a -journal beside it that is not a regular file
+    (a FIFO)". The detail named the real cause while the label pointed at the
+    restore branch, over a database nothing had touched. Asserted through the
+    CLI's JSON because that is what a scheduler records, and with the exit code
+    because ``UNKNOWN`` must still page someone.
+    """
+    root = _stored(tmp_path)
+    database = root / _STORE
+    journal = database.with_name(database.name + "-journal")
+    os.mkfifo(journal, 0o600)
+    before = database.read_bytes()
+
+    code, report = _report_json(root)
+
+    assert code == 1, report
+    assert report["healthy"] is False
+    by_id = {item["id"]: item for item in report["indicators"]}
+    for objective in ("store-intact", "store-readable"):
+        item = by_id[objective]
+        assert item["status"] == Status.UNKNOWN.value, item
+        assert item["value"] is None, item
+        detail = item["detail"]
+        assert detail.startswith(_REFUSED), detail
+        assert "StoreSidecarError: " in detail, detail
+        assert "-journal" in detail and "(a FIFO)" in detail, detail
+        assert _DAMAGED not in detail, detail
+    # Read-only in both directions: the FIFO was not consumed, the database not touched.
+    assert journal.is_fifo()
+    assert database.read_bytes() == before
+
+
+def _damage_first_met_at(root: Path) -> str | None:
+    """Where a store measurement first meets damage, asked of the store directly.
+
+    The calls the two store measurers make, in this order: ``open``, then the
+    readability sample's two queries, then ``verify_integrity``. So
+    ``"quick-check"`` means the sample read cleanly and only the quick check
+    refused.
+    """
+    try:
+        store = EventStore.open(root)
+    except StoreCorruptionError:
+        return "open"
+    with store:
+        try:
+            store.query(Query(limit=READABILITY_SAMPLE))
+            store.query(Query(limit=READABILITY_SAMPLE, newest_first=False))
+        except StoreCorruptionError:
+            return "query"
+        try:
+            store.verify_integrity()
+        except StoreCorruptionError:
+            return "quick-check"
+    return None
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("stage", ["open", "query", "quick-check"])
+def test_real_damage_still_reads_damaged_wherever_it_is_met(tmp_path: Path, stage: str) -> None:
+    """The other direction: classifying the open must not launder damage into "unknown".
+
+    A zeroed page can be met in three places and a 12-event store has all
+    three. Measured: the first two pages after the header fail inside
+    ``open``, some fail the readability sample's query, and the rest fail only
+    ``quick_check``. Each is asserted where it is met, because the grading is
+    per stage and a change that broke one would pass a test of the other two.
+    The page is found by measurement rather than by number, so a schema or
+    page-size change moves it instead of voiding the test.
+    """
+    from scripts.report_sli import main
+
+    root = _stored(tmp_path)
+    database = root / _STORE
+    folding = sqlite3.connect(database)
+    try:
+        folding.execute("PRAGMA journal_mode=DELETE")
+        page_size = int(folding.execute("PRAGMA page_size").fetchone()[0])
+    finally:
+        folding.close()
+    pristine = database.read_bytes()
+
+    def damage(pageno: int) -> None:
+        # Every open, the classifying one included, may switch the file to WAL and
+        # leave sidecars, so each measurement starts from the same damaged image.
+        for suffix in SIDECAR_SUFFIXES:
+            database.with_name(database.name + suffix).unlink(missing_ok=True)
+        offset = (pageno - 1) * page_size
+        database.write_bytes(pristine[:offset] + bytes(page_size) + pristine[offset + page_size :])
+
+    found = None
+    for pageno in range(2, len(pristine) // page_size + 1):
+        damage(pageno)
+        if _damage_first_met_at(root) == stage:
+            found = pageno
+            break
+    assert found is not None, f"no page's loss is first met at {stage!r}; nothing was exercised"
+
+    damage(found)
+    by_id = _store_objectives(root)
+
+    intact = by_id["store-intact"]
+    assert intact.status is Status.BREACHED, intact.summary()
+    assert intact.value == 0.0
+    assert intact.detail.startswith(f"the store's {_DAMAGED}"), intact.detail
+    readable = by_id["store-readable"]
+    if stage == "quick-check":
+        # The reason the two objectives are separate (tests/unit/test_sli.py owns
+        # that argument): the sample read cleanly and only store-intact saw it.
+        assert readable.status is Status.MET, readable.summary()
+    else:
+        assert readable.status is Status.BREACHED, readable.summary()
+        assert readable.value == 0.0
+        assert readable.detail.startswith("the store cannot be read: StoreCorruptionError"), (
+            readable.detail
+        )
+    assert not intact.detail.startswith(_REFUSED)
+    assert not readable.detail.startswith(_REFUSED)
+
+    damage(found)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(["--root", str(root), "--caller", "soc-test"])
+    assert code == 1, out.getvalue()
+    assert "store-intact: breached" in out.getvalue(), out.getvalue()

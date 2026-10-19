@@ -36,7 +36,7 @@ import pytest
 from ingest import normalize
 from scripts.run_backup import MANIFEST_FORMAT
 from scripts.run_backup import main as backup_main
-from store import EventStore, StorePathError
+from store import EventStore, StoreFileError
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 # The current format, so each hostile manifest reaches the shape check it names
@@ -528,11 +528,12 @@ def test_a_backup_shm_hard_linked_to_the_live_store_cannot_destroy_it(
     assert _verify(root, backup, "--verify") == 1
     assert f"its -shm ({before[0]} bytes) has 2 links" in capsys.readouterr().out
     assert _fingerprint(live) == before
-    # The plant is also a second name for the live store, which is refused until it
-    # is gone; then the store opens with every event.
-    with pytest.raises(StorePathError, match="shares its file with 1 other name"):
+    # While the backup's -shm is a second name for it, the live store is refused
+    # too: every write would also land in that name. Remove it and the store opens.
+    shm = (backup / _STORE).with_name(_STORE.name + "-shm")
+    with pytest.raises(StoreFileError, match="has 2 hard links"):
         EventStore.open(root)
-    (backup / _STORE).with_name(_STORE.name + "-shm").unlink()
+    shm.unlink()
     with EventStore.open(root) as store:
         assert store.count() == 12
 
@@ -997,7 +998,6 @@ def test_a_sidecar_that_cannot_be_checked_is_refused_not_taken_as_absent(
     """Found by review: nothing pinned this branch, so treating any ``lstat`` error as
     "absent" passed every test. Not walkable is not safe."""
     import scripts.run_backup as run_backup
-    import store.paths
 
     db = tmp_path / "events.sqlite3"
     db.write_bytes(b"x")
@@ -1008,7 +1008,7 @@ def test_a_sidecar_that_cannot_be_checked_is_refused_not_taken_as_absent(
             raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[call-overload]
         return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(store.paths.os, "lstat", refusing)
+    monkeypatch.setattr(run_backup.os, "lstat", refusing)
     # Through run_backup's own call site, so this pins that it passes the reason on.
     reason = run_backup._unsafe_to_open(db, what="the store")
     assert reason is not None and f"its {suffix} cannot be checked (PermissionError)" in reason
@@ -1171,7 +1171,6 @@ def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.Mo
     ``lstat`` stands in, the approach ``test_cli_startup_failclosed.py`` takes. A block
     device has no node guaranteed on every runner and is left unexercised."""
     import scripts.run_backup as run_backup
-    import store.paths
 
     db = tmp_path / "events.sqlite3"
     db.write_bytes(b"x")
@@ -1183,6 +1182,6 @@ def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.Mo
             return device
         return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(store.paths.os, "lstat", as_device)
+    monkeypatch.setattr(run_backup.os, "lstat", as_device)
     reason = run_backup._unsafe_to_open(db, what="the store")
     assert reason is not None and "its -wal is a character device, not a regular file" in reason

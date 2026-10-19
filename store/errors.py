@@ -30,25 +30,73 @@ class StorePathError(StoreError):
     """
 
 
-class StoreSidecarError(StorePathError):
-    """A file beside the database makes it unsafe to hand to SQLite.
+class StoreFileError(StorePathError):
+    """The database file itself is not one SQLite may open.
 
-    SQLite opens a ``-wal``, ``-journal`` and ``-shm`` with every database, so
-    one that is a FIFO, a socket, a directory, a symlink, or a regular file
-    sharing its inode with another name is refused before the connection
-    exists — see :func:`store.paths.sidecar_problem` for what each did when it
-    was not: a hang that held three CLIs' locks for good, and a file outside
-    the root overwritten with WAL index at exit 0.
+    ``store.paths.confine`` refuses a symlink at the database path and nothing
+    else, so until this check a hard link or a FIFO there reached SQLite.
+    Measured through every CLI that opens the live store, on the tree before it:
 
-    A subclass of :class:`StorePathError`, deliberately, and for the reason
-    :class:`StoreCorruptionError` subclasses its parent: every caller already
-    catches :class:`StoreError`, and ``sli/indicators.py`` treats a path the
-    store will not open as unmeasurable rather than damaged, so subclassing
-    changes no handler while the type name says which file to look at. The
-    remedy differs from a symlinked ``data/``: nothing was opened, so the
-    database is as it was found, and the runbook row is ``docs/RESTORE.md``'s
-    "cannot be opened safely".
+    * **A hard link was written through.** A ``cp -al`` snapshot of the store
+      outside ``data/`` grew by 4 KiB with a new digest when the collector ran,
+      at exit 0, so the snapshot was not one. A 0-byte file outside ``data/``
+      linked in at the store path was initialised in place, 0 -> 61440 bytes
+      and 0o644 -> 0o600, by the collector, the pipeline and retention (all at
+      exit 0) and by the SLI reporter.
+    * **A FIFO hung the open for an account that cannot write it.** SQLite opens
+      the database ``O_RDWR``, retries ``O_RDONLY`` after ``EACCES``, and a
+      read-only open of a FIFO blocks until a writer appears. A FIFO that is
+      read-only to the running account (its own at 0o400, or another account's
+      at 0o644, as ``sudo mkfifo`` leaves it) hung the collector, the pipeline
+      and retention, each holding its single-instance lock, so a second pass
+      printed "skipped" at exit 0. A FIFO it can write failed with a bare "disk
+      I/O error" instead, because ``pread`` on a pipe returns ``ESPIPE``: exit
+      1, and the wrong diagnosis. Root is the second case, which is why a test
+      run as root sees no hang.
+
+    A subclass of :class:`StorePathError` for the reason :class:`StoreSidecarError`
+    is: the same refusal, raised before any file is opened, so every handler that
+    catches :class:`StoreError` is unchanged. :class:`StoreSidecarError` is in
+    turn a subclass of this, because a sidecar is one of the files SQLite opens
+    for the store, and ``except StoreFileError`` should not need to name both.
+    ``problem`` is kept separately so a caller that reports rather than raises
+    (``scripts/run_backup.py``'s verifiers) can phrase the finding itself.
     """
+
+    def __init__(self, message: str, *, problem: str) -> None:
+        super().__init__(message)
+        self.problem = problem
+
+
+class StoreSidecarError(StoreFileError):
+    """A file SQLite would open beside the database is not one it may open.
+
+    SQLite opens ``-journal``, ``-wal`` and ``-shm`` *by name* beside the
+    database, so whoever can create a name in the events directory chooses
+    what the store's own open reads and writes. Measured through every CLI
+    that opens the live store, before this check or the backup CLI's own
+    ``_sidecar_problem`` existed: a FIFO
+    ``-journal`` hung the collector, the pipeline, retention, the backup take
+    and the SLI reporter inside SQLite's open, and the four that hold a
+    single-instance lock held it while blocked, so every later scheduled pass
+    printed "skipped" at exit 0. A ``-shm`` hard-linked to another file had
+    that file truncated and rewritten as 32 KiB of WAL index by every one of
+    them and by the read-only backup verifier, which still reported every
+    digest matching at exit 0. A hard-linked ``-wal`` had its other name
+    overwritten with WAL frames by the collector and the take, both at exit 0.
+    A FIFO ``-wal`` was deleted.
+
+    A subclass of :class:`StorePathError` (through :class:`StoreFileError`,
+    which refuses the database file itself) because it is the same refusal:
+    raised before any file is opened, and every first-party handler catches
+    :class:`StoreError`, so no caller changes. ``suffix`` and ``problem`` are
+    kept separately so a caller that reports rather than raises can phrase the
+    finding in its own terms without parsing the message.
+    """
+
+    def __init__(self, message: str, *, suffix: str, problem: str) -> None:
+        super().__init__(message, problem=problem)
+        self.suffix = suffix
 
 
 class SchemaVersionError(StoreError):

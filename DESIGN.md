@@ -252,9 +252,19 @@ a more-trusted one. Crossing one requires validation and (often) an approval gat
     refuse `UPDATE` outright, because append-only enforced only in the Python API is not a
     control when anything holding the file could rewrite history. **Containment:** the
     database lives under gitignored `data/events/`, a filename that escapes it is refused
-    rather than normalized, and the package imports no socket, subprocess, or dynamic
-    execution — asserted over its AST like `ingest/` and `intel/`. **Honesty:** `ingested_at`
-    is injected rather than read from a clock, so the storage timeline is reproducible;
+    rather than normalized, the database file itself and each `-journal`, `-wal` and
+    `-shm` SQLite would open beside it must be absent or a regular, singly linked file
+    before `connect` (a FIFO `-journal` hung the collector, pipeline, retention, backup
+    take and SLI reporter, and a hard-linked `-shm` had its other name rewritten even by
+    the read-only `--verify`; a hard-linked database had its other name written by the
+    collector at exit 0, and a FIFO database the running account could only read hung
+    the collector, pipeline and retention while every backup mode read it as absent;
+    `store/README.md` "Sidecars" and "The database file itself"; `scripts/run_backup.py`
+    asks the store's own check rather than keeping a copy of it), and the package
+    imports no socket, subprocess, or dynamic execution — asserted over its AST like
+    `ingest/` and `intel/`. **Honesty:**
+    `ingested_at` is injected rather than read from a clock, so the storage timeline is
+    reproducible;
     retention prunes on it rather than on source-reported time, so a host with a wrong clock
     cannot control its own retention; and an event carrying no source timestamp is excluded
     from every time window rather than treated as in-range, because an unknown position in
@@ -640,7 +650,9 @@ trusting artifacts from the gating workflow. Pages publication keeps its own
     **unspecified in either family** is refused outright rather than warned about: measured,
     `0.0.0.0`, `::`, `::0`, `0:0:0:0:0:0:0:0`, the expanded `0000:…:0000` and the IPv4-mapped
     `::ffff:0.0.0.0` are all unspecified, so the first draft's literal `0.0.0.0` rule caught
-    one of six while `::` binds every IPv6 interface. Same reasoning as `collect/` refusing a
+    one of six while `::` binds every IPv6 interface. That measurement is interpreter-dependent
+    for the mapped form, which is `False` under `is_unspecified` on CPython 3.12.3, so the
+    refusal reads the IPv4 address a mapped form denotes (AGENTS.md §5). Same reasoning as `collect/` refusing a
     glob, and the same defect class this repository keeps finding in its own controls — a
     rule written as a string that the thing it stops can spell differently.
 

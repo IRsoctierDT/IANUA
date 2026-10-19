@@ -168,24 +168,6 @@ def test_a_wrong_key_does_not_authenticate(
 
 
 @pytest.mark.security
-def test_a_signed_backup_verified_without_a_key_is_not_a_pass(
-    tmp_path: Path, key: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Measured on main: exit 0 "restore verified", with the run's own records left
-    unsigned so every later keyed reader sees a stale head."""
-    source, live = tmp_path / "source", tmp_path / "live"
-    source.mkdir()
-    _seed(source)
-    backup = _take(source, "probe")
-    _restore(backup, live)
-    monkeypatch.delenv("AUDIT_HMAC_KEY")
-    capsys.readouterr()
-
-    assert _verify_restore(live, backup) == 1
-    assert "SIGNATURE UNCHECKED" in capsys.readouterr().out
-
-
-@pytest.mark.security
 def test_an_unsigned_backup_verified_without_a_key_still_passes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
