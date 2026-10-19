@@ -182,7 +182,13 @@ with tab_compliance:
             st.error(f"Attestation store FAILED validation (ignored): {exc}")
             attestations = {}
         report = run_controls(repo_root, attestations=attestations)
-        record_run(report, root=repo_root)
+        try:
+            record_run(report, root=repo_root)
+        except ValueError as exc:
+            # Unusable audit-signing key material (signer_from_env) refuses the
+            # write before any evidence line is appended; say so instead of
+            # showing a traceback. The message never carries key material.
+            st.error(f"Evidence NOT recorded — the audit chain refused the write: {exc}")
         st.session_state["compliance_report"] = report
 
     stored_report = st.session_state.get("compliance_report")
@@ -221,16 +227,24 @@ with tab_compliance:
                 st.write(f"`{result.control.id}` {refs}")
 
         st.subheader("Evidence trail")
-        chain = verify_chain(repo_root)
-        if chain.entries == 0:
-            st.info("No evidence chain yet — it starts with the first recorded run.")
-        elif chain.intact:
-            st.success(
-                f"Evidence chain verified — {chain.entries} entries, signature: {chain.signature}."
-            )
+        try:
+            chain = verify_chain(repo_root)
+        except ValueError as exc:
+            # Unusable verifier key material (verifier_from_env) or a symlinked
+            # data/compliance: nothing was verified, so no verdict is shown.
+            # The message never carries key material.
+            st.error(f"Evidence chain NOT verified: {exc}")
         else:
-            # A broken chain is a security event, not a display glitch.
-            st.error(f"Evidence chain FAILED verification: {chain.failure}")
+            if chain.entries == 0:
+                st.info("No evidence chain yet — it starts with the first recorded run.")
+            elif chain.intact:
+                st.success(
+                    f"Evidence chain verified — {chain.entries} entries, "
+                    f"signature: {chain.signature}."
+                )
+            else:
+                # A broken chain is a security event, not a display glitch.
+                st.error(f"Evidence chain FAILED verification: {chain.failure}")
         recent = load_recent(repo_root, limit=50)
         if recent:
             st.table(evidence_rows(recent))
