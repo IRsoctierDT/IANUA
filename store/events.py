@@ -36,10 +36,11 @@ Security considerations (AGENTS.md §3, §5):
   normalized (:class:`store.errors.StorePathError`).
 * **Nothing SQLite would open beside it is taken on trust.** The database
   path and its ``-wal``, ``-journal`` and ``-shm`` are each ``lstat``-ed
-  before the connection exists, and a special file or a sidecar sharing its
-  inode is refused (:class:`store.errors.StoreSidecarError`), because SQLite
-  blocks on a FIFO and writes through a hard link
-  (:func:`store.paths.sidecar_problem`).
+  before the connection exists. A special file at the database path is a
+  :class:`store.errors.StorePathError`; a special-file or hard-linked sidecar,
+  or a shared database file with a log SQLite would replay into it, is a
+  :class:`store.errors.StoreSidecarError`, because SQLite blocks on a FIFO
+  and writes through a hard link (:func:`store.paths.sidecar_problem`).
 * **Parameterized SQL only.** Every value reaches SQLite as a bound
   parameter; no statement is assembled from caller input. Asserted over this
   module's AST in ``tests/security/test_store_hardening.py``, at each
@@ -419,16 +420,32 @@ def _refuse_unsafe_files(path: Path) -> None:
     wrong. :func:`confine` has already refused a symlink here; this check sees
     one only in a race and refuses it with the rest.
 
-    **A second link to the database is not refused**, deliberately and unlike a
-    sidecar's. A hard-link copy of the tree (``cp -al``, ``rsync
-    --link-dest``, rsnapshot) gives the live database a second name for as
-    long as the copy exists, and refusing it would fail every scheduled pass
-    until someone noticed. The cost, measured rather than assumed: a 0-byte
-    file outside the root, hard-linked in at the database path before the
-    first open, was **initialised in place** (0 -> 61440 bytes, mode 0o644 ->
-    0o600), because to SQLite an empty file is a new database. Planting that
-    needs write access to ``data/events/``, which is 0o700, and whatever
-    shares the inode then holds the store — that is the trade.
+    **A second link to the database is not refused on its own**, deliberately
+    and unlike a sidecar's. A hard-link copy of the tree (``cp -al``, ``cp
+    -l``, ``ln``, or ``rsync --link-dest`` pointed at the tree itself) gives
+    the database a second name for as long as the copy exists, and a
+    hard-link snapshot farm of ``data/backups`` gives every backup's store
+    one; refusing that would fail every scheduled pass, or every ``--verify``,
+    until someone noticed. (rsnapshot and an incremental ``rsync
+    --link-dest`` link snapshots to each other, never to the tree they copy:
+    measured with rsnapshot's rotation reproduced, the live files kept one
+    link.)
+
+    **It is refused when opening would write a log into the shared file.** A
+    database with more than one name and a non-empty ``-wal`` or ``-journal``
+    beside it is a hard-link copy whose log SQLite would checkpoint or roll
+    back into the file every other name also sees. Measured, found by
+    independent review: a ``cp -al`` of a live root taken while a writer had
+    the store open kept that writer's ``-wal`` under the copy's name; once a
+    later pass had written to the live store, a read-only ``SELECT`` on the
+    copy replayed it and **rolled the live store back from 60 events to 40**,
+    with ``quick_check`` clean. The live side of the same copy is caught by
+    the sidecar check (its ``-wal`` and ``-shm`` have two links while the
+    writer is open); this is the copy's side, where they have one. An empty
+    database with a second name is refused for the same reason: SQLite
+    initialises an empty file as a new database, in place, so a 0-byte file
+    hard-linked in at the database path became a store through its other name
+    (measured, 0 -> 61440 bytes, mode 0o644 -> 0o600).
 
     Then every sidecar, through :func:`store.paths.sidecar_problem`, which
     carries the measurements. :class:`StoreSidecarError` for those, because
@@ -438,7 +455,9 @@ def _refuse_unsafe_files(path: Path) -> None:
     Raises:
         StorePathError: for a database path that exists and is not a regular
             file, or that cannot be stated for a reason other than absence.
-        StoreSidecarError: for any sidecar :func:`sidecar_problem` refuses.
+        StoreSidecarError: for any sidecar :func:`sidecar_problem` refuses, and
+            for a database with a second name that is empty or has a
+            non-empty ``-wal`` or ``-journal`` beside it.
     """
     what = f"the event store {path}"
     try:
@@ -457,6 +476,43 @@ def _refuse_unsafe_files(path: Path) -> None:
     reason = sidecar_problem(path, what=what)
     if reason is not None:
         raise StoreSidecarError(reason)
+    if found is not None and found.st_nlink > 1:
+        shared = _shared_database_problem(path, found)
+        if shared is not None:
+            raise StoreSidecarError(f"{what} {shared}")
+
+
+def _shared_database_problem(path: Path, found: os.stat_result) -> str | None:
+    """Why opening a database that has a second name would write into it, or ``None``.
+
+    ``found`` is the database's own ``lstat``, already known to show more than
+    one link. See :func:`_refuse_unsafe_files` for the measurements.
+    """
+    others = found.st_nlink - 1
+    shares = f"shares its file with {others} other name{'s' if others > 1 else ''}"
+    if found.st_size == 0:
+        return (
+            f"is empty and {shares}: SQLite would initialise it as a new store in place, "
+            "through every name, so the store was not opened"
+        )
+    for suffix in ("-wal", "-journal"):
+        try:
+            size = os.lstat(path.with_name(path.name + suffix)).st_size
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return (
+                f"{shares} and its {suffix} cannot be checked ({type(exc).__name__}), "
+                "so the store was not opened"
+            )
+        if size > 0:
+            return (
+                f"{shares} and has a {size}-byte {suffix} beside it: SQLite would replay "
+                "that log into the shared file, which a hard-link copy of a live root "
+                "does to the live store, so the store was not opened. If this is a copy, "
+                "delete the copy's names; never open it"
+            )
+    return None
 
 
 def _finite(value: object, what: str) -> float:

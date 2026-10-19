@@ -151,7 +151,7 @@ from store import (  # noqa: E402
     EventStore,
     StoreError,
 )
-from store.paths import confine, sidecar_problem, validated_root  # noqa: E402
+from store.paths import confine, kind_of, sidecar_problem, validated_root  # noqa: E402
 
 #: Where backups live: a sibling of the state they copy, inside the same
 #: gitignored root, so a backup can never be the thing that commits evidence.
@@ -602,6 +602,29 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
     return problems
 
 
+def _special_store(db: Path, *, what: str) -> str | None:
+    """Why ``db`` is present but is not a file a store could be, or ``None``.
+
+    ``None`` for absent and for a regular file, which the callers' own
+    ``is_file()`` checks then handle. Without this, ``is_file()`` read a FIFO,
+    a directory or a socket at the store path as no store at all, and under
+    ``--verify-restore`` that sent an operator back to step 4, whose ``cp -a``
+    onto a FIFO blocks (measured; found by independent review).
+    """
+    try:
+        found = os.lstat(db)
+    except OSError:
+        return None
+    if stat.S_ISREG(found.st_mode) or stat.S_ISLNK(found.st_mode):
+        # A symlink is the path walk's to name, and every caller runs it first.
+        return None
+    return (
+        f"{what} is {kind_of(found.st_mode)}, not a regular file, so it was not opened. "
+        "Move it out of the root (mv) and keep it for investigation; nothing copies "
+        "onto it"
+    )
+
+
 def _same_file(left: Path, right: Path) -> bool:
     """Are these two names one file? ``False`` when either cannot be looked up."""
     try:
@@ -818,6 +841,9 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
         # real one, so there is no safe way to proceed without it.
         raise StoreError(unsafe)
     source_db = root / EVENTS_SUBDIR / DEFAULT_FILENAME
+    special = _special_store(source_db, what=f"the live store {source_db}")
+    if special is not None:
+        raise StoreError(special)
     if not source_db.is_file():
         raise StoreError(
             f"no event store at {source_db}; refusing to write a backup that "
@@ -1317,6 +1343,8 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     db = directory / str(store_entry["path"]) if store_entry["path"] else None
     if db is None:
         pass
+    elif (special := _special_store(db, what=str(store_entry["path"]))) is not None:
+        problems.append(special)
     elif not db.is_file():
         problems.append(f"{store_entry['path']} is missing")
     else:
@@ -1498,6 +1526,8 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # report with a bare error (found by independent review); and SQLite
         # looks for the sidecars beside the target, not beside the link.
         problems.append(live_path)
+    elif (special := _special_store(db, what=f"the live store {db}")) is not None:
+        problems.append(special)
     elif not db.is_file():
         problems.append(
             f"no store at {db}: the restore did not put one there, and this check will "

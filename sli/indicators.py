@@ -98,6 +98,31 @@ def _store_path(root: Path) -> Path:
     return root / EVENTS_SUBDIR / DEFAULT_FILENAME
 
 
+def _no_store(root: Path) -> str | None:
+    """Why there is no store file to measure, or ``None`` when something is there.
+
+    The guard exists so a probe never creates a store, which ``EventStore.open``
+    does for an absent one, so only absence belongs here. It used ``is_file()``,
+    which also read a FIFO, a directory or a socket at the database path as
+    absent: measured, all five store indicators said "no event store" while the
+    collector, on the same tree, said the store "is a FIFO, not a regular file"
+    (found by independent review). So anything present goes to
+    ``EventStore.open``, whose refusal names it, as a symlink always did, since
+    ``is_file()`` follows one. One ``lstat``, and an error other than absence is
+    not read as absence.
+    """
+    path = _store_path(root)
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return f"no event store at {path.relative_to(root)}"
+    except OSError as exc:
+        return (
+            f"the event store at {path.relative_to(root)} cannot be checked ({type(exc).__name__})"
+        )
+    return None
+
+
 def _high_water_mark(root: Path) -> tuple[float | None, str | None]:
     """The newest ``ingested_at`` in the store, or a reason there is none.
 
@@ -105,12 +130,16 @@ def _high_water_mark(root: Path) -> tuple[float | None, str | None]:
     indicators so the store is opened once per question rather than three
     times with three slightly different existence checks.
     """
-    path = _store_path(root)
-    if not path.is_file():
-        return None, f"no event store at {path.relative_to(root)}"
+    missing = _no_store(root)
+    if missing is not None:
+        return None, missing
     try:
         with EventStore.open(root) as store:
             mark = store.high_water_mark()
+    except StorePathError as exc:
+        # With its message, as store-intact and store-readable give it: the class
+        # name alone does not say which file to look at (found by review).
+        return None, f"the event store could not be opened ({type(exc).__name__}): {exc}"
     except (StoreError, OSError) as exc:
         return None, f"the event store could not be opened ({type(exc).__name__})"
     if mark is None:
@@ -273,9 +302,9 @@ def measure_detection_backlog(root: Path, now: float) -> Measurement:
     breach out of retention working.
     """
     del now
-    path = _store_path(root)
-    if not path.is_file():
-        return Measurement(None, f"no event store at {path.relative_to(root)}")
+    missing = _no_store(root)
+    if missing is not None:
+        return Measurement(None, missing)
     try:
         cursor = load_cursor(cursor_path(root))
     except (CursorError, OSError) as exc:
@@ -293,6 +322,10 @@ def measure_detection_backlog(root: Path, now: float) -> Measurement:
             # disagree about which store they measured.
             mark = store.high_water_mark()
             pending = len(store.query(spec))
+    except StorePathError as exc:
+        return Measurement(
+            None, f"the event store could not be queried ({type(exc).__name__}): {exc}"
+        )
     except (StoreError, OSError) as exc:
         return Measurement(None, f"the event store could not be queried ({type(exc).__name__})")
     if cursor is not None and mark is not None and mark < cursor.ingested_at:
@@ -340,9 +373,9 @@ def measure_store_intact(root: Path, now: float) -> Measurement:
     ``EventStore.verify_integrity``.
     """
     del now
-    path = _store_path(root)
-    if not path.is_file():
-        return Measurement(None, f"no event store at {path.relative_to(root)}")
+    missing = _no_store(root)
+    if missing is not None:
+        return Measurement(None, missing)
     try:
         with EventStore.open(root) as store:
             store.verify_integrity()
@@ -396,9 +429,9 @@ def measure_store_readable(root: Path, now: float) -> Measurement:
     pruned.
     """
     del now
-    path = _store_path(root)
-    if not path.is_file():
-        return Measurement(None, f"no event store at {path.relative_to(root)}")
+    missing = _no_store(root)
+    if missing is not None:
+        return Measurement(None, missing)
     try:
         with EventStore.open(root) as store:
             newest = store.query(Query(limit=READABILITY_SAMPLE))

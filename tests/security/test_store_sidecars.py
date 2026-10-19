@@ -14,8 +14,9 @@ while every other scheduled entry point that opens the live store went through
 - a ``-shm`` hard-linked to a file outside the root left that file 65536 -> 32768 bytes of
   WAL index and mode 0o644 -> 0o600 at exit 0, and the ``-shm`` name was unlinked on close,
   so nothing in the tree showed it; a hard-linked ``-wal`` was chmodded the same way;
-- a symlinked, directory or FIFO sidecar raised a bare ``OperationalError``, or (a
-  directory ``-shm``, a FIFO ``-wal``) opened without complaint;
+- a symlinked, directory or FIFO sidecar mostly raised a bare ``OperationalError``; a
+  directory ``-shm`` (for a reader), a FIFO ``-wal`` and a dangling-symlink ``-journal``
+  opened without complaint;
 - with the refusal in place and ``sli/`` unchanged, ``store-intact`` and
   ``store-readable`` graded the refusal BREACHED 0.0, "the store's database is damaged".
 
@@ -30,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -227,7 +229,6 @@ def test_open_refuses_a_sidecar_sqlite_would_block_on_or_write_through(
     assert _kind(side) == planted, "the open replaced or removed the planted sidecar"
     assert _fingerprint(db) == store_before, "the store changed under a refused open"
     assert _fingerprint(victim) == victim_before, "the victim was written or chmodded"
-    assert not (tmp_path / "nowhere").exists(), "the open created a dangling link's target"
     assert not any(other.exists() for other in others), "the refused open created a sidecar"
 
 
@@ -275,27 +276,15 @@ def test_a_database_that_cannot_be_stated_is_refused_not_taken_as_absent(
 
 
 @pytest.mark.security
-@pytest.mark.parametrize("suffix", _SUFFIXES)
-@pytest.mark.parametrize("shape", _SHAPES)
-def test_the_store_helper_says_exactly_what_run_backup_says(
-    tmp_path: Path, suffix: str, shape: str
-) -> None:
+def test_run_backup_imports_the_store_helper() -> None:
     """``store.paths.sidecar_problem`` is ``run_backup``'s former ``_sidecar_problem``
     moved down a layer, and ``docs/RESTORE.md``'s findings table quotes its
     sentences, so ``run_backup`` imports this one rather than keeping a copy that
-    could drift from it."""
+    could drift from it. Its wording is pinned by every refusal test above."""
     from scripts import run_backup
 
-    db = tmp_path / "events.sqlite3"
-    db.write_bytes(b"x")
-    victim = _victim(tmp_path)
-    _plant(db.with_name(db.name + suffix), shape, victim)
-    what = f"the live store {db}"
-
-    moved = store.paths.sidecar_problem(db, what=what)
-
-    assert moved is not None and _named(suffix, shape, victim) in moved, moved
     assert run_backup.sidecar_problem is store.paths.sidecar_problem
+    assert not hasattr(run_backup, "_sidecar_problem")
 
 
 @pytest.mark.security
@@ -360,10 +349,11 @@ def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.Mo
 
 @pytest.mark.security
 def test_a_database_with_a_second_hard_link_is_still_opened(tmp_path: Path) -> None:
-    """Deliberately not refused. A hard-link copy of the tree (``cp -al``, ``rsync
-    --link-dest``, rsnapshot) gives the live database a second name for as long as the
-    copy exists, and refusing it would fail every scheduled pass. A control, so it is
-    green before and after the fix: what it pins is the absence of a false alarm."""
+    """Deliberately not refused on its own. A hard-link snapshot farm of ``data/backups``
+    gives every backup's store a second name, and a hard-link copy of the tree (``cp -al``,
+    ``ln``) gives the live one a second name for as long as the copy exists; refusing that
+    would fail every ``--verify`` or every scheduled pass. A control, so it is green before
+    and after the fix: what it pins is the absence of a false alarm."""
     root, db = _seed(tmp_path)
     snapshot = tmp_path / "snapshot.sqlite3"
     os.link(db, snapshot)
@@ -436,7 +426,8 @@ def test_every_cli_that_opens_the_live_store_refuses_at_exit_1(
         for objective in _STORE_INDICATORS:
             assert indicators[objective]["status"] == "unknown", indicators[objective]
             assert "StoreSidecarError" in indicators[objective]["detail"], indicators[objective]
-        for objective in ("store-intact", "store-readable"):
+            # All five, not only the two that first carried it (found by review): the
+            # class name alone does not say which file to look at.
             assert named in indicators[objective]["detail"], indicators[objective]
     else:
         assert f"error: the event store {db} cannot be opened safely" in result.stderr, (
@@ -481,5 +472,181 @@ def test_a_store_open_refuses_is_unmeasurable_not_damaged(tmp_path: Path, plant:
         assert indicator.status.value == "unknown"
         assert indicator.detail.startswith("the store could not be opened ("), indicator.detail
         assert reason in indicator.detail, indicator.detail
+    for objective in ("ingest-freshness", "detection-lag", "detection-backlog"):
+        assert indicators[objective].value is None, indicators[objective].detail
+        assert reason in indicators[objective].detail, indicators[objective].detail
     assert _fingerprint(victim) == before
     assert issubclass(StoreSidecarError, StorePathError)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(("shape", "kind"), [("fifo", "a FIFO"), ("directory", "a directory")])
+def test_a_special_file_at_the_store_path_is_named_by_every_store_indicator(
+    tmp_path: Path, shape: str, kind: str
+) -> None:
+    """Measured before, found by review: an ``is_file()`` guard ahead of the open read a
+    FIFO or a directory at the database path as "no event store" in all five indicators,
+    while the collector on the same tree named it. Still UNKNOWN, now with the reason."""
+    root = tmp_path / "lab"
+    db = root / _STORE
+    db.parent.mkdir(parents=True)
+    _plant(db, shape, _victim(tmp_path))
+
+    indicators = {item.objective.id: item for item in measure(root, now=time.time()).indicators}
+
+    for objective in _STORE_INDICATORS:
+        indicator = indicators[objective]
+        assert indicator.value is None, f"{objective}: {indicator.status.value} {indicator.detail}"
+        assert f"is {kind}, not a regular file" in indicator.detail, indicator.detail
+        assert "no event store" not in indicator.detail, indicator.detail
+
+
+@pytest.mark.security
+def test_run_backup_names_a_special_file_at_the_store_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The take said "no event store", ``--verify`` said the store "is missing", and
+    ``--verify-restore`` said "the restore did not put one there", whose remedy is
+    repeating step 4 — and ``cp -a`` onto a FIFO blocks (measured; found by review)."""
+    from scripts.run_backup import main as backup_main
+
+    root, db = _seed(tmp_path)
+    assert backup_main(["--root", str(root), "--name", "probe", "--caller", "test"]) == 0
+    backup = root / "data" / "backups" / "probe"
+    db.rename(tmp_path / "aside.sqlite3")
+    os.mkfifo(db, 0o600)
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--name", "second", "--caller", "test"]) == 1
+    assert f"the live store {db} is a FIFO, not a regular file" in capsys.readouterr().err
+
+    argv = ["--root", str(root), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    out = capsys.readouterr().out
+    assert f"the live store {db} is a FIFO, not a regular file" in out, out
+    assert "no store at" not in out, out
+
+    (backup / _STORE).unlink()
+    os.mkfifo(backup / _STORE, 0o600)
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 1
+    out = capsys.readouterr().out
+    assert f"{_STORE} is a FIFO, not a regular file" in out, out
+
+
+# -- a database file with a second name ----------------------------------------------------
+
+
+def _link_tree(source: Path, target: Path) -> None:
+    """``cp -al``: the same directories, every file a hard link."""
+    for directory, _subdirs, files in os.walk(source):
+        here = target / Path(directory).relative_to(source)
+        here.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            os.link(Path(directory) / name, here / name)
+
+
+def _append(events: EventStore, first: int, count: int) -> None:
+    now = time.time()
+    for index in range(first, first + count):
+        events.append(normalize(_RECORD % index), ingested_at=events.next_stamp(now + index))
+
+
+@pytest.mark.security
+def test_a_hard_link_copy_of_a_live_root_cannot_roll_the_live_store_back(tmp_path: Path) -> None:
+    """Measured before this refusal, found by independent review: a ``cp -al`` of a live
+    root taken while a writer had the store open kept that writer's ``-wal`` under the
+    copy's name, and after a later pass wrote to the live store, one read-only ``SELECT``
+    on the copy replayed that log into the database file both names share — the live store
+    went from 60 events to 40 with ``quick_check`` clean. The copy's sidecars have one
+    link each, so only the database's second name says what the copy is."""
+    root, _db = _seed(tmp_path)
+    copy = tmp_path / "copy"
+    writer = EventStore.open(root)
+    try:
+        _append(writer, 100, 20)
+        _link_tree(root, copy)
+    finally:
+        writer.close()
+    with EventStore.open(root) as later:
+        _append(later, 200, 20)
+        expected = later.count()
+    copied = copy / _STORE
+    copied_wal = copied.with_name(copied.name + "-wal")
+    assert copied.stat().st_nlink == 2, "the premise: the copy shares the database file"
+    assert copied_wal.stat().st_size > 0 and copied_wal.stat().st_nlink == 1, "the premise"
+
+    with pytest.raises(StoreSidecarError, match=r"shares its file with 1 other name and has a"):
+        EventStore.open(copy)
+
+    with EventStore.open(root) as live:
+        assert live.count() == expected == _SEEDED + 40
+        live.verify_integrity()
+
+
+@pytest.mark.security
+def test_an_empty_database_with_a_second_name_is_not_initialised_through_it(
+    tmp_path: Path,
+) -> None:
+    """SQLite initialises an empty file as a new database, in place: measured before this
+    refusal, a 0-byte file outside the root hard-linked in at the database path became a
+    store through its other name (0 -> 61440 bytes, mode 0o644 -> 0o600)."""
+    root = tmp_path / "lab"
+    db = root / _STORE
+    db.parent.mkdir(parents=True)
+    victim = tmp_path / "empty-victim"
+    victim.write_bytes(b"")
+    victim.chmod(0o644)
+    os.link(victim, db)
+    before = _fingerprint(victim)
+
+    with pytest.raises(StoreSidecarError, match=r"is empty and shares its file with 1 other"):
+        EventStore.open(root)
+    assert _fingerprint(victim) == before
+
+
+_CRASH = (
+    "import os\nfrom pathlib import Path\nfrom ingest import normalize\n"
+    "from store import EventStore\n"
+    "events = EventStore.open(Path({root!r}))\n"
+    "for index in range(300, 310):\n"
+    "    events.append(normalize({record!r} % index), ingested_at=events.next_stamp(1.0e9 + index))\n"
+    "os.kill(os.getpid(), 9)\n"
+)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("writer", ["open", "crashed"])
+def test_deleting_a_hard_link_copy_of_the_live_root_is_the_remedy(
+    tmp_path: Path, writer: str
+) -> None:
+    """``docs/RESTORE.md``'s remedy for a live sidecar with two links, measured both ways:
+    with the writer still open, and after it was killed with the committed events only in
+    its ``-wal``, when no writer is left to unlink the sidecars and waiting fixes nothing.
+    A control on the refusal's other side: deleting the copy, and nothing else, lets the
+    store open with every committed event."""
+    root, db = _seed(tmp_path)
+    copy = tmp_path / "copy"
+    holder: EventStore | None = None
+    if writer == "open":
+        holder = EventStore.open(root)
+        _append(holder, 300, 10)
+    else:
+        code = _CRASH.format(root=str(root), record=_RECORD)
+        result = _child(code, "the crashing writer")
+        assert result.returncode == -9, result.stderr[-400:]
+    try:
+        wal = db.with_name(db.name + "-wal")
+        assert wal.stat().st_size > 0, "the premise: committed events are in the -wal"
+        _link_tree(root, copy)
+        with pytest.raises(StoreSidecarError, match=r"its -wal \(\d+ bytes\) has 2 links"):
+            EventStore.open(root)
+
+        shutil.rmtree(copy)
+
+        with EventStore.open(root) as events:
+            assert events.count() == _SEEDED + 10
+    finally:
+        if holder is not None:
+            holder.close()

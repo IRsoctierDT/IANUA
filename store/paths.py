@@ -301,11 +301,12 @@ def sidecar_problem(db: Path, *, what: str) -> str | None:
       was left in the tree to show it had happened. A hard-linked ``-wal`` was
       chmodded the same way through an open alone, and the collector, which
       writes, overwrote it with WAL frames;
-    - a symlinked or directory ``-wal``, ``-journal`` or ``-shm`` raised a bare
-      ``OperationalError`` ("unable to open database file", "disk I/O
+    - a symlinked or directory ``-wal``, ``-journal`` or ``-shm`` mostly raised
+      a bare ``OperationalError`` ("unable to open database file", "disk I/O
       error"), which the collector reported *against the log source* it
-      happened to be reading. A directory ``-shm`` opened without error for a
-      reader and left a new ``-wal`` behind.
+      happened to be reading. Two did not, and opened without a word (found by
+      review): a dangling-symlink ``-journal``, and a directory ``-shm`` for a
+      reader, which left a new ``-wal`` behind.
 
     A hard link is a regular file, which is why the link count is checked
     with the type, and why this is one ``lstat`` per name. It is a check on
