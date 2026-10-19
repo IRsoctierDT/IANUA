@@ -217,6 +217,22 @@ COPIED_TREES: tuple[Path, ...] = (Path("data") / "reports",)
 #: ``AUDIT_HMAC_KEY`` and the head signature does.
 CHAIN_FILES: tuple[Path, ...] = COPIED_FILES[:4]
 
+#: The detached head signature beside each chain (``AuditLogger``'s
+#: ``<chain>.sig``), mapped to the chain it signs. Copied and declared like any
+#: other sibling, but neither append-only nor stable: every signed ``record()``
+#: replaces it whole. See :func:`_verify_restore` for how it is compared instead.
+HEAD_SIGNATURES: dict[Path, Path] = {
+    chain.with_name(chain.name + ".sig"): chain for chain in CHAIN_FILES
+}
+
+#: ``AuditLogger``'s lock sidecar beside each declared file. Never copied:
+#: ``docs/RESTORE.md`` has always said ``*.lock`` does not land in a backup, and
+#: :func:`_copied_paths`' sibling rule copied ``audit.log.lock`` anyway once the
+#: logger gained one. The lock is the open descriptor, not the file.
+LOCK_SIDECARS: frozenset[Path] = frozenset(
+    declared.with_name(declared.name + ".lock") for declared in COPIED_FILES
+)
+
 #: Never copied, and the reason is load-bearing. See the module docstring.
 EXCLUDED: dict[str, str] = {
     "data/collect/offsets.json": (
@@ -402,21 +418,47 @@ def _is_append_only(relative: Path) -> bool:
     legitimately grow hides a rewrite, while demanding equality of something
     that does grow produces a loud, obvious finding an operator can read.
 
-    Append-only means the four hash chains in :data:`COPIED_FILES`, the
-    evidence stream beside them, and their rotation siblings — ``audit.log.1``,
-    a checkpoint, a head signature — which is the same rule
-    :func:`_copied_paths` uses to pick them up, expressed once so the backup
-    side and the verify side cannot disagree about what may grow.
+    **Append-only means the five streams in :data:`COPIED_FILES` themselves,
+    and nothing beside them.** This used to grant growth to every sibling whose
+    name starts with a declared one — "``audit.log.1``, a checkpoint, a head
+    signature" — on the theory that it was the rule :func:`_copied_paths` copies
+    them by, so the two sides could not disagree. But *which files to copy* and
+    *which files may grow* are different questions, and none of the three grows:
 
-    ``data/reports/`` is not append-only: a report is rewritten whole, and
-    within the step-4-to-step-5 window of :func:`_verify_restore` nothing
-    writes one at all.
+    * a rotated archive is frozen once ``AuditLogger._rotate`` renames it;
+    * a checkpoint is rewritten whole, and only by ``_prune``, which nothing runs
+      within the step-4-to-step-5 window of :func:`_verify_restore`;
+    * a head signature is rewritten whole by every signed ``record()`` — see
+      :data:`HEAD_SIGNATURES` and :func:`_verify_restore` for how it is judged.
+
+    Measured on the old rule: with ``AUDIT_HMAC_KEY`` set, **every correct
+    restore failed** ``REWRITTEN: data/events/audit.log.sig``, because this
+    command's own gate decision re-signs that chain before the check reads it;
+    and blank lines appended to a rotated archive, or whitespace to a
+    checkpoint, verified green, since chain verification skips blank lines and
+    ``json.loads`` accepts trailing whitespace. The two sides still cannot
+    disagree in the direction that matters: every file a backup copies has a
+    manifest entry, and every entry is compared, strictly unless named here.
+
+    ``data/reports/`` is not append-only either: a report is rewritten whole, and
+    within that window nothing writes one at all.
     """
-    if relative in COPIED_FILES:
-        return True
-    return any(
-        relative.parent == declared.parent and relative.name.startswith(declared.name)
-        for declared in COPIED_FILES
+    return relative in COPIED_FILES
+
+
+def _signature_judged(state: object) -> bool:
+    """Did :func:`_verify_chains` judge this chain's head signature under a key?
+
+    ``unsigned`` is what it reports when no verifier is configured, and then
+    nothing has looked at the signature at all. Every other status means a key
+    was in hand, and anything but ``valid`` (or ``empty``, nothing to sign) has
+    already made the chain a finding. A chain absent from the live root has no
+    status, so its signature is not judged either.
+    """
+    return (
+        isinstance(state, dict)
+        and state.get("present") is True
+        and state.get("signature") != "unsigned"
     )
 
 
@@ -487,7 +529,10 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
         if base.is_dir():
             candidates.extend(sorted(child.relative_to(root) for child in base.iterdir()))
     # Rotated archives, checkpoints and head signatures sit beside their
-    # chain; they are part of the same evidence and are copied with it.
+    # chain; they are part of the same evidence and are copied with it. The
+    # lock sidecar sits there too and is not evidence (see LOCK_SIDECARS). This
+    # rule says what to COPY and nothing about what may grow: _is_append_only
+    # answers that, and the two questions have different answers.
     for relative in COPIED_FILES:
         parent = (root / relative).parent
         if not parent.is_dir() or parent.is_symlink():
@@ -497,7 +542,9 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
             sorted(
                 child.relative_to(root)
                 for child in parent.iterdir()
-                if child.name != stem and child.name.startswith(stem)
+                if child.name != stem
+                and child.name.startswith(stem)
+                and child.relative_to(root) not in LOCK_SIDECARS
             )
         )
 
@@ -1253,6 +1300,14 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     :func:`_require_format` with the recourse named, and a v2 manifest missing
     any attestation field is refused by :func:`_attestation_gaps` rather than
     compared on what is left.
+
+    **A head signature is judged by its chain, not by its bytes, when a key is
+    set** — and that is a fix, not a relaxation. The old classifier
+    prefix-compared it, so with ``AUDIT_HMAC_KEY`` set this gate failed every
+    correct restore: the gate decision re-signs ``data/events/audit.log`` before
+    the comparison reads its ``.sig``. The signature must still be present, and
+    :func:`_verify_chains` must find it valid for the current head. With no key
+    it is compared exactly, which is what still catches a tampered one then.
     """
     manifest = _load_manifest(backup)
 
@@ -1401,6 +1456,16 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 "mark moved without the count, which no restore step does"
             )
 
+    # Chains before the declared files, because how a head signature is compared
+    # below depends on whether its chain's signature was judged here. Nothing
+    # writes between the two, so the order changes no verdict.
+    chains = _verify_chains(root)
+    judged_signatures = {
+        signature
+        for signature, chain in HEAD_SIGNATURES.items()
+        if _signature_judged(chains.get(str(chain)))
+    }
+
     # Declared files. Prefix comparison for the append-only streams only; exact
     # equality for everything else. See _is_append_only for why the allow-list
     # is on the growing side.
@@ -1417,6 +1482,17 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         if not path.is_file():
             problems.append(f"{entry['path']} is missing from the live root")
             continue
+        if entry_path in judged_signatures:
+            # Present, as its manifest entry requires, and judged by what it means
+            # in the chain findings below: with a key in hand, _verify_chains
+            # requires the signature to verify AND to cover the current head, or
+            # it reports the chain broken. Its bytes cannot be compared, because
+            # every signed record() replaces it whole — and this command's own
+            # gate decision has done exactly that to data/events/audit.log.sig
+            # before this runs, which failed every correct signed restore as
+            # REWRITTEN. With no key nothing re-signs one, so it falls through to
+            # the exact comparison, which is stricter than the prefix it used to get.
+            continue
         live_size = path.stat().st_size
         if _is_append_only(entry_path):
             if live_size < backed_up:
@@ -1432,9 +1508,10 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         elif live_size != backed_up:
             problems.append(
                 f"ALTERED: {entry['path']} is {live_size} bytes; the backup holds "
-                f"{backed_up}. This is not an append-only stream — a report is rewritten "
-                "whole and nothing writes one during this window — so any size difference "
-                "means the live copy is not the backed-up one"
+                f"{backed_up}. Only the declared streams may grow, and nothing in this "
+                "window rewrites anything else — a report, a rotated archive, a checkpoint, "
+                "or, with no key set, a head signature — so any size difference means the "
+                "live copy is not the backed-up one"
             )
         elif _digest_file(path) != entry["sha256"]:
             problems.append(
@@ -1478,8 +1555,7 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 f"{why.split(':')[0]}"
             )
 
-    # Chains: entries may only GROW, and must still verify.
-    chains = _verify_chains(root)
+    # Chains (verified above): entries may only GROW, and must still verify.
     for name, state in sorted(chains.items()):
         if not isinstance(state, dict):
             continue
@@ -1834,8 +1910,9 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
                 say(
                     f"restore verified: {payload['root']} holds the "
                     f"{payload['events']} event(s) {payload['backup']} attested, every "
-                    "declared file carries the backed-up history as a prefix, and every "
-                    "chain still verifies."
+                    "declared stream carries the backed-up history as a prefix, every "
+                    "other declared file is unchanged, and every chain still verifies "
+                    "(head signatures included, when a key is set)."
                 )
                 # Said on success, not only in the docs, because a green line
                 # here is exactly what an operator will quote as justification

@@ -98,7 +98,7 @@ What does not, and will not:
 |---|---|
 | `data/collect/offsets.json` | restoring one newer than the store is unrecoverable |
 | `data/pipeline/cursor.json` | never needs restoring; re-correlating is at-least-once |
-| `*.lock` | the lock is the open descriptor, not the file |
+| `*.lock` | the lock is the open descriptor, not the file — including each audit chain's `audit.log.lock`, which earlier versions copied by mistake (a restore of such a backup still verifies) |
 
 The backup's own integrity is anchored in the audit chain: the record it appends carries the
 manifest's sha256, and the chain is hash-linked, so a manifest edited afterwards no longer
@@ -138,8 +138,9 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `LOSS` | fewer events **or fewer observables** than attested — **the dangerous one**; the copy is incomplete |
 | `SUBSTITUTED` | the attested count exactly, but different rows — a different set of events, **or the same number of observables with different values** (the observables digest differs). Not this backup |
 | `ADDED` | more events or observables than attested. Re-collection (step 5) is the expected cause — but a count plus a whole-set digest **cannot tell re-collection from substitution plus addition**, since the digest necessarily differs once rows were added. If you have **not** run step 5, treat this as `SUBSTITUTED` |
-| `TRUNCATED` / `REWRITTEN` | a declared **append-only** file shrank, or its history was replaced rather than appended to |
-| `ALTERED` | a declared file that is **not** append-only — a report — differs in size or digest. A report is rewritten whole and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
+| `TRUNCATED` / `REWRITTEN` | a declared **append-only stream** — one of the four `audit.log` chains or `evidence.jsonl`, never a file beside one — shrank, or its history was replaced rather than appended to |
+| `ALTERED` | a declared file that is **not** an append-only stream — a report, a rotated archive, a checkpoint, or (with no key set) a head signature — differs in size or digest. None of them grows, and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
+| `…: chain does not verify: head signature …` | with a key set, a chain's head signature is missing, forged (`invalid`) or covers an older head (`stale`). Run the gate with the key the chains were signed with; a different one reads as `invalid` on every signed chain |
 | `UNDECLARED` | a file is in the live root that the manifest never listed, **or `data/reports` is itself a symlink**. Step 4's `cp -a` **merges**, so this is a file from before the restore that outlived it. **Not** store evidence loss — remove it, then re-run |
 | *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
 | `has no '…'` / `is not an integer` / `is not a string` / *store was not compared* | the manifest's attestation lacks a field (every one is required: `events`, `observables`, `digest`, `observables_digest`, `high_water`, `schema_version`) or carries one of the wrong type (counts and the schema version must be integers, digests strings, the mark a number or null — a string `"40"` is refused, not coerced). The store is **not** compared on what is left — a verdict on part of the evidence is not a verdict |
@@ -154,6 +155,16 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `cannot be opened safely: its -shm (N bytes) has 2 links` | a sidecar that shares its file with another name. SQLite writes its WAL index through a `-shm`, so whatever else is linked to it is overwritten — measured, a backup's own manifest and the live store — and the store was **not opened**. A hard-link copy of a tree that held sidecars makes one benignly (`cp -al`, `rsync --link-dest`, rsnapshot of a backup a killed or concurrent `--verify` left them in, or of a live root while a writer was open). Find the other names with `find <mount> -xdev -samefile <sidecar>`: rotation snapshots are benign; a manifest, a store, an audit log or anything you cannot explain is tampering. In a **backup** (`--verify`), `rm` the sidecar names, which removes the names and never the linked content, then re-run; the re-run still checks the store against the manifest. Under a **take**, never delete a live `-wal`, `-journal` or `-shm`: a `-wal` holds committed events not yet in the store file. If the other name is your own copy, delete the copy, or wait for the writer to close (SQLite then unlinks the live sidecars), and retry. Under **`--verify-restore`**, a writer with the restored store open means a pass ran during or after step 4, and waiting does not fix it: follow the lock-held sequence in the row above |
 | `contains a NUL byte` / `cannot be checked (…)` | a manifest path the verifier could not look up, reported beside the other findings rather than replacing the report. Read the name in parentheses: `contains a NUL byte`, `(UnicodeEncodeError)` (a lone surrogate) or `(OSError)` (an overlong name) mean a damaged or edited manifest. `(PermissionError)` means a directory on the path is not searchable by this account, so the manifest is probably fine: check the backup's or the live root's modes and ownership first |
 | `the live store data/events/events.sqlite3 passes through the symlink …` | under `--verify-restore`, the live store file itself is a symlink, so it was not opened (a symlinked `data/` or `data/events` is refused earlier, at exit `2`: see "Taking a backup"). Step 4's `cp -a` wrote through the link, so its target outside the root now holds the backup's store and not what it held before. Repeating step 4 leaves the link in place, and this finding with it. Remove the link (`test -L <root>/data/events/events.sqlite3 && rm <root>/data/events/events.sqlite3`), repeat step 4, then re-run 4b |
+
+**Why a head signature is checked by its chain and not by its bytes.** Every signed
+`record()` replaces `audit.log.sig` whole, and this command's own gate decision re-signs
+`data/events/audit.log` before the comparison runs. Measured on the earlier rule, which
+prefix-compared it like a stream: with `AUDIT_HMAC_KEY` set, **every correct restore
+failed** with `REWRITTEN: data/events/audit.log.sig`. The signature must still be present,
+and with the key it must verify and cover the current head, or the chain is reported broken.
+That is what it means, so that is what is checked. With no key nothing re-signs it, so it is
+compared exactly instead. That keeps the one check that still catches a forged signature
+when no key is available to judge it.
 
 **Why `LOSS` covers observables separately.** The completeness digest is a sha256 over the
 `event_id` set only, so a restore that loses rows from `observables` and none from `events`
