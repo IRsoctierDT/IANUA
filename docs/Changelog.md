@@ -220,17 +220,31 @@ All notable changes to this project. Versions correspond to git tags.
   both the run and the evidence trail instead of a traceback (both found by review). Measured
   red before on `main`: 19 of the 22 new cases in `tests/security/test_audit_writer_signer.py`,
   including every writer end to end and every writer's refusal.
-- **The egress allow-list's reasons no longer depend on the Python patch release.** For an
-  IPv4-mapped address (`::ffff:0.0.0.0`, `::ffff:169.254.169.254`), `is_unspecified`,
-  `is_link_local` and `is_multicast` read False on 3.12.3 (Ubuntu 24.04's system Python) and
-  the IPv4 class on 3.11.17 and 3.13.16. Every such address was refused either way, but on
-  3.12.3 as "IPv4-mapped" rather than for what it is. `parse_address` now classifies the IPv4
-  address a mapped form carries. A new test installs 3.12.3's semantics on any interpreter,
-  so CI catches this too.
 - **A symlink-loop corpus root reads "cannot be resolved" on Python 3.13 as on 3.11 and
   3.12.** On 3.13, `Path.resolve()` no longer raises on a loop and `is_dir()` swallows the
   `ELOOP`, so the root read "not a directory". The root now asks `stat()` for `ELOOP`
   directly.
+- **The egress allow-list's mapped-address refusals no longer depend on the CPython patch
+  release.** `tests/security/test_egress_allowlist.py` was red on CPython 3.12.3, Ubuntu
+  24.04's system Python and inside `requires-python`, so a contributor running §7 locally
+  got a failing suite while CI, on the latest 3.12 patch, stayed green. Measured:
+  `is_unspecified` for `::ffff:0.0.0.0`, `is_link_local` for `::ffff:169.254.169.254` and
+  `is_multicast` for `::ffff:224.0.0.1` are True on 3.11.17 and 3.13.16 and **False on
+  3.12.3**, which does not delegate them to the mapped IPv4 address. Every mapped address
+  was still refused, by the IPv4-mapped rule, so the product was safe. On that interpreter,
+  though, the metadata address written as `::ffff:169.254.169.254` rested on that one rule,
+  and `parse_address`'s docstring claimed it was caught as link-local "(measured)".
+  `parse_address` now reads the address a mapped form denotes before its unspecified,
+  multicast, broadcast and link-local refusals, so each has one reason everywhere and the
+  IPv4-mapped rule is a second layer on every interpreter. The set of refused addresses is
+  unchanged. The test's premise now reads the denoted address too, the shape test pins its
+  reasons instead of ignoring them, and a new case reproduces 3.12.3's non-delegating
+  properties with stand-ins (checked against the real 3.12.3: no disagreements over 15
+  addresses). That case is red against the old code on 3.11, 3.12.3 and 3.13, so CI now
+  guards an interpreter it does not run. AGENTS.md §5 (both the stage 7 listener bullet
+  and the lab-host bullet) and DESIGN.md boundary 15 carried the same measured claim and
+  now say where it holds. The listener's future bind refusal is told it owes the same
+  unwrap.
 - **`--verify-restore` failed every correct restore whenever `AUDIT_HMAC_KEY` was set.**
   `_is_append_only` granted growth to every file whose name starts with a declared stream's,
   so the head signature `audit.log.sig` was prefix-compared. But every signed `record()`
