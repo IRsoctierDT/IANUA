@@ -17,6 +17,7 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -686,7 +687,12 @@ def test_a_root_that_is_a_backup_is_refused_before_anything_is_written(
     # The argued backup is a different one, so only the "is a backup" check can fire.
     argv += ["--name", "inner"] if mode == "take" else [mode, str(other)]
     assert backup_main(argv) == 2
-    assert f"is the backup {Path(os.path.realpath(backup))}" in capsys.readouterr().err
+    resolved = Path(os.path.realpath(backup))
+    err = capsys.readouterr().err
+    if where == "the-backup":
+        assert f"holds a backup manifest ({resolved / 'manifest.json'})" in err, err
+    else:
+        assert f"lies inside the backup {resolved}" in err, err
     assert sorted(str(p.relative_to(backup)) for p in backup.rglob("*")) == before
     assert _fingerprint(backup / _CHAIN) == chain
 
@@ -844,7 +850,9 @@ def test_a_file_that_changes_while_it_is_read_is_named_as_such(
 @pytest.mark.security
 def test_a_symlinked_manifest_is_named(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root, (backup,) = _source(tmp_path)
-    real = tmp_path / "manifest.json"
+    # Not in an ancestor of the root: a backup manifest there makes the root a backup's.
+    real = tmp_path / "elsewhere" / "manifest.json"
+    real.parent.mkdir()
     (backup / "manifest.json").rename(real)
     (backup / "manifest.json").symlink_to(real)
     capsys.readouterr()
@@ -1104,7 +1112,10 @@ def test_a_chain_unsigned_when_the_backup_was_taken_is_named_as_such_at_4b(
     argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
     assert backup_main(argv) == 1
     out = capsys.readouterr().out
-    assert f"{_COLLECT_CHAIN}: the backed-up chain was not signed when the backup was taken" in out
+    assert (
+        f"{_COLLECT_CHAIN}: the backed-up chain carries no head signature, and its manifest "
+        "records it unsigned when the backup was taken (signature 'missing')"
+    ) in out, out
     assert f"{_COLLECT_CHAIN}: the backed-up chain does not authenticate" not in out
 
 
@@ -1231,3 +1242,302 @@ def test_a_store_path_the_slis_cannot_check_is_not_read_as_absent(
     for objective in ("ingest-freshness", "detection-lag", "detection-backlog"):
         assert report[objective].value is None, report[objective].detail
         assert "cannot be checked (PermissionError)" in report[objective].detail
+
+
+# -- sixth review: step 4a as printed, moved backups, chains the backup never held ----------
+
+
+def _runbook_step_4a(live_root: Path, kept_base: Path) -> str:
+    """``docs/RESTORE.md`` step 4a exactly as printed, with only its two paths replaced."""
+    text = (_REPO_ROOT / "docs" / "RESTORE.md").read_text(encoding="utf-8")
+    start = text.index("# 4a. SAME-NODE RESTORE ONLY")
+    end = text.index("# 4. Put the state back.", start)
+    body = "\n".join(line for line in text[start:end].splitlines() if not line.startswith("#"))
+    assert "mkdir -m 700" in body and "mv -n" in body, "the premise: this is the step"
+    return body.replace("/srv/ianua-kept", str(kept_base)).replace("/srv/ianua", str(live_root))
+
+
+def _run_bash(script: str) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - bash is on every runner
+        pytest.skip("no bash")
+    return subprocess.run(  # noqa: S603 - fixed program, a script built from the runbook
+        [bash, "-c", script], capture_output=True, text=True, timeout=60, check=False
+    )
+
+
+@pytest.mark.security
+def test_the_runbooks_step_4a_keeps_every_record_and_never_overwrites_what_it_kept(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review, high: step 4a's fixed destination and plain mv overwrote what an
+    earlier run kept, so repeating it, or a later incident on the node, lost every
+    post-backup record; and it skipped data/compliance/evidence.jsonl, which step 4 then
+    replaced. Run here exactly as printed, twice, with the restore between."""
+    if shutil.which("cp") is None:  # pragma: no cover
+        pytest.skip("no cp")
+    root, _backups = _source(tmp_path)
+    evidence = root / "data" / "compliance" / "evidence.jsonl"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text('{"line": "pre"}\n', encoding="utf-8")
+    backup = _take(root, "with-evidence")
+    with evidence.open("a", encoding="utf-8") as handle:
+        handle.write('{"line": "post"}\n')
+    assert backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)]) == 0
+    events_before = (root / _CHAIN).read_bytes()
+    kept_base = tmp_path / "kept"
+
+    first = _run_bash(_runbook_step_4a(root, kept_base))
+    assert first.returncode == 0, first.stdout + first.stderr
+    kept_first = Path(first.stdout.strip().removeprefix("kept in "))
+    assert stat.S_IMODE(kept_first.stat().st_mode) == 0o700
+    assert (kept_first / "events" / "audit.log").read_bytes() == events_before
+    assert '"post"' in (kept_first / "compliance" / "evidence.jsonl").read_text(encoding="utf-8")
+
+    _same_node_restore(root, backup)
+    capsys.readouterr()
+    argv = ["--root", str(root), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 0, capsys.readouterr().out
+
+    time.sleep(1.1)  # the directory is named to the second, and mkdir refuses a reuse
+    second = _run_bash(_runbook_step_4a(root, kept_base))
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert Path(second.stdout.strip().removeprefix("kept in ")) != kept_first
+    assert (kept_first / "events" / "audit.log").read_bytes() == events_before
+    assert '"post"' in (kept_first / "compliance" / "evidence.jsonl").read_text(encoding="utf-8")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["take", "--verify", "--verify-restore"])
+def test_a_root_inside_a_moved_backup_is_refused(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: a backup copied out of data/backups was not recognised, and a pass
+    with --root at its data/ wrote records, locks and directories into it."""
+    _root, (backup,) = _source(tmp_path)
+    moved = tmp_path / "offsite" / "b1"
+    shutil.copytree(backup, moved)
+    before = sorted(str(p.relative_to(moved)) for p in moved.rglob("*"))
+    capsys.readouterr()
+
+    argv = ["--root", str(moved / "data"), "--caller", "test"]
+    argv += ["--name", "x"] if mode == "take" else [mode, str(backup)]
+    assert backup_main(argv) == 2
+    assert f"lies inside the backup {Path(os.path.realpath(moved))}" in capsys.readouterr().err
+    assert sorted(str(p.relative_to(moved)) for p in moved.rglob("*")) == before
+
+
+@pytest.mark.security
+def test_an_unrelated_manifest_above_a_lab_root_is_not_a_backup(tmp_path: Path) -> None:
+    """Found by review: a lab root under a directory holding some other manifest.json was
+    refused in every mode."""
+    parent = tmp_path / "data" / "backups" / "project"
+    parent.mkdir(parents=True)
+    (parent / "manifest.json").write_text('{"name": "some-package"}\n', encoding="utf-8")
+    root = parent / "lab"
+    root.mkdir()
+    _seed(root)
+    assert backup_main(["--root", str(root), "--name", "first", "--caller", "test"]) == 0
+
+
+@pytest.mark.security
+def test_a_lab_root_holding_a_backup_manifest_names_the_file_to_move(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A lab root restored by copying a whole backup directory holds that backup's
+    manifest; the refusal names it, and moving it out is the whole remedy."""
+    _root, (backup,) = _source(tmp_path)
+    live = tmp_path / "live"
+    shutil.copytree(backup, live)
+    capsys.readouterr()
+
+    argv = ["--root", str(live), "--name", "next", "--caller", "test"]
+    assert backup_main(argv) == 2
+    err = capsys.readouterr().err
+    assert f"holds a backup manifest ({Path(os.path.realpath(live)) / 'manifest.json'})" in err
+    assert "move that manifest.json out of it" in err
+    (live / "manifest.json").rename(tmp_path / "kept-manifest.json")
+    assert backup_main(argv) == 0
+
+
+@pytest.mark.security
+def test_a_chain_the_backup_never_held_is_named_whole_and_clears(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: for a chain created after the take, 4b named only its archive, and
+    once that was moved 4b still failed on the chain's own live log."""
+    if shutil.which("cp") is None:  # pragma: no cover
+        pytest.skip("no cp")
+    root, (backup,) = _source(tmp_path)
+    pipeline = AuditLogger(root / "data" / "pipeline" / "audit.log")
+    for index in range(3):
+        pipeline.record(
+            actor="t", action=f"a{index}", action_class="read_only", decision="allow", reason="r"
+        )
+    AuditLogger(root / "data" / "pipeline" / "audit.log", max_bytes=1).apply_retention()
+    pipeline.record(
+        actor="t", action="late", action_class="read_only", decision="allow", reason="r"
+    )
+    _same_node_restore(root, backup)
+    capsys.readouterr()
+
+    argv = ["--root", str(root), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    out = capsys.readouterr().out
+    assert "UNDECLARED: data/pipeline/audit.log is the live log of a chain the backup" in out
+    assert "UNDECLARED: data/pipeline/audit.log.1 is beside the restored" in out
+    assert "chain break" not in out, out
+    kept = tmp_path / "kept"
+    kept.mkdir()
+    for name in ("audit.log", "audit.log.1"):
+        (root / "data" / "pipeline" / name).rename(kept / name)
+    assert backup_main(argv) == 0, capsys.readouterr().out
+
+
+@pytest.mark.security
+def test_a_backup_taken_before_the_key_is_named_unsigned_at_4b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: a backup taken with no key records its chains 'unsigned', and 4b
+    under the key called them edited."""
+    monkeypatch.delenv("AUDIT_HMAC_KEY", raising=False)
+    root = tmp_path / "source"
+    root.mkdir()
+    _seed(root)
+    AuditLogger(root / _COLLECT_CHAIN).record(
+        actor="t", action="pre-key", action_class="read_only", decision="allow", reason="r"
+    )
+    backup = _take(root, "pre-key")
+    live = tmp_path / "live"
+    _restore(backup, live)
+    monkeypatch.setenv("AUDIT_HMAC_KEY", secrets.token_hex(32))
+    capsys.readouterr()
+
+    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    out = capsys.readouterr().out
+    assert "records it unsigned when the backup was taken (signature 'unsigned')" in out, out
+    assert "UNDECLARED: data/events/audit.log.sig" not in out, "the gate's signature is skipped"
+
+
+@pytest.mark.security
+def test_a_signature_stripped_after_the_take_is_not_called_unsigned_at_take(
+    tmp_path: Path, key: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The unsigned-at-take wording applies only where the manifest recorded it so; a
+    chain the take recorded signed and whose signature is gone is the generic finding."""
+    root = tmp_path / "source"
+    root.mkdir()
+    _seed(root)
+    AuditLogger(root / _COLLECT_CHAIN, signing_key=signing_key_from_env()).record(
+        actor="t", action="keyed", action_class="read_only", decision="allow", reason="r"
+    )
+    backup = _take(root, "signed")
+    assert _manifest(backup)["chains"][_COLLECT_CHAIN]["signature"] == "valid"  # type: ignore[index]
+    signature = _COLLECT_CHAIN + ".sig"
+    (backup / signature).unlink()
+    manifest = _manifest(backup)
+    manifest["files"] = [e for e in manifest["files"] if e["path"] != signature]  # type: ignore[attr-defined]
+    _write_manifest(backup, manifest)
+    live = tmp_path / "live"
+    _restore(backup, live)
+    capsys.readouterr()
+
+    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    out = capsys.readouterr().out
+    assert f"{_COLLECT_CHAIN}: the backed-up chain does not authenticate (signature missing)" in out
+    assert "records it unsigned when the backup was taken" not in out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("shape", ["fifo", "dangling-symlink", "directory"])
+def test_a_position_that_is_not_a_regular_file_gets_a_remedy_that_works(
+    tmp_path: Path, shape: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: POSITION PRESENT said step 3's rm -f cannot remove a FIFO or a
+    symlink, which it does; only a directory needs moving. The remedy is run here."""
+    _root, (backup,) = _source(tmp_path)
+    live = tmp_path / "live"
+    _restore(backup, live)
+    position = live / "data" / "collect" / "offsets.json"
+    position.parent.mkdir(parents=True, exist_ok=True)
+    if shape == "fifo":
+        os.mkfifo(position)
+    elif shape == "dangling-symlink":
+        position.symlink_to(tmp_path / "nowhere")
+    else:
+        position.mkdir()
+    capsys.readouterr()
+
+    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    out = capsys.readouterr().out
+    if shape == "directory":
+        assert "is a directory, which no pass writes and step 3's rm -f does not remove" in out
+        position.rename(tmp_path / "kept-position")
+    else:
+        kind = "a FIFO" if shape == "fifo" else "a symlink"
+        assert (
+            f"POSITION PRESENT: data/collect/offsets.json exists in the live root (as {kind})"
+            in out
+        )
+        assert "does not remove" not in out
+        subprocess.run(["rm", "-f", str(position)], check=True, timeout=30)  # noqa: S603,S607
+    assert backup_main(argv) == 0, capsys.readouterr().out
+
+
+@pytest.mark.security
+def test_a_position_that_cannot_be_checked_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _root, (backup,) = _source(tmp_path)
+    live = tmp_path / "live"
+    _restore(backup, live)
+    real_lstat = os.lstat
+
+    def refusing(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if os.fspath(path).endswith("cursor.json"):  # type: ignore[call-overload]
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[call-overload]
+        return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(run_backup.os, "lstat", refusing)
+    capsys.readouterr()
+    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    assert "POSITION PRESENT: data/pipeline/cursor.json cannot be checked (PermissionError)" in (
+        capsys.readouterr().out
+    )
+
+
+@pytest.mark.security
+def test_a_planted_directorys_contents_are_not_reported_one_by_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, (backup,) = _source(tmp_path)
+    planted = backup / "data" / "planted"
+    (planted / "inner").mkdir(parents=True)
+    (planted / "inner" / "file").write_text("x", encoding="utf-8")
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)]) == 1
+    out = capsys.readouterr().out
+    assert "UNDECLARED: data/planted is a directory in the backup" in out
+    assert "data/planted/inner" not in out, out
+
+
+@pytest.mark.security
+def test_a_non_file_at_a_chain_family_name_is_named_by_kind(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _root, (backup,) = _source(tmp_path)
+    live = tmp_path / "live"
+    _restore(backup, live)
+    os.mkfifo(live / (_CHAIN + ".7"))
+    capsys.readouterr()
+
+    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    assert f"UNDECLARED: {_CHAIN}.7 is a FIFO at a name of {_CHAIN}'s family" in (
+        capsys.readouterr().out
+    )

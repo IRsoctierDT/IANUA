@@ -180,11 +180,11 @@ VERIFY_LOCK_FILE = "verify.lock"
 #: this gate add (two per run, a few hundred bytes each), and small enough that
 #: appending, which reads the head segment whole, is bounded.
 LIVE_CHAIN_GROWTH = 16 * 1024 * 1024
-#: The largest live segment of that chain the gate will read when the backup
-#: does not list it: a same-node restore merges into the old tree, so newer
-#: archives the backup never held are legitimate (found by review: refusing
-#: them by name failed a correct restore, and repeating step 4 could not clear
-#: it). Far above any rotation size this platform configures.
+#: The largest live segment of that chain the gate will read, to append its
+#: record, when the backup does not list it: a same-node restore merges into the
+#: old tree, so such a segment can be there. This bounds only the read; whether
+#: the segment belongs is _undeclared_chain_segments' finding. Far above any
+#: rotation size this platform configures.
 LIVE_SEGMENT_CAP = 256 * 1024 * 1024
 #: The exit a skipped --verify or --verify-restore returns: nothing was
 #: verified, so it must never read as a pass, and it is retryable, not a page.
@@ -776,16 +776,19 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
             continue
         if not report.intact:
             taken = manifest["chains"][str(chain)]
-            if report.signature == "missing" and taken.get("signature") == "missing":
-                # Not an edit: the take itself recorded it unsigned, which the first
-                # take after a key is configured does (found by review: the generic
-                # finding below sent an operator away from a correct backup).
+            if report.signature == "missing" and taken.get("signature") in {"missing", "unsigned"}:
+                # The take itself recorded it unsigned: with a key but before any
+                # keyed record ("missing"), or with no key at all ("unsigned"). Found
+                # by review: the generic finding below sent an operator away from a
+                # correct backup. The manifest is not authenticated, so this says what
+                # it records and does not vouch for it; 4b fails either way.
                 problems.append(
-                    f"{chain}: the backed-up chain was not signed when the backup was taken "
-                    "(its manifest records the signature missing, and the take named it in "
-                    "chains_broken), so it cannot be authenticated under the key. That is "
-                    "a backup taken before the key was configured, not an edit: see "
-                    "docs/RESTORE.md for the unkeyed recourse"
+                    f"{chain}: the backed-up chain carries no head signature, and its manifest "
+                    f"records it unsigned when the backup was taken (signature "
+                    f"{taken.get('signature')!r}): a backup taken before the key was "
+                    "configured, or before this chain's first keyed record, if the manifest "
+                    "is genuine. It cannot be authenticated under the key: see docs/RESTORE.md "
+                    "for the unkeyed recourse"
                 )
                 continue
             problems.append(
@@ -885,9 +888,17 @@ def _root_in_backup(root: Path, backup: Path | None) -> str | None:
     records to the backup's chain, and a take with a backup as its root wrote
     those records and a whole nested backup into it, at exit 0; neither backup
     verified again (both found by independent review). So the argued backup is
-    checked, and so is any backup the root is or lies under: a directory holding
-    a ``manifest.json`` that is the root itself or sits directly in a
-    ``data/backups`` directory. A lab-data root never holds one.
+    checked, and so is any backup the root is or lies under, wherever it was
+    moved to: a directory whose ``manifest.json`` declares a backup format. By
+    content, not by place: requiring the directory to sit in ``data/backups``
+    missed a backup copied elsewhere (measured, a pass with ``--root`` at its
+    ``data/`` wrote records and locks into it), and a bare ``manifest.json``
+    refused a lab root under some unrelated one (both found by review).
+
+    A lab root that holds a backup manifest at its top is refused too, with the
+    file named: it was restored by copying a whole backup directory rather than
+    the backup's ``data/``, which step 4 does, and the manifest does not belong
+    there. A manifest that cannot be read or parsed is not taken as a backup's.
     """
     resolved = Path(os.path.realpath(root))
     if backup is not None and (resolved == backup or resolved.is_relative_to(backup)):
@@ -897,20 +908,37 @@ def _root_in_backup(root: Path, backup: Path | None) -> str | None:
             "lab-data root as --root"
         )
     for candidate in (resolved, *resolved.parents):
-        try:
-            holds_manifest = (candidate / MANIFEST_FILE).is_file()
-        except OSError:
-            holds_manifest = False  # every ancestor was searched to reach --root
-        in_backups = candidate.parent.name == BACKUP_SUBDIR.name and (
-            candidate.parent.parent.name == BACKUP_SUBDIR.parent.name
-        )
-        if holds_manifest and (candidate == resolved or in_backups):
+        if not _holds_backup_manifest(candidate):
+            continue
+        if candidate == resolved:
             return (
-                f"--root {resolved} is the backup {candidate}, or inside it, and this pass "
-                "writes its audit records and its lock under --root, which would change "
-                "that backup. Use the lab-data root as --root"
+                f"--root {resolved} holds a backup manifest ({resolved / MANIFEST_FILE}), so "
+                "it is a backup, or a lab root restored by copying a whole backup directory. "
+                "This pass writes its audit records and its lock under --root, which would "
+                "change a backup. If it is a backup, use the lab-data root as --root. If it is "
+                "a restored lab root, move that manifest.json out of it and keep it: "
+                "docs/RESTORE.md step 4 copies only the backup's data/"
             )
+        return (
+            f"--root {resolved} lies inside the backup {candidate} (it holds a backup "
+            "manifest), and this pass writes its audit records and its lock under --root, "
+            "which would change that backup. Use the lab-data root as --root"
+        )
     return None
+
+
+def _holds_backup_manifest(directory: Path) -> bool:
+    """Does ``directory`` hold a ``manifest.json`` that declares a backup format?"""
+    try:
+        with _open_regular(directory / MANIFEST_FILE) as handle:
+            raw = handle.read(MANIFEST_CAP + 1)
+        if len(raw) > MANIFEST_CAP:
+            return False
+        loaded = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, RecursionError, MemoryError):
+        return False
+    found = loaded.get("format") if isinstance(loaded, dict) else None
+    return found == MANIFEST_FORMAT or found in SUPERSEDED_FORMATS
 
 
 def _live_chain_bound(root: Path, backup: Path) -> str | None:
@@ -1118,21 +1146,51 @@ def _undeclared_chain_segments(
             continue
         for child in sorted(parent.iterdir()):
             name = child.name
-            if name == chain.name or not name.startswith(chain.name):
-                continue
-            if name.endswith((".lock", ".sig")):
+            if not name.startswith(chain.name) or name.endswith((".lock", ".sig")):
                 continue
             relative = str(child.relative_to(root))
             if relative in declared:
                 continue
-            found.setdefault(chain, []).append(
-                f"UNDECLARED: {_capped(relative)} is beside the restored {chain} but not in the "
-                "backup: a segment from before the restore (a rotation since the backup was "
-                "taken) that step 4's cp -a merge left behind, so the restored chain does not "
-                "continue into it. It holds audit records written after the backup: do not "
-                "delete it. Move it out of the root and keep it, then re-run this check"
-            )
+            found.setdefault(chain, []).append(_leftover_segment(relative, child, chain))
     return found
+
+
+def _leftover_segment(relative: str, child: Path, chain: Path) -> str:
+    """The ``UNDECLARED`` finding for one live chain file the backup does not hold.
+
+    By what it is, because the remedy is the same and the reason to keep it is
+    not: an archive holds audit records written after the backup; an active
+    log the backup does not list belongs to a chain the backup never held
+    (measured: naming only its archive left 4b failing on that log, found by
+    review); a checkpoint records segments pruned after the backup; and
+    anything that is not a regular file is no segment at all.
+    """
+    shown = _capped(relative)
+    keep = "Move it out of the root and keep it, then re-run this check"
+    try:
+        mode = child.lstat().st_mode
+    except OSError as exc:
+        return f"UNDECLARED: {shown} beside {chain} cannot be checked ({type(exc).__name__})"
+    if not stat.S_ISREG(mode):
+        return (
+            f"UNDECLARED: {shown} is {_kind_of(mode)} at a name of {chain}'s family, not a "
+            f"chain segment, and the backup does not hold it. {keep}"
+        )
+    if child.name == chain.name:
+        return (
+            f"UNDECLARED: {shown} is the live log of a chain the backup does not hold, so it "
+            "is from before the restore. It holds audit records written after the backup: "
+            f"do not delete it. {keep}, with any archives beside it"
+        )
+    if child.name.endswith(".checkpoint"):
+        what = "a checkpoint of segments pruned after the backup was taken"
+    else:
+        what = "an archive holding audit records written after the backup"
+    return (
+        f"UNDECLARED: {shown} is beside the restored {chain} but not in the backup: {what}, "
+        "which step 4's cp -a merge left behind, so the restored chain does not continue "
+        f"into it. Do not delete it. {keep}"
+    )
 
 
 def _live_tree_inventory(root: Path) -> tuple[list[Path], list[str]]:
@@ -2402,16 +2460,18 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 f"POSITION PRESENT: {relative} cannot be checked ({type(exc).__name__})"
             )
             continue
-        if not stat.S_ISREG(found.st_mode):
-            # Step 3's rm -f does not remove a directory (found by review).
+        if stat.S_ISDIR(found.st_mode):
+            # Step 3's rm -f does not remove a directory (found by review); it
+            # does remove a FIFO, a socket or a symlink.
             problems.append(
-                f"POSITION PRESENT: {relative} in the live root is {_kind_of(found.st_mode)}, "
-                "which no pass writes and step 3's rm -f does not remove. Move it out of the "
-                "root and keep it for investigation, then re-run this check"
+                f"POSITION PRESENT: {relative} in the live root is a directory, which no pass "
+                "writes and step 3's rm -f does not remove. Move it out of the root and keep "
+                "it for investigation, then re-run this check"
             )
             continue
+        kind = "" if stat.S_ISREG(found.st_mode) else f" (as {_kind_of(found.st_mode)})"
         problems.append(
-            f"POSITION PRESENT: {relative} exists in the live root. "
+            f"POSITION PRESENT: {relative} exists in the live root{kind}. "
             f"docs/RESTORE.md step 3 removes it before the store comes back, because "
             f"{why.split(':')[0]}"
         )
