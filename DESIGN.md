@@ -650,7 +650,9 @@ trusting artifacts from the gating workflow. Pages publication keeps its own
     **unspecified in either family** is refused outright rather than warned about: measured,
     `0.0.0.0`, `::`, `::0`, `0:0:0:0:0:0:0:0`, the expanded `0000:…:0000` and the IPv4-mapped
     `::ffff:0.0.0.0` are all unspecified, so the first draft's literal `0.0.0.0` rule caught
-    one of six while `::` binds every IPv6 interface. Same reasoning as `collect/` refusing a
+    one of six while `::` binds every IPv6 interface. That measurement is interpreter-dependent
+    for the mapped form, which is `False` under `is_unspecified` on CPython 3.12.3, so the
+    refusal reads the IPv4 address a mapped form denotes (AGENTS.md §5). Same reasoning as `collect/` refusing a
     glob, and the same defect class this repository keeps finding in its own controls — a
     rule written as a string that the thing it stops can spell differently.
 
