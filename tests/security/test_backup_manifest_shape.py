@@ -36,7 +36,7 @@ import pytest
 from ingest import normalize
 from scripts.run_backup import MANIFEST_FORMAT
 from scripts.run_backup import main as backup_main
-from store import EventStore
+from store import EventStore, StoreFileError
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 # The current format, so each hostile manifest reaches the shape check it names
@@ -528,6 +528,12 @@ def test_a_backup_shm_hard_linked_to_the_live_store_cannot_destroy_it(
     assert _verify(root, backup, "--verify") == 1
     assert f"its -shm ({before[0]} bytes) has 2 links" in capsys.readouterr().out
     assert _fingerprint(live) == before
+    # While the backup's -shm is a second name for it, the live store is refused
+    # too: every write would also land in that name. Remove it and the store opens.
+    shm = (backup / _STORE).with_name(_STORE.name + "-shm")
+    with pytest.raises(StoreFileError, match="has 2 hard links"):
+        EventStore.open(root)
+    shm.unlink()
     with EventStore.open(root) as store:
         assert store.count() == 12
 
