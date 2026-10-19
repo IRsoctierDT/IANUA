@@ -119,27 +119,49 @@ python -m scripts.run_backup --root /srv/ianua --verify /srv/ianua/data/backups/
 
 Re-attests the store, re-hashes every file, and re-verifies every chain against the
 manifest. Exit `1` and a list of problems on any mismatch. **Verify before you need it** —
-on the schedule, not during the incident.
+on the schedule, not during the incident. **A pass is the `verified …` line with exit `0`.**
+A verify that finds another verify holding `data/backups/verify.lock` prints "skipped: …
+Nothing was verified." and exits `4`, never `0` (under `--json`, `{"skipped": true,
+"verified": false, …}`): retry it, never read it as a pass.
 
 A backup is data an attacker with write access to `data/backups` chose, so `--verify`
 reads only what the manifest bounds. A file whose size differs from its entry is reported
 by size and never hashed (`size N != M`), and a store whose size differs is not opened
-either (`was not read further`). A manifest over 64 MiB is refused unread (`is larger than`),
+either (`was not read further`). A manifest over 64 MiB is refused after reading at most one
+byte past that (`is larger than`), and one that decodes to more objects than memory holds is
+refused too (`cannot be decoded as JSON (MemoryError)`),
 and a manifest without the store's size is refused (`store size must be a non-negative
 integer`); every manifest a take writes carries it. A chain is not verified
 (`<chain>: not verified: …`) when any file of its family is missing from the manifest or
-differs from its recorded size, because the chain verifier lists the directory and reads
-each file whole. Measured before this, a 1 TiB sparse file planted in a backup kept
+differs from its recorded size, because a take declares every file of a chain's family and
+the chain verifier lists the directory and reads each archive whole; when the chain's
+directory passes through a symlink, which a take never writes (measured before this: a
+2 GiB file outside the backup read whole); and when the chain's lock in the backup is held
+(`its lock in the backup is held`). Nothing should hold a lock in a backup, and verifying
+waits on that lock: measured before this, a backup's `audit.log.lock` replaced by a hard
+link to the lock the pass itself held made it wait for ever. Find the other names with
+`find <mount> -xdev -samefile <lock>`. Measured before this, a 1 TiB sparse file planted in a backup kept
 `--verify` reading for about an hour and a half, and one planted beside a chain was a
 `MemoryError` traceback. Each of these is a backup that was changed after the take: take a
 fresh one.
 
 `--verify` takes `data/backups/verify.lock`, not the take's `backup.lock`, so a slow verify
-no longer makes every scheduled take print "skipped". Two verifies still exclude each other
-("skipped: another verify pass holds the lock"). The take writes its manifest last, whole,
-under a temporary name renamed into place, so a verify that overlaps a take of the same
-backup sees no manifest ("this is not a backup") and never half of one. `--verify-restore`
-keeps `backup.lock`, because it reads and writes the live root a take reads.
+no longer makes every scheduled take print "skipped". Two verifies still exclude each other.
+A verify writes the root's audit chain, and SQLite's transient `-wal` and `-shm` beside the
+backup's store while it attests it, removed on close. The take copies each chain, its
+archives and its head signature under that chain's own shared lock, so a verify's record
+waits for the copy instead of tearing it (measured before this: a record landing between the
+copy of `audit.log` and of `audit.log.sig` left a signed backup that could never verify). It
+writes its manifest last, whole, under a temporary name renamed into place, so a verify that
+overlaps a take of the same backup sees no manifest ("this is not a backup") and never half
+of one. `--verify-restore` keeps `backup.lock`, because it reads and writes the live root a
+take reads; an edited manifest that claims a planted file's size therefore still costs a long
+read under that lock there.
+
+A take whose own copy of a chain does not verify still writes the backup, names the chain
+("warning: chains that did NOT verify in this backup as it was taken") and exits `1`; its
+`--json` report lists them as `chains_broken`. `--verify` of that backup then says the chain
+"was already broken when the backup was taken", not that it "no longer verifies".
 
 ### Verifying a restore (the promotion gate)
 
@@ -166,7 +188,13 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `TRUNCATED` / `REWRITTEN` | a declared **append-only** file shrank, or its history was replaced rather than appended to |
 | `ALTERED` | a declared file that is **not** append-only — a report — differs in size or digest. A report is rewritten whole and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
 | `UNDECLARED` | a file is in the live root that the manifest never listed, **or `data/reports` is itself a symlink**. Step 4's `cp -a` **merges**, so this is a file from before the restore that outlived it. **Not** store evidence loss — remove it, then re-run |
-| `LINKED` (or, for `data/events/audit.log`, a refusal on stderr at exit `1` before anything is written) | a live file is the backup's own file: step 4 was a hard-link copy (`cp -al`, `rsync --link-dest`, `ln`). Every later write to it — step 5's re-collection, any pass, this gate's own audit record — would change the backup. Remove the live tree's linked files and repeat step 4 with `cp -a`. A hard-link snapshot of `data/backups` itself is fine: `--verify` does not write to the backup it checks |
+| `LINKED` (or, for `data/events/audit.log`, a refusal on stderr at exit `1` before anything is written to the audit chain or the backup, in every mode) | a live file is the backup's own file, or shares its file with some other name: step 4 was a hard-link copy (`cp -al`, `rsync --link-dest`, `ln`), from this backup or from another copy of it (measured: `rsync --link-dest` pointed at the previous backup links whatever is unchanged to that older backup). Every later write to it — step 5's re-collection, any pass, this gate's own audit record — would change the other copy. Remove the live tree's linked files first (`cp -a` cannot copy over them, since they are the same file), then repeat step 4 with `cp -a`. A hard-link snapshot of `data/backups` itself is fine: `--verify` writes nothing into a backup's files |
+| `the backed-up chain does not authenticate (signature …)` | under `AUDIT_HMAC_KEY`, the backup's own copy of a chain fails its key: the chain or its head signature was edited after the take, or the key differs. The live chain's prefix is compared against that backup, so do not promote; restore from another backup that passes |
+| `the backup carries no head signature for it and a key is set` | a take under a key always signs `data/events/audit.log`, so a signed backup without one was stripped. A backup taken before the key was configured has none either: verify it with the key unset, then take a fresh signed backup as soon as a live store exists |
+| `SIGNATURE UNCHECKED: …` | the backup is signed and no verification key is set, so whether this is the history the take signed cannot be checked. Re-run with the key |
+| `the manifest records present=… and the backup holds it` (or `does not hold it`), or `the manifest records it absent` / `present with 0 entries` for `data/events/audit.log` | the manifest's chain record disagrees with the backup, or claims the events chain a take always writes is missing. A take records its gate decision there before it copies anything. This backup was edited after the take: restore from another |
+| `the live data/events/audit.log… is N bytes and the backup holds M`, or `is not in the backup's manifest`, on stderr at exit `1` | the restored events chain is larger than the backup's copy (beyond what this gate's own repeated runs append) or carries a file of its family the backup does not list, so the gate refused before appending its record, which reads the head segment whole. Repeat step 4 from a backup that passes step 2 |
+| `changed size while it was read` | a file grew or shrank while `--verify` hashed it. Nothing should write into a backup; find what does, then re-run |
 | *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
 | `has no '…'` / `is not an integer` / `is not a string` / *store was not compared* | the manifest's attestation lacks a field (every one is required: `events`, `observables`, `digest`, `observables_digest`, `high_water`, `schema_version`) or carries one of the wrong type (counts and the schema version must be integers, digests strings, the mark a number or null — a string `"40"` is refused, not coerced). The store is **not** compared on what is left — a verdict on part of the evidence is not a verdict |
 | `store attestation schema_version: …` / `high_water: …` | the restored store's schema version differs from the attested one (a migration question, not a completeness one), or its high-water mark does while the event count matches. `--verify` has always compared every attestation field; `--verify-restore` now does too |
@@ -242,19 +270,25 @@ decision row records why.
 #    a collector still in flight can recreate offsets.json after step 3 or write
 #    the database during step 4, rebuilding the exact newer-offsets/older-store
 #    state this runbook calls unrecoverable.
+#    Stop any timer you run for scripts/run_backup.py or scripts/audit_maintenance.py
+#    too: a scheduled take or verify holds a lock step 2 or 4b needs, and a rotation
+#    between steps 4 and 4b renames the restored chain out from under the gate.
 systemctl --user stop ianua-pipeline.timer ianua-collector.timer
 systemctl --user stop ianua-pipeline.service ianua-collector.service
 systemctl --user list-units 'ianua-*' --all --no-legend   # expect none active
 
 # 1b. Belt and braces: the locks are the platform's own interlock. If any of
 #     these is held, a pass is still running — wait rather than proceed.
-for f in collect/collect.lock pipeline/cycle.lock events/retention.lock; do
+for f in collect/collect.lock pipeline/cycle.lock events/retention.lock \
+         backups/backup.lock backups/verify.lock; do
   flock --nonblock --exclusive "/srv/ianua/data/$f" true \
     || echo "STILL RUNNING: $f is held; do not continue"
 done
 
 # 2. Verify the backup you are about to trust.
-python -m scripts.run_backup --root /srv/ianua --verify /path/to/backup   # must exit 0
+python -m scripts.run_backup --root /srv/ianua --verify /path/to/backup
+#    must print "verified …" and exit 0. "skipped … Nothing was verified." exits 4:
+#    something still holds a lock (step 1b), so nothing was checked.
 
 # 3. THE ORDERING RULE. Remove the positions before the store comes back.
 rm -f /srv/ianua/data/collect/offsets.json /srv/ianua/data/pipeline/cursor.json
@@ -269,7 +303,8 @@ cp -a /path/to/backup/data/. /srv/ianua/data/
 #     missing most of its pages opens cleanly and reports a plausible count,
 #     so this compares the live root against the attestation the backup
 #     carried rather than checking that the database looks healthy.
-python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup   # must exit 0
+python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup
+#     must print "restore verified: …" and exit 0; a skip exits 4 and verified nothing.
 
 # 5. Re-collect. Every source is re-read; content addressing stores only what is new.
 python -m scripts.run_collector --root /srv/ianua --source /var/log/auth.log --json

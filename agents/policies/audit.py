@@ -522,6 +522,22 @@ class AuditLogger:
         finally:
             os.close(descriptor)
 
+    def reading(self) -> contextlib.AbstractContextManager[None]:
+        """Hold the chain still for a reader outside this class.
+
+        The shared lock :meth:`verify_report` takes, for a caller that must
+        read the chain and its sidecars as one consistent set:
+        ``scripts/run_backup.py``'s take, which copied ``audit.log`` and
+        ``audit.log.sig`` as two separate reads. Measured, a record landing
+        between them, which became possible once ``--verify`` stopped
+        sharing the take's lock, left a backup whose head signature was stale
+        and which could never pass ``--verify`` or the promotion gate (found by
+        independent review). Blocking, like the writer's lock, and it never
+        creates the lock file. Do not call :meth:`record` on the same chain
+        while holding it: the lock is not reentrant.
+        """
+        return self._shared()
+
     # ---------------------------------------------------------------- segments
     @staticmethod
     def _is_segment(path: Path) -> bool:

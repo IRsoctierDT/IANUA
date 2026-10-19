@@ -92,19 +92,24 @@ speaks about the copy and says nothing about whether exactly one node is
 active.
 
 **Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
-or verified (including a skip because another pass held the lock), ``1`` the
-backup, either verification or the audit write failed — including any mismatch
-found by ``--verify`` or ``--verify-restore``, ``2`` bad arguments or the
-single-instance lock could not be taken, ``3`` blocked by policy, ``4``
-retryable contention — another writer held the
-store's write lock, so no backup was taken and nothing was left behind. Retry
-rather than page; see ``scripts/_exit_codes.py``.
+or verified, or a take was skipped because another take held the lock; ``1``
+the backup, either verification or the audit write failed — including any
+mismatch found by ``--verify`` or ``--verify-restore``, and a take whose own
+copy of a chain does not verify (the backup is still written, and names it);
+``2`` bad arguments or the single-instance lock could not be taken; ``3``
+blocked by policy; ``4`` retryable — another writer held the store's write
+lock, so no backup was taken and nothing was left behind, or a ``--verify`` or
+``--verify-restore`` was skipped because another pass held its lock, so nothing
+was verified. A skipped verify used to exit ``0`` like a pass (found by
+independent review). Retry rather than page; see ``scripts/_exit_codes.py``.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -166,9 +171,20 @@ LOCK_FILE = "backup.lock"
 #: ``--verify`` serialises with other verifies only. It held ``backup.lock``, and
 #: measured, a 1 TiB sparse file planted in a backup kept it reading at about
 #: 200 MiB/s, roughly an hour and a half, while every scheduled take printed
-#: "skipped" at exit 0 (found by independent review). It reads one backup and
-#: writes only the audit chain, whose own lock serialises it with a take.
+#: "skipped" at exit 0 (found by independent review). It reads one backup; it
+#: writes the root's audit chain, and SQLite's transient -wal and -shm beside
+#: the backup's store while it attests it. A take copies each chain under that
+#: chain's own shared lock (AuditLogger.reading), so a verify's records cannot
+#: tear the copy.
 VERIFY_LOCK_FILE = "verify.lock"
+#: How far the live events chain may have grown past the backup's copy before
+#: --verify-restore will append to it: far above the records repeated runs of
+#: this gate add (two per run, a few hundred bytes each), and small enough that
+#: appending, which reads the head segment whole, is bounded.
+LIVE_CHAIN_GROWTH = 16 * 1024 * 1024
+#: The exit a skipped --verify or --verify-restore returns: nothing was
+#: verified, so it must never read as a pass, and it is retryable, not a page.
+EXIT_SKIPPED_VERIFY = EXIT_RETRYABLE
 #: Far above any real manifest (about 375,000 file entries at the measured 179
 #: bytes each); a manifest is read whole, so it is bounded before it is parsed.
 MANIFEST_CAP = 64 * 1024 * 1024
@@ -382,7 +398,9 @@ def _digest_exact(path: Path, size: int) -> tuple[int, str | None]:
     recorded as 34 bytes, planted as a 1 TiB sparse file, was digested in full
     after the size mismatch was already known, and the store's size was never
     compared at all (found by independent review). At most ``size`` bytes are
-    read, and a file that grows while it is read is a mismatch too.
+    read, and a file that grows or shrinks while it is read is a mismatch too,
+    reported as :data:`CHANGED_WHILE_READ` rather than as a size it never had
+    (found by review: it reported ``size + 1`` and the bytes read so far).
     """
     with _open_regular(path) as handle:
         actual = os.fstat(handle.fileno()).st_size
@@ -393,27 +411,46 @@ def _digest_exact(path: Path, size: int) -> tuple[int, str | None]:
         while remaining:
             block = handle.read(min(1024 * 1024, remaining))
             if not block:
-                return size - remaining, None
+                return CHANGED_WHILE_READ, None
             running.update(block)
             remaining -= len(block)
         if handle.read(1):
-            return size + 1, None
+            return CHANGED_WHILE_READ, None
     return actual, running.hexdigest()
+
+
+#: :func:`_digest_exact`'s size for a file that changed length while it was read.
+CHANGED_WHILE_READ = -1
+
+
+def _size_finding(path: object, size: int, recorded: object) -> str:
+    """``size N != M``, or that the file changed while it was read."""
+    if size == CHANGED_WHILE_READ:
+        return f"{path}: changed size while it was read (the manifest records {recorded})"
+    return f"{path}: size {size} != {recorded}"
 
 
 def _unbounded_chain(directory: Path, chain: Path, sizes: dict[str, int]) -> str | None:
     """Why ``chain`` in ``directory`` must not be verified, or ``None``.
 
-    Verifying a chain reads every file of its family whole into memory, and
+    Verifying a chain reads each of its segments whole into memory, and
     finds the archives and checkpoint by listing the directory, so a manifest
     check alone never bounded it: measured, a 1 TiB sparse ``audit.log.99``
     planted beside a backup's chain, with the manifest untouched, ended
     ``--verify`` in a MemoryError traceback (found by independent review). A
     take declares every file of the family, so each must be in the manifest at
     the size it has; anything else is reported and not read.
+
+    A chain directory that passes through a symlink is refused, not skipped: a
+    take never writes one, and measured, skipping it let ``--verify`` read a
+    2 GiB file outside the backup whole (found by independent review). And
+    last, the chain's lock is tried without waiting: see :func:`_lock_in_use`.
     """
     parent = directory / chain.parent
-    if not parent.is_dir() or parent.is_symlink():
+    unsafe = _unsafe_manifest_path(directory, chain.parent, what="chain directory")
+    if unsafe is not None:
+        return f"{chain}: not verified: {unsafe}"
+    if not parent.is_dir():
         return None
     for child in sorted(parent.iterdir()):
         if not child.name.startswith(chain.name):
@@ -426,13 +463,49 @@ def _unbounded_chain(directory: Path, chain: Path, sizes: dict[str, int]) -> str
         if relative not in sizes:
             return (
                 f"{chain}: not verified: {_capped(relative)} is beside it but not in the "
-                "manifest, and verifying the chain would read it"
+                "manifest; a take declares every file of a chain's family, so this one was "
+                "not put there by a take"
             )
         if held != sizes[relative]:
             return (
                 f"{chain}: not verified: {relative} is {held} bytes and the manifest "
                 f"records {sizes[relative]}, so reading it is not bounded by the manifest"
             )
+    return _lock_in_use(directory, chain)
+
+
+def _lock_in_use(directory: Path, chain: Path) -> str | None:
+    """Why ``chain``'s lock in a backup must not be waited on, or ``None``.
+
+    A backup has no writer, so nothing should hold a lock in one, and verifying
+    a chain takes a **blocking** shared lock on its ``.lock``. Measured, found
+    by independent review: a backup's ``audit.log.lock`` replaced by a hard
+    link to ``data/backups/backup.lock`` (both empty, so its manifest entry
+    still matched) made ``--verify-restore`` under a key wait for ever on the
+    lock it already held, while every take skipped at exit 0; linked to
+    ``verify.lock``, ``--verify`` did the same. So the lock is tried without
+    waiting first, and a held one is a finding. A holder that appears after
+    this probe can still make the read wait: that needs a process on this
+    node and write access to the backup.
+    """
+    lock = directory / chain.with_name(chain.name + ".lock")
+    try:
+        handle = _open_regular(lock)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"{chain}: not verified: its lock cannot be checked ({type(exc).__name__})"
+    with handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return (
+                f"{chain}: not verified: its lock in the backup is held, by another process "
+                "or because it is the same file as a lock this pass holds. A backup has no "
+                "writer, so nothing should hold one; find the other names with find "
+                "<mount> -xdev -samefile on it"
+            )
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     return None
 
 
@@ -503,7 +576,9 @@ def _is_append_only(relative: Path) -> bool:
     disagree about what may grow.
 
     **Not the head signature**, which an earlier version of this docstring
-    listed. ``audit.log.sig`` is not appended to: every keyed record *replaces*
+    listed, although this function returns ``True`` for it too, since it
+    matches by prefix: :func:`_verify_restore` takes the head signature out
+    before it asks. ``audit.log.sig`` is not appended to: every keyed record *replaces*
     it (a new inode through ``os.replace``), including this CLI's own gate
     record, which is written before :func:`_verify_restore` runs. Measured with
     ``AUDIT_HMAC_KEY`` set: every correct restore failed ``REWRITTEN`` on it
@@ -553,10 +628,21 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
     ``scripts/audit_verify.py --require-signature`` treats it. An unsigned
     backup verified without a key passes on the chain alone, as before.
     """
-    problems: list[str] = []
+    problems: list[str] = list(_events_chain_problems(manifest))
     verifier = verifier_from_env()
     for chain in CHAIN_FILES:
-        if not manifest["chains"][str(chain)].get("present"):  # shape-checked
+        recorded = bool(manifest["chains"][str(chain)].get("present"))  # shape-checked
+        if AuditLogger(backup / chain).exists() != recorded:
+            # Before the short-circuit below, which trusted this field: measured,
+            # a forged events chain with its signature stripped passed at exit 0
+            # once the manifest also called the chain absent (found by
+            # independent review). --verify already compares the two.
+            problems.append(
+                f"{chain}: the manifest records present={recorded} and the backup "
+                f"{'holds' if not recorded else 'does not hold'} it"
+            )
+            continue
+        if not recorded:
             continue
         family = [
             entry
@@ -600,12 +686,127 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
         except MemoryError:
             problems.append(f"{chain}: a file of the backed-up chain is too large to verify")
             continue
+        except RecursionError:
+            # json's own, on a deeply nested line: measured, a traceback that
+            # replaced the report (found by independent review).
+            problems.append(f"{chain}: a line of the backed-up chain is nested too deeply to read")
+            continue
+        if chain == AUDIT_SUBDIR / AUDIT_FILE and not any(
+            _head_signature_chain(Path(str(e["path"]))) == chain for e in family
+        ):
+            problems.append(
+                f"{chain}: the backup carries no head signature for it and a key is set. A "
+                "take records its signed gate decision there before it copies, so a backup "
+                "taken under a key always has one. A backup taken before the key was "
+                "configured has none: verify it with the key unset, then take a fresh "
+                "signed backup"
+            )
+            continue
         if not report.intact:
             problems.append(
                 f"{chain}: the backed-up chain does not authenticate (signature "
                 f"{report.signature}): {report.failure}"
             )
     return problems
+
+
+def _events_chain_problems(manifest: dict[str, Any]) -> list[str]:
+    """Why the manifest's events chain cannot be a take's, as findings.
+
+    Every take records its gate decision in ``data/events/audit.log`` before
+    it copies anything, so a genuine backup always holds that chain with at
+    least one entry. Measured, found by independent review: with the chain's
+    family deleted and the manifest calling it absent, or with ``entries`` set
+    to 0, ``--verify-restore`` exited 0 with every backed-up record gone. The
+    other chains can be legitimately absent, which is why removing one of them
+    and its record is still undetectable without authenticating the manifest
+    (the recorded residual).
+    """
+    record = manifest["chains"][str(AUDIT_SUBDIR / AUDIT_FILE)]  # shape-checked
+    entries = record.get("entries")
+    if record.get("present") and _is_count(entries) and entries >= 1:
+        return []
+    return [
+        f"{AUDIT_SUBDIR / AUDIT_FILE}: the manifest records it "
+        f"{'present with ' + repr(entries) + ' entries' if record.get('present') else 'absent'}. "
+        "A take records its gate decision there before it copies anything, so a backup a "
+        "take wrote always holds it with at least one entry"
+    ]
+
+
+def _linked_live_chain(root: Path) -> str | None:
+    """Why this pass must not append its gate record to ``root``'s chain, or ``None``.
+
+    Every mode's first write is the gate decision in ``data/events/audit.log``,
+    so a live chain with a second name is refused before it, whatever the
+    other name is: measured, found by independent review, a ``--verify`` or a
+    take whose ``--root`` was a hard-link copy of a backup appended its gate
+    record into that backup, which then failed ``--verify`` for good. A copied
+    restore and a hard-link farm of ``data/backups`` both leave the live chain
+    with one link. Checked by path, before the chain's lock is taken: a link
+    swapped in while the pass waits for that lock is not caught, which needs
+    write access to ``data/events``.
+    """
+    chain = root / AUDIT_SUBDIR / AUDIT_FILE
+    try:
+        links = os.lstat(chain).st_nlink
+    except OSError:
+        return None  # absent, or unusable: AuditLogger says which
+    if links <= 1:
+        return None
+    return (
+        f"the live {AUDIT_SUBDIR / AUDIT_FILE} shares its file with {links - 1} other "
+        "name(s), and this pass appends to it, which would change whatever else uses that "
+        "file (a backup, if the root was restored with cp -al, rsync --link-dest or ln). "
+        f"Find them with find <mount> -xdev -samefile {chain}. Remove the linked files from "
+        "this root, then repeat docs/RESTORE.md step 4 with cp -a"
+    )
+
+
+def _live_chain_bound(root: Path, backup: Path) -> str | None:
+    """Why the live events chain is too large for this gate to append to, or ``None``.
+
+    Appending reads the head segment whole, before any check runs. Measured,
+    found by independent review: a 1 TiB sparse ``audit.log`` in the backup,
+    restored by step 4, made the gate record a ``MemoryError`` traceback in
+    place of the report, and so did an empty one beside a 1 TiB archive. So,
+    before the gate, each live file of that chain's family that the backup
+    holds must be no larger than the backup's copy, plus
+    :data:`LIVE_CHAIN_GROWTH` for the active log, which repeated runs of this
+    gate append to. A sibling the manifest does not list is refused for the
+    reason :func:`_unbounded_chain` gives.
+    """
+    try:
+        manifest = _load_manifest(backup)
+    except StoreError:
+        return None  # refused by name once the pass runs
+    sizes = {str(entry["path"]): entry["size"] for entry in manifest["files"]}
+    chain = AUDIT_SUBDIR / AUDIT_FILE
+    parent = root / chain.parent
+    if not parent.is_dir() or parent.is_symlink():
+        return None  # main() refuses a symlinked data/events at exit 2, before this
+    for child in sorted(parent.iterdir()):
+        if not child.name.startswith(chain.name) or child.name.endswith((".lock", ".sig")):
+            continue
+        relative = str(child.relative_to(root))
+        try:
+            held = child.lstat().st_size
+        except OSError:
+            continue
+        recorded = sizes.get(relative)
+        if recorded is None:
+            return (
+                f"the live {_capped(relative)} is not in the backup's manifest; a take declares "
+                f"every file of {chain}'s family, and this gate would read it"
+            )
+        allowed = recorded + (LIVE_CHAIN_GROWTH if child.name == chain.name else 0)
+        if held > allowed:
+            return (
+                f"the live {relative} is {held} bytes and the backup holds {recorded}; this "
+                "gate reads it whole to append its record, so it was not run. Repeat "
+                "docs/RESTORE.md step 4 from a backup that passes step 2"
+            )
+    return None
 
 
 def _special_store(db: Path, *, what: str) -> str | None:
@@ -644,11 +845,24 @@ def _linked(relative: Path) -> str:
     return (
         f"LINKED: {relative} in the live root is the backup's own file (a hard link), so "
         "the next write to it, step 5's re-collection or any later pass, changes the backup "
-        "too. A restore is a copy: repeat docs/RESTORE.md step 4 with cp -a"
+        "too. A restore is a copy: remove the linked files from the live root (cp -a cannot "
+        "copy over them: they are the same file), then repeat docs/RESTORE.md step 4 with "
+        "cp -a"
     )
 
 
-def _linked_to_backup(root: Path, argument: Path) -> str | None:
+def _shared_live_file(relative: Path, links: int) -> str:
+    """The finding for a live file with a second name that is not the backup's."""
+    return (
+        f"LINKED: {relative} in the live root shares its file with {links - 1} other "
+        "name(s), so the next write to it changes them too: a restore made with cp -al, "
+        "rsync --link-dest or ln from some other copy. Find them with find <mount> -xdev "
+        "-samefile, remove the linked files from the live root, then repeat docs/RESTORE.md "
+        "step 4 with cp -a"
+    )
+
+
+def _linked_to_backup(root: Path, argument: Path) -> str | None:  # argument: resolved
     """Why this ``--verify-restore`` must not write its gate record, or ``None``.
 
     The pass's first write is the gate decision in the live chain, so a live
@@ -666,16 +880,13 @@ def _linked_to_backup(root: Path, argument: Path) -> str | None:
     created read-only and never written (measured). The store and every other
     declared file are reported by :func:`_verify_restore`.
     """
-    try:
-        backup = Path(os.path.realpath(argument))
-    except RecursionError:
-        return None  # the pass refuses it by name, as --verify does
     relative = AUDIT_SUBDIR / AUDIT_FILE
-    if _same_file(root / relative, backup / relative):
+    if _same_file(root / relative, argument / relative):
         return (
             f"the live {relative} is the backup's own file (a hard link), and this pass "
             "appends to it, which would change the backup it is checking. A restore is a "
-            "copy: repeat docs/RESTORE.md step 4 with cp -a, never with cp -al, "
+            "copy: remove the linked files from the live root (cp -a cannot copy over them), "
+            "then repeat docs/RESTORE.md step 4 with cp -a, never with cp -al, "
             "rsync --link-dest or ln"
         )
     return None
@@ -810,16 +1021,26 @@ def _verify_chains(root: Path, *, skip: dict[Path, str] | None = None) -> dict[s
             continue
         reason = (skip or {}).get(relative)
         if reason is not None:
-            chains[str(relative)] = {"present": True, "intact": False, "failure": reason}
-            continue
-        try:
-            report = logger.verify_report()
-        except MemoryError:
-            # A chain file larger than memory, read whole by verify_report.
             chains[str(relative)] = {
                 "present": True,
                 "intact": False,
-                "failure": "a file of this chain is too large to verify in memory",
+                "failure": reason,
+                "skipped": True,
+            }
+            continue
+        try:
+            report = logger.verify_report()
+        except (MemoryError, RecursionError) as exc:
+            # A chain file larger than memory, read whole by verify_report, or
+            # a line nested deeper than json will parse.
+            chains[str(relative)] = {
+                "present": True,
+                "intact": False,
+                "failure": (
+                    "a file of this chain is too large to verify in memory"
+                    if isinstance(exc, MemoryError)
+                    else "a line of this chain is nested too deeply to read"
+                ),
             }
             continue
         chains[str(relative)] = {
@@ -883,20 +1104,32 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
     target_db.chmod(FILE_MODE)
 
     files: list[dict[str, object]] = []
-    copied, refused = _copied_paths(root)
-    for relative in copied:
-        target = destination / relative
-        target.parent.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
-        target.parent.chmod(DIR_MODE)
-        shutil.copy2(root / relative, target)
-        target.chmod(FILE_MODE)
-        files.append(
-            {
-                "path": str(relative),
-                "size": target.stat().st_size,
-                "sha256": _digest_file(target),
-            }
-        )
+    # Listed and copied under every chain's shared lock, the one AuditLogger's
+    # writers take exclusively, so each chain, its archives and its head
+    # signature are one consistent set. Measured without it once --verify no
+    # longer shared the take's lock: a verify's record landing between the
+    # copy of audit.log and of audit.log.sig left a signed backup whose
+    # signature was stale, which could never pass --verify or the promotion
+    # gate, at exit 0; 8 of 40 takes under a continuous verify (found by
+    # independent review). Writers wait for the copy, which is small next to
+    # the store. In CHAIN_FILES order, and no record is made inside it.
+    with contextlib.ExitStack() as held:
+        for chain in CHAIN_FILES:
+            held.enter_context(AuditLogger(root / chain).reading())
+        copied, refused = _copied_paths(root)
+        for relative in copied:
+            target = destination / relative
+            target.parent.mkdir(mode=DIR_MODE, parents=True, exist_ok=True)
+            target.parent.chmod(DIR_MODE)
+            shutil.copy2(root / relative, target)
+            target.chmod(FILE_MODE)
+            files.append(
+                {
+                    "path": str(relative),
+                    "size": target.stat().st_size,
+                    "sha256": _digest_file(target),
+                }
+            )
 
     # The copy is attested, never the source: attesting the source would
     # describe a database that has since moved on, and the thing a restore
@@ -1184,14 +1417,20 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
         with _open_regular(manifest_path) as handle:
             raw = handle.read(MANIFEST_CAP + 1)
     except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            # O_NOFOLLOW's refusal, which "cannot be read (OSError)" did not name
+            # (found by review).
+            raise _malformed(directory, "is a symlink, which a take never writes") from exc
         raise _malformed(directory, f"cannot be read ({type(exc).__name__})") from exc
     if len(raw) > MANIFEST_CAP:
         raise _malformed(directory, f"is larger than {MANIFEST_CAP} bytes")
     try:
         manifest = json.loads(raw.decode("utf-8"))
-    except (ValueError, RecursionError) as exc:
+    except (ValueError, RecursionError, MemoryError) as exc:
         # ValueError covers JSONDecodeError and UnicodeDecodeError; RecursionError
         # is json's own — measured, 100,000 nested `[` was a traceback in both modes.
+        # MemoryError because the cap bounds bytes, not objects: measured, 64 MiB
+        # of empty objects peaked at 1.69 GiB (found by review).
         raise _malformed(directory, f"cannot be decoded as JSON ({type(exc).__name__})") from exc
     try:
         _require_format(manifest)
@@ -1367,7 +1606,7 @@ def _verify_backup(directory: Path) -> dict[str, object]:
         size, actual = _digest_exact(db, store_entry["size"])
         if actual is None:
             problems.append(
-                f"{store_entry['path']}: size {size} != the manifest's {store_entry['size']}, "
+                f"{_size_finding(store_entry['path'], size, store_entry['size'])}, "
                 "so it is not the backed-up store and was not read further"
             )
         elif actual != store_entry["sha256"]:
@@ -1379,8 +1618,9 @@ def _verify_backup(directory: Path) -> dict[str, object]:
         if unopenable is not None:
             problems.append(unopenable)
         elif actual is None:
-            # Not opened: attest runs quick_check, which reads every page, and
-            # the size already says this is not the store that was backed up.
+            # Not opened: the size already says this is not the store that was
+            # backed up, so attesting it answers nothing, and opening it would
+            # write SQLite's -wal and -shm into the backup for no verdict.
             pass
         else:
             # A hard-link snapshot farm of data/backups links every backup's
@@ -1409,7 +1649,7 @@ def _verify_backup(directory: Path) -> dict[str, object]:
             continue
         size, actual = _digest_exact(path, entry["size"])
         if actual is None:
-            problems.append(f"{entry['path']}: size {size} != {entry['size']}")
+            problems.append(_size_finding(entry["path"], size, entry["size"]))
         elif actual != entry["sha256"]:
             problems.append(f"{entry['path']}: sha256 {actual} != {_capped(entry['sha256'])}")
 
@@ -1435,7 +1675,17 @@ def _verify_backup(directory: Path) -> dict[str, object]:
         # Independent of the record on purpose: this is the one check the
         # manifest cannot answer, so nothing in the manifest may silence it.
         if state.get("present") and not state.get("intact"):
-            problems.append(f"{name}: chain no longer verifies: {state.get('failure')}")
+            if state.get("skipped"):
+                problems.append(str(state.get("failure")))
+            elif recorded.get("present") and recorded.get("intact") is False:
+                # Not "no longer": the take's own check already failed it.
+                problems.append(
+                    f"{name}: chain does not verify, and was already broken when the backup "
+                    f"was taken: {state.get('failure')}"
+                )
+            else:
+                problems.append(f"{name}: chain no longer verifies: {state.get('failure')}")
+    problems.extend(_events_chain_problems(manifest))
 
     return {
         "backup": str(directory),
@@ -1683,6 +1933,15 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             # fail; the finding is the identity itself.
             problems.append(_linked(entry_path))
             continue
+        links = path.lstat().st_nlink
+        if links > 1:
+            # Not the argued backup's, so identity cannot see it: measured, a
+            # restore hard-linked from a second copy of the backup, or by rsync
+            # --link-dest from the previous one, passed 4b at exit 0, and the
+            # gate itself or step 5 then wrote into that copy (found by
+            # independent review). A copied restore leaves one link.
+            problems.append(_shared_live_file(entry_path, links))
+            continue
         live_size = path.stat().st_size
         if _head_signature_chain(entry_path) is not None:
             # Replaced by every keyed record, this run's gate record included,
@@ -1752,10 +2011,19 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # something; the live ones below show only that each continues cleanly.
     problems.extend(_backed_up_chain_problems(backup, manifest))
 
-    # Chains: entries may only GROW, and must still verify.
-    chains = _verify_chains(root)
+    # Chains: entries may only GROW, and must still verify. Not through a
+    # symlinked chain directory: measured, data/compliance pointed outside the
+    # root passed at exit 0 "every chain still verifies" (found by review).
+    unsafe_chains = {
+        chain: f"{chain}: not verified: {reason}"
+        for chain in CHAIN_FILES
+        if (reason := _unsafe_manifest_path(root, chain.parent, what="live chain directory"))
+        is not None
+    }
+    problems.extend(unsafe_chains.values())
+    chains = _verify_chains(root, skip=unsafe_chains)
     for name, state in sorted(chains.items()):
-        if not isinstance(state, dict):
+        if not isinstance(state, dict) or state.get("skipped"):
             continue
         recorded = manifest["chains"][name]  # shape-checked by _load_manifest
         if recorded.get("present") and not state.get("present"):
@@ -1933,8 +2201,22 @@ def main(argv: list[str] | None = None) -> int:
         with single_instance(lock) as acquired:
             if not acquired:
                 which = "verify" if args.verify is not None else "backup"
-                print(f"skipped: another {which} pass holds the lock; this invocation did nothing.")
-                return 0
+                message = (
+                    f"skipped: another {which} pass holds the lock; this invocation did nothing."
+                )
+                if args.verify is None and args.verify_restore is None:
+                    print(message)
+                    return 0
+                # A gate that verified nothing must not exit like one that
+                # passed: measured, a tampered backup cleared docs/RESTORE.md
+                # step 2 at exit 0 while a scheduled verify held the lock, and
+                # step 4b while a take did (found by independent review).
+                message += " Nothing was verified."
+                if args.json:
+                    print(json.dumps({"skipped": True, "verified": False, "reason": message}))
+                else:
+                    print(message)
+                return EXIT_SKIPPED_VERIFY
             return _run(
                 args,
                 root=root,
@@ -1985,15 +2267,30 @@ def _run(
     verifying = mode != "take"
     label = f"{ACTION_NAME}:{mode}"
 
+    # Before the gate record, which is every mode's first write and appends to
+    # the live events chain. The argument is resolved once, here, so a link
+    # chain too deep to follow is refused before anything is written: measured,
+    # the check below fell open on it and the gate record landed in the backup
+    # (found by independent review).
+    restore_from: Path | None = None
     if mode == "verify-restore":
-        shared = _linked_to_backup(root, args.verify_restore)
-        if shared is not None:
-            print(f"error: {_printable(shared)}", file=sys.stderr)
+        try:
+            restore_from = _resolve_argument(args.verify_restore)
+        except StoreError as exc:
+            print(f"error: {_printable(str(exc))}", file=sys.stderr)
             return 1
+    refusal = (
+        _linked_to_backup(root, restore_from) if restore_from is not None else None
+    ) or _linked_live_chain(root)
+    if refusal is None and restore_from is not None:
+        refusal = _live_chain_bound(root, restore_from)
+    if refusal is not None:
+        print(f"error: {_printable(refusal)}", file=sys.stderr)
+        return 1
 
     try:
         audit = AuditLogger(root / AUDIT_SUBDIR / AUDIT_FILE, signing_key=signing_key_from_env())
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, MemoryError, RecursionError) as exc:
         print(
             f"error: audit log unusable, refusing to run: {_printable(str(exc))}", file=sys.stderr
         )
@@ -2010,15 +2307,21 @@ def _run(
     except ToolBlockedError as exc:
         print(f"blocked: {exc}", file=sys.stderr)
         return 3
-    except (AuditFieldError, OSError, ValueError) as exc:
-        print(f"error: could not record the gate decision: {_printable(str(exc))}", file=sys.stderr)
+    except (AuditFieldError, OSError, ValueError, MemoryError, RecursionError) as exc:
+        # MemoryError and RecursionError: appending reads the head segment
+        # whole and parses its last line (see _live_chain_bound).
+        print(
+            "error: could not record the gate decision: "
+            f"{_printable(str(exc) or type(exc).__name__)}",
+            file=sys.stderr,
+        )
         return 1
 
     try:
         if mode == "verify":
             payload = _verify_backup(_resolve_argument(args.verify))
-        elif mode == "verify-restore":
-            payload = _verify_restore(root, _resolve_argument(args.verify_restore))
+        elif restore_from is not None:
+            payload = _verify_restore(root, restore_from)
         else:
             manifest = _take_backup(root, destination)
             manifest_path = destination / MANIFEST_FILE
@@ -2042,6 +2345,15 @@ def _run(
                 "excluded": sorted(EXCLUDED),
                 "refused": manifest["refused"],
                 "wide_paths": _wide_paths(root),
+                # The take's own verdict on what it copied, which only the
+                # manifest carried: measured, a take whose copy was torn exited
+                # 0 "wrote" and the next --verify called it a chain that "no
+                # longer verifies" (found by independent review).
+                "chains_broken": [
+                    f"{name}: {state.get('failure')}"
+                    for name, state in sorted(manifest["chains"].items())  # type: ignore[attr-defined]
+                    if isinstance(state, dict) and state.get("present") and not state.get("intact")
+                ],
             }
     except (StoreError, sqlite3.Error, ValueError, OSError, KeyError) as exc:
         # sqlite3.Error is neither OSError nor StoreError, so a corrupt or
@@ -2079,8 +2391,11 @@ def _run(
                 )
             ),
         )
-    except (AuditFieldError, OSError, ValueError) as exc:
-        print(f"error: pass ran but could not be recorded: {_printable(str(exc))}", file=sys.stderr)
+    except (AuditFieldError, OSError, ValueError, MemoryError, RecursionError) as exc:
+        print(
+            f"error: pass ran but could not be recorded: {_printable(str(exc) or type(exc).__name__)}",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -2097,6 +2412,8 @@ def _run(
         return 1
 
     if verifying and not payload["verified"]:
+        return 1
+    if not verifying and payload.get("chains_broken"):
         return 1
     return 0
 
@@ -2152,6 +2469,11 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
         "  positions are not in this backup by design "
         f"({', '.join(sorted(EXCLUDED))}); see docs/RESTORE.md."
     )
+    broken = payload.get("chains_broken")
+    if isinstance(broken, list) and broken:
+        say("  warning: chains that did NOT verify in this backup as it was taken (exit 1):")
+        for entry in broken:
+            say(f"    {entry}")
     refused = payload.get("refused")
     if isinstance(refused, list) and refused:
         say("  warning: sources NOT in this backup, refused as unsafe to read:")

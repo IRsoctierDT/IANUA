@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from ingest import normalize
+from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import FILE_MODE, prepare_lock, single_instance
 from scripts.run_backup import LOCK_FILE, MANIFEST_CAP, VERIFY_LOCK_FILE
 from scripts.run_backup import main as backup_main
@@ -149,20 +150,33 @@ def test_an_oversized_backed_up_file_is_refused_by_its_size_without_being_read(
 
 
 @pytest.mark.security
-def test_an_oversized_store_is_not_opened(tmp_path: Path) -> None:
-    """Opening it runs ``quick_check``, which reads every page; the size already
-    says this is not the store that was backed up, so nothing in the backup changes."""
+def test_an_oversized_store_is_not_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The size already says this is not the store that was backed up, so it is not
+    opened at all. In-process with a spy, because opening leaves nothing behind once it
+    closes, and found by review: the version of this test that compared the directory
+    listing passed with the guard removed."""
+    import scripts.run_backup as run_backup
+
     root = tmp_path / "root"
     root.mkdir()
     backup = _seed(root)
     _sparse(backup / _STORE)
-    before = sorted(path.name for path in (backup / _STORE).parent.iterdir())
+    opened: list[Path] = []
+    real_open = run_backup.EventStore.open
 
-    result = _verify(root, backup)
+    def spy(directory: Path, **kwargs: object) -> object:
+        opened.append(Path(directory))
+        return real_open(directory, **kwargs)  # type: ignore[arg-type]
 
-    assert result.returncode == 1, result.stdout[-600:] + result.stderr[-600:]
-    assert "is not the backed-up store and was not read further" in result.stdout
-    assert sorted(path.name for path in (backup / _STORE).parent.iterdir()) == before
+    monkeypatch.setattr(run_backup.EventStore, "open", spy)
+    clean = tmp_path / "clean"
+    clean.mkdir()
+
+    assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 1
+    assert "is not the backed-up store and was not read further" in capsys.readouterr().out
+    assert Path(os.path.realpath(backup)) not in opened, opened
 
 
 @pytest.mark.security
@@ -324,7 +338,8 @@ def test_verify_does_not_wait_for_a_take_and_a_take_does_not_wait_for_verify(
         capsys.readouterr()
         assert backup_main(["--root", str(root), "--name", "second", "--caller", "test"]) == 0
         assert "skipped" not in capsys.readouterr().out
-        assert backup_main(verify) == 0
+        # Skipped, and not a pass: nothing was verified (found by review).
+        assert backup_main(verify) == EXIT_RETRYABLE
         assert "skipped: another verify pass holds the lock" in capsys.readouterr().out
 
 
@@ -333,7 +348,8 @@ def test_verify_restore_still_serialises_with_a_take(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Only ``--verify`` moved: ``--verify-restore`` reads and writes the live root a
-    take reads, so it keeps the take's lock."""
+    take reads, so it keeps the take's lock. A skipped gate exits 4, never 0: it
+    verified nothing, and docs/RESTORE.md step 4b must not read it as a pass."""
     root = tmp_path / "root"
     root.mkdir()
     backup = _seed(root)
@@ -343,7 +359,7 @@ def test_verify_restore_still_serialises_with_a_take(
         assert held
         capsys.readouterr()
         argv = ["--root", str(root), "--caller", "test", "--verify-restore", str(backup)]
-        assert backup_main(argv) == 0
+        assert backup_main(argv) == EXIT_RETRYABLE
         assert "skipped: another backup pass holds the lock" in capsys.readouterr().out
 
 

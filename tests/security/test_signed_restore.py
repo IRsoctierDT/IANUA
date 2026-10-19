@@ -142,7 +142,13 @@ def test_a_tampered_signed_backup_does_not_verify_after_restore(
 
     assert _verify_restore(live, backup) == 1
     out = capsys.readouterr().out
-    assert "the backed-up chain does not authenticate" in out, out
+    expected = (
+        # Named for what it is: a take under a key always signs this chain.
+        "the backup carries no head signature for it and a key is set"
+        if tamper == "stripped-signature"
+        else "the backed-up chain does not authenticate"
+    )
+    assert expected in out, out
 
 
 @pytest.mark.security
