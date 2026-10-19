@@ -214,9 +214,12 @@ All notable changes to this project. Versions correspond to git tags.
   key on a node that holds only that. A pair that is not one pair is refused on both sides,
   and every unusable key raises the `ValueError` the writers already turn into "refusing to
   run". `--verify-restore` on a node holding only the public key now refuses before writing,
-  instead of leaving the restored chain's head unsigned. Measured red before on `main`:
-  14 of the 17 new cases in `tests/security/test_audit_writer_signer.py`, including every
-  writer end to end.
+  instead of leaving the restored chain's head unsigned. `compliance.evidence.record_run`
+  resolves the signer before appending any evidence line, so a refused run leaves no
+  unchained record for `score_history` to count, and the dashboard reports a refused key on
+  both the run and the evidence trail instead of a traceback (both found by review). Measured
+  red before on `main`: 19 of the 22 new cases in `tests/security/test_audit_writer_signer.py`,
+  including every writer end to end and every writer's refusal.
 - **The egress allow-list's reasons no longer depend on the Python patch release.** For an
   IPv4-mapped address (`::ffff:0.0.0.0`, `::ffff:169.254.169.254`), `is_unspecified`,
   `is_link_local` and `is_multicast` read False on 3.12.3 (Ubuntu 24.04's system Python) and
@@ -228,7 +231,6 @@ All notable changes to this project. Versions correspond to git tags.
   3.12.** On 3.13, `Path.resolve()` no longer raises on a loop and `is_dir()` swallows the
   `ELOOP`, so the root read "not a directory". The root now asks `stat()` for `ELOOP`
   directly.
-
 - **`--verify-restore` failed every correct restore whenever `AUDIT_HMAC_KEY` was set.**
   `_is_append_only` granted growth to every file whose name starts with a declared stream's,
   so the head signature `audit.log.sig` was prefix-compared. But every signed `record()`
