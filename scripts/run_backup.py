@@ -1494,7 +1494,7 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # equality for everything else. See _is_append_only for why the allow-list
     # is on the growing side.
     declared: set[Path] = set()
-    signatures: list[tuple[Path, dict[str, Any]]] = []
+    signatures: list[tuple[Path, str | None]] = []
     for entry in manifest["files"]:
         entry_path = Path(str(entry["path"]))
         unsafe = _unsafe_manifest_path(root, entry_path, what="manifest path")
@@ -1508,9 +1508,11 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             problems.append(f"{entry['path']} is missing from the live root")
             continue
         if entry_path in HEAD_SIGNATURES:
-            # Present, as its manifest entry requires; how it is compared is
-            # decided below, from the same chain report the verdict uses.
-            signatures.append((entry_path, entry))
+            # Present, as its manifest entry requires. Its bytes are compared NOW,
+            # so the chain report below is the last read this pass makes; whether
+            # the finding stands is decided from that report without touching the
+            # disk again (a second review round found the reads after it).
+            signatures.append((entry_path, _altered(entry, path)))
             continue
         if not _is_append_only(entry_path):
             if (altered := _altered(entry, path)) is not None:
@@ -1564,21 +1566,23 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 f"{why.split(':')[0]}"
             )
 
-    # Chains, verified after every stream above was compared and not before: a
-    # prefix comparison allows any growth, so a chain report taken first missed
-    # whatever an unquiesced writer appended in between (found by review).
+    # Chains, verified LAST: after every stream, report and signature above was
+    # read. A prefix comparison allows any growth, so a chain report taken before
+    # any of those reads missed whatever an unquiesced writer appended during
+    # them (found by review, twice). What lands after this read is unseen in any
+    # order; nothing below touches the disk.
     chains = _verify_chains(root)
 
     # Head signatures, from that same report. Where it verified the signature —
     # present, under the key, covering the current head — or already reports the
-    # chain broken, the bytes are not compared: every signed record() replaces
+    # chain broken, the byte finding is dropped: every signed record() replaces
     # the file whole, and this command's own gate decision has done exactly that
     # to data/events/audit.log.sig, which failed every correct signed restore as
     # REWRITTEN. Otherwise nothing re-signed it, so it must be the backed-up file.
-    for entry_path, entry in signatures:
-        if _signature_judged(chains.get(str(HEAD_SIGNATURES[entry_path]))):
-            continue
-        if (altered := _altered(entry, root / entry_path)) is not None:
+    for entry_path, altered in signatures:
+        if altered is not None and not _signature_judged(
+            chains.get(str(HEAD_SIGNATURES[entry_path]))
+        ):
             problems.append(altered)
 
     # Chains: entries may only GROW, and must still verify.

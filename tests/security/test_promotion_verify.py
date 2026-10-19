@@ -1476,3 +1476,52 @@ def test_the_chain_verdict_is_taken_after_the_streams_are_compared(
     assert _verify_restore(live, backup) == 1
     out = capsys.readouterr().out
     assert "data/pipeline/audit.log: chain does not verify" in out, out
+
+
+@pytest.mark.security
+def test_no_read_follows_the_chain_verdict(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chain verdict is the last read, signatures included.
+
+    Found by a second review round. The fix for the case above deferred each head
+    signature's byte comparison until after ``_verify_chains``, so with no key
+    (nothing judges a signature then, and its bytes are compared) those reads came
+    after the chain report and an append landing during one was seen by nothing.
+    Measured on ``b8b89fb``: a torn record appended from the signature's own
+    ``_digest_file`` call verified at exit 0. Signatures are now compared in the
+    file loop, before the chain report, and only whether the finding stands is
+    decided after it.
+    """
+    _drop_keys(monkeypatch)
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    monkeypatch.setenv("AUDIT_HMAC_KEY", secrets.token_hex(32))
+    _rotated_chain(source)  # a signed chain, so the backup carries a signature
+    backup = _take(source)
+    _drop_keys(monkeypatch)
+    _restore(backup, live)
+
+    import scripts.run_backup as run_backup
+
+    real = run_backup._digest_file
+    signature, stream = live / _PIPELINE_SIGNATURE, live / _PIPELINE_CHAIN
+    fired: list[Path] = []
+
+    def digest_then_append(path: Path) -> str:
+        digest = real(path)
+        if path == signature and not fired:
+            fired.append(path)
+            with stream.open("ab") as handle:
+                handle.write(b'{"seq": "torn')  # an append that did not finish
+        return digest
+
+    monkeypatch.setattr(run_backup, "_digest_file", digest_then_append)
+
+    code = _verify_restore(live, backup)
+    out = capsys.readouterr().out
+    assert fired, "premise: the signature's bytes were read, so the append happened"
+    assert code == 1, out
+    assert "data/pipeline/audit.log: chain does not verify" in out, out
