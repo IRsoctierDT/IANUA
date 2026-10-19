@@ -384,6 +384,18 @@ licensed here authenticates every request before it does anything.
   the all-interface surface it existed to prevent. This is the defect class this repository
   keeps finding in its own controls: a rule written as a string that the thing it means to
   stop can simply spell differently.
+
+  **And "parses as" has to mean the address a mapped form *denotes*, because the stdlib's
+  answer is interpreter-dependent.** The measurement above holds on CPython 3.11.17 and
+  3.13.16. On **3.12.3**, Ubuntu 24.04's system Python and inside `requires-python`,
+  `ip_address("::ffff:0.0.0.0").is_unspecified` is **False**, and `is_link_local` and
+  `is_multicast` drift the same way for `::ffff:169.254.169.254` and `::ffff:224.0.0.1`
+  (measured). A refusal written as `is_unspecified` on the parsed object therefore passes
+  the sixth spelling there, and CI cannot see it, because it installs the latest 3.12
+  patch, which delegates. `agents/policies/egress.py` reads `ipv4_mapped` before its shape
+  refusals and keeps its IPv4-mapped refusal as a second layer. The listener's bind refusal
+  owes the same. It is the string defect one level down: a rule written as a library
+  property that a different patch release answers differently.
 - **The active node listens; the passive node reaches out.** So the node that will be
   *promoted* — the one whose integrity matters most at the moment it matters — has no
   inbound surface at all. Egress is therefore from the passive node only, to a single host
@@ -599,7 +611,11 @@ tidiness — all of it measured against `ipaddress` rather than assumed:
   `ip_address(0)` is `0.0.0.0`, and — `bool` being an `int` subclass —
   `ip_address(True)` is `0.0.0.1`. So `{"address": 3232235777}` would have loaded as
   `192.168.1.1`: a declared destination no reviewer can see in a diff.
-- **Unspecified, multicast, limited-broadcast, link-local**, on the **parsed** value.
+- **Unspecified, multicast, limited-broadcast, link-local**, on the **parsed** value,
+  and for an IPv4-mapped form on the IPv4 address it denotes, because on CPython 3.12.3
+  the IPv6 object's own `is_unspecified`, `is_link_local` and `is_multicast` answer
+  False for mapped forms (measured; 3.11.17 and 3.13.16 answer True). See the stage 7
+  bullet above.
   Six spellings are unspecified and a literal-string rule catches one of them;
   `169.254.169.254` is the cloud instance-metadata address and the canonical SSRF
   target. Note that a *positive* shape test would not do: measured, `224.0.0.1` is
@@ -608,7 +624,9 @@ tidiness — all of it measured against `ipaddress` rather than assumed:
   `ip_address("::1").is_reserved` is **True**, so refusing everything reserved would
   refuse IPv6 loopback and make a single-box lab undeclarable.
 - **IPv4-mapped and scoped IPv6 forms**, because they *alias*: measured,
-  `::ffff:127.0.0.1 != 127.0.0.1` and `fe80::1%2 != fe80::1`, with unequal hashes. A
+  `::ffff:127.0.0.1 != 127.0.0.1` and `fe80::1%2 != fe80::1`, with unequal hashes. Every
+  mapped form is refused here, so for a mapped spelling of a shape refused above this is
+  the second layer on every interpreter, not the only one. A
   declared host that silently does not match itself written the other way is a
   confusing non-match, not a control.
 - **A duplicate after normalization**, since `::1` and `0:0:0:0:0:0:0:1` are one entry
