@@ -69,6 +69,7 @@ from store.errors import (
     IngestionOrderError,
     SchemaVersionError,
     StoreCorruptionError,
+    StoreFileError,
     StoreIntegrityError,
     StorePathError,
     StoreSidecarError,
@@ -403,6 +404,89 @@ def _sidecar(path: Path, suffix: str) -> Path:
     return path.with_name(path.name + suffix)
 
 
+def _file_problem(path: Path) -> str | None:
+    """Why SQLite must not be handed ``path``, or ``None`` if it is absent or safe.
+
+    One ``lstat``, never following a link. Absent is ``None``: ``ENOENT``, and
+    ``ENOTDIR`` (an ancestor is not a directory, so nothing can exist here, and
+    the ``mkdir`` in :meth:`EventStore.open` raises the honest error). Any other
+    ``stat`` failure is a problem rather than absent, because the open it
+    precedes would fail on it anyway. Present must be a regular file with exactly
+    one link. Size and content are not examined. The one rule behind both
+    :func:`refuse_unsafe_database` and :func:`refuse_unsafe_sidecars`, so the
+    two cannot drift.
+    """
+    try:
+        found = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        return f"cannot be stated ({exc.strerror or exc})"
+    kind = stat.S_IFMT(found.st_mode)
+    if kind != stat.S_IFREG:
+        return f"is not a regular file ({_FILE_KINDS.get(kind, 'an unrecognised type')})"
+    if found.st_nlink != 1:
+        return f"has {found.st_nlink} hard links"
+    return None
+
+
+def refuse_unsafe_database(database: Path) -> None:
+    """Refuse the database file itself unless SQLite may open it.
+
+    The same rule as :func:`refuse_unsafe_sidecars`, applied to the one file
+    that check deliberately did not state: absent (a fresh root, which
+    :meth:`EventStore.open` then creates) or a regular file with exactly one
+    link. :func:`store.paths.confine` already refuses a symlink here; this adds
+    everything else. Measured on the tree before it, through the CLIs except
+    where noted (:class:`store.errors.StoreFileError` has the detail):
+
+    * **One link.** SQLite writes the database in place, so a second name is a
+      second file written. A ``cp -al`` snapshot of the store gained 4 KiB and a
+      new digest when the collector ran; a 0-byte file outside ``data/`` linked
+      in at this path was initialised as a store, 0 -> 61440 bytes, by the
+      collector, the pipeline and retention at exit 0, and by the SLI reporter.
+    * **Not a FIFO.** SQLite falls back to a read-only open after ``EACCES``,
+      and a read-only open of a FIFO blocks until a writer appears: the
+      collector, the pipeline and retention hung holding their locks. A FIFO
+      the account can write gave a bare "disk I/O error" instead.
+    * **Not a directory or socket**, which SQLite cannot open either: measured
+      through :meth:`EventStore.open`, each gave a bare "unable to open database
+      file" that named nothing. A device is refused by the same type rule; that
+      case was not measured.
+
+    ``scripts/run_backup.py`` calls this rather than keeping a copy, because its
+    take reads the live store through ``sqlite3.connect`` and never reaches
+    :meth:`EventStore.open`. It catches the error and reports
+    :attr:`StoreFileError.problem` beside its other findings.
+
+    **What this does not close.** The ``lstat`` and SQLite's open are separate
+    syscalls, and SQLite cannot be handed a descriptor this function has
+    checked. Swapping the file between them requires creating names in the
+    events directory, which :meth:`EventStore.open` keeps at ``0o700``, and with
+    that access the database could be rewritten directly. What this catches is a
+    database that is already wrong when the store is opened: a hard-link
+    snapshot of ``data/``, a restore made with ``cp -al``, a mistake, or a
+    planted file.
+
+    Args:
+        database: The database path, already confined by
+            :func:`store.paths.confine`. Stated with ``lstat``, never opened.
+
+    Raises:
+        StoreFileError: if ``database`` exists and is not a regular, singly
+            linked file, or cannot be stated for a reason other than absence.
+    """
+    problem = _file_problem(database)
+    if problem is None:
+        return
+    raise StoreFileError(
+        f"{database} {problem}; the store opens only a regular file with one link (SQLite "
+        "would block on a FIFO and write through a second link), so the store was not "
+        "opened (see store/README.md, 'The database file itself')",
+        problem=problem,
+    )
+
+
 def refuse_unsafe_sidecars(database: Path) -> None:
     """Refuse a sidecar SQLite would open beside ``database`` unless it is safe to.
 
@@ -448,8 +532,8 @@ def refuse_unsafe_sidecars(database: Path) -> None:
     a leftover, a hard-link snapshot of ``data/``, or a planted file.
 
     Args:
-        database: The database path. Not opened or stated itself; only the
-            three names beside it are.
+        database: The database path. Not opened or stated here; only the
+            three names beside it are. :func:`refuse_unsafe_database` states it.
 
     Raises:
         StoreSidecarError: naming the first sidecar that is not a regular,
@@ -462,23 +546,9 @@ def refuse_unsafe_sidecars(database: Path) -> None:
     """
     for suffix in SIDECAR_SUFFIXES:
         side = _sidecar(database, suffix)
-        try:
-            found = side.lstat()
-        except (FileNotFoundError, NotADirectoryError):
-            # ENOTDIR: an ancestor is not a directory, so the sidecar cannot
-            # exist. Read as absent, so the mkdir in open() raises the honest
-            # error rather than this check blaming a sidecar.
+        problem = _file_problem(side)
+        if problem is None:
             continue
-        except OSError as exc:
-            problem = f"cannot be stated ({exc.strerror or exc})"
-        else:
-            kind = stat.S_IFMT(found.st_mode)
-            if kind != stat.S_IFREG:
-                problem = f"is not a regular file ({_FILE_KINDS.get(kind, 'an unrecognised type')})"
-            elif found.st_nlink != 1:
-                problem = f"has {found.st_nlink} hard links"
-            else:
-                continue
         raise StoreSidecarError(
             f"{database} has a {suffix} beside it that {problem}; SQLite opens {side.name} "
             "by name with the store and would block on, follow or write through it, so the "
@@ -563,15 +633,19 @@ class EventStore:
 
         Raises :class:`StorePathError` for a filename that is not a plain
         filename or that resolves outside the events directory,
-        :class:`StoreSidecarError` (a subclass) for a ``-journal``, ``-wal``
-        or ``-shm`` beside it that is not a regular, singly linked file, and
-        :class:`SchemaVersionError` if the database was written by a different
-        schema version.
+        :class:`StoreFileError` (a subclass) for a database file that exists
+        and is not a regular, singly linked file, :class:`StoreSidecarError`
+        (a subclass of that) for a ``-journal``, ``-wal`` or ``-shm`` beside it
+        that is not one either, and :class:`SchemaVersionError` if the database
+        was written by a different schema version.
         """
         path = cls._resolve(root, filename)
         # Before anything is created or narrowed, so a refusal leaves the tree
         # as it found it, and before `connect`, which is where SQLite would
-        # block on a FIFO or write through a link. See refuse_unsafe_sidecars.
+        # block on a FIFO or write through a link. The database first, because
+        # it is the file SQLite opens first; absent still means "create it".
+        # See refuse_unsafe_database and refuse_unsafe_sidecars.
+        refuse_unsafe_database(path)
         refuse_unsafe_sidecars(path)
         # Owner-only, matching the cursor, the offsets and the audit log. The
         # database holding every collected event was the ONE piece of state
