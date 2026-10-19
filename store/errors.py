@@ -119,6 +119,16 @@ class StoreIntegrityError(StoreError):
     outside this platform. The store surfaces that instead of skipping the
     row, because a query that quietly returns fewer events than history holds
     is indistinguishable to the caller from a quiet period.
+
+    Also covers a projection that hashes correctly and still will not rebuild:
+    a field past its bound, the case ``DESIGN.md`` §11 records stopping every
+    detection cycle on a store. A matching hash does not settle provenance,
+    because ``event_id`` is an unkeyed sha256 that anyone who can write the
+    file can recompute. So such a row was written by an earlier build that
+    lacked the write-side read-back, or written outside the API. The reader's
+    ``MalformedProjectionError`` is its ``__cause__``. It used to reach callers
+    bare, and as an ``IngestError`` it slipped past every ``except
+    StoreError``, including the ``store-readable`` probe that exists for it.
     """
 
 

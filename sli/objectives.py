@@ -182,7 +182,10 @@ OBJECTIVES: tuple[Objective, ...] = (
             "making every subsequent query raise MalformedProjectionError for "
             "the whole result set, which run_cycle does not catch — one record "
             "stopped every later detection cycle on that store. A store that "
-            "accepts writes and cannot be read is the failure this measures."
+            "accepts writes and cannot be read is the failure this measures. "
+            "store/ now raises that row as StoreIntegrityError chained from "
+            "the reader's error, which is what lets this probe grade it "
+            "breached rather than unmeasurable."
         ),
     ),
     Objective(
