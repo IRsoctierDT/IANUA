@@ -34,6 +34,7 @@ from agents.policies.audit import (
     AuditLogger,
     escape_delimiter,
     reject_delimiter,
+    signer_from_env,
     signing_key_from_env,
     verifier_from_env,
 )
@@ -87,6 +88,7 @@ __all__ = [
     "guard",
     "load_bundle",
     "reject_delimiter",
+    "signer_from_env",
     "signing_key_from_env",
     "verifier_from_env",
 ]

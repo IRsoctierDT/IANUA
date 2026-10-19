@@ -55,9 +55,10 @@ from pathlib import Path
 from agents.policies.audit import (
     AuditLogger,
     VerificationReport,
-    signing_key_from_env,
+    signer_from_env,
     verifier_from_env,
 )
+from agents.policies.signing import Signer
 from compliance.engine import ComplianceReport
 
 _EVIDENCE_DIR = Path("data") / "compliance"
@@ -148,8 +149,8 @@ def _confirm_chain_path(root: Path, directory_fd: int) -> Path:
     return directory / _AUDIT_FILE
 
 
-def _logger(chain: Path, clock: Callable[[], str] | None) -> AuditLogger:
-    return AuditLogger(chain, clock=clock, signing_key=signing_key_from_env())
+def _logger(chain: Path, clock: Callable[[], str] | None, signer: Signer | None) -> AuditLogger:
+    return AuditLogger(chain, clock=clock, signer=signer)
 
 
 def record_run(
@@ -159,7 +160,11 @@ def record_run(
 
     Returns the records written. ``clock`` is injectable for deterministic
     tests and defaults to the report's own timestamp for the evidence lines.
+    Raises ``ValueError`` on unusable audit key material before anything is
+    written, so a refused run leaves no unchained record for ``score_history``
+    to count.
     """
+    signer = signer_from_env()
     records = tuple(
         EvidenceRecord(
             recorded_at=report.generated_at,
@@ -191,7 +196,7 @@ def record_run(
     # ``ComplianceReport.score`` (0 for no controls) both already refuse. A
     # chain record is what an auditor reads; it must not attest to a pass
     # nothing was measured for.
-    _logger(chain, clock).record(
+    _logger(chain, clock, signer).record(
         actor="compliance-engine",
         action="compliance_run",
         action_class="read_only",
@@ -235,9 +240,10 @@ def load_recent(root: Path, limit: int = 200) -> tuple[EvidenceRecord, ...]:
 def _reader(root: Path) -> AuditLogger:
     """A read-only view of the chain, resolving the *verifier* scheme.
 
-    Separate from :func:`_logger`, which writes: a writer needs a key that can
-    sign and :class:`Ed25519Verifier` cannot, so the two cannot share one
-    resolution. Reading through ``signing_key_from_env`` reported an Ed25519
+    Separate from :func:`_logger`, which writes through ``signer_from_env``: a
+    writer needs a key that can sign and :class:`Ed25519Verifier` cannot, so the
+    two cannot share one resolution. Reading through the HMAC-only
+    ``signing_key_from_env`` reported an Ed25519
     chain as ``unsigned`` — the same defect ``scripts.audit_maintenance`` was
     fixed for, surviving here because nothing checked that every reader agreed.
     """

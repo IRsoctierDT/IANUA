@@ -214,6 +214,26 @@ All notable changes to this project. Versions correspond to git tags.
   escapes are closed with it (an integer timestamp past float range, and JSON nested past
   the decoder), and the reader's sentence is bounded at 200 characters because two of its
   shapes quote the row.
+- **Every chain writer signs with Ed25519 when that is the configured scheme.** All five
+  writers (`run_backup`, `run_retention`, `run_pipeline`, `run_collector`,
+  `compliance.evidence`) resolved the HMAC-only `signing_key_from_env`, so an Ed25519
+  deployment wrote every chain head unsigned and its public-key verifiers reported every
+  chain broken, despite `.env.example` telling operators to "sign with the private key".
+  The new `agents.policies.audit.signer_from_env` has `verifier_from_env`'s precedence (HMAC,
+  then `AUDIT_ED25519_PRIVATE_KEY`). `verifier_from_env` now also verifies with the private
+  key on a node that holds only that. A pair that is not one pair is refused on both sides,
+  and every unusable key raises the `ValueError` the writers already turn into "refusing to
+  run". `--verify-restore` on a node holding only the public key now refuses before writing,
+  instead of leaving the restored chain's head unsigned. `compliance.evidence.record_run`
+  resolves the signer before appending any evidence line, so a refused run leaves no
+  unchained record for `score_history` to count, and the dashboard reports a refused key on
+  both the run and the evidence trail instead of a traceback (both found by review). Measured
+  red before on `main`: 19 of the 22 new cases in `tests/security/test_audit_writer_signer.py`,
+  including every writer end to end and every writer's refusal.
+- **A symlink-loop corpus root reads "cannot be resolved" on Python 3.13 as on 3.11 and
+  3.12.** On 3.13, `Path.resolve()` no longer raises on a loop and `is_dir()` swallows the
+  `ELOOP`, so the root read "not a directory". The root now asks `stat()` for `ELOOP`
+  directly.
 - **The egress allow-list's mapped-address refusals no longer depend on the CPython patch
   release.** `tests/security/test_egress_allowlist.py` was red on CPython 3.12.3, Ubuntu
   24.04's system Python and inside `requires-python`, so a contributor running §7 locally

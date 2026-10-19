@@ -105,3 +105,23 @@ def test_a_symlink_loop_root_is_a_validation_error(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="cannot be resolved"):
         ingest(loop)
     assert KnowledgeBaseAgent(kb_root=loop).cite("x") == []
+
+
+def test_a_symlink_loop_root_reads_the_same_whatever_resolve_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 3.13 behaviour, reproduced on every interpreter.
+
+    ``Path.resolve()`` raises ``RuntimeError`` on a loop on 3.11 and 3.12 and
+    returns the path unchanged on 3.13, after which ``is_dir()`` swallows the
+    ``ELOOP``: measured, the root was reported "not a directory" on 3.13 only.
+    This patches ``resolve`` to the 3.13 behaviour so the case is exercised in a
+    CI matrix that does not run 3.13. A missing root keeps its own message.
+    """
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    with pytest.raises(ValidationError, match="cannot be resolved"):
+        ingest(loop)
+    with pytest.raises(ValidationError, match="not a directory"):
+        ingest(tmp_path / "missing")

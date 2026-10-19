@@ -48,11 +48,18 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agents.policies.signing import HmacSigner, Signer, ed25519_verifier_from_env
+from agents.policies.signing import (
+    HmacSigner,
+    Signer,
+    ed25519_signer_from_env,
+    ed25519_verifier_from_env,
+)
 
 _GENESIS_HASH = "0" * 64
 #: Default environment variable holding the audit-log HMAC signing key.
 _SIGNING_KEY_ENV = "AUDIT_HMAC_KEY"
+#: Signed once and verified once, to prove a configured Ed25519 pair is one pair.
+_PAIR_PROBE = b"ianua-audit-ed25519-pair-check"
 
 
 def signing_key_from_env(var: str = _SIGNING_KEY_ENV) -> bytes | None:
@@ -63,6 +70,64 @@ def signing_key_from_env(var: str = _SIGNING_KEY_ENV) -> bytes | None:
     """
     value = os.environ.get(var, "")
     return value.encode("utf-8") if value else None
+
+
+def _ed25519_from_env() -> tuple[Signer | None, Signer | None]:
+    """``(signer, verifier)`` from the two Ed25519 variables, checked to be one pair.
+
+    Either may be ``None``. When both are set, a signature made with the private
+    key must verify under the public key. A writer signing with one key while
+    every reader verifies with another reports every chain ``invalid``, so a
+    mismatch — one half rotated and not the other — is refused here, at
+    resolution, instead of being discovered later as a broken chain. Raises
+    ``ValueError`` for a bad or mismatched key and ``RuntimeError`` without the
+    ``.[crypto]`` extra; no message carries key material.
+    """
+    signer = ed25519_signer_from_env()
+    verifier = ed25519_verifier_from_env()
+    if (
+        signer is not None
+        and verifier is not None
+        and not verifier.verify(_PAIR_PROBE, signer.sign(_PAIR_PROBE))
+    ):
+        raise ValueError(
+            "AUDIT_ED25519_PRIVATE_KEY and AUDIT_ED25519_PUBLIC_KEY are not one key pair: "
+            "chains signed with the first would fail verification with the second"
+        )
+    return signer, verifier
+
+
+def signer_from_env() -> Signer | None:
+    """The scheme a chain **writer** signs its head with, or ``None``.
+
+    The writing counterpart of :func:`verifier_from_env`, with the same
+    precedence, so one node's writers and readers agree: HMAC (``AUDIT_HMAC_KEY``)
+    when set, else Ed25519 from ``AUDIT_ED25519_PRIVATE_KEY``, else ``None``
+    (the head is written unsigned, as with no key at all). A node holding only
+    ``AUDIT_ED25519_PUBLIC_KEY`` can verify and cannot sign, so it writes unsigned
+    too, and its verifier then reports the head it appended to as not ``valid``.
+    A node that writes to an Ed25519-signed chain must hold the private key.
+
+    Until this existed every writer resolved :func:`signing_key_from_env`, which
+    is HMAC-only, so an Ed25519 deployment's chains were written unsigned and
+    never verified, although ``.env.example`` already told operators to "sign
+    with the private key".
+
+    **Every unusable configuration raises ``ValueError``**: a bad hex key, a key
+    of the wrong length, a private key that is not the configured public key's
+    pair, and Ed25519 without the ``.[crypto]`` extra (re-raised from its
+    ``RuntimeError``). ``ValueError`` is the one exception every writer already
+    turns into "audit log unusable, refusing to run", so key material that exists
+    but cannot sign stops the pass instead of degrading it to an unsigned write.
+    """
+    hmac_key = signing_key_from_env()
+    if hmac_key is not None:
+        return HmacSigner(hmac_key)
+    try:
+        signer, _ = _ed25519_from_env()
+    except RuntimeError as exc:  # the .[crypto] extra is not installed
+        raise ValueError(str(exc)) from exc
+    return signer
 
 
 def verifier_from_env() -> Signer | None:
@@ -89,18 +154,23 @@ def verifier_from_env() -> Signer | None:
     claimed all of them and only the first two were true, which is how the
     third kept reporting a stale Ed25519 head signature as intact.
 
+    For Ed25519 the public key is preferred, as the least capability that can
+    verify. A node holding only ``AUDIT_ED25519_PRIVATE_KEY`` verifies with that
+    key's signer, because it can check its own signatures, so its writers and
+    readers agree without the public key being configured a second time. When
+    both are set they must be one pair (see :func:`_ed25519_from_env`).
+
     *Writers* do **not** use this: they need a key that can sign, and
     :class:`Ed25519Verifier` deliberately cannot. They resolve
-    :func:`signing_key_from_env` instead, which is HMAC-only — so an Ed25519
-    deployment's chains are written unsigned. That is a real gap and a wider
-    one than this function; it is recorded rather than implied here, because
-    closing it means deciding whether the platform wants an Ed25519 *signing*
-    posture at all (``ed25519_signer_from_env`` exists and no writer calls it).
+    :func:`signer_from_env`, which has the same precedence. Until it existed
+    every writer was HMAC-only, so an Ed25519 deployment's chains were written
+    unsigned and never verified.
     """
     hmac_key = signing_key_from_env()
     if hmac_key is not None:
         return HmacSigner(hmac_key)
-    return ed25519_verifier_from_env()
+    signer, verifier = _ed25519_from_env()
+    return verifier if verifier is not None else signer
 
 
 def _utc_now() -> str:

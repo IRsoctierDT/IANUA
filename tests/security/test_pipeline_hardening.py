@@ -530,7 +530,7 @@ def test_the_cli_reaches_the_environment_only_for_the_signing_key() -> None:
         if isinstance(node, ast.Attribute):
             assert node.attr not in {"environ", "environb", "getenv"}, (
                 f"the CLI reaches the process environment via .{node.attr}; only "
-                "signing_key_from_env may, and an identity never may"
+                "signer_from_env may (the signing key), and an identity never may"
             )
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -544,9 +544,9 @@ def test_the_cli_reaches_the_environment_only_for_the_signing_key() -> None:
             # `from agents.policies.audit import signing_key_from_env` is the
             # sanctioned path and is allowed; any other *_from_env is not.
             for alias in node.names:
-                assert alias.name in {"signing_key_from_env"} or not alias.name.endswith(
-                    "_from_env"
-                ), f"{alias.name} is an environment-sourced value other than the signing key"
+                assert alias.name in {"signer_from_env"} or not alias.name.endswith("_from_env"), (
+                    f"{alias.name} is an environment-sourced value other than the signing key"
+                )
 
 
 @pytest.mark.security
