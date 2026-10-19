@@ -141,6 +141,7 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `TRUNCATED` / `REWRITTEN` | a declared **append-only** file shrank, or its history was replaced rather than appended to |
 | `ALTERED` | a declared file that is **not** append-only — a report — differs in size or digest. A report is rewritten whole and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
 | `UNDECLARED` | a file is in the live root that the manifest never listed, **or `data/reports` is itself a symlink**. Step 4's `cp -a` **merges**, so this is a file from before the restore that outlived it. **Not** store evidence loss — remove it, then re-run |
+| `LINKED` (or, for `data/events/audit.log`, a refusal on stderr at exit `1` before anything is written) | a live file is the backup's own file: step 4 was a hard-link copy (`cp -al`, `rsync --link-dest`, `ln`). Every later write to it — step 5's re-collection, any pass, this gate's own audit record — would change the backup. Remove the live tree's linked files and repeat step 4 with `cp -a`. A hard-link snapshot of `data/backups` itself is fine: `--verify` does not write to the backup it checks |
 | *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
 | `has no '…'` / `is not an integer` / `is not a string` / *store was not compared* | the manifest's attestation lacks a field (every one is required: `events`, `observables`, `digest`, `observables_digest`, `high_water`, `schema_version`) or carries one of the wrong type (counts and the schema version must be integers, digests strings, the mark a number or null — a string `"40"` is refused, not coerced). The store is **not** compared on what is left — a verdict on part of the evidence is not a verdict |
 | `store attestation schema_version: …` / `high_water: …` | the restored store's schema version differs from the attested one (a migration question, not a completeness one), or its high-water mark does while the event count matches. `--verify` has always compared every attestation field; `--verify-restore` now does too |
@@ -231,7 +232,9 @@ python -m scripts.run_backup --root /srv/ianua --verify /path/to/backup   # must
 # 3. THE ORDERING RULE. Remove the positions before the store comes back.
 rm -f /srv/ianua/data/collect/offsets.json /srv/ianua/data/pipeline/cursor.json
 
-# 4. Put the state back.
+# 4. Put the state back. A COPY, never a hard link (cp -al, rsync --link-dest,
+#    ln): a hard-linked live file is the backup's own file, so every later write
+#    to the live root changes the backup. 4b refuses one.
 cp -a /path/to/backup/data/. /srv/ianua/data/
 
 # 4b. THE PROMOTION GATE. Verify what actually landed, BEFORE re-collecting.

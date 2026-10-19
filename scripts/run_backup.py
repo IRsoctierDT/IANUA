@@ -504,6 +504,56 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
     return problems
 
 
+def _same_file(left: Path, right: Path) -> bool:
+    """Are these two names one file? ``False`` when either cannot be looked up."""
+    try:
+        return os.path.samestat(os.lstat(left), os.lstat(right))
+    except (OSError, ValueError):
+        return False
+
+
+def _linked(relative: Path) -> str:
+    """The finding for a live file that is the backup's own file."""
+    return (
+        f"LINKED: {relative} in the live root is the backup's own file (a hard link), so "
+        "the next write to it, step 5's re-collection or any later pass, changes the backup "
+        "too. A restore is a copy: repeat docs/RESTORE.md step 4 with cp -a"
+    )
+
+
+def _linked_to_backup(root: Path, argument: Path) -> str | None:
+    """Why this ``--verify-restore`` must not write its gate record, or ``None``.
+
+    The pass's first write is the gate decision in the live chain, so a live
+    chain that *is* the backup's chain is refused before it. Measured on main:
+    with step 4 done as a hard-link copy (``cp -al``), the gate and pass records
+    appended through the shared inode into the backup's own ``audit.log``, which
+    then failed ``--verify`` for good, while this check exited 0 "restore
+    verified" (found by independent review).
+
+    Identity, not the link count: ``st_nlink > 1`` is also what a hard-link
+    snapshot farm of ``data/backups`` (``cp -al``, rsnapshot) leaves on every
+    backup file, and refusing it would fail a correct deployment, the trade
+    ``scripts/_locking.py`` already declined. Only ``audit.log`` is checked
+    here: the head signature is replaced through a new inode, and the lock is
+    created read-only and never written (measured). The store and every other
+    declared file are reported by :func:`_verify_restore`.
+    """
+    try:
+        backup = Path(os.path.realpath(argument))
+    except RecursionError:
+        return None  # the pass refuses it by name, as --verify does
+    relative = AUDIT_SUBDIR / AUDIT_FILE
+    if _same_file(root / relative, backup / relative):
+        return (
+            f"the live {relative} is the backup's own file (a hard link), and this pass "
+            "appends to it, which would change the backup it is checking. A restore is a "
+            "copy: repeat docs/RESTORE.md step 4 with cp -a, never with cp -al, "
+            "rsync --link-dest or ln"
+        )
+    return None
+
+
 def _live_tree_inventory(root: Path) -> tuple[list[Path], list[str]]:
     """Every file presently in the copied trees, plus any tree root that is unsafe.
 
@@ -1383,6 +1433,11 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             f"no store at {db}: the restore did not put one there, and this check will "
             "not create one to measure"
         )
+    elif _same_file(db, backup / EVENTS_SUBDIR / DEFAULT_FILENAME):
+        # Identity, which no comparison can see: a hard-linked store compares
+        # equal to itself. Not opened, so nothing here touches the backup's own
+        # file. See _linked_to_backup.
+        problems.append(_linked(EVENTS_SUBDIR / DEFAULT_FILENAME))
     elif (unopenable := _unsafe_to_open(db, what=f"the live store {db}")) is not None:
         problems.append(unopenable)
     else:
@@ -1500,6 +1555,11 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         backed_up = int(entry["size"])
         if not path.is_file():
             problems.append(f"{entry['path']} is missing from the live root")
+            continue
+        if _same_file(path, backup / entry_path):
+            # Equal to the backup by construction, so no comparison below can
+            # fail; the finding is the identity itself.
+            problems.append(_linked(entry_path))
             continue
         live_size = path.stat().st_size
         if _head_signature_chain(entry_path) is not None:
@@ -1799,6 +1859,12 @@ def _run(
         mode = "take"
     verifying = mode != "take"
     label = f"{ACTION_NAME}:{mode}"
+
+    if mode == "verify-restore":
+        shared = _linked_to_backup(root, args.verify_restore)
+        if shared is not None:
+            print(f"error: {_printable(shared)}", file=sys.stderr)
+            return 1
 
     try:
         audit = AuditLogger(root / AUDIT_SUBDIR / AUDIT_FILE, signing_key=signing_key_from_env())
