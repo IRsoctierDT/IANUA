@@ -92,10 +92,11 @@ speaks about the copy and says nothing about whether exactly one node is
 active.
 
 **Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
-or verified, or a take was skipped because another take held the lock; ``1``
-the backup, either verification or the audit write failed — including any
-mismatch found by ``--verify`` or ``--verify-restore``, and a take whose own
-copy of a chain does not verify (the backup is still written, and names it);
+or verified, or a take was skipped because another take or ``--verify-restore``
+held the lock (a take whose own copy of a chain does not verify still exits
+``0``, and names the chain in a warning and in ``chains_broken``); ``1`` the
+backup, either verification or the audit write failed — including any mismatch
+found by ``--verify`` or ``--verify-restore``;
 ``2`` bad arguments or the single-instance lock could not be taken; ``3``
 blocked by policy; ``4`` retryable — another writer held the store's write
 lock, so no backup was taken and nothing was left behind, or a ``--verify`` or
@@ -157,6 +158,7 @@ from store import (  # noqa: E402
     StoreError,
 )
 from store.paths import (  # noqa: E402
+    SIDECARS,
     confine,
     kind_of,
     linked_database_problem,
@@ -182,6 +184,12 @@ VERIFY_LOCK_FILE = "verify.lock"
 #: this gate add (two per run, a few hundred bytes each), and small enough that
 #: appending, which reads the head segment whole, is bounded.
 LIVE_CHAIN_GROWTH = 16 * 1024 * 1024
+#: The largest live segment of that chain the gate will read when the backup
+#: does not list it: a same-node restore merges into the old tree, so newer
+#: archives the backup never held are legitimate (found by review: refusing
+#: them by name failed a correct restore, and repeating step 4 could not clear
+#: it). Far above any rotation size this platform configures.
+LIVE_SEGMENT_CAP = 256 * 1024 * 1024
 #: The exit a skipped --verify or --verify-restore returns: nothing was
 #: verified, so it must never read as a pass, and it is retryable, not a page.
 EXIT_SKIPPED_VERIFY = EXIT_RETRYABLE
@@ -629,6 +637,7 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
     backup verified without a key passes on the chain alone, as before.
     """
     problems: list[str] = list(_events_chain_problems(manifest))
+    problems.extend(_backup_inventory_problems(backup, manifest))
     verifier = verifier_from_env()
     for chain in CHAIN_FILES:
         recorded = bool(manifest["chains"][str(chain)].get("present"))  # shape-checked
@@ -726,6 +735,11 @@ def _events_chain_problems(manifest: dict[str, Any]) -> list[str]:
     entries = record.get("entries")
     if record.get("present") and _is_count(entries) and entries >= 1:
         return []
+    checkpoint = f"{AUDIT_SUBDIR / AUDIT_FILE}.checkpoint"
+    if record.get("present") and any(e["path"] == checkpoint for e in manifest["files"]):
+        # A rotation that pruned every segment (--retain-segments 0) inside the
+        # take's copy window leaves only the checkpoint (found by review).
+        return []
     return [
         f"{AUDIT_SUBDIR / AUDIT_FILE}: the manifest records it "
         f"{'present with ' + repr(entries) + ' entries' if record.get('present') else 'absent'}. "
@@ -735,32 +749,59 @@ def _events_chain_problems(manifest: dict[str, Any]) -> list[str]:
 
 
 def _linked_live_chain(root: Path) -> str | None:
-    """Why this pass must not append its gate record to ``root``'s chain, or ``None``.
+    """Why this pass must not touch ``root``'s chains, or ``None``.
 
     Every mode's first write is the gate decision in ``data/events/audit.log``,
-    so a live chain with a second name is refused before it, whatever the
-    other name is: measured, found by independent review, a ``--verify`` or a
-    take whose ``--root`` was a hard-link copy of a backup appended its gate
-    record into that backup, which then failed ``--verify`` for good. A copied
-    restore and a hard-link farm of ``data/backups`` both leave the live chain
-    with one link. Checked by path, before the chain's lock is taken: a link
-    swapped in while the pass waits for that lock is not caught, which needs
-    write access to ``data/events``.
+    and a take then holds every chain's lock while it copies, so a chain or a
+    chain lock with a second name is refused before either, whatever the other
+    name is. Measured, found by independent review: a ``--verify`` or a take
+    whose ``--root`` was a hard-link copy of a backup appended its gate record
+    into that backup; and a chain lock that was the same file as
+    ``data/backups/backup.lock`` (``cp -a`` keeps hard links *between* the
+    files it copies, so a backup holding one restores it) made 4b and every
+    take wait for ever on the lock they held themselves. A copied restore and a
+    hard-link farm of ``data/backups`` leave every one of these with one link.
+    Checked by path, before the lock is taken: a link swapped in while the pass
+    waits for that lock is not caught, which needs write access to the chain's
+    directory.
     """
-    chain = root / AUDIT_SUBDIR / AUDIT_FILE
-    try:
-        links = os.lstat(chain).st_nlink
-    except OSError:
-        return None  # absent, or unusable: AuditLogger says which
-    if links <= 1:
-        return None
-    return (
-        f"the live {AUDIT_SUBDIR / AUDIT_FILE} shares its file with {links - 1} other "
-        "name(s), and this pass appends to it, which would change whatever else uses that "
-        "file (a backup, if the root was restored with cp -al, rsync --link-dest or ln). "
-        f"Find them with find <mount> -xdev -samefile {chain}. Remove the linked files from "
-        "this root, then repeat docs/RESTORE.md step 4 with cp -a"
-    )
+    for chain in CHAIN_FILES:
+        for path in (root / chain, root / chain.with_name(chain.name + ".lock")):
+            try:
+                links = os.lstat(path).st_nlink
+            except OSError:
+                continue  # absent, or unusable: AuditLogger says which
+            if links <= 1:
+                continue
+            return (
+                f"the live {path.relative_to(root)} shares its file with {links - 1} other "
+                "name(s), and this pass writes or locks it, which would change or wait on "
+                f"whatever else uses that file. Find them with find <mount> -xdev -samefile "
+                f"{path} and remove the names that are not this root's own. If this root was "
+                "restored with cp -al, rsync --link-dest or ln, or from a backup that holds "
+                "hard links, remove its linked files and repeat docs/RESTORE.md step 4 with "
+                "cp -a --no-preserve=links. Never restore over a live root to clear this"
+            )
+    return None
+
+
+def _root_in_backup(root: Path, backup: Path) -> str | None:
+    """Why ``root`` must not be the root of a pass verifying ``backup``, or ``None``.
+
+    Every mode writes its audit records under ``--root``, so a ``--root`` that is
+    the backup, or inside it, writes into the backup: measured, ``--verify`` with
+    the backup as its own root appended its gate and outcome records to the
+    backup's chain and created a lock in it, and the backup never verified
+    again (found by independent review).
+    """
+    resolved = Path(os.path.realpath(root))
+    if resolved == backup or resolved.is_relative_to(backup):
+        return (
+            f"--root {resolved} is the backup being verified, or inside it, and this pass "
+            "writes its audit records under --root, which would change the backup. Use the "
+            "lab-data root as --root"
+        )
+    return None
 
 
 def _live_chain_bound(root: Path, backup: Path) -> str | None:
@@ -778,14 +819,18 @@ def _live_chain_bound(root: Path, backup: Path) -> str | None:
     """
     try:
         manifest = _load_manifest(backup)
-    except StoreError:
-        return None  # refused by name once the pass runs
-    sizes = {str(entry["path"]): entry["size"] for entry in manifest["files"]}
-    chain = AUDIT_SUBDIR / AUDIT_FILE
-    parent = root / chain.parent
-    if not parent.is_dir() or parent.is_symlink():
-        return None  # main() refuses a symlinked data/events at exit 2, before this
-    for child in sorted(parent.iterdir()):
+        sizes = {str(entry["path"]): entry["size"] for entry in manifest["files"]}
+        chain = AUDIT_SUBDIR / AUDIT_FILE
+        parent = root / chain.parent
+        if not parent.is_dir() or parent.is_symlink():
+            return None  # main() refuses a symlinked data/events at exit 2, before this
+        children = sorted(parent.iterdir())
+    except (StoreError, OSError):
+        # Refused by name once the pass runs, inside its guarded try: measured,
+        # an unreadable backup was a PermissionError traceback here (found by
+        # review).
+        return None
+    for child in children:
         if not child.name.startswith(chain.name) or child.name.endswith((".lock", ".sig")):
             continue
         relative = str(child.relative_to(root))
@@ -794,19 +839,73 @@ def _live_chain_bound(root: Path, backup: Path) -> str | None:
         except OSError:
             continue
         recorded = sizes.get(relative)
-        if recorded is None:
-            return (
-                f"the live {_capped(relative)} is not in the backup's manifest; a take declares "
-                f"every file of {chain}'s family, and this gate would read it"
-            )
-        allowed = recorded + (LIVE_CHAIN_GROWTH if child.name == chain.name else 0)
+        if child.name == chain.name:
+            allowed = (recorded or 0) + LIVE_CHAIN_GROWTH
+        elif recorded is not None:
+            allowed = recorded
+        else:
+            allowed = LIVE_SEGMENT_CAP
         if held > allowed:
             return (
-                f"the live {relative} is {held} bytes and the backup holds {recorded}; this "
-                "gate reads it whole to append its record, so it was not run. Repeat "
-                "docs/RESTORE.md step 4 from a backup that passes step 2"
+                f"the live {relative} is {held} bytes, more than the {allowed} this gate "
+                f"allows it ({'the backup holds ' + str(recorded) if recorded is not None else 'the backup does not hold it'}). "
+                "The gate reads that chain's segments to append its record, so it was not "
+                "run. Move that file out of the root and keep it for investigation, then "
+                "repeat docs/RESTORE.md step 4 from a backup that passes step 2"
             )
     return None
+
+
+def _backup_inventory_problems(backup: Path, manifest: dict[str, Any]) -> list[str]:
+    """Files in a backup's ``data/`` the manifest does not account for, and links inside it.
+
+    Step 4's ``cp -a`` copies everything under ``data/``, and keeps hard links
+    *between* the files it copies. Measured, found by independent review: a
+    backup with a chain lock hard-linked to a planted ``data/backups/backup.lock``
+    passed ``--verify``, and once restored, 4b and every take waited for ever on
+    the lock they held themselves. A take writes only the files it declares, the
+    store and the store's transient sidecars, each with one name within the
+    backup, so anything else is reported. Links *between* backups, which a
+    hard-link snapshot farm makes, are not looked at.
+    """
+    store = str(manifest["store"]["path"])  # shape-checked: a string
+    allowed = {str(entry["path"]) for entry in manifest["files"]} | {store}
+    allowed |= {store + suffix for suffix in SIDECARS}
+    base = backup / "data"
+    if base.is_symlink() or not base.is_dir():
+        return []  # the path walks name a symlinked data/; an absent one is a missing store
+    problems: list[str] = []
+    seen: dict[tuple[int, int], str] = {}
+    for directory, dirnames, filenames in os.walk(base):
+        for name in sorted(dirnames + filenames):
+            path = Path(directory) / name
+            relative = str(path.relative_to(backup))
+            try:
+                found = path.lstat()
+            except OSError as exc:
+                problems.append(
+                    f"{_capped(relative)} in the backup cannot be checked ({type(exc).__name__})"
+                )
+                continue
+            if stat.S_ISDIR(found.st_mode):
+                continue
+            if relative not in allowed:
+                kind = "a file" if stat.S_ISREG(found.st_mode) else kind_of(found.st_mode)
+                problems.append(
+                    f"UNDECLARED: {_capped(relative)} is {kind} in the backup that its manifest "
+                    "does not list. A take writes only the files it declares, and step 4's "
+                    "cp -a would copy it into the live root"
+                )
+                continue
+            key = (found.st_dev, found.st_ino)
+            if stat.S_ISREG(found.st_mode) and key in seen:
+                problems.append(
+                    f"{seen[key]} and {relative} in the backup are the same file (a hard link "
+                    "inside the backup). A take never makes one, and step 4's cp -a would "
+                    "recreate it in the live root"
+                )
+            seen.setdefault(key, relative)
+    return problems
 
 
 def _special_store(db: Path, *, what: str) -> str | None:
@@ -847,7 +946,7 @@ def _linked(relative: Path) -> str:
         "the next write to it, step 5's re-collection or any later pass, changes the backup "
         "too. A restore is a copy: remove the linked files from the live root (cp -a cannot "
         "copy over them: they are the same file), then repeat docs/RESTORE.md step 4 with "
-        "cp -a"
+        "cp -a --no-preserve=links"
     )
 
 
@@ -858,7 +957,7 @@ def _shared_live_file(relative: Path, links: int) -> str:
         "name(s), so the next write to it changes them too: a restore made with cp -al, "
         "rsync --link-dest or ln from some other copy. Find them with find <mount> -xdev "
         "-samefile, remove the linked files from the live root, then repeat docs/RESTORE.md "
-        "step 4 with cp -a"
+        "step 4 with cp -a --no-preserve=links"
     )
 
 
@@ -886,7 +985,7 @@ def _linked_to_backup(root: Path, argument: Path) -> str | None:  # argument: re
             f"the live {relative} is the backup's own file (a hard link), and this pass "
             "appends to it, which would change the backup it is checking. A restore is a "
             "copy: remove the linked files from the live root (cp -a cannot copy over them), "
-            "then repeat docs/RESTORE.md step 4 with cp -a, never with cp -al, "
+            "then repeat docs/RESTORE.md step 4 with cp -a --no-preserve=links, never with cp -al, "
             "rsync --link-dest or ln"
         )
     return None
@@ -969,7 +1068,12 @@ def _copied_paths(root: Path) -> tuple[list[Path], list[str]]:
             sorted(
                 child.relative_to(root)
                 for child in parent.iterdir()
-                if child.name != stem and child.name.startswith(stem)
+                if child.name != stem
+                and child.name.startswith(stem)
+                # Never a lock: nothing is ever held in a backup, and a copied
+                # lock is the shape a planted link took to reach the live root
+                # (found by review). Backups taken before this declare theirs.
+                and not child.name.endswith(".lock")
             )
         )
 
@@ -1115,6 +1219,11 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
     # the store. In CHAIN_FILES order, and no record is made inside it.
     with contextlib.ExitStack() as held:
         for chain in CHAIN_FILES:
+            if _unsafe_path(root, chain.parent, what="chain directory") is not None:
+                # Refused as a source below, so not locked either: measured, the
+                # take flocked a file outside the root through the symlink and
+                # waited as long as anything held it (found by review).
+                continue
             held.enter_context(AuditLogger(root / chain).reading())
         copied, refused = _copied_paths(root)
         for relative in copied:
@@ -1680,12 +1789,13 @@ def _verify_backup(directory: Path) -> dict[str, object]:
             elif recorded.get("present") and recorded.get("intact") is False:
                 # Not "no longer": the take's own check already failed it.
                 problems.append(
-                    f"{name}: chain does not verify, and was already broken when the backup "
-                    f"was taken: {state.get('failure')}"
+                    f"{name}: chain does not verify, and did not when the backup was taken "
+                    f"either: {state.get('failure')}"
                 )
             else:
                 problems.append(f"{name}: chain no longer verifies: {state.get('failure')}")
     problems.extend(_events_chain_problems(manifest))
+    problems.extend(_backup_inventory_problems(directory, manifest))
 
     return {
         "backup": str(directory),
@@ -2182,6 +2292,17 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+        argued = args.verify if args.verify is not None else args.verify_restore
+        if argued is not None:
+            # Before the lock, which is created under --root: a --root that is
+            # the backup would put a lock, and then audit records, inside it.
+            try:
+                inside = _root_in_backup(root, _resolve_argument(argued))
+            except StoreError:
+                inside = None  # refused by name in _run, at exit 1
+            if inside is not None:
+                print(f"error: {_printable(inside)}", file=sys.stderr)
+                return 1
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
@@ -2205,7 +2326,10 @@ def main(argv: list[str] | None = None) -> int:
                     f"skipped: another {which} pass holds the lock; this invocation did nothing."
                 )
                 if args.verify is None and args.verify_restore is None:
-                    print(message)
+                    if args.json:
+                        print(json.dumps({"skipped": True, "reason": message}))
+                    else:
+                        print(message)
                     return 0
                 # A gate that verified nothing must not exit like one that
                 # passed: measured, a tampered backup cleared docs/RESTORE.md
@@ -2273,12 +2397,15 @@ def _run(
     # the check below fell open on it and the gate record landed in the backup
     # (found by independent review).
     restore_from: Path | None = None
-    if mode == "verify-restore":
-        try:
+    verify_from: Path | None = None
+    try:
+        if mode == "verify-restore":
             restore_from = _resolve_argument(args.verify_restore)
-        except StoreError as exc:
-            print(f"error: {_printable(str(exc))}", file=sys.stderr)
-            return 1
+        elif mode == "verify":
+            verify_from = _resolve_argument(args.verify)
+    except StoreError as exc:
+        print(f"error: {_printable(str(exc))}", file=sys.stderr)
+        return 1
     refusal = (
         _linked_to_backup(root, restore_from) if restore_from is not None else None
     ) or _linked_live_chain(root)
@@ -2318,8 +2445,8 @@ def _run(
         return 1
 
     try:
-        if mode == "verify":
-            payload = _verify_backup(_resolve_argument(args.verify))
+        if verify_from is not None:
+            payload = _verify_backup(verify_from)
         elif restore_from is not None:
             payload = _verify_restore(root, restore_from)
         else:
@@ -2413,8 +2540,6 @@ def _run(
 
     if verifying and not payload["verified"]:
         return 1
-    if not verifying and payload.get("chains_broken"):
-        return 1
     return 0
 
 
@@ -2471,7 +2596,7 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
     )
     broken = payload.get("chains_broken")
     if isinstance(broken, list) and broken:
-        say("  warning: chains that did NOT verify in this backup as it was taken (exit 1):")
+        say("  warning: chains that did NOT verify in this backup as it was taken:")
         for entry in broken:
             say(f"    {entry}")
     refused = payload.get("refused")

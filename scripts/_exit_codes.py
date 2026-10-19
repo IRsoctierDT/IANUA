@@ -38,7 +38,8 @@ The codes in use across the scheduled CLIs, for the contract this joins:
 exit  meaning
 ====  ============================================================
 0     a pass ran — reported, applied, or skipped because another
-      pass holds the single-instance lock
+      pass holds the single-instance lock (except a skipped
+      ``run_backup --verify`` or ``--verify-restore``: exit 4)
 1     damage: the store would not open or verify, a schema
       mismatched, an audit write or report failed
 2     refused before doing anything: bad arguments, an unreadable
@@ -46,7 +47,9 @@ exit  meaning
       single-instance lock could not be taken for a reason other
       than contention
 3     blocked by policy — a destructive action without its grant
-4     retryable contention; retry, do not page
+4     retryable contention; retry, do not page. Also a skipped
+      ``run_backup --verify`` or ``--verify-restore``: a gate
+      that verified nothing must never read as a pass
 ====  ============================================================
 """
 

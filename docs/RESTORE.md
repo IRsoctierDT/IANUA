@@ -103,7 +103,7 @@ What does not, and will not:
 |---|---|
 | `data/collect/offsets.json` | restoring one newer than the store is unrecoverable |
 | `data/pipeline/cursor.json` | never needs restoring; re-correlating is at-least-once |
-| `*.lock` | the lock is the open descriptor, not the file |
+| `*.lock` | the lock is the open descriptor, not the file. A take since this version copies none; a backup taken before it declares each chain's `audit.log.lock`, which is verified and never held |
 
 The backup's own integrity is anchored in the audit chain: the record it appends carries the
 manifest's sha256, and the chain is hash-linked, so a manifest edited afterwards no longer
@@ -159,9 +159,26 @@ take reads; an edited manifest that claims a planted file's size therefore still
 read under that lock there.
 
 A take whose own copy of a chain does not verify still writes the backup, names the chain
-("warning: chains that did NOT verify in this backup as it was taken") and exits `1`; its
-`--json` report lists them as `chains_broken`. `--verify` of that backup then says the chain
-"was already broken when the backup was taken", not that it "no longer verifies".
+("warning: chains that did NOT verify in this backup as it was taken") and exits `0`; its
+`--json` report lists them as `chains_broken`. Exit `0` deliberately: measured, the first take
+after `AUDIT_HMAC_KEY` is configured finds chains not yet signed, which is not damage.
+`--verify` of that backup then says the chain "did not when the backup was taken either", not
+that it "no longer verifies". A file that grows or shrinks while `--verify` hashes it is
+reported as `changed size while it was read`: nothing should write into a backup, so find what
+does, then re-run.
+
+`--verify` also lists every file under the backup's `data/` that its manifest does not account
+for (`UNDECLARED: … in the backup`), and any two of its files that are the same file (`are the
+same file (a hard link inside the backup)`). A take writes neither, and step 4's `cp -a` would
+carry both into the live root: measured, a backup whose chain lock was hard-linked to a planted
+`data/backups/backup.lock` passed step 2 before this, and once restored, 4b and every take
+waited for ever on the lock they held themselves. Links *between* backups, which a hard-link
+snapshot farm makes, are not looked at. And `--root` may not be the backup, or inside it: a
+pass writes its audit records under `--root`, so that is refused before anything is written.
+
+**A backup taken before `AUDIT_HMAC_KEY` was configured** has no head signature, so with the key
+set step 2 reports its events chain as not verifying. Verify it with the key unset, and take a
+fresh signed backup as soon as a live store exists.
 
 ### Verifying a restore (the promotion gate)
 
@@ -193,8 +210,9 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `the backup carries no head signature for it and a key is set` | a take under a key always signs `data/events/audit.log`, so a signed backup without one was stripped. A backup taken before the key was configured has none either: verify it with the key unset, then take a fresh signed backup as soon as a live store exists |
 | `SIGNATURE UNCHECKED: …` | the backup is signed and no verification key is set, so whether this is the history the take signed cannot be checked. Re-run with the key |
 | `the manifest records present=… and the backup holds it` (or `does not hold it`), or `the manifest records it absent` / `present with 0 entries` for `data/events/audit.log` | the manifest's chain record disagrees with the backup, or claims the events chain a take always writes is missing. A take records its gate decision there before it copies anything. This backup was edited after the take: restore from another |
-| `the live data/events/audit.log… is N bytes and the backup holds M`, or `is not in the backup's manifest`, on stderr at exit `1` | the restored events chain is larger than the backup's copy (beyond what this gate's own repeated runs append) or carries a file of its family the backup does not list, so the gate refused before appending its record, which reads the head segment whole. Repeat step 4 from a backup that passes step 2 |
-| `changed size while it was read` | a file grew or shrank while `--verify` hashed it. Nothing should write into a backup; find what does, then re-run |
+| `the live data/events/audit.log… is N bytes, more than the M this gate allows it`, on stderr at exit `1` | a file of the live events chain is larger than this gate will read to append its record: the backup's copy plus 16 MiB for the active log, the backup's size for an archive it holds, or 256 MiB for one it does not (a same-node restore merges into the old tree, so newer archives are legitimate). Move that file out of the root and keep it for investigation, then repeat step 4 from a backup that passes step 2 — repeating step 4 alone cannot clear it, because `cp -a` merges |
+| `the live data/…/audit.log.lock shares its file with N other name(s)` (or the chain itself), on stderr at exit `1`, in every mode | a chain or a chain lock in the live root has a second name, so this pass would write through it or wait on it. Measured: a lock that was the same file as `data/backups/backup.lock` made 4b and every take wait for ever on the lock they held themselves. Find the other names with `find <mount> -xdev -samefile <path>` and remove the ones that are not this root's own. If this root came from a restore, remove its linked files and repeat step 4 with `cp -a --no-preserve=links`. **Never restore over a live root to clear this**: a root that was never restored has nothing to restore, and doing so replaces its evidence with older evidence |
+| `UNDECLARED: … in the backup`, or `… are the same file (a hard link inside the backup)` | the backup holds a file its manifest does not list, or two names for one file. A take writes neither, so the backup was changed after it: take a fresh one, or restore from another that passes |
 | *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
 | `has no '…'` / `is not an integer` / `is not a string` / *store was not compared* | the manifest's attestation lacks a field (every one is required: `events`, `observables`, `digest`, `observables_digest`, `high_water`, `schema_version`) or carries one of the wrong type (counts and the schema version must be integers, digests strings, the mark a number or null — a string `"40"` is refused, not coerced). The store is **not** compared on what is left — a verdict on part of the evidence is not a verdict |
 | `store attestation schema_version: …` / `high_water: …` | the restored store's schema version differs from the attested one (a migration question, not a completeness one), or its high-water mark does while the event count matches. `--verify` has always compared every attestation field; `--verify-restore` now does too |
@@ -281,6 +299,7 @@ systemctl --user list-units 'ianua-*' --all --no-legend   # expect none active
 #     these is held, a pass is still running — wait rather than proceed.
 for f in collect/collect.lock pipeline/cycle.lock events/retention.lock \
          backups/backup.lock backups/verify.lock; do
+  [ -e "/srv/ianua/data/$f" ] || continue   # never created: nothing holds it
   flock --nonblock --exclusive "/srv/ianua/data/$f" true \
     || echo "STILL RUNNING: $f is held; do not continue"
 done
@@ -295,8 +314,10 @@ rm -f /srv/ianua/data/collect/offsets.json /srv/ianua/data/pipeline/cursor.json
 
 # 4. Put the state back. A COPY, never a hard link (cp -al, rsync --link-dest,
 #    ln): a hard-linked live file is the backup's own file, so every later write
-#    to the live root changes the backup. 4b refuses one.
-cp -a /path/to/backup/data/. /srv/ianua/data/
+#    to the live root changes the backup. 4b refuses one. --no-preserve=links,
+#    because cp -a otherwise keeps hard links BETWEEN the files it copies, and a
+#    backup can hold one (step 2 names it): restored, it made 4b wait for ever.
+cp -a --no-preserve=links /path/to/backup/data/. /srv/ianua/data/
 
 # 4b. THE PROMOTION GATE. Verify what actually landed, BEFORE re-collecting.
 #     Step 4 is a plain copy and nothing used to look at the result. A store

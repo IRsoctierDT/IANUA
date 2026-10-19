@@ -102,6 +102,16 @@ def _redeclare(backup: Path, relative: str) -> None:
     _write_manifest(backup, manifest)
 
 
+def _declare(backup: Path, relative: str) -> None:
+    """Add a manifest entry for a file, as a backup taken by an older revision has."""
+    manifest = _manifest(backup)
+    data = (backup / relative).read_bytes()
+    manifest["files"].append(  # type: ignore[attr-defined]
+        {"path": relative, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    )
+    _write_manifest(backup, manifest)
+
+
 def _sparse(path: Path, size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
@@ -161,9 +171,10 @@ def test_a_backup_lock_linked_to_the_pass_own_lock_is_a_finding_not_a_hang(
     )
     held.touch()
     lock = backup / (_CHAIN + ".lock")
-    assert lock.stat().st_size == 0, "the premise: a chain lock is empty"
-    lock.unlink()
+    # A take no longer copies a lock; a backup taken before that declares one.
+    assert not lock.exists(), "the premise: this revision's take copied no lock"
     os.link(held, lock)
+    _declare(backup, _CHAIN + ".lock")
     live = tmp_path / "live"
     if mode == "--verify-restore":
         _restore(backup, live)
@@ -176,6 +187,8 @@ def test_a_backup_lock_linked_to_the_pass_own_lock_is_a_finding_not_a_hang(
 
     assert result.returncode == 1, result.stdout[-600:] + result.stderr[-600:]
     assert f"{_CHAIN}: not verified: its lock in the backup is held" in result.stdout
+    # Said once, not as "chain no longer verifies: <chain>: not verified: ..."
+    assert f"no longer verifies: {_CHAIN}: not verified" not in result.stdout
 
 
 # -- the manifest's chain records are checked against the backup --------------------------
@@ -289,6 +302,12 @@ def test_an_argument_too_deep_to_resolve_writes_no_gate_record(
         link = links / f"l{index}"
         link.symlink_to(target)
         target = link
+    try:
+        os.path.realpath(target)
+    except RecursionError:
+        pass
+    else:  # pragma: no cover - interpreter-dependent
+        pytest.skip("this interpreter's realpath follows the chain without recursing")
     before = _fingerprint(live / _CHAIN)
     capsys.readouterr()
 
@@ -324,7 +343,9 @@ def test_the_gate_does_not_append_to_a_live_chain_larger_than_the_backup(
 @pytest.mark.security
 def test_a_symlinked_chain_directory_in_a_backup_is_not_read_through(tmp_path: Path) -> None:
     """Found by review, medium: ``_unbounded_chain`` returned "safe" for a symlinked
-    chain directory, and ``--verify`` read a 2 GiB file outside the backup whole."""
+    chain directory, and ``--verify`` read a 2 GiB file outside the backup whole. What is
+    pinned is the refusal by name, which is what keeps the read from happening; the child
+    is limited so a regression is a failure, not a long read."""
     root, (backup,) = _source(tmp_path)
     outside = tmp_path / "outside"
     _sparse(outside / "audit.log", 2 << 30)
@@ -450,18 +471,20 @@ def test_a_verify_landing_mid_take_does_not_tear_the_signed_backup(
 
 
 @pytest.mark.security
-def test_a_take_whose_copy_of_a_chain_does_not_verify_exits_1(
+def test_a_take_whose_copy_of_a_chain_does_not_verify_names_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Found by review: such a take printed only "wrote" at exit 0, its verdict was in
-    the manifest alone, and ``--verify`` then said the chain "no longer verifies"."""
+    """Found by review: such a take printed only "wrote", its verdict was in the manifest
+    alone, and ``--verify`` then said the chain "no longer verifies". It is named now,
+    and still exits 0: a second review measured exit 1 paging on states that are not
+    damage (the first take after a key is configured, whose chains are not yet signed)."""
     root, _backups = _source(tmp_path)
     chain = root / _CHAIN
     text = chain.read_text(encoding="utf-8")
     chain.write_text(text.replace("test", "tset", 1), encoding="utf-8")
     capsys.readouterr()
 
-    assert backup_main(["--root", str(root), "--name", "torn", "--caller", "test", "--json"]) == 1
+    assert backup_main(["--root", str(root), "--name", "torn", "--caller", "test", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert any(entry.startswith(f"{_CHAIN}: ") for entry in payload["chains_broken"]), payload
     backup = root / "data" / "backups" / "torn"
@@ -470,7 +493,12 @@ def test_a_take_whose_copy_of_a_chain_does_not_verify_exits_1(
     clean = tmp_path / "clean"
     clean.mkdir()
     assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 1
-    assert "was already broken when the backup was taken" in capsys.readouterr().out
+    assert "did not when the backup was taken either" in capsys.readouterr().out
+
+    assert backup_main(["--root", str(root), "--name", "torn-text", "--caller", "test"]) == 0
+    assert "warning: chains that did NOT verify in this backup as it was taken:" in (
+        capsys.readouterr().out
+    )
 
 
 # -- a skipped gate is not a pass ------------------------------------------------------------
@@ -545,3 +573,334 @@ def test_a_take_writes_its_manifest_only_under_a_staging_name(
 
     assert "manifest.json" not in written, written
     assert ".manifest.json.tmp" in written, written
+
+
+# -- third review: links inside a backup, and what a restore carries over --------------------
+
+
+def _cp_a(backup: Path, live: Path, *extra: str) -> None:
+    """``docs/RESTORE.md`` step 4 with the real ``cp``, which keeps hard links between the
+    files it copies unless told not to."""
+    (live / "data").mkdir(parents=True, exist_ok=True)
+    subprocess.run(  # noqa: S603 - fixed program, test paths
+        ["cp", "-a", *extra, f"{backup / 'data'}/.", f"{live / 'data'}/"],  # noqa: S607
+        check=True,
+        timeout=60,
+    )
+
+
+@pytest.mark.security
+def test_a_backup_holding_a_link_to_a_lock_is_refused_and_its_restore_does_not_hang(
+    tmp_path: Path,
+) -> None:
+    """Found by review, high: a chain lock in a backup hard-linked to a planted
+    ``data/backups/backup.lock`` passed step 2; ``cp -a`` restored the link, and 4b and
+    every take on the restored root then waited for ever on the lock they held."""
+    if shutil.which("cp") is None:  # pragma: no cover - coreutils is on every runner
+        pytest.skip("no cp")
+    root, (backup,) = _source(tmp_path)
+    lock = backup / (_CHAIN + ".lock")
+    lock.touch()
+    _declare(backup, _CHAIN + ".lock")
+    (backup / "data" / "backups").mkdir()
+    os.link(lock, backup / "data" / "backups" / run_backup.LOCK_FILE)
+
+    step2 = _child(["--root", str(root), "--caller", "test", "--verify", str(backup)])
+    assert step2.returncode == 1, step2.stdout[-600:]
+    assert "UNDECLARED: data/backups/backup.lock is a file in the backup" in step2.stdout
+
+    live = tmp_path / "live"
+    _cp_a(backup, live)
+    assert (live / (_CHAIN + ".lock")).stat().st_nlink == 2, "the premise: cp -a kept the link"
+    for argv in (
+        ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)],
+        ["--root", str(live), "--caller", "test", "--name", "next"],
+    ):
+        result = _child(argv, timeout=60)
+        assert result.returncode == 1, result.stdout[-600:] + result.stderr[-600:]
+        assert f"the live {_CHAIN}.lock shares its file with 1 other name(s)" in result.stderr
+
+    # The runbook's step 4 does not carry the link over.
+    clean = tmp_path / "clean-restore"
+    _cp_a(backup, clean, "--no-preserve=links")
+    assert (clean / (_CHAIN + ".lock")).stat().st_nlink == 1
+
+
+@pytest.mark.security
+def test_a_take_does_not_wait_on_a_chain_lock_that_is_its_own(tmp_path: Path) -> None:
+    """Found by review, high (a regression in 46f9f84): a take holds every chain's shared
+    lock while it copies, and waited for ever when one of them was the same file as the
+    ``backup.lock`` it already held. It is refused before the gate now."""
+    root, _backups = _source(tmp_path)
+    collect = root / "data" / "collect"
+    collect.mkdir(parents=True, exist_ok=True)
+    os.link(root / "data" / "backups" / run_backup.LOCK_FILE, collect / "audit.log.lock")
+
+    result = _child(["--root", str(root), "--caller", "test", "--name", "next"], timeout=60)
+
+    assert result.returncode == 1, result.stdout[-600:] + result.stderr[-600:]
+    assert "the live data/collect/audit.log.lock shares its file" in result.stderr
+
+
+@pytest.mark.security
+def test_a_take_does_not_lock_through_a_symlinked_chain_directory(tmp_path: Path) -> None:
+    """Found by review: the take flocked a file outside the root through a symlinked
+    chain directory it refused to copy, and waited as long as anything held that file.
+    Held here by the test, so a regression is a timeout."""
+    import fcntl
+
+    root, _backups = _source(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "audit.log").write_text("", encoding="utf-8")
+    (outside / "audit.log.lock").touch()
+    shutil.rmtree(root / "data" / "collect", ignore_errors=True)
+    (root / "data" / "collect").symlink_to(outside)
+    with (outside / "audit.log.lock").open("rb") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        result = _child(["--root", str(root), "--caller", "test", "--name", "next"], timeout=30)
+
+    assert result.returncode == 0, result.stdout[-600:] + result.stderr[-600:]
+    assert "data/collect" in result.stdout, "the refused source is named"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+def test_a_root_that_is_the_backup_is_refused_before_anything_is_written(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review, high: ``--verify`` with the backup as its own ``--root`` appended
+    its records to the backup's chain and created a lock inside it, and the backup never
+    verified again."""
+    _root, (backup,) = _source(tmp_path)
+    before = sorted(str(p.relative_to(backup)) for p in backup.rglob("*"))
+    chain = _fingerprint(backup / _CHAIN)
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(backup), "--caller", "test", mode, str(backup)]) == 1
+    assert "is the backup being verified, or inside it" in capsys.readouterr().err
+    assert sorted(str(p.relative_to(backup)) for p in backup.rglob("*")) == before
+    assert _fingerprint(backup / _CHAIN) == chain
+
+
+@pytest.mark.security
+def test_two_files_of_one_backup_that_are_the_same_file_are_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A link *inside* a backup, which a take never makes and ``cp -a`` would carry over;
+    links *between* backups, which a snapshot farm makes, are not looked at."""
+    root, (backup,) = _source(tmp_path)
+    report = backup / _REPORT
+    twin = backup / "data" / "reports" / "twin.md"
+    os.link(report, twin)
+    _declare(backup, "data/reports/twin.md")
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)]) == 1
+    out = capsys.readouterr().out
+    assert "are the same file (a hard link inside the backup)" in out, out
+
+
+@pytest.mark.security
+def test_an_events_chain_emptied_and_redeclared_is_refused(
+    tmp_path: Path, key: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the ``entries >= 1`` rule had no test of its own; with the chain
+    emptied, redeclared and its record set to 0 entries, removing it passed both gates."""
+    _root, (backup,) = _source(tmp_path)
+    (backup / _CHAIN).write_bytes(b"")
+    _redeclare(backup, _CHAIN)
+    manifest = _manifest(backup)
+    manifest["chains"][_CHAIN]["entries"] = 0  # type: ignore[index]
+    _write_manifest(backup, manifest)
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 1
+    assert f"{_CHAIN}: the manifest records it present with 0 entries" in (capsys.readouterr().out)
+
+
+@pytest.mark.security
+def test_a_chain_the_manifest_calls_absent_but_the_backup_holds_is_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the present comparison was exercised only on the events chain,
+    where another check also fires."""
+    _root, (backup,) = _source(tmp_path)
+    planted = AuditLogger(backup / _COLLECT_CHAIN)
+    for index in range(3):
+        planted.record(
+            actor="test",
+            action=f"probe:{index}",
+            action_class="read_only",
+            decision="allow",
+            reason="planted",
+        )
+    for found in sorted((backup / "data" / "collect").iterdir()):
+        if not found.name.endswith(".lock"):
+            _declare(backup, str(found.relative_to(backup)))
+    (backup / (_COLLECT_CHAIN + ".lock")).unlink()
+    live = tmp_path / "live"
+    _restore(backup, live)
+    capsys.readouterr()
+
+    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    assert (
+        f"{_COLLECT_CHAIN}: the manifest records present=False and the backup holds it"
+        in capsys.readouterr().out
+    )
+
+
+# -- the live events chain is bounded by size, never refused by name -------------------------
+
+
+@pytest.mark.security
+def test_the_live_chain_bound_admits_what_a_same_node_restore_leaves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by review, high (a regression in 46f9f84): a same-node restore merges into
+    the old tree, so a newer active log or archive the backup never held is legitimate,
+    and refusing it by name failed a correct restore that repeating step 4 could not
+    clear. Bounded by size instead; small files, so this runs without sparse files."""
+    _root, (backup,) = _source(tmp_path)
+    live = tmp_path / "live"
+    _restore(backup, live)
+    (live / _CHAIN).unlink()
+    (live / _CHAIN).write_bytes(b"x" * 64)  # an active log the backup's manifest lists
+    (live / (_CHAIN + ".7")).write_bytes(b"x" * 64)  # an archive it does not
+    assert run_backup._live_chain_bound(live, backup) is None
+
+    monkeypatch.setattr(run_backup, "LIVE_SEGMENT_CAP", 32)
+    refusal = run_backup._live_chain_bound(live, backup)
+    assert refusal is not None and f"the live {_CHAIN}.7 is 64 bytes" in refusal
+
+    monkeypatch.setattr(run_backup, "LIVE_SEGMENT_CAP", 1 << 20)
+    recorded = _manifest(backup)
+    size = next(e["size"] for e in recorded["files"] if e["path"] == _CHAIN)  # type: ignore[attr-defined]
+    monkeypatch.setattr(run_backup, "LIVE_CHAIN_GROWTH", 0)
+    (live / _CHAIN).write_bytes(b"x" * (size + 1))
+    refusal = run_backup._live_chain_bound(live, backup)
+    assert refusal is not None and f"the backup holds {size}" in refusal
+
+
+@pytest.mark.security
+def test_the_live_chain_bound_never_raises_on_an_unreadable_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by review: an account that cannot read the backup got a PermissionError
+    traceback from this pre-gate check; the pass reports it by name instead."""
+
+    def denied(directory: Path) -> object:
+        raise PermissionError(13, "Permission denied", str(directory))
+
+    monkeypatch.setattr(run_backup, "_load_manifest", denied)
+    assert run_backup._live_chain_bound(tmp_path, tmp_path / "backup") is None
+
+
+# -- messages review found unasserted ---------------------------------------------------------
+
+
+@pytest.mark.security
+def test_a_file_that_changes_while_it_is_read_is_named_as_such(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "f"
+    path.write_bytes(b"0123456789")
+    real_fstat = os.fstat
+
+    def shorter(fd: int) -> os.stat_result:
+        found = real_fstat(fd)
+        fields = list(found)
+        fields[6] = 5  # st_size: the file "grew" after this was taken
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(run_backup.os, "fstat", shorter)
+    size, digest = run_backup._digest_exact(path, 5)
+    assert digest is None and size == run_backup.CHANGED_WHILE_READ
+    assert "changed size while it was read" in run_backup._size_finding("f", size, 5)
+
+
+@pytest.mark.security
+def test_a_symlinked_manifest_is_named(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root, (backup,) = _source(tmp_path)
+    real = tmp_path / "manifest.json"
+    (backup / "manifest.json").rename(real)
+    (backup / "manifest.json").symlink_to(real)
+    capsys.readouterr()
+    assert backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)]) == 1
+    assert "is a symlink, which a take never writes" in capsys.readouterr().err
+
+
+@pytest.mark.security
+def test_a_manifest_too_large_to_decode_is_refused_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, (backup,) = _source(tmp_path)
+    real_loads = json.loads
+
+    def exhausted(text: str | bytes, *args: object, **kwargs: object) -> object:
+        if isinstance(text, str) and '"format"' in text:
+            raise MemoryError
+        return real_loads(text, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(run_backup.json, "loads", exhausted)
+    capsys.readouterr()
+    assert backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)]) == 1
+    assert "cannot be decoded as JSON (MemoryError)" in capsys.readouterr().err
+
+
+@pytest.mark.security
+def test_a_lock_in_a_backup_that_cannot_be_opened_is_not_taken_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, (backup,) = _source(tmp_path)
+    (backup / (_CHAIN + ".lock")).touch()
+    _declare(backup, _CHAIN + ".lock")
+    real_open = run_backup._open_regular
+    opened: list[str] = []
+
+    def refusing(path: Path) -> object:
+        # The second open of the lock is the probe; the first is its manifest digest.
+        if str(path).endswith(".lock"):
+            opened.append(str(path))
+            if len(opened) > 1:
+                raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path)
+
+    monkeypatch.setattr(run_backup, "_open_regular", refusing)
+    capsys.readouterr()
+    assert backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)]) == 1
+    assert f"{_CHAIN}: not verified: its lock cannot be checked (PermissionError)" in (
+        capsys.readouterr().out
+    )
+
+
+@pytest.mark.security
+def test_a_gate_record_that_runs_out_of_memory_is_an_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, (backup,) = _source(tmp_path)
+
+    def exhausted(self: AuditLogger, **kwargs: object) -> object:
+        raise MemoryError
+
+    monkeypatch.setattr(AuditLogger, "record", exhausted)
+    capsys.readouterr()
+    assert backup_main(["--root", str(root), "--caller", "test", "--verify", str(backup)]) == 1
+    assert "could not record the gate decision: MemoryError" in capsys.readouterr().err
+
+
+@pytest.mark.security
+def test_a_skipped_take_under_json_says_so_in_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root, _backups = _source(tmp_path)
+    locks = root / "data" / "backups"
+    with prepare_lock(locks, run_backup.LOCK_FILE) as handle, single_instance(handle) as held:
+        assert held
+        capsys.readouterr()
+        argv = ["--root", str(root), "--caller", "test", "--name", "next", "--json"]
+        assert backup_main(argv) == 0
+        assert json.loads(capsys.readouterr().out)["skipped"] is True
