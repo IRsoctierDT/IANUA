@@ -210,9 +210,13 @@ All notable changes to this project. Versions correspond to git tags.
   replaces that file whole, and the gate's own decision re-signs `data/events/audit.log`
   before the comparison runs: `REWRITTEN: data/events/audit.log.sig`, exit 1, on a restore
   nothing had touched. No test set a key, so the suite stayed green. Now only the five
-  declared streams may grow. With a key, a head signature must be present and is judged by
-  its chain verifying. Without one it is compared exactly, which still catches a forged
-  signature (skipping it outright would not). The same rule had granted growth to rotated
+  declared streams may grow. A head signature must be present, and it skips the byte
+  comparison only where its chain verified it under the key (or the chain is already a
+  finding). Otherwise it is compared exactly: with no key, that still catches a forged
+  signature, and a chain pruned to its checkpoint has nothing for the key to verify. The
+  chain verdict is taken after every stream comparison, so an unquiesced writer's append
+  cannot slip between the two. Review found both of those gaps in the first version of
+  this fix. The same rule had granted growth to rotated
   archives and checkpoints, which never grow: blank lines appended to an archive, or
   whitespace to a checkpoint, verified green. Both are exact now. On the backup side the rule
   copied `audit.log.lock` into every backup, despite `docs/RESTORE.md` saying `*.lock` never

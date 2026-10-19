@@ -447,19 +447,50 @@ def _is_append_only(relative: Path) -> bool:
 
 
 def _signature_judged(state: object) -> bool:
-    """Did :func:`_verify_chains` judge this chain's head signature under a key?
+    """May this chain's head signature go byte-uncompared, because its report covers it?
 
-    ``unsigned`` is what it reports when no verifier is configured, and then
-    nothing has looked at the signature at all. Every other status means a key
-    was in hand, and anything but ``valid`` (or ``empty``, nothing to sign) has
-    already made the chain a finding. A chain absent from the live root has no
-    status, so its signature is not judged either.
+    In exactly two states, and in both the verdict stays honest without the
+    bytes: the signature verified (``valid`` — under a key, present and covering
+    the current head), or the chain is already a finding (``intact`` false), so
+    the pass is red whatever the bytes say and comparing them would only add a
+    misleading second finding, since the gate decision re-signs the events chain.
+
+    Everything else falls through to the exact comparison, and the first version
+    of this predicate got one of them wrong. ``unsigned`` means no verifier, so
+    nothing read the signature. But a key in hand is not the same as the
+    signature having been checked: a chain pruned to its checkpoint
+    (``--retain-segments 0``) has no entry to sign, ``verify_report`` reports
+    ``empty`` without reading the sidecar, and treating that as judged let a
+    same-length forgery verify at exit 0 (found by review). A chain absent from
+    the live root has no state, so its signature is compared too.
     """
-    return (
-        isinstance(state, dict)
-        and state.get("present") is True
-        and state.get("signature") != "unsigned"
-    )
+    if not isinstance(state, dict) or state.get("present") is not True:
+        return False
+    return state.get("signature") == "valid" or state.get("intact") is False
+
+
+def _altered(entry: dict[str, Any], path: Path) -> str | None:
+    """The ``ALTERED`` finding for a declared file that may not change, or ``None``.
+
+    Everything :func:`_is_append_only` does not name, and a head signature that
+    :func:`_signature_judged` does not excuse, must be byte-identical to the backup.
+    """
+    backed_up = int(entry["size"])
+    live_size = path.stat().st_size
+    if live_size != backed_up:
+        return (
+            f"ALTERED: {entry['path']} is {live_size} bytes; the backup holds "
+            f"{backed_up}. Only the declared streams may grow, and nothing in this "
+            "window rewrites anything else — a report, a rotated archive, a checkpoint, "
+            "or a head signature nothing re-signed — so any size difference means the "
+            "live copy is not the backed-up one"
+        )
+    if _digest_file(path) != entry["sha256"]:
+        return (
+            f"ALTERED: {entry['path']} is {backed_up} bytes as attested but hashes "
+            "differently, so its contents were changed without changing its length"
+        )
+    return None
 
 
 def _live_tree_inventory(root: Path) -> tuple[list[Path], list[str]]:
@@ -1306,8 +1337,11 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     prefix-compared it, so with ``AUDIT_HMAC_KEY`` set this gate failed every
     correct restore: the gate decision re-signs ``data/events/audit.log`` before
     the comparison reads its ``.sig``. The signature must still be present, and
-    :func:`_verify_chains` must find it valid for the current head. With no key
-    it is compared exactly, which is what still catches a tampered one then.
+    is excused its bytes only where :func:`_verify_chains` found it valid for the
+    current head (or the chain is already a finding) — see
+    :func:`_signature_judged`. Otherwise (no key, or a chain pruned to its
+    checkpoint with nothing to sign) it is compared exactly, which is what still
+    catches a forged one then.
     """
     manifest = _load_manifest(backup)
 
@@ -1456,20 +1490,11 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 "mark moved without the count, which no restore step does"
             )
 
-    # Chains before the declared files, because how a head signature is compared
-    # below depends on whether its chain's signature was judged here. Nothing
-    # writes between the two, so the order changes no verdict.
-    chains = _verify_chains(root)
-    judged_signatures = {
-        signature
-        for signature, chain in HEAD_SIGNATURES.items()
-        if _signature_judged(chains.get(str(chain)))
-    }
-
     # Declared files. Prefix comparison for the append-only streams only; exact
     # equality for everything else. See _is_append_only for why the allow-list
     # is on the growing side.
     declared: set[Path] = set()
+    signatures: list[tuple[Path, dict[str, Any]]] = []
     for entry in manifest["files"]:
         entry_path = Path(str(entry["path"]))
         unsafe = _unsafe_manifest_path(root, entry_path, what="manifest path")
@@ -1482,41 +1507,25 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         if not path.is_file():
             problems.append(f"{entry['path']} is missing from the live root")
             continue
-        if entry_path in judged_signatures:
-            # Present, as its manifest entry requires, and judged by what it means
-            # in the chain findings below: with a key in hand, _verify_chains
-            # requires the signature to verify AND to cover the current head, or
-            # it reports the chain broken. Its bytes cannot be compared, because
-            # every signed record() replaces it whole — and this command's own
-            # gate decision has done exactly that to data/events/audit.log.sig
-            # before this runs, which failed every correct signed restore as
-            # REWRITTEN. With no key nothing re-signs one, so it falls through to
-            # the exact comparison, which is stricter than the prefix it used to get.
+        if entry_path in HEAD_SIGNATURES:
+            # Present, as its manifest entry requires; how it is compared is
+            # decided below, from the same chain report the verdict uses.
+            signatures.append((entry_path, entry))
+            continue
+        if not _is_append_only(entry_path):
+            if (altered := _altered(entry, path)) is not None:
+                problems.append(altered)
             continue
         live_size = path.stat().st_size
-        if _is_append_only(entry_path):
-            if live_size < backed_up:
-                problems.append(
-                    f"TRUNCATED: {entry['path']} is {live_size} bytes; the backup holds "
-                    f"{backed_up}. An append-only artifact cannot legitimately shrink"
-                )
-            elif _digest_prefix(path, backed_up) != entry["sha256"]:
-                problems.append(
-                    f"REWRITTEN: {entry['path']}'s first {backed_up} bytes do not match the "
-                    "backup, so its history was not appended to — it was replaced"
-                )
-        elif live_size != backed_up:
+        if live_size < backed_up:
             problems.append(
-                f"ALTERED: {entry['path']} is {live_size} bytes; the backup holds "
-                f"{backed_up}. Only the declared streams may grow, and nothing in this "
-                "window rewrites anything else — a report, a rotated archive, a checkpoint, "
-                "or, with no key set, a head signature — so any size difference means the "
-                "live copy is not the backed-up one"
+                f"TRUNCATED: {entry['path']} is {live_size} bytes; the backup holds "
+                f"{backed_up}. An append-only artifact cannot legitimately shrink"
             )
-        elif _digest_file(path) != entry["sha256"]:
+        elif _digest_prefix(path, backed_up) != entry["sha256"]:
             problems.append(
-                f"ALTERED: {entry['path']} is {backed_up} bytes as attested but hashes "
-                "differently, so its contents were changed without changing its length"
+                f"REWRITTEN: {entry['path']}'s first {backed_up} bytes do not match the "
+                "backup, so its history was not appended to — it was replaced"
             )
 
     # The reverse direction, which nothing did: a live file the manifest never
@@ -1555,7 +1564,24 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 f"{why.split(':')[0]}"
             )
 
-    # Chains (verified above): entries may only GROW, and must still verify.
+    # Chains, verified after every stream above was compared and not before: a
+    # prefix comparison allows any growth, so a chain report taken first missed
+    # whatever an unquiesced writer appended in between (found by review).
+    chains = _verify_chains(root)
+
+    # Head signatures, from that same report. Where it verified the signature —
+    # present, under the key, covering the current head — or already reports the
+    # chain broken, the bytes are not compared: every signed record() replaces
+    # the file whole, and this command's own gate decision has done exactly that
+    # to data/events/audit.log.sig, which failed every correct signed restore as
+    # REWRITTEN. Otherwise nothing re-signed it, so it must be the backed-up file.
+    for entry_path, entry in signatures:
+        if _signature_judged(chains.get(str(HEAD_SIGNATURES[entry_path]))):
+            continue
+        if (altered := _altered(entry, root / entry_path)) is not None:
+            problems.append(altered)
+
+    # Chains: entries may only GROW, and must still verify.
     for name, state in sorted(chains.items()):
         if not isinstance(state, dict):
             continue

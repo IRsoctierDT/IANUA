@@ -139,7 +139,7 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `SUBSTITUTED` | the attested count exactly, but different rows — a different set of events, **or the same number of observables with different values** (the observables digest differs). Not this backup |
 | `ADDED` | more events or observables than attested. Re-collection (step 5) is the expected cause — but a count plus a whole-set digest **cannot tell re-collection from substitution plus addition**, since the digest necessarily differs once rows were added. If you have **not** run step 5, treat this as `SUBSTITUTED` |
 | `TRUNCATED` / `REWRITTEN` | a declared **append-only stream** — one of the four `audit.log` chains or `evidence.jsonl`, never a file beside one — shrank, or its history was replaced rather than appended to |
-| `ALTERED` | a declared file that is **not** an append-only stream — a report, a rotated archive, a checkpoint, or (with no key set) a head signature — differs in size or digest. None of them grows, and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
+| `ALTERED` | a declared file that is **not** an append-only stream — a report, a rotated archive, a checkpoint, or a head signature the key did not verify — differs in size or digest. None of them grows, and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
 | `…: chain does not verify: head signature …` | with a key set, a chain's head signature is missing, forged (`invalid`) or covers an older head (`stale`). Run the gate with the key the chains were signed with; a different one reads as `invalid` on every signed chain |
 | `UNDECLARED` | a file is in the live root that the manifest never listed, **or `data/reports` is itself a symlink**. Step 4's `cp -a` **merges**, so this is a file from before the restore that outlived it. **Not** store evidence loss — remove it, then re-run |
 | *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
@@ -162,9 +162,11 @@ What it refuses, each with the direction named rather than a bare mismatch:
 prefix-compared it like a stream: with `AUDIT_HMAC_KEY` set, **every correct restore
 failed** with `REWRITTEN: data/events/audit.log.sig`. The signature must still be present,
 and with the key it must verify and cover the current head, or the chain is reported broken.
-That is what it means, so that is what is checked. With no key nothing re-signs it, so it is
-compared exactly instead. That keeps the one check that still catches a forged signature
-when no key is available to judge it.
+That is what it means, so that is what is checked. Where the key did not verify it, nothing
+re-signed it either, so it is compared exactly instead. That covers two cases. With no key,
+it is the one check that still catches a forged signature. With a chain pruned to its
+checkpoint (`--retain-segments 0`), there is no entry to sign, so verification never reads
+the signature at all.
 
 **Why `LOSS` covers observables separately.** The completeness digest is a sha256 over the
 `event_id` set only, so a restore that loses rows from `observables` and none from `events`

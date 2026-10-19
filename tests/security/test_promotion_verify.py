@@ -1388,3 +1388,91 @@ def test_the_sidecar_names_are_the_ones_the_audit_logger_writes(
     written = sorted(child.name for child in (tmp_path / chain).parent.iterdir())
     assert written == sorted([chain.name, signature.name, lock.name]), written
     assert set(HEAD_SIGNATURES.values()) == set(CHAIN_FILES)
+
+
+# --- review round 1 (Codex on 3cf3b42) ----------------------------------------------
+
+
+@pytest.mark.security
+@pytest.mark.usefixtures("audit_key")
+@pytest.mark.parametrize("forged", [False, True], ids=["correct", "forged"])
+def test_a_signature_beside_a_fully_pruned_chain_is_compared_exactly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], forged: bool
+) -> None:
+    """A key in hand is not the same as the signature having been checked.
+
+    Found by review. ``--retain-segments 0`` is accepted by
+    ``scripts/audit_maintenance.py``, and it prunes a chain down to its checkpoint
+    and its signature. ``verify_report`` then has no entry to sign and reports
+    ``signature="empty"`` without reading the sidecar — so the first version of
+    this fix, which skipped the bytes whenever a key was set, compared nothing:
+    measured, a same-length forgery verified at exit 0. Only a ``valid`` signature
+    (or a chain already reported broken) may skip the byte comparison.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    chain = AuditLogger(
+        source / _PIPELINE_CHAIN, max_bytes=1, retain_segments=0, signing_key=signing_key_from_env()
+    )
+    chain.record(
+        actor="test", action="cycle", action_class="read_only", decision="allow", reason="seeded"
+    )
+    chain.apply_retention()
+    names = sorted(child.name for child in chain.path.parent.iterdir())
+    assert names == ["audit.log.checkpoint", "audit.log.lock", "audit.log.sig"], names
+    assert chain.verify_report().signature == "empty", "premise: nothing reads the signature"
+    backup = _take(source)
+    _restore(backup, live)
+    if forged:
+        _forge_signature(live / _PIPELINE_SIGNATURE)
+
+    code = _verify_restore(live, backup)
+    out = capsys.readouterr().out
+    if forged:
+        assert code == 1, out
+        assert f"ALTERED: {_PIPELINE_SIGNATURE}" in out, out
+    else:
+        assert code == 0, out
+        assert "restore verified" in out, out
+
+
+@pytest.mark.security
+def test_the_chain_verdict_is_taken_after_the_streams_are_compared(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A writer that was not quiesced must not slip a broken tail past the gate.
+
+    Found by review. The first version of this fix verified the chains *before*
+    the declared files, to decide which signatures to skip. A stream's prefix
+    comparison allows any growth, so an append landing between the two was seen
+    by neither: measured, a malformed tail written during the comparison verified
+    at exit 0. The chain verdict is now taken after every stream is compared —
+    the original order — and the signatures are decided from that same report.
+    What is written after the last read is unseen in any order.
+    """
+    _drop_keys(monkeypatch)
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    _rotated_chain(source)
+    backup = _take(source)
+    _restore(backup, live)
+
+    import scripts.run_backup as run_backup
+
+    real = run_backup._digest_prefix
+    stream = live / _PIPELINE_CHAIN
+
+    def digest_then_append(path: Path, length: int) -> str:
+        digest = real(path, length)
+        if path == stream:
+            with stream.open("ab") as handle:
+                handle.write(b'{"seq": "torn')  # an append that did not finish
+        return digest
+
+    monkeypatch.setattr(run_backup, "_digest_prefix", digest_then_append)
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "data/pipeline/audit.log: chain does not verify" in out, out
