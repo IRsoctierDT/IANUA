@@ -91,7 +91,8 @@ compares and, more importantly, for what a green verdict does **not** say — it
 speaks about the copy and says nothing about whether exactly one node is
 active.
 
-**Exit codes**, the whole interface a scheduler sees: ``0`` a backup was taken
+**Exit codes**, the whole interface a scheduler sees (``2`` includes a ``--root``
+that is a backup, or inside one): ``0`` a backup was taken
 or verified, or a take was skipped because another take or ``--verify-restore``
 held the lock (a take whose own copy of a chain does not verify still exits
 ``0``, and names the chain in a warning and in ``chains_broken``); ``1`` the
@@ -774,6 +775,19 @@ def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[st
             )
             continue
         if not report.intact:
+            taken = manifest["chains"][str(chain)]
+            if report.signature == "missing" and taken.get("signature") == "missing":
+                # Not an edit: the take itself recorded it unsigned, which the first
+                # take after a key is configured does (found by review: the generic
+                # finding below sent an operator away from a correct backup).
+                problems.append(
+                    f"{chain}: the backed-up chain was not signed when the backup was taken "
+                    "(its manifest records the signature missing, and the take named it in "
+                    "chains_broken), so it cannot be authenticated under the key. That is "
+                    "a backup taken before the key was configured, not an edit: see "
+                    "docs/RESTORE.md for the unkeyed recourse"
+                )
+                continue
             problems.append(
                 f"{chain}: the backed-up chain does not authenticate (signature "
                 f"{report.signature}): {report.failure}"
@@ -828,41 +842,74 @@ def _linked_live_chain(root: Path) -> str | None:
     directory.
     """
     for chain in CHAIN_FILES:
-        for path in (root / chain, root / chain.with_name(chain.name + ".lock")):
+        lock = root / chain.with_name(chain.name + ".lock")
+        for path in (root / chain, lock):
             try:
-                links = os.lstat(path).st_nlink
+                found = os.lstat(path)
             except OSError:
                 continue  # absent, or unusable: AuditLogger says which
-            if links <= 1:
+            if not stat.S_ISREG(found.st_mode) or found.st_nlink <= 1:
+                # A directory's link count is its subdirectories plus two, not a
+                # second name: measured, an empty directory at a lock path was
+                # refused as "shares its file with 1 other name(s)" (found by
+                # review). AuditLogger refuses a non-regular chain or lock itself,
+                # and a reader proceeds without a lock that is not a regular file.
                 continue
+            others = found.st_nlink - 1
+            if path == lock:
+                return (
+                    f"the live {path.relative_to(root)} shares its file with {others} other "
+                    "name(s), and this pass takes that lock, so it would wait on whatever else "
+                    "holds that file — measured, the lock this pass already holds. Find them "
+                    f"with find <mount> -xdev -samefile {path}, then remove this chain lock's "
+                    f"name ({path.relative_to(root)}): a chain lock holds nothing, and the next "
+                    "record recreates it"
+                )
             return (
-                f"the live {path.relative_to(root)} shares its file with {links - 1} other "
-                "name(s), and this pass writes or locks it, which would change or wait on "
-                f"whatever else uses that file. Find them with find <mount> -xdev -samefile "
-                f"{path} and remove the names that are not this root's own. If this root was "
-                "restored with cp -al, rsync --link-dest or ln, or from a backup that holds "
+                f"the live {path.relative_to(root)} shares its file with {others} other "
+                "name(s), and this pass appends to it, which would change whatever else uses "
+                f"that file. Find them with find <mount> -xdev -samefile {path}. If this root "
+                "was restored with cp -al, rsync --link-dest or ln, or from a backup that holds "
                 "hard links, remove its linked files and repeat docs/RESTORE.md step 4 with "
                 "cp -a --no-preserve=links. Never restore over a live root to clear this"
             )
     return None
 
 
-def _root_in_backup(root: Path, backup: Path) -> str | None:
-    """Why ``root`` must not be the root of a pass verifying ``backup``, or ``None``.
+def _root_in_backup(root: Path, backup: Path | None) -> str | None:
+    """Why ``--root`` must not be used, because it is a backup or inside one, or ``None``.
 
-    Every mode writes its audit records under ``--root``, so a ``--root`` that is
-    the backup, or inside it, writes into the backup: measured, ``--verify`` with
-    the backup as its own root appended its gate and outcome records to the
-    backup's chain and created a lock in it, and the backup never verified
-    again (found by independent review).
+    Every mode writes its audit records, and its lock, under ``--root``, so a
+    ``--root`` that is a backup, or inside one, writes into that backup: measured,
+    ``--verify`` with the backup as its own root appended its gate and outcome
+    records to the backup's chain, and a take with a backup as its root wrote
+    those records and a whole nested backup into it, at exit 0; neither backup
+    verified again (both found by independent review). So the argued backup is
+    checked, and so is any backup the root is or lies under: a directory holding
+    a ``manifest.json`` that is the root itself or sits directly in a
+    ``data/backups`` directory. A lab-data root never holds one.
     """
     resolved = Path(os.path.realpath(root))
-    if resolved == backup or resolved.is_relative_to(backup):
+    if backup is not None and (resolved == backup or resolved.is_relative_to(backup)):
         return (
             f"--root {resolved} is the backup being verified, or inside it, and this pass "
             "writes its audit records under --root, which would change the backup. Use the "
             "lab-data root as --root"
         )
+    for candidate in (resolved, *resolved.parents):
+        try:
+            holds_manifest = (candidate / MANIFEST_FILE).is_file()
+        except OSError:
+            holds_manifest = False  # every ancestor was searched to reach --root
+        in_backups = candidate.parent.name == BACKUP_SUBDIR.name and (
+            candidate.parent.parent.name == BACKUP_SUBDIR.parent.name
+        )
+        if holds_manifest and (candidate == resolved or in_backups):
+            return (
+                f"--root {resolved} is the backup {candidate}, or inside it, and this pass "
+                "writes its audit records and its lock under --root, which would change "
+                "that backup. Use the lab-data root as --root"
+            )
     return None
 
 
@@ -876,8 +923,10 @@ def _live_chain_bound(root: Path, backup: Path) -> str | None:
     before the gate, each live file of that chain's family that the backup
     holds must be no larger than the backup's copy, plus
     :data:`LIVE_CHAIN_GROWTH` for the active log, which repeated runs of this
-    gate append to. A sibling the manifest does not list is refused for the
-    reason :func:`_unbounded_chain` gives.
+    gate append to, and one the backup does not hold no larger than
+    :data:`LIVE_SEGMENT_CAP`. Only the read is bounded here: whether such a
+    leftover segment belongs to the restored chain is :func:`_verify_restore`'s
+    ``UNDECLARED`` finding.
     """
     try:
         manifest = _load_manifest(backup)
@@ -927,18 +976,25 @@ def _backup_inventory_problems(backup: Path, manifest: dict[str, Any]) -> list[s
     passed ``--verify``, and once restored, 4b and every take waited for ever on
     the lock they held themselves. A take writes only the files it declares, the
     store and the store's transient sidecars, each with one name within the
-    backup, so anything else is reported. Links *between* backups, which a
-    hard-link snapshot farm makes, are not looked at.
+    backup, so anything else is reported, and so is a directory no reported
+    path lies in. Links *between* backups, which a hard-link snapshot farm makes,
+    are not looked at here; the store check refuses a linked store anyway (#259).
     """
     store = str(manifest["store"]["path"])  # shape-checked: a string
     allowed = {str(entry["path"]) for entry in manifest["files"]} | {store}
     allowed |= {store + suffix for suffix in _SIDECARS}
+    # Every directory a declared file lies in. A take creates no other, and a
+    # planted empty one at a lock or position path passed step 2 and, restored,
+    # stopped every CLI at exit 2 (found by review), so any other is reported
+    # and not descended into.
+    folders = {str(parent) for path in allowed for parent in Path(path).parents}
     base = backup / "data"
     if base.is_symlink() or not base.is_dir():
         return []  # the path walks name a symlinked data/; an absent one is a missing store
     problems: list[str] = []
     seen: dict[tuple[int, int], str] = {}
     for directory, dirnames, filenames in os.walk(base):
+        undeclared_dirs = []
         for name in sorted(dirnames + filenames):
             path = Path(directory) / name
             relative = str(path.relative_to(backup))
@@ -950,6 +1006,14 @@ def _backup_inventory_problems(backup: Path, manifest: dict[str, Any]) -> list[s
                 )
                 continue
             if stat.S_ISDIR(found.st_mode):
+                if relative not in folders:
+                    undeclared_dirs.append(name)
+                    problems.append(
+                        f"UNDECLARED: {_capped(relative)} is a directory in the backup that no "
+                        "file its manifest lists lies in. A take creates none, and step 4's cp "
+                        "-a would copy it into the live root, where a directory at a lock or "
+                        "position path stops the CLIs that open it"
+                    )
                 continue
             if relative not in allowed:
                 kind = "a file" if stat.S_ISREG(found.st_mode) else _kind_of(found.st_mode)
@@ -967,6 +1031,7 @@ def _backup_inventory_problems(backup: Path, manifest: dict[str, Any]) -> list[s
                     "recreate it in the live root"
                 )
             seen.setdefault(key, relative)
+        dirnames[:] = [name for name in dirnames if name not in undeclared_dirs]
     return problems
 
 
@@ -1010,13 +1075,11 @@ def _linked_to_backup(root: Path, argument: Path) -> str | None:  # argument: re
     then failed ``--verify`` for good, while this check exited 0 "restore
     verified" (found by independent review).
 
-    Identity, not the link count: ``st_nlink > 1`` is also what a hard-link
-    snapshot farm of ``data/backups`` (``cp -al``, rsnapshot) leaves on every
-    backup file, and refusing it would fail a correct deployment, the trade
-    ``scripts/_locking.py`` already declined. Only ``audit.log`` is checked
-    here: the head signature is replaced through a new inode, and the lock is
-    created read-only and never written (measured). The store and every other
-    declared file are reported by :func:`_verify_restore`.
+    Identity, so this names the backup as the other copy; any other second name
+    is :func:`_linked_live_chain`'s refusal, which follows it. Only ``audit.log``
+    is checked here: the head signature is replaced through a new inode, and the
+    lock is created read-only and never written (measured). The store and every
+    other declared file are reported by :func:`_verify_restore`.
     """
     relative = AUDIT_SUBDIR / AUDIT_FILE
     if _same_file(root / relative, argument / relative):
@@ -1028,6 +1091,48 @@ def _linked_to_backup(root: Path, argument: Path) -> str | None:  # argument: re
             "rsync --link-dest or ln"
         )
     return None
+
+
+def _undeclared_chain_segments(
+    root: Path, manifest: dict[str, Any], *, skip: dict[Path, str]
+) -> dict[Path, list[str]]:
+    """Live chain segments the backup did not hold, as ``UNDECLARED`` findings, per chain.
+
+    Step 4's ``cp -a`` merges: it replaces the active log with the backup's and
+    leaves any archive or checkpoint the old tree had beside it. Within the
+    step-4-to-step-5 window nothing rotates a chain (this gate's own logger has
+    no size limit), so a segment the manifest does not list predates the
+    restore. Measured, found by independent review: after any rotation since the
+    take, a same-node restore failed 4b with an unexplained "chain break …
+    found seq 0", repeating step 4 could not clear it, and moving the leftover
+    archive aside did. That segment holds audit records written after the
+    backup, so the remedy keeps it rather than deleting it. Locks and head
+    signatures are not segments: a lock holds nothing, and this gate's own
+    record replaces the events chain's signature.
+    """
+    declared = {str(entry["path"]) for entry in manifest["files"]}
+    found: dict[Path, list[str]] = {}
+    for chain in CHAIN_FILES:
+        parent = root / chain.parent
+        if chain in skip or parent.is_symlink() or not parent.is_dir():
+            continue
+        for child in sorted(parent.iterdir()):
+            name = child.name
+            if name == chain.name or not name.startswith(chain.name):
+                continue
+            if name.endswith((".lock", ".sig")):
+                continue
+            relative = str(child.relative_to(root))
+            if relative in declared:
+                continue
+            found.setdefault(chain, []).append(
+                f"UNDECLARED: {_capped(relative)} is beside the restored {chain} but not in the "
+                "backup: a segment from before the restore (a rotation since the backup was "
+                "taken) that step 4's cp -a merge left behind, so the restored chain does not "
+                "continue into it. It holds audit records written after the backup: do not "
+                "delete it. Move it out of the root and keep it, then re-run this check"
+            )
+    return found
 
 
 def _live_tree_inventory(root: Path) -> tuple[list[Path], list[str]]:
@@ -1487,6 +1592,20 @@ def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _unreadable_manifest(directory: Path) -> str:
+    """The refusal for a manifest this account may not read, which says nothing of its content.
+
+    Not :func:`_malformed`'s "damaged or edited": measured, a backup under a
+    mode this account could not read was reported as damaged, and one it could
+    not search as a bare errno (found by review).
+    """
+    return (
+        f"{MANIFEST_FILE} in {directory} cannot be read by this account (PermissionError); "
+        "this says nothing about whether the backup is damaged. Check the modes and "
+        "ownership of the backup and its directories, or run as the account that took it"
+    )
+
+
 def _malformed(directory: Path, what: str) -> StoreError:
     """The refusal for a manifest whose shape cannot be verified against."""
     return StoreError(
@@ -1549,7 +1668,11 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
     wrong with the copy, which a raise from this function would hide.
     """
     manifest_path = directory / MANIFEST_FILE
-    if not manifest_path.is_file():
+    try:
+        present = manifest_path.is_file()
+    except PermissionError as exc:
+        raise StoreError(_unreadable_manifest(directory)) from exc
+    if not present:
         raise StoreError(f"no {MANIFEST_FILE} in {directory}; this is not a backup")
     # Bounded before it is parsed. Measured, a manifest extended to 1 TiB ended
     # both verifiers in a MemoryError traceback, and one of 2 GiB took 55 s and
@@ -1562,6 +1685,8 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
             # O_NOFOLLOW's refusal, which "cannot be read (OSError)" did not name
             # (found by review).
             raise _malformed(directory, "is a symlink, which a take never writes") from exc
+        if isinstance(exc, PermissionError):
+            raise StoreError(_unreadable_manifest(directory)) from exc
         raise _malformed(directory, f"cannot be read ({type(exc).__name__})") from exc
     if len(raw) > MANIFEST_CAP:
         raise _malformed(directory, f"is larger than {MANIFEST_CAP} bytes")
@@ -2268,12 +2393,28 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # a position present here is the newer-offsets state docs/RESTORE.md calls
     # the single unrecoverable skew.
     for relative, why in sorted(EXCLUDED.items()):
-        if (root / relative).exists():
+        try:
+            found = os.lstat(root / relative)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
             problems.append(
-                f"POSITION PRESENT: {relative} exists in the live root. "
-                f"docs/RESTORE.md step 3 removes it before the store comes back, because "
-                f"{why.split(':')[0]}"
+                f"POSITION PRESENT: {relative} cannot be checked ({type(exc).__name__})"
             )
+            continue
+        if not stat.S_ISREG(found.st_mode):
+            # Step 3's rm -f does not remove a directory (found by review).
+            problems.append(
+                f"POSITION PRESENT: {relative} in the live root is {_kind_of(found.st_mode)}, "
+                "which no pass writes and step 3's rm -f does not remove. Move it out of the "
+                "root and keep it for investigation, then re-run this check"
+            )
+            continue
+        problems.append(
+            f"POSITION PRESENT: {relative} exists in the live root. "
+            f"docs/RESTORE.md step 3 removes it before the store comes back, because "
+            f"{why.split(':')[0]}"
+        )
 
     # The backed-up chains, authenticated where their signatures still mean
     # something; the live ones below show only that each continues cleanly.
@@ -2289,6 +2430,12 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         is not None
     }
     problems.extend(unsafe_chains.values())
+    for chain, leftovers in _undeclared_chain_segments(root, manifest, skip=unsafe_chains).items():
+        problems.extend(leftovers)
+        unsafe_chains[chain] = (
+            f"{chain}: not verified, because a segment beside it is not in the backup "
+            "(see the UNDECLARED finding)"
+        )
 
     # Chains, verified LAST: after every stream, report and signature above was
     # read. A prefix comparison allows any growth, so a chain report taken before
@@ -2468,16 +2615,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         argued = args.verify if args.verify is not None else args.verify_restore
-        if argued is not None:
-            # Before the lock, which is created under --root: a --root that is
-            # the backup would put a lock, and then audit records, inside it.
-            try:
-                inside = _root_in_backup(root, _resolve_argument(argued))
-            except StoreError:
-                inside = None  # refused by name in _run, at exit 1
-            if inside is not None:
-                print(f"error: {_printable(inside)}", file=sys.stderr)
-                return 1
+        # Before the lock, which is created under --root: a --root that is a
+        # backup would put a lock, and then audit records, inside it. A bad
+        # argument, so exit 2, as the exit-code tables say.
+        try:
+            resolved = _resolve_argument(argued) if argued is not None else None
+        except StoreError:
+            resolved = None  # refused by name in _run, at exit 1
+        inside = _root_in_backup(root, resolved)
+        if inside is not None:
+            print(f"error: {_printable(inside)}", file=sys.stderr)
+            return 2
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.

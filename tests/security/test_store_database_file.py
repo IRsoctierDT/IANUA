@@ -314,10 +314,9 @@ def test_every_cli_refuses_the_database_instead_of_hanging_or_writing_through(
     Exit 1 is the "damage, page someone" code these CLIs already use for a store that
     will not open, and it is what the hang used to turn into "skipped" at exit 0. Every
     one except the SLI reporter names the problem and says the store was not opened.
-    The SLI reporter checks ``is_file()`` before it opens anything, so a FIFO never
-    reaches the store there: it reports "no event store", which is unmeasured and exit 1
-    by its contract, and that cell pins behaviour that was already fail-closed. A hard
-    link does reach ``EventStore.open`` and is reported as ``StoreFileError``.
+    The SLI reporter's guard is an ``lstat``, so a FIFO, like a hard link, reaches
+    ``EventStore.open`` and is reported as ``StoreFileError``; only absence reads as
+    "no event store". Both are unmeasured, so exit 1 by its contract.
     """
     root = _seeded(tmp_path)
     log = root / "logs" / "auth.log"

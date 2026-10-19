@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Ivan Rozenblad
 # SPDX-License-Identifier: Apache-2.0
 
-"""A restore made with hard links is refused, and a hard-link snapshot farm is not.
+"""A restore made with hard links is refused; a copied restore from a farmed backup is not.
 
 ``docs/RESTORE.md`` step 4 is a copy. Done instead with ``cp -al``, ``rsync
 --link-dest`` or ``ln``, every live file *is* the backup's file. Measured on main:
@@ -10,10 +10,11 @@ records appended through the shared inode into the backup's ``audit.log``, which
 then failed ``--verify`` for good; and the first re-collected event would have
 landed in the backup's store.
 
-The fix compares identity, never the link count. ``st_nlink > 1`` is also what a
-hard-link snapshot farm of ``data/backups`` leaves on every backup file, and a
-check keyed on it would fail a correct deployment, which is why the last test here
-exists: it pins the acceptance side.
+This check compares identity with the argued backup. Since #259 the store's own
+check refuses any store file with a second name, so ``--verify`` of a backup in a
+hard-link snapshot farm of ``data/backups`` now fails on its store; what the last test
+here pins is that a copied restore from such a backup still passes the promotion
+gate, because no live file is linked.
 """
 
 from __future__ import annotations

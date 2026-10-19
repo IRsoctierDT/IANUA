@@ -113,9 +113,14 @@ timers so nothing holds the store open, then find out how the file got there bef
 you remove it. A FIFO, socket, device, directory or symlink can be deleted, and SQLite
 recreates its sidecars. A hard link means a second name shares the inode, often a
 hard-link snapshot of `data/` (`cp -al`, `rsync --link-dest`). `find / -xdev -samefile
-<sidecar>` names the other one. Removing the sidecar's name unlinks it from the store
-and leaves the other copy intact. For a non-empty `-wal`, take a copy first: it can
-hold frames that were never checkpointed.
+<sidecar>` names the other one. **Never remove a live `-wal` or `-journal` name**: it can
+hold committed events that were never checkpointed, and measured, copying a hard-linked
+`-wal` aside and then removing its name dropped 20 of 32 committed events from the store.
+With nothing holding the store open, give the name a private copy instead and keep the
+linked one: `cp -p <sidecar> <sidecar>.new && mv <sidecar> <a directory outside the
+root>/ && mv <sidecar>.new <sidecar>` (measured: all 32 kept). A `-shm` holds no events and
+can be moved out once nothing holds the store open. `docs/RESTORE.md`, the sidecar-link
+row of "Verifying a restore", has the full sequence and why quiescing comes first.
 
 ### The database file itself
 
@@ -163,10 +168,10 @@ store's content is evidence about how it happened, so take a copy first.
 cannot be handed a descriptor that was checked, and it recreates its sidecars later.
 Winning that race needs write access to `data/events/`, which the store keeps at
 `0o700`, and with that access the database itself can be rewritten. This catches a
-database or a sidecar that is already wrong at open. The SLI reporter checks
-`is_file()` before it opens the store, so a FIFO never reaches this check there. It
-reports "no event store", which is unmeasured and therefore exit 1 under its own
-contract, but it names the wrong thing.
+database or a sidecar that is already wrong at open. The SLI reporter's guard is a
+single `lstat`: only absence reads as "no event store", a FIFO, directory or socket at
+the store path reaches this check and is named (`StoreFileError`, every store indicator
+`UNKNOWN`), and any other `lstat` error reads "cannot be checked". It creates nothing.
 
 ## Attesting what is held
 
