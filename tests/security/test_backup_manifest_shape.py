@@ -23,7 +23,9 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -42,13 +44,16 @@ _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.11
 _FORMAT = MANIFEST_FORMAT
 
 
-def _backup(tmp_path: Path) -> tuple[Path, Path]:
+def _backup(tmp_path: Path, *, report: bool = False) -> tuple[Path, Path]:
     root = tmp_path / "lab"
     root.mkdir()
     now = time.time()
     with EventStore.open(root) as store:
         for index in range(12):
             store.append(normalize(_RECORD % index), ingested_at=store.next_stamp(now + index))
+    if report:
+        (root / _REPORT).parent.mkdir(parents=True)
+        (root / _REPORT).write_text("# incident\n\nCorrelated 12 events.\n", encoding="utf-8")
     assert backup_main(["--root", str(root), "--name", "probe", "--caller", "test"]) == 0
     return root, root / "data" / "backups" / "probe"
 
@@ -74,6 +79,85 @@ def _fingerprint(path: Path) -> tuple[int, int, str]:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STORE = Path("data") / "events" / "events.sqlite3"
 _CHAIN = "data/events/audit.log"
+_REPORT = Path("data") / "reports" / "r.md"
+
+
+def _run_isolated(
+    argv: list[str], *, timeout: float = 30.0, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run the CLI in a child, for the cases whose failure is a hang.
+
+    A subprocess with a timeout, as in ``test_audit_lock_path.py``: measured on the
+    pre-fix verifier, a 30s ``SIGALRM`` never raised while the open blocked inside
+    SQLite, so the suite hung rather than failed. The repository root goes on the
+    child's ``sys.path`` by name, because ``-c`` adds the working directory only when
+    ``PYTHONSAFEPATH`` is unset (found by review).
+    """
+    code = (
+        f"import sys\nsys.path.insert(0, {str(_REPO_ROOT)!r})\n"
+        f"from scripts.run_backup import main\nsys.exit(main({argv!r}))\n"
+    )
+    try:
+        return subprocess.run(  # noqa: S603 - fixed interpreter, literal code, test paths
+            [sys.executable, "-c", code],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"the CLI blocked for {timeout}s instead of refusing: {argv}")
+
+
+def _kind(path: Path) -> tuple[int, int]:
+    """File type and inode, without following a link: what a planted object *is*."""
+    found = os.lstat(path)
+    return stat.S_IFMT(found.st_mode), found.st_ino
+
+
+def _plant(side: Path, shape: str, victim: Path) -> None:
+    """Put a ``shape`` at a sidecar name. ``victim`` is what a link points at."""
+    if shape == "fifo":
+        os.mkfifo(side, 0o600)
+    elif shape == "socket":
+        # Bound relatively: ``sun_path`` is ~108 bytes and a tmp_path can exceed it.
+        here = Path.cwd()
+        sock = socket.socket(socket.AF_UNIX)
+        try:
+            os.chdir(side.parent)
+            sock.bind(side.name)
+        finally:
+            os.chdir(here)
+            sock.close()
+    elif shape == "directory":
+        side.mkdir()
+    elif shape == "dangling-symlink":
+        side.symlink_to(victim.parent / "nowhere")
+    elif shape == "symlink-to-file":
+        side.symlink_to(victim)
+    elif shape == "hard-link":
+        os.link(victim, side)
+    else:  # pragma: no cover - a typo in the parametrize list
+        raise AssertionError(shape)
+
+
+_SHAPES = ["fifo", "socket", "directory", "dangling-symlink", "symlink-to-file", "hard-link"]
+
+
+def _named(suffix: str, shape: str, victim: Path) -> str:
+    """The words the finding must use for ``shape``: what is wrong, not only that it is."""
+    kind = {
+        "fifo": "a FIFO",
+        "socket": "a socket",
+        "directory": "a directory",
+        "dangling-symlink": "a symlink",
+        "symlink-to-file": "a symlink",
+    }.get(shape)
+    if kind is None:
+        return f"its {suffix} ({victim.stat().st_size} bytes) has 2 links"
+    return f"its {suffix} is {kind}, not a regular file"
 
 
 @pytest.mark.security
@@ -387,77 +471,208 @@ def test_an_unknown_attestation_field_is_refused(
 
 @pytest.mark.security
 @pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
-@pytest.mark.parametrize("suffix", ["-journal", "-wal"])
-def test_a_fifo_sidecar_is_refused_rather_than_opened(
-    tmp_path: Path, mode: str, suffix: str
+@pytest.mark.parametrize("suffix", ["-wal", "-journal", "-shm"])
+@pytest.mark.parametrize("shape", _SHAPES)
+def test_a_sidecar_that_is_not_a_plain_file_is_refused_rather_than_opened(
+    tmp_path: Path, mode: str, suffix: str, shape: str
 ) -> None:
-    """Measured, found by review of the merge: a FIFO ``-journal`` hung both verifiers
-    inside ``EventStore.open`` while they held the backup lock, so a scheduled take
-    skipped at exit 0.
+    """SQLite opens all three sidecars with the store, so each must be a regular file
+    with one link. Measured, found by review:
 
-    The verifier runs in a subprocess with a timeout, as in ``test_audit_lock_path.py``,
-    because the failure under test is a hang. An alarm does not do it: measured on the
-    pre-fix verifier, a 30s ``SIGALRM`` never raised while the open blocked inside
-    SQLite, and the suite hung rather than failed.
+    - a FIFO ``-journal`` hung both verifiers inside ``EventStore.open`` while they held
+      the backup lock, so a scheduled take skipped at exit 0;
+    - a FIFO, socket, directory or symlink ``-shm`` replaced the report with a bare
+      SQLite error and left a new ``-wal`` in the tree under inspection;
+    - a ``-shm`` hard-linked to the backup's own manifest had the manifest overwritten
+      with 32 KiB of WAL index under a run that exited 0 "verified".
+
+    Every shape runs in a child, so a regression is a failure rather than a hung
+    suite. Both symlink shapes are needed: a dangling one is caught only by not
+    following it, and one to a regular file only because ``is_file()`` would follow it.
     """
     root, backup = _backup(tmp_path)
     target = (backup if mode == "--verify" else root) / _STORE
     side = target.with_name(target.name + suffix)
-    os.mkfifo(side, 0o600)
-    argv = ["--root", str(root), "--caller", "test", mode, str(backup)]
-    code = f"import sys\nfrom scripts.run_backup import main\nsys.exit(main({argv!r}))\n"
-    try:
-        result = subprocess.run(  # noqa: S603 - fixed interpreter, literal code, test paths
-            [sys.executable, "-c", code],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30.0,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        pytest.fail(f"the verifier opened a FIFO {suffix} and blocked")
+    victim = backup / "manifest.json"
+    _plant(side, shape, victim)
+    others = [
+        target.with_name(target.name + s) for s in ("-wal", "-journal", "-shm") if s != suffix
+    ]
+    planted, store, manifest = _kind(side), _fingerprint(target), _fingerprint(victim)
+    named = _named(suffix, shape, victim)
+
+    result = _run_isolated(["--root", str(root), "--caller", "test", mode, str(backup)])
+
     assert result.returncode == 1, result.stdout[-400:] + result.stderr[-400:]
-    out = result.stdout
-    assert f"{suffix} beside it that is not a regular file" in out, out
-    assert side.exists() and not side.is_file(), "the verifier removed the FIFO"
+    assert named in result.stdout, result.stdout[-400:] + result.stderr[-400:]
+    assert result.stderr == "", result.stderr[-400:]
+    assert _kind(side) == planted, "the verifier replaced or removed the planted sidecar"
+    assert _fingerprint(target) == store, "the store under inspection changed"
+    assert _fingerprint(victim) == manifest, "the manifest was written through the sidecar"
+    assert not any(other.exists() for other in others), "the verifier created a sidecar"
+
+
+@pytest.mark.security
+def test_a_backup_shm_hard_linked_to_the_live_store_cannot_destroy_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The worst case the review measured: a plain ``--verify`` of the backup exited 0
+    "verified" and left the LIVE evidence store as 32 KiB of WAL index, which no
+    longer opened ("file is not a database")."""
+    root, backup = _backup(tmp_path)
+    live = root / _STORE
+    os.link(live, (backup / _STORE).with_name(_STORE.name + "-shm"))
+    before = _fingerprint(live)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    assert f"its -shm ({before[0]} bytes) has 2 links" in capsys.readouterr().out
+    assert _fingerprint(live) == before
+    with EventStore.open(root) as store:
+        assert store.count() == 12
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("suffix", ["-wal", "-journal", "-shm"])
+@pytest.mark.parametrize("shape", ["fifo", "hard-link"])
+def test_a_take_refuses_a_sidecar_before_it_writes_anything(
+    tmp_path: Path, suffix: str, shape: str
+) -> None:
+    """Found by review: the take had the hang the verifiers were fixed for. A FIFO
+    ``-journal`` beside the live store blocked it inside the copy while it held the
+    backup lock, so every later take and verify printed "skipped" at exit 0 for as long
+    as the FIFO stayed. A hard link has its target written through the WAL index. The
+    take now refuses either before it creates the backup directory."""
+    root, _first = _backup(tmp_path)
+    live = root / _STORE
+    side = live.with_name(live.name + suffix)
+    victim = tmp_path / "victim"
+    victim.write_text("not the store's to write\n", encoding="utf-8")
+    _plant(side, shape, victim)
+    planted, store, untouched = _kind(side), _fingerprint(live), _fingerprint(victim)
+    named = _named(suffix, shape, victim)
+
+    result = _run_isolated(["--root", str(root), "--name", "second", "--caller", "test"])
+
+    assert result.returncode == 1, result.stdout[-400:] + result.stderr[-400:]
+    assert named in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr, result.stderr[-800:]
+    assert not (root / "data" / "backups" / "second").exists(), "a refused take left a tree"
+    assert _kind(side) == planted
+    assert _fingerprint(live) == store
+    assert _fingerprint(victim) == untouched
+
+
+def _dac_enforced(tmp_path: Path) -> bool:
+    """Does this process get EACCES from a directory it cannot search?
+
+    Probed rather than read off ``geteuid()``: root with ``CAP_DAC_OVERRIDE`` dropped is
+    refused like anyone else, and the CI runner is not root at all.
+    """
+    probe = tmp_path / "dac-probe"
+    probe.mkdir()
+    (probe / "f").write_text("x", encoding="utf-8")
+    probe.chmod(0o600)
+    try:
+        (probe / "f").stat()
+    except PermissionError:
+        return True
+    else:
+        return False
+    finally:
+        probe.chmod(0o700)
+
+
+@pytest.mark.security
+def test_a_take_over_an_unsearchable_tree_fails_closed(tmp_path: Path) -> None:
+    """Found by review of the round-2 fix: catching ``OSError`` in the walk the take
+    shares turned an unsearchable ``data/reports`` into a "refused" entry, and the take
+    exited 0 with the reports silently absent. The catch now lives only on the
+    verifiers' side, and the take fails as it did before."""
+    if not _dac_enforced(tmp_path):
+        pytest.skip("this process bypasses DAC checks, so the result would be vacuous")
+    root = tmp_path / "lab"
+    root.mkdir()
+    with EventStore.open(root) as store:
+        store.append(normalize(_RECORD % 0), ingested_at=store.next_stamp(time.time()))
+    reports = root / "data" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "r.md").write_text("# incident\n", encoding="utf-8")
+    reports.chmod(0o600)
+    try:
+        code = backup_main(["--root", str(root), "--name", "b", "--caller", "test"])
+    finally:
+        reports.chmod(0o700)
+    assert code == 1
+    assert not (root / "data" / "backups" / "b" / "manifest.json").exists()
 
 
 @pytest.mark.security
 @pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
 @pytest.mark.parametrize(
-    "path", ["data/reports/\x00x", "data/" + "z" * 300], ids=["nul", "overlong-component"]
+    "path",
+    [
+        "data/reports/\x00x",
+        "data/" + "z" * 200_000,
+        "/" + "A" * 200_000,
+        "data/reports/\ud800",
+        "data/\ud800/x",
+    ],
+    ids=["nul", "overlong-component", "huge-absolute", "surrogate", "surrogate-directory"],
 )
 def test_an_unwalkable_file_path_is_a_finding_not_an_os_error(
     tmp_path: Path, mode: str, path: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The store-path fix, for ``files[]``: these raised a bare error in place of the
-    whole report, so a genuine mismatch beside them was never shown."""
-    root, backup = _backup(tmp_path)
+    whole report, so a genuine mismatch beside them was never shown.
+
+    The hostile entry goes first and a genuinely altered report after it, so the test
+    shows the report survives the entry rather than ending at it, and the echo is
+    bounded (found by review: two wrong fixes passed the first version of this test).
+    """
+    root, backup = _backup(tmp_path, report=True)
     manifest_path = backup / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["files"].append({"path": path, "size": 1, "sha256": "0" * 64})
+    manifest["files"].insert(0, {"path": path, "size": 1, "sha256": "0" * 64})
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    altered = (backup if mode == "--verify" else root) / _REPORT
+    altered.write_text("# a different incident\n", encoding="utf-8")
     capsys.readouterr()
 
     assert _verify(root, backup, mode) == 1
     captured = capsys.readouterr()
-    assert "cannot be checked" in captured.out, captured
-    assert captured.err == "", captured.err
+    assert captured.err == "", captured.err[-400:]
+    assert len(captured.out) < 8192, len(captured.out)
+    reasons = ("cannot be checked", "contains a NUL byte", "is absolute")
+    assert any(reason in captured.out for reason in reasons), captured.out
+    assert str(_REPORT) in captured.out, "the genuine mismatch after the entry was lost"
 
 
 @pytest.mark.security
+@pytest.mark.parametrize("field", ["attestation-digest", "store-sha256", "file-sha256"])
 def test_a_mismatched_digest_is_echoed_capped(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, field: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Measured on the merge: a 2,000,000-character digest became 2 MB of output."""
+    """Measured on the merge: a 2,000,000-character digest became 2 MB of output. Each
+    of the three places ``--verify`` echoes one is pinned (found by review: uncapping
+    the two sha256 sites passed the first version of this test)."""
     root, backup = _backup(tmp_path)
-    _edit_attestation(backup, "digest", "a" * 2_000_000)
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    huge = "a" * 2_000_000
+    if field == "attestation-digest":
+        manifest["store"]["attestation"]["digest"] = huge
+    elif field == "store-sha256":
+        manifest["store"]["sha256"] = huge
+    else:
+        next(entry for entry in manifest["files"] if entry["path"] == _CHAIN)["sha256"] = huge
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     capsys.readouterr()
 
     assert _verify(root, backup, "--verify") == 1
     out = capsys.readouterr().out
-    assert "store attestation digest" in out and len(out) < 8192, len(out)
+    assert len(out) < 8192, len(out)
+    assert "a" * 79 + "..." in out, out[-400:]
 
 
 @pytest.mark.security
@@ -472,3 +687,494 @@ def test_an_unknown_attestation_key_cannot_write_control_sequences(
     assert _verify(root, backup, "--verify") == 1
     out = capsys.readouterr().out
     assert "\x1b" not in out and "never does" in out, out
+
+
+#: C0 (ESC, LF, CR, BEL), C1 (the single-character CSI, NEL), a bidi override and a
+#: line separator: an escaper that knew only C0 passed the first version of the test
+#: below (found by review).
+_FORGED = "\x1b[2J\x1b[H\nrestore verified: OK\r\n\x9b2J\x07\u202e\u2028\x85"
+
+
+def _all_printable(text: str) -> bool:
+    """Every character shows as itself; a newline only ever ends a line."""
+    return all(char.isprintable() or char == "\n" for char in text)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+@pytest.mark.parametrize(
+    "site",
+    ["absolute-path", "missing-path", "surrogate-path", "store-sha256"],
+)
+def test_manifest_text_reaches_the_terminal_escaped(
+    tmp_path: Path, mode: str, site: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: escaping only the attestation keys left every other echo raw.
+    A ``files[]`` path of ``"/\\x1b[2J\\x1b[Hrestore verified: OK\\r\\n"`` cleared the
+    operator's terminal and wrote a forged line, and a lone surrogate crashed the text
+    report with a traceback partway through. Escaped once, where lines are printed."""
+    if site == "store-sha256" and mode == "--verify-restore":
+        pytest.skip("--verify-restore does not echo the store sha256")
+    root, backup = _backup(tmp_path)
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    hostile = {
+        "absolute-path": "/" + _FORGED,
+        "missing-path": "data/reports/" + _FORGED,
+        "surrogate-path": "/\ud800" + _FORGED,
+        "store-sha256": _FORGED + "\ud800",
+    }[site]
+    if site == "store-sha256":
+        manifest["store"]["sha256"] = hostile
+    else:
+        manifest["files"].insert(0, {"path": hostile, "size": 1, "sha256": "0" * 64})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "", captured.err[-400:]
+    assert _all_printable(captured.out), repr(captured.out[-400:])
+    assert "restore verified: OK" not in captured.out.splitlines(), captured.out
+    assert "\\x1b[2J" in captured.out, "the finding was dropped rather than escaped"
+
+
+@pytest.mark.security
+def test_a_symlinked_component_is_named_relative_to_the_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: capping the absolute path cut the finding to the backup's own
+    prefix, so it named neither the symlinked component nor where it pointed."""
+    root, backup = _backup(tmp_path, report=True)
+    elsewhere = tmp_path / ("deep-" * 20) / "elsewhere"
+    elsewhere.mkdir(parents=True)
+    shutil.copy2(backup / _REPORT, elsewhere / _REPORT.name)
+    shutil.rmtree(backup / _REPORT.parent)
+    (backup / _REPORT.parent).symlink_to(elsewhere, target_is_directory=True)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    out = capsys.readouterr().out
+    assert f"passes through the symlink {_REPORT.parent} (->" in out, out
+    assert "deep-deep-/elsewhere); refusing" in out, out
+
+
+def _lab(tmp_path: Path) -> Path:
+    """A root holding one event and nothing else, for the take tests."""
+    root = tmp_path / "lab"
+    root.mkdir()
+    with EventStore.open(root) as store:
+        store.append(normalize(_RECORD % 0), ingested_at=store.next_stamp(time.time()))
+    return root
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "name", [("x" + _FORGED).encode(), b"\x80evil.md"], ids=["control-sequences", "undecodable"]
+)
+def test_a_take_warning_reaches_the_terminal_escaped(
+    tmp_path: Path, name: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: nothing pinned the escaping on the take's "sources NOT in this
+    backup" warnings, where a planted link's name is printed: raw control sequences at
+    exit 0, or, for a name that is not UTF-8, a traceback after the backup was written."""
+    root = _lab(tmp_path)
+    reports = root / "data" / "reports"
+    reports.mkdir()
+    Path(os.fsdecode(os.fsencode(reports) + b"/" + name)).symlink_to("/nowhere")
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--name", "b", "--caller", "test"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "", captured.err[-400:]
+    assert "sources NOT in this backup" in captured.out, captured.out
+    assert _all_printable(captured.out), repr(captured.out[-400:])
+    assert ("\\x1b[2J" if b"\x1b" in name else "\\udc80evil.md") in captured.out
+    assert (root / "data" / "backups" / "b" / "manifest.json").is_file()
+
+
+@pytest.mark.security
+def test_a_pass_error_reaches_the_terminal_escaped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the pass's ``error:`` line was escaped in the code and pinned by
+    nothing. A SchemaVersionError quotes the store's own ``meta`` value, which is the
+    backup's content."""
+    root, backup = _backup(tmp_path)
+    db = backup / _STORE
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", ("9" + _FORGED,))
+        conn.commit()
+    for suffix in ("-wal", "-shm"):
+        db.with_name(db.name + suffix).unlink(missing_ok=True)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    err = capsys.readouterr().err
+    assert "schema version" in err and "\\x1b[2J" in err, err
+    assert _all_printable(err), repr(err[-400:])
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["take", "--verify", "--verify-restore", "--verify-another"])
+def test_the_gate_record_cannot_follow_a_symlinked_events_directory(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the gate decision is every mode's first write, and AuditLogger
+    refuses a symlink only at the leaf. With ``data/events`` linked into a backup the
+    record landed in that backup's chain, which then failed ``--verify`` for good; a
+    ``--verify`` of a *different* backup did it at exit 0."""
+    root, backup = _backup(tmp_path)
+    other = root / "data" / "backups" / "other"
+    assert backup_main(["--root", str(root), "--name", "other", "--caller", "test"]) == 0
+    events = root / "data" / "events"
+    events.rename(events.with_name("events.real"))
+    events.symlink_to(other / "data" / "events", target_is_directory=True)
+    chain = other / _CHAIN
+    before = _fingerprint(chain)
+    tail = {
+        "take": ["--name", "third"],
+        "--verify": ["--verify", str(other)],
+        "--verify-restore": ["--verify-restore", str(other)],
+        "--verify-another": ["--verify", str(backup)],
+    }[mode]
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--caller", "test", *tail]) == 2
+    assert "is a symlink" in capsys.readouterr().err
+    assert _fingerprint(chain) == before, "the gate record was written into the backup's chain"
+    assert not (root / "data" / "backups" / "third").exists()
+
+
+@pytest.mark.security
+def test_the_gate_record_cannot_be_written_outside_the_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same hole pointed outside: measured, a ``--verify`` exited 0 "verified" and
+    created ``audit.log`` in a directory outside the lab root. The refusal quotes the
+    link target, so its name is escaped too."""
+    root, backup = _backup(tmp_path)
+    outside = tmp_path / ("outside" + _FORGED.replace("\n", ""))
+    outside.mkdir()
+    events = root / "data" / "events"
+    events.rename(events.with_name("events.real"))
+    events.symlink_to(outside, target_is_directory=True)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 2
+    err = capsys.readouterr().err
+    assert _all_printable(err) and "\\x1b[2J" in err, repr(err[-400:])
+    assert list(outside.iterdir()) == [], "the verifier wrote outside the lab root"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("shape", ["readable", "dangling", "unsearchable"])
+def test_a_symlinked_live_store_is_a_finding_and_the_report_survives(
+    tmp_path: Path, shape: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: ``--verify-restore`` never walked the live store's path, so
+    ``EventStore.open``'s confine raised and the bare error replaced the whole report.
+    It is now walked as the backup side's is, and the other findings still print.
+
+    The walk must come before the ``is_file()`` check, which follows the link: a
+    dangling link read as "no store at", and one into a directory this account cannot
+    search raised out of it (found by review: a readable target alone did not pin it).
+    """
+    if shape == "unsearchable" and not _dac_enforced(tmp_path):
+        pytest.skip("this process bypasses DAC checks, so the result would be vacuous")
+    root, backup = _backup(tmp_path, report=True)
+    live = root / _STORE
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    real = vault / "store.sqlite3"
+    live.rename(real)
+    live.symlink_to(real if shape != "dangling" else vault / "nowhere")
+    (root / _REPORT).write_text("# a different incident\n", encoding="utf-8")
+    before = _fingerprint(real)
+    capsys.readouterr()
+
+    if shape == "unsearchable":
+        vault.chmod(0o000)
+    try:
+        code = _verify(root, backup, "--verify-restore")
+    finally:
+        vault.chmod(0o700)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err == "", captured.err[-400:]
+    assert f"the live store {_STORE} passes through the symlink {_STORE}" in captured.out
+    assert "no store at" not in captured.out, captured.out
+    assert f"ALTERED: {_REPORT}" in captured.out, "the rest of the report was lost"
+    assert _fingerprint(real) == before
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("shape", ["outside-the-root", "inside-the-root", "dangling"])
+def test_a_take_names_a_symlinked_tree_it_did_not_copy(
+    tmp_path: Path, shape: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: a symlinked ``data/reports`` was skipped without a word, so a take
+    exited 0 with every report absent and nothing in ``refused``. Three shapes, each of
+    which a narrower check would miss: a containment-only check passes the link inside
+    the root, and one gated on ``is_dir()`` skips the dangling link."""
+    root = _lab(tmp_path)
+    target = {
+        "outside-the-root": tmp_path / "outside",
+        "inside-the-root": root / "data" / "elsewhere",
+        "dangling": tmp_path / "nowhere",
+    }[shape]
+    if shape != "dangling":
+        target.mkdir()
+        (target / "r.md").write_text("# incident\n", encoding="utf-8")
+    (root / "data" / "reports").symlink_to(target, target_is_directory=True)
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--name", "b", "--caller", "test"]) == 0
+    out = capsys.readouterr().out
+    manifest = json.loads((root / "data/backups/b/manifest.json").read_text(encoding="utf-8"))
+    named = "tree data/reports passes through the symlink data/reports"
+    assert any(entry.startswith(named) for entry in manifest["refused"]), manifest["refused"]
+    assert not any(entry["path"].startswith("data/reports/") for entry in manifest["files"])
+    assert named in out, out
+    # Refused and not also followed: without the `continue`, the take listed the link's
+    # target, outside the root, into the manifest and stdout (found by review).
+    assert not any(entry.startswith("source data/reports/") for entry in manifest["refused"])
+    assert "r.md" not in json.dumps(manifest) and "r.md" not in out, out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+def test_a_symlink_loop_at_the_backup_path_is_a_refusal_not_a_traceback(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: ``Path.resolve()`` raises RuntimeError on a loop on 3.11 and 3.12,
+    and nothing caught it, so a planted ``data/backups/latest -> latest`` was a traceback
+    after the gate decision was recorded."""
+    root, _backup_dir = _backup(tmp_path)
+    loop = root / "data" / "backups" / "loop"
+    loop.symlink_to(loop)
+    capsys.readouterr()
+
+    assert _verify(root, loop, mode) == 1
+    assert "this is not a backup" in capsys.readouterr().err
+
+
+@pytest.mark.security
+def test_an_unencodable_character_does_not_cut_the_report_short(tmp_path: Path) -> None:
+    """Found by review: escaping control characters left the encoding. Under a non-UTF-8
+    stdout an accented letter in a manifest path raised partway through the report. The
+    child runs with an ASCII stdout, which ``capsys`` cannot reproduce."""
+    root, backup = _backup(tmp_path, report=True)
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"].insert(
+        0, {"path": "data/reports/r\u00e9sum\u00e9.md", "size": 1, "sha256": "0" * 64}
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (backup / _REPORT).write_text("# a different incident\n", encoding="utf-8")
+
+    result = _run_isolated(
+        ["--root", str(root), "--caller", "test", "--verify", str(backup)],
+        env={**os.environ, "PYTHONIOENCODING": "ascii"},
+    )
+
+    assert result.returncode == 1, result.stdout[-400:] + result.stderr[-400:]
+    assert "Traceback" not in result.stderr, result.stderr[-800:]
+    assert "r\\xe9sum\\xe9.md is missing" in result.stdout, result.stdout[-400:]
+    assert str(_REPORT) in result.stdout, "the finding after the entry was lost"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("suffix", ["-wal", "-journal", "-shm"])
+def test_a_sidecar_that_cannot_be_checked_is_refused_not_taken_as_absent(
+    tmp_path: Path, suffix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by review: nothing pinned this branch, so treating any ``lstat`` error as
+    "absent" passed every test. Not walkable is not safe."""
+    import scripts.run_backup as run_backup
+
+    db = tmp_path / "events.sqlite3"
+    db.write_bytes(b"x")
+    real_lstat = os.lstat
+
+    def refusing(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if os.fspath(path).endswith(suffix):  # type: ignore[call-overload]
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[call-overload]
+        return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(run_backup.os, "lstat", refusing)
+    reason = run_backup._sidecar_problem(db, what="the store")
+    assert reason is not None and f"its {suffix} cannot be checked (PermissionError)" in reason
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+def test_a_symlink_chain_too_deep_to_follow_is_a_refusal_not_a_traceback(
+    tmp_path: Path, mode: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by review: ``realpath`` recurses once per link on 3.11 and 3.12, so a chain
+    of about a thousand links raised RecursionError out of the pass. Raised here for the
+    argument alone, because 3.13 resolves the same chain iteratively and a real chain
+    would test the interpreter rather than the CLI."""
+    import scripts.run_backup as run_backup
+
+    root, backup = _backup(tmp_path)
+    real_realpath = os.path.realpath
+
+    def too_deep(path: object, *args: object, **kwargs: object) -> str:
+        if os.fspath(path) == str(backup):  # type: ignore[call-overload]
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_realpath(path, *args, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+    monkeypatch.setattr(run_backup.os.path, "realpath", too_deep)
+    capsys.readouterr()
+
+    assert _verify(root, backup, mode) == 1
+    assert "more symbolic links than can be followed" in capsys.readouterr().err
+
+
+@pytest.mark.security
+def test_every_offending_sidecar_is_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: nothing pinned "each offending sidecar is named", and a version
+    that stopped at the first let a FIFO hide behind a benign-looking link count."""
+    root, backup = _backup(tmp_path)
+    target = backup / _STORE
+    _plant(target.with_name(target.name + "-journal"), "symlink-to-file", backup / "manifest.json")
+    _plant(target.with_name(target.name + "-shm"), "hard-link", backup / "manifest.json")
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    out = capsys.readouterr().out
+    assert "its -journal is a symlink, not a regular file" in out, out
+    assert "its -shm (" in out and "has 2 links" in out, out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["--verify", "--verify-restore"])
+@pytest.mark.parametrize("verdict", ["verified", "failed"])
+def test_the_subject_and_success_lines_reach_the_terminal_escaped(
+    tmp_path: Path, mode: str, verdict: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the subject and success lines carry the resolved backup path,
+    and reverting them to a bare ``print`` passed every test. A directory name can then
+    forge a "verified" line over a FAILED verdict."""
+    root, backup = _backup(tmp_path)
+    hostile = backup.with_name("probe" + _FORGED.replace("/", ""))
+    backup.rename(hostile)
+    if verdict == "failed":
+        _edit_attestation(hostile, "injected", 1)
+    capsys.readouterr()
+
+    assert _verify(root, hostile, mode) == (0 if verdict == "verified" else 1)
+    out = capsys.readouterr().out
+    assert _all_printable(out), repr(out[-400:])
+    assert "probe\\x1b[2J" in out, out
+
+
+@pytest.mark.security
+def test_ordinary_text_is_not_escaped(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The other side of the escaping: a printable non-ASCII name reaches a UTF-8
+    terminal as itself. An escaper that turned every non-ASCII character into an escape
+    passed every other test (found by review)."""
+    root, backup = _backup(tmp_path)
+    accented = "data/reports/r\u00e9sum\u00e9.md"
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"].insert(0, {"path": accented, "size": 1, "sha256": "0" * 64})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    assert f"{accented} is missing" in capsys.readouterr().out
+
+
+@pytest.mark.security
+def test_a_refused_startup_creates_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: nothing pinned the audit confine running before the lock is
+    prepared, and moved after it a refused run created ``data/backups/backup.lock`` and
+    abandoned the descriptor."""
+    root = tmp_path / "lab"
+    (root / "data").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "data" / "events").symlink_to(outside, target_is_directory=True)
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--name", "b", "--caller", "test"]) == 2
+    assert "is a symlink" in capsys.readouterr().err
+    assert not (root / "data" / "backups").exists(), "a refused startup created the lock"
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.security
+def test_an_unsearchable_events_directory_is_an_unusable_audit_log(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: the audit confine turned an unsearchable ``data/events`` into a
+    bare errno at exit 2, the arguments' code, where it had been exit 1 "audit log
+    unusable". The symlink refusal stays exit 2."""
+    if not _dac_enforced(tmp_path):
+        pytest.skip("this process bypasses DAC checks, so the result would be vacuous")
+    root = _lab(tmp_path)
+    events = root / "data" / "events"
+    events.chmod(0o600)
+    try:
+        code = backup_main(["--root", str(root), "--name", "b", "--caller", "test"])
+    finally:
+        events.chmod(0o700)
+    assert code == 1
+    assert "audit log unusable, refusing to run" in capsys.readouterr().err
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("kind", ["subdirectory", "fifo"])
+def test_a_take_names_a_report_entry_it_cannot_copy(
+    tmp_path: Path, kind: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Found by review: a subdirectory, or a special file, in ``data/reports`` was left
+    out of the backup without a word, at exit 0. It is now named like a symlink is."""
+    root = _lab(tmp_path)
+    reports = root / "data" / "reports"
+    reports.mkdir()
+    (reports / "r.md").write_text("# incident\n", encoding="utf-8")
+    entry = reports / "sub"
+    if kind == "subdirectory":
+        entry.mkdir()
+        (entry / "c.md").write_text("# nested\n", encoding="utf-8")
+    else:
+        os.mkfifo(entry, 0o600)
+    capsys.readouterr()
+
+    assert backup_main(["--root", str(root), "--name", "b", "--caller", "test"]) == 0
+    out = capsys.readouterr().out
+    manifest = json.loads((root / "data/backups/b/manifest.json").read_text(encoding="utf-8"))
+    named = "source data/reports/sub is not a regular file, so it is not in this backup"
+    assert named in manifest["refused"], manifest["refused"]
+    assert named in out, out
+    assert {"data/reports/r.md"} <= {item["path"] for item in manifest["files"]}
+
+
+@pytest.mark.security
+def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The device kinds cannot be created without CAP_MKNOD, so an existing node's
+    ``lstat`` stands in, the approach ``test_cli_startup_failclosed.py`` takes. A block
+    device has no node guaranteed on every runner and is left unexercised."""
+    import scripts.run_backup as run_backup
+
+    db = tmp_path / "events.sqlite3"
+    db.write_bytes(b"x")
+    real_lstat = os.lstat
+    device = real_lstat("/dev/null")
+
+    def as_device(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if os.fspath(path).endswith("-wal"):  # type: ignore[call-overload]
+            return device
+        return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(run_backup.os, "lstat", as_device)
+    reason = run_backup._sidecar_problem(db, what="the store")
+    assert reason is not None and "its -wal is a character device, not a regular file" in reason
