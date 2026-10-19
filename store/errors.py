@@ -30,7 +30,45 @@ class StorePathError(StoreError):
     """
 
 
-class StoreSidecarError(StorePathError):
+class StoreFileError(StorePathError):
+    """The database file itself is not one SQLite may open.
+
+    ``store.paths.confine`` refuses a symlink at the database path and nothing
+    else, so until this check a hard link or a FIFO there reached SQLite.
+    Measured through every CLI that opens the live store, on the tree before it:
+
+    * **A hard link was written through.** A ``cp -al`` snapshot of the store
+      outside ``data/`` grew by 4 KiB with a new digest when the collector ran,
+      at exit 0, so the snapshot was not one. A 0-byte file outside ``data/``
+      linked in at the store path was initialised in place, 0 -> 61440 bytes
+      and 0o644 -> 0o600, by the collector, the pipeline and retention (all at
+      exit 0) and by the SLI reporter.
+    * **A FIFO hung the open for an account that cannot write it.** SQLite opens
+      the database ``O_RDWR``, retries ``O_RDONLY`` after ``EACCES``, and a
+      read-only open of a FIFO blocks until a writer appears. A FIFO that is
+      read-only to the running account (its own at 0o400, or another account's
+      at 0o644, as ``sudo mkfifo`` leaves it) hung the collector, the pipeline
+      and retention, each holding its single-instance lock, so a second pass
+      printed "skipped" at exit 0. A FIFO it can write failed with a bare "disk
+      I/O error" instead, because ``pread`` on a pipe returns ``ESPIPE``: exit
+      1, and the wrong diagnosis. Root is the second case, which is why a test
+      run as root sees no hang.
+
+    A subclass of :class:`StorePathError` for the reason :class:`StoreSidecarError`
+    is: the same refusal, raised before any file is opened, so every handler that
+    catches :class:`StoreError` is unchanged. :class:`StoreSidecarError` is in
+    turn a subclass of this, because a sidecar is one of the files SQLite opens
+    for the store, and ``except StoreFileError`` should not need to name both.
+    ``problem`` is kept separately so a caller that reports rather than raises
+    (``scripts/run_backup.py``'s verifiers) can phrase the finding itself.
+    """
+
+    def __init__(self, message: str, *, problem: str) -> None:
+        super().__init__(message)
+        self.problem = problem
+
+
+class StoreSidecarError(StoreFileError):
     """A file SQLite would open beside the database is not one it may open.
 
     SQLite opens ``-journal``, ``-wal`` and ``-shm`` *by name* beside the
@@ -48,7 +86,8 @@ class StoreSidecarError(StorePathError):
     overwritten with WAL frames by the collector and the take, both at exit 0.
     A FIFO ``-wal`` was deleted.
 
-    A subclass of :class:`StorePathError` because it is the same refusal:
+    A subclass of :class:`StorePathError` (through :class:`StoreFileError`,
+    which refuses the database file itself) because it is the same refusal:
     raised before any file is opened, and every first-party handler catches
     :class:`StoreError`, so no caller changes. ``suffix`` and ``problem`` are
     kept separately so a caller that reports rather than raises can phrase the
@@ -56,9 +95,8 @@ class StoreSidecarError(StorePathError):
     """
 
     def __init__(self, message: str, *, suffix: str, problem: str) -> None:
-        super().__init__(message)
+        super().__init__(message, problem=problem)
         self.suffix = suffix
-        self.problem = problem
 
 
 class SchemaVersionError(StoreError):

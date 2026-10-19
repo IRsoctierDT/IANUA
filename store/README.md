@@ -34,7 +34,8 @@ line once, between `ingest/` (normalize) and `correlation/` (resolve).
 | **Tamper-evident** | Every row is re-hashed on read; a projection that does not match its `event_id` raises `StoreIntegrityError`. So does one that matches and still will not rebuild (a field past its bound), chained from the reader's `MalformedProjectionError`, since `event_id` is an unkeyed hash and a match does not prove which build wrote the row. |
 | **No ambient clock** | `ingested_at` is a required keyword argument. The store never asks the host what time it is. |
 | **Contained** | The database lives under gitignored `data/events/`. A filename with a separator, a traversal, or a leading dot is refused. |
-| **No hostile sidecar** | Before SQLite opens the database, each `-journal`, `-wal` and `-shm` beside it must be absent or a regular file with one link (`lstat`, never followed). Anything else raises `StoreSidecarError`. See [Sidecars](#sidecars). |
+| **No hostile database file** | Before SQLite opens it, `events.sqlite3` itself must be absent (a fresh root, which then creates it) or a regular file with one link (`lstat`, never followed). Anything else raises `StoreFileError`. See [The database file itself](#the-database-file-itself). |
+| **No hostile sidecar** | Before SQLite opens the database, each `-journal`, `-wal` and `-shm` beside it must be absent or a regular file with one link (`lstat`, never followed). Anything else raises `StoreSidecarError`, a `StoreFileError` subclass. See [Sidecars](#sidecars). |
 | **Bounded** | Projections over 64 KiB are refused; every query is clamped to 10,000 rows. |
 | **Versioned** | A database written by another schema version is refused, never implicitly migrated. |
 | **Damage is a `StoreError`** | SQLite's two corruption verdicts (`SQLITE_CORRUPT`, `SQLITE_NOTADB`) are mapped to `StoreCorruptionError` at every public method, so a damaged file cannot reach a caller as a raw driver exception. A lock (`SQLITE_BUSY`), a trigger refusal (`IntegrityError`) and a caller bug (`ProgrammingError`) keep their own meaning. |
@@ -116,12 +117,56 @@ hard-link snapshot of `data/` (`cp -al`, `rsync --link-dest`). `find / -xdev -sa
 and leaves the other copy intact. For a non-empty `-wal`, take a copy first: it can
 hold frames that were never checkpointed.
 
-**What it does not close.** The check and SQLite's open are separate syscalls, and
-SQLite recreates its sidecars later. Winning that race needs write access to
-`data/events/`, which the store keeps at `0o700`, and with that access the database
-itself can be rewritten. This catches a sidecar that is already wrong at open. The
-database file itself is not link-checked; `store.paths.confine` refuses a symlink
-there, but not a hard link or a FIFO.
+### The database file itself
+
+The same rule, applied by `refuse_unsafe_database` to the one file the sidecar check
+did not state. `store.paths.confine` refuses a symlink at `events.sqlite3` and nothing
+else, so until this check a hard link or a FIFO there reached SQLite. `EventStore.open`
+runs it first, before the sidecars and before `sqlite3.connect`: the file must be
+absent (a fresh root, which the open then creates) or a regular file with exactly one
+link. `scripts/run_backup.py` calls the same function rather than keeping a copy,
+before its take's own `sqlite3.connect` and in both verifiers, and reports the store's
+own `problem` beside its other findings.
+
+Measured through the same seven CLIs on the tree before the check (`9ff3604`), run
+both as root and as an account the kernel applies file modes to. A test run as root
+cannot see the hang: root is never refused the read-write open.
+
+| At `events.sqlite3` | Before | After |
+|---|---|---|
+| Hard link, second name outside `data/` (a `cp -al` snapshot) | The collector wrote through it: the other name grew 4 KiB with a new digest, at exit 0. The pipeline, retention, the take and both verifiers changed nothing and exited 0 over it, so a restore made with `cp -al` would have verified clean | Exit 1 from all seven, `has 2 hard links`, neither name changed |
+| A 0-byte file outside `data/`, hard-linked in | Initialised in place as a store, 0 -> 61440 bytes and 0o644 -> 0o600, by the collector, the pipeline and retention (all exit 0) and by the SLI reporter | Exit 1 from all seven, `has 2 hard links`, the file left at 0 bytes and 0o644 |
+| A non-SQLite file, hard-linked in | Exit 1 from all seven: SQLite's "file is not a database" after it had opened the file, or the verifiers' header check | Exit 1, `has 2 hard links`, before it is opened |
+| FIFO read-only to the running account: its own at 0o400, or another account's at 0o644 (what `sudo mkfifo` leaves) | The collector, the pipeline and retention hung inside SQLite's open, which retries read-only after `EACCES`. Each held its lock, so a second pass printed "skipped" at exit 0 | Exit 1, `is not a regular file (a FIFO)` |
+| FIFO the account can write, or any FIFO as root | A bare "disk I/O error" from the same three (`pread` on a pipe fails), exit 1 | Exit 1, `is not a regular file (a FIFO)` |
+| FIFO, under the take, `--verify` and `--verify-restore` | Read as absent: "no event store", "is missing", "no store at …", exit 1 | Exit 1, `is not a regular file (a FIFO)` |
+| Directory or socket (measured through `EventStore.open`) | A bare "unable to open database file" | `StoreFileError`, `is not a regular file` |
+
+**If you see the refusal.** Stop the timers first, so nothing holds the store open. A
+FIFO, socket or directory at the store path is never something SQLite creates: find
+out how it got there before you remove it, then restore the store from a backup
+(`docs/RESTORE.md`). A hard link means another name shares the store's file;
+`find / -xdev -samefile data/events/events.sqlite3` names it. There are two ways out,
+and `tests/security/test_store_database_file.py` exercises both:
+
+* If you do not need the other name (a stale snapshot), delete **that** name. The store
+  keeps its content and is back to one link.
+* If you need to keep it, give the store an inode of its own. From `data/events/`, run
+  `cp -p events.sqlite3 events.sqlite3.unlinked && mv events.sqlite3.unlinked
+  events.sqlite3`. The other name keeps the content it had at that moment, and nothing
+  the store does reaches it again.
+
+Neither is right for a name you cannot explain. That is the tampering case, and the
+store's content is evidence about how it happened, so take a copy first.
+
+**What it does not close.** The checks and SQLite's open are separate syscalls. SQLite
+cannot be handed a descriptor that was checked, and it recreates its sidecars later.
+Winning that race needs write access to `data/events/`, which the store keeps at
+`0o700`, and with that access the database itself can be rewritten. This catches a
+database or a sidecar that is already wrong at open. The SLI reporter checks
+`is_file()` before it opens the store, so a FIFO never reaches this check there. It
+reports "no event store", which is unmeasured and therefore exit 1 under its own
+contract, but it names the wrong thing.
 
 ## Attesting what is held
 
