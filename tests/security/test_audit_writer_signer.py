@@ -1,0 +1,312 @@
+# SPDX-FileCopyrightText: 2026 Ivan Rozenblad
+# SPDX-License-Identifier: Apache-2.0
+
+"""Chain writers sign with the scheme the node is configured for, Ed25519 included.
+
+Every writer used to resolve ``signing_key_from_env``, which is HMAC-only, so a
+deployment configured for Ed25519 wrote every chain head unsigned: its verifiers
+(public key only) then reported every chain broken, and
+``scripts/run_backup.py --verify-restore`` failed every correct restore because
+its own gate decision appended an unsigned entry. ``.env.example`` already told
+operators to "sign with the private key"; no writer read it.
+
+``signer_from_env`` is the writing counterpart of ``verifier_from_env``, with
+the same precedence, and both refuse key material that exists but cannot be
+used. Keys are generated per test and never written anywhere (AGENTS.md §5).
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import secrets
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+import agents.policies.signing as signing
+from agents.policies.audit import AuditLogger, signer_from_env, verifier_from_env
+from agents.policies.signing import (
+    Ed25519Signer,
+    Ed25519Verifier,
+    HmacSigner,
+    generate_ed25519_keypair,
+)
+from ingest import normalize
+from store import EventStore
+
+pytestmark = pytest.mark.security
+
+_REPO = Path(__file__).resolve().parents[2]
+#: The packages AGENTS.md §7 type-checks, tests excluded.
+_PRODUCTION = (
+    "agents",
+    "attack",
+    "intel",
+    "ingest",
+    "store",
+    "correlation",
+    "pipeline",
+    "collect",
+    "scripts",
+    "dashboard",
+    "mcp",
+    "rag",
+    "compliance",
+    "sli",
+)
+_RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
+_AUDITD = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
+_MESSAGE = b"head-message"
+#: Not hex, so no key at all: the shape an operator's typo takes.
+_UNUSABLE = "not-hex"
+
+
+def _pair() -> tuple[str, str]:
+    private, public = generate_ed25519_keypair()
+    return private.hex(), public.hex()
+
+
+def _env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None:
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+# --- resolution ---------------------------------------------------------------------
+
+
+def test_nothing_configured_means_unsigned_on_both_sides() -> None:
+    assert signer_from_env() is None
+    assert verifier_from_env() is None
+
+
+def test_hmac_wins_on_both_sides_when_both_schemes_are_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same precedence ``verifier_from_env`` always had, now on the writing side too."""
+    private, public = _pair()
+    _env(
+        monkeypatch,
+        AUDIT_HMAC_KEY=secrets.token_hex(32),
+        AUDIT_ED25519_PRIVATE_KEY=private,
+        AUDIT_ED25519_PUBLIC_KEY=public,
+    )
+    assert isinstance(signer_from_env(), HmacSigner)
+    assert isinstance(verifier_from_env(), HmacSigner)
+
+
+def test_a_private_key_signs_and_its_public_half_verifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private, public = _pair()
+    _env(monkeypatch, AUDIT_ED25519_PRIVATE_KEY=private, AUDIT_ED25519_PUBLIC_KEY=public)
+    signer, verifier = signer_from_env(), verifier_from_env()
+    assert isinstance(signer, Ed25519Signer)
+    assert isinstance(verifier, Ed25519Verifier), "the public key is the least capability"
+    assert verifier.verify(_MESSAGE, signer.sign(_MESSAGE))
+
+
+def test_a_private_key_alone_verifies_what_it_signs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A writing node need not configure the public key a second time.
+
+    Before, ``verifier_from_env`` read only the public key, so a node holding just
+    the private key verified chain-only (``unsigned``) and never checked a signature.
+    """
+    private, _ = _pair()
+    _env(monkeypatch, AUDIT_ED25519_PRIVATE_KEY=private)
+    signer, verifier = signer_from_env(), verifier_from_env()
+    assert signer is not None and verifier is not None
+    assert verifier.verify(_MESSAGE, signer.sign(_MESSAGE))
+
+
+def test_a_public_key_alone_verifies_and_cannot_sign(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, public = _pair()
+    _env(monkeypatch, AUDIT_ED25519_PUBLIC_KEY=public)
+    assert signer_from_env() is None
+    assert isinstance(verifier_from_env(), Ed25519Verifier)
+
+
+# --- refusals -----------------------------------------------------------------------
+
+
+def test_a_pair_that_is_not_one_pair_is_refused_on_both_sides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One half rotated and not the other: every chain would read ``invalid``."""
+    private, _ = _pair()
+    _, other_public = _pair()
+    _env(monkeypatch, AUDIT_ED25519_PRIVATE_KEY=private, AUDIT_ED25519_PUBLIC_KEY=other_public)
+    for resolve in (signer_from_env, verifier_from_env):
+        with pytest.raises(ValueError, match="not one key pair") as caught:
+            resolve()
+        assert private not in str(caught.value) and other_public not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-hex", "ab" * 31, "ab" * 33],
+    ids=["not-hex", "short", "long"],
+)
+def test_an_unusable_private_key_is_refused_not_ignored(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Writers ignored this variable entirely, so a broken one was never noticed."""
+    _env(monkeypatch, AUDIT_ED25519_PRIVATE_KEY=value)
+    with pytest.raises(ValueError) as caught:
+        signer_from_env()
+    assert value not in str(caught.value), "key material must not reach an error message"
+    with pytest.raises(ValueError):
+        verifier_from_env()
+
+
+def test_ed25519_without_the_crypto_extra_is_a_value_error_for_writers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ValueError`` is what every writer already turns into a refusal to run.
+
+    ``RuntimeError`` would have escaped all four CLIs' ``except (OSError, ValueError)``
+    as a traceback.
+    """
+    private, _ = _pair()
+    _env(monkeypatch, AUDIT_ED25519_PRIVATE_KEY=private)
+
+    def missing() -> None:
+        raise RuntimeError("Ed25519 signing requires the optional 'cryptography' dependency")
+
+    monkeypatch.setattr(signing, "_load_ed25519", missing)
+    with pytest.raises(ValueError, match="cryptography"):
+        signer_from_env()
+
+
+def test_a_writer_refuses_to_run_on_unusable_key_material(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refused with a message and exit 1, before anything is written."""
+    from scripts.run_backup import main as backup_main
+
+    root = tmp_path / "root"
+    _seed(root)
+    _env(monkeypatch, AUDIT_ED25519_PRIVATE_KEY=_UNUSABLE)
+    assert backup_main(["--root", str(root), "--caller", "test"]) == 1
+    err = capsys.readouterr().err
+    assert "audit log unusable, refusing to run" in err and "Traceback" not in err, err
+    assert not (root / "data" / "events" / "audit.log").exists()
+
+
+# --- every writer, end to end ---------------------------------------------------------
+
+
+def _seed(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    with EventStore.open(root) as store:
+        for index in range(5):
+            store.append(normalize(_RECORD % index), ingested_at=store.next_stamp(now + index))
+
+
+def _backup(root: Path, tmp: Path) -> Path:
+    from scripts.run_backup import main
+
+    _seed(root)
+    assert main(["--root", str(root), "--caller", "test"]) == 0
+    return root / "data" / "events" / "audit.log"
+
+
+def _retention(root: Path, tmp: Path) -> Path:
+    from scripts.run_retention import main
+
+    _seed(root)
+    assert main(["--root", str(root), "--caller", "test"]) == 0
+    return root / "data" / "events" / "audit.log"
+
+
+def _pipeline(root: Path, tmp: Path) -> Path:
+    from scripts.run_pipeline import main
+
+    _seed(root)
+    assert main(["--root", str(root)]) == 0
+    return root / "data" / "pipeline" / "audit.log"
+
+
+def _collector(root: Path, tmp: Path) -> Path:
+    from scripts.run_collector import main
+
+    root.mkdir(parents=True, exist_ok=True)
+    logs = tmp / "logs"
+    logs.mkdir()
+    source = logs / "audit.log"
+    source.write_text(_AUDITD + "\n", encoding="utf-8")
+    assert main(["--root", str(root), "--source", str(source)]) == 0
+    return root / "data" / "collect" / "audit.log"
+
+
+def _compliance(root: Path, tmp: Path) -> Path:
+    from compliance.controls import Category, CheckResult, Control, ControlStatus, Severity
+    from compliance.engine import run_controls
+    from compliance.evidence import record_run
+
+    root.mkdir(parents=True, exist_ok=True)
+    control = Control(
+        id="T-01",
+        title="Test control",
+        description="d",
+        category=Category.POLICY,
+        severity=Severity.LOW,
+        check=lambda _root: CheckResult(ControlStatus.PASS, "ok"),
+    )
+    record_run(run_controls(root, controls=(control,)), root=root)
+    return root / "data" / "compliance" / "audit.log"
+
+
+_WRITERS: dict[str, Callable[[Path, Path], Path]] = {
+    "run_backup": _backup,
+    "run_retention": _retention,
+    "run_pipeline": _pipeline,
+    "run_collector": _collector,
+    "compliance.evidence": _compliance,
+}
+
+
+@pytest.mark.parametrize("writer", sorted(_WRITERS))
+def test_every_writer_signs_with_ed25519_when_that_is_the_configured_scheme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: str
+) -> None:
+    """The property the gap broke: a chain an Ed25519 node writes verifies under its public key.
+
+    The writer is given the private key and nothing else; the chain is then
+    verified with a public-key-only verifier, the way an auditor or a passive node
+    holding no secret would read it. Measured before the fix: ``missing`` from
+    every writer, because none of them read the private key.
+    """
+    private, public = _pair()
+    _env(monkeypatch, AUDIT_ED25519_PRIVATE_KEY=private)
+    chain = _WRITERS[writer](tmp_path / "root", tmp_path)
+    assert chain.is_file(), f"{writer} wrote no chain at {chain}"
+
+    report = AuditLogger(chain, signer=Ed25519Verifier(bytes.fromhex(public))).verify_report()
+    assert report.signature == "valid", (writer, report.signature, report.failure)
+    assert report.intact and report.entries >= 1, report
+    sidecar = json.loads(chain.with_name(chain.name + ".sig").read_text(encoding="utf-8"))
+    assert sidecar["algo"] == "ed25519", sidecar
+
+
+def test_no_production_writer_resolves_the_hmac_only_key() -> None:
+    """``signing_key=`` is the HMAC-only path; a writer passing it cannot sign Ed25519.
+
+    Asserted over the AST of every production module, so a new writer that copies
+    the old line goes red here instead of writing unsigned chains on Ed25519 nodes.
+    """
+    offenders: list[str] = []
+    for package in _PRODUCTION:
+        for path in sorted((_REPO / package).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                if name == "AuditLogger" and any(k.arg == "signing_key" for k in node.keywords):
+                    offenders.append(f"{path.relative_to(_REPO)}:{node.lineno}")
+    assert offenders == [], offenders

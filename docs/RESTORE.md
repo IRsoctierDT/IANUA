@@ -166,6 +166,15 @@ the key it must verify and cover the current head, or the chain is reported brok
 key nothing re-signs it, so it is compared exactly, which is the one check that still catches
 a forged signature then.
 
+**With Ed25519 keys, run `--verify-restore` where `AUDIT_ED25519_PRIVATE_KEY` is set.** The
+gate decision is a write, and writers sign with the private key (`AUDIT_HMAC_KEY` still wins when
+both schemes are set). A node holding only `AUDIT_ED25519_PUBLIC_KEY` cannot sign that decision,
+so it refuses `--verify-restore` at exit 1 before writing anything, instead of leaving the
+restored chain's head unsigned and then reporting it stale. The node being promoted needs the
+private key to write at all; to check chains read-only on a verify-only node, use
+`python -m scripts.audit_verify`. When both Ed25519 keys are set they must be one pair, or every
+writer and reader refuses to run.
+
 **Every other signature is compared byte for byte, key or not.** Nothing writes the collect,
 pipeline or compliance chain during this window, so their signatures must be exactly the
 backed-up files. The key check is not a substitute there: it reads a signature's sequence,

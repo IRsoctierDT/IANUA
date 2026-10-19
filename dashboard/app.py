@@ -182,7 +182,13 @@ with tab_compliance:
             st.error(f"Attestation store FAILED validation (ignored): {exc}")
             attestations = {}
         report = run_controls(repo_root, attestations=attestations)
-        record_run(report, root=repo_root)
+        try:
+            record_run(report, root=repo_root)
+        except ValueError as exc:
+            # Unusable audit-signing key material (signer_from_env) refuses the
+            # write rather than recording unsigned evidence; say so instead of
+            # showing a traceback. The message never carries key material.
+            st.error(f"Evidence NOT recorded — the audit chain refused the write: {exc}")
         st.session_state["compliance_report"] = report
 
     stored_report = st.session_state.get("compliance_report")

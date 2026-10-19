@@ -55,7 +55,7 @@ from pathlib import Path
 from agents.policies.audit import (
     AuditLogger,
     VerificationReport,
-    signing_key_from_env,
+    signer_from_env,
     verifier_from_env,
 )
 from compliance.engine import ComplianceReport
@@ -149,7 +149,7 @@ def _confirm_chain_path(root: Path, directory_fd: int) -> Path:
 
 
 def _logger(chain: Path, clock: Callable[[], str] | None) -> AuditLogger:
-    return AuditLogger(chain, clock=clock, signing_key=signing_key_from_env())
+    return AuditLogger(chain, clock=clock, signer=signer_from_env())
 
 
 def record_run(
@@ -235,9 +235,10 @@ def load_recent(root: Path, limit: int = 200) -> tuple[EvidenceRecord, ...]:
 def _reader(root: Path) -> AuditLogger:
     """A read-only view of the chain, resolving the *verifier* scheme.
 
-    Separate from :func:`_logger`, which writes: a writer needs a key that can
-    sign and :class:`Ed25519Verifier` cannot, so the two cannot share one
-    resolution. Reading through ``signing_key_from_env`` reported an Ed25519
+    Separate from :func:`_logger`, which writes through ``signer_from_env``: a
+    writer needs a key that can sign and :class:`Ed25519Verifier` cannot, so the
+    two cannot share one resolution. Reading through the HMAC-only
+    ``signing_key_from_env`` reported an Ed25519
     chain as ``unsigned`` — the same defect ``scripts.audit_maintenance`` was
     fixed for, surviving here because nothing checked that every reader agreed.
     """

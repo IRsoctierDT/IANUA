@@ -204,6 +204,19 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **Every chain writer signs with Ed25519 when that is the configured scheme.** All five
+  writers (`run_backup`, `run_retention`, `run_pipeline`, `run_collector`,
+  `compliance.evidence`) resolved the HMAC-only `signing_key_from_env`, so an Ed25519
+  deployment wrote every chain head unsigned and its public-key verifiers reported every
+  chain broken, despite `.env.example` telling operators to "sign with the private key".
+  The new `agents.policies.audit.signer_from_env` has `verifier_from_env`'s precedence (HMAC,
+  then `AUDIT_ED25519_PRIVATE_KEY`). `verifier_from_env` now also verifies with the private
+  key on a node that holds only that. A pair that is not one pair is refused on both sides,
+  and every unusable key raises the `ValueError` the writers already turn into "refusing to
+  run". `--verify-restore` on a node holding only the public key now refuses before writing,
+  instead of leaving the restored chain's head unsigned. Measured red before on `main`:
+  14 of the 17 new cases in `tests/security/test_audit_writer_signer.py`, including every
+  writer end to end.
 - **`--verify-restore` failed every correct restore whenever `AUDIT_HMAC_KEY` was set.**
   `_is_append_only` granted growth to every file whose name starts with a declared stream's,
   so the head signature `audit.log.sig` was prefix-compared. But every signed `record()`

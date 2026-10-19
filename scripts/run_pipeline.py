@@ -131,7 +131,7 @@ from agents.policies import (  # noqa: E402
 from agents.policies.audit import (  # noqa: E402
     AuditFieldError,
     AuditLogger,
-    signing_key_from_env,
+    signer_from_env,
 )
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle  # noqa: E402
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
@@ -457,7 +457,7 @@ def _run(
 ) -> int:
     """One cycle, under the lock. Split out so the lock's scope is unmissable."""
     try:
-        audit = AuditLogger(path.parent / AUDIT_FILE, signing_key=signing_key_from_env())
+        audit = AuditLogger(path.parent / AUDIT_FILE, signer=signer_from_env())
     except (OSError, ValueError) as exc:
         print(f"error: audit log unusable, refusing to run: {exc}", file=sys.stderr)
         return 1
