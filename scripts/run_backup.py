@@ -404,9 +404,17 @@ def _is_append_only(relative: Path) -> bool:
 
     Append-only means the four hash chains in :data:`COPIED_FILES`, the
     evidence stream beside them, and their rotation siblings — ``audit.log.1``,
-    a checkpoint, a head signature — which is the same rule
-    :func:`_copied_paths` uses to pick them up, expressed once so the backup
-    side and the verify side cannot disagree about what may grow.
+    a checkpoint — which is the same rule :func:`_copied_paths` uses to pick
+    them up, expressed once so the backup side and the verify side cannot
+    disagree about what may grow.
+
+    **Not the head signature**, which an earlier version of this docstring
+    listed. ``audit.log.sig`` is not appended to: every keyed record *replaces*
+    it (a new inode through ``os.replace``), including this CLI's own gate
+    record, which is written before :func:`_verify_restore` runs. Measured with
+    ``AUDIT_HMAC_KEY`` set: every correct restore failed ``REWRITTEN`` on it
+    (found by independent review). It is authenticated by meaning instead, in
+    :func:`_backed_up_chain_problems`; see :func:`_head_signature_chain`.
 
     ``data/reports/`` is not append-only: a report is rewritten whole, and
     within the step-4-to-step-5 window of :func:`_verify_restore` nothing
@@ -418,6 +426,82 @@ def _is_append_only(relative: Path) -> bool:
         relative.parent == declared.parent and relative.name.startswith(declared.name)
         for declared in COPIED_FILES
     )
+
+
+def _head_signature_chain(relative: Path) -> Path | None:
+    """The chain whose detached head signature ``relative`` names, or ``None``."""
+    for chain in CHAIN_FILES:
+        if relative.parent == chain.parent and relative.name == f"{chain.name}.sig":
+            return chain
+    return None
+
+
+def _backed_up_chain_problems(backup: Path, manifest: dict[str, Any]) -> list[str]:
+    """Authenticate each backed-up chain where its signature still means something.
+
+    A live head signature proves only what this process just signed: the gate
+    record replaced it before the comparison runs, so comparing its bytes failed
+    every correct signed restore, and verifying it says nothing about the
+    history that was restored. The backup still holds the signature the take
+    wrote, over the chain the take copied, so that is where the key is checked;
+    and every file in the chain's family must be in the backup exactly as the
+    manifest recorded, which ties the live prefix (compared against the same
+    manifest) to the bytes the key was checked over.
+
+    Every chain the manifest records as present is checked, not only those with
+    a ``.sig`` entry: measured on main, deleting the backup's signature and its
+    manifest entry, then recomputing the chain over an edited entry and the
+    manifest's digests, gave ``--verify-restore`` exit 0 under a key (found by
+    independent review).
+
+    With no key configured nothing can authenticate a signed chain, so a
+    backup that carries one is a finding rather than a pass, as
+    ``scripts/audit_verify.py --require-signature`` treats it. An unsigned
+    backup verified without a key passes on the chain alone, as before.
+    """
+    problems: list[str] = []
+    verifier = verifier_from_env()
+    for chain in CHAIN_FILES:
+        if not manifest["chains"][str(chain)].get("present"):  # shape-checked
+            continue
+        family = [
+            entry
+            for entry in manifest["files"]
+            if Path(str(entry["path"])).parent == chain.parent
+            and Path(str(entry["path"])).name.startswith(chain.name)
+        ]
+        for entry in family:
+            relative = Path(str(entry["path"]))
+            unsafe = _unsafe_manifest_path(backup, relative, what="backup path")
+            if unsafe is not None:
+                problems.append(unsafe)
+                continue
+            held = backup / relative
+            if not held.is_file():
+                problems.append(f"{entry['path']} is missing from the backup")
+            elif held.stat().st_size != entry["size"] or _digest_file(held) != entry["sha256"]:
+                problems.append(
+                    f"{entry['path']}: the backup's copy is not what its manifest recorded, "
+                    "so the live chain cannot be traced to the history the take signed"
+                )
+        signed = any(_head_signature_chain(Path(str(e["path"]))) == chain for e in family)
+        if verifier is None:
+            if signed:
+                problems.append(
+                    f"SIGNATURE UNCHECKED: {chain} in the backup carries a head signature and "
+                    "no verification key is configured (AUDIT_HMAC_KEY or "
+                    "AUDIT_ED25519_PUBLIC_KEY), so whether this is the history that was "
+                    "signed cannot be checked; this run's own records also left the live "
+                    "head unsigned. Re-run with the key"
+                )
+            continue
+        report = AuditLogger(backup / chain, signer=verifier).verify_report()
+        if not report.intact:
+            problems.append(
+                f"{chain}: the backed-up chain does not authenticate (signature "
+                f"{report.signature}): {report.failure}"
+            )
+    return problems
 
 
 def _live_tree_inventory(root: Path) -> tuple[list[Path], list[str]]:
@@ -1418,6 +1502,10 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
             problems.append(f"{entry['path']} is missing from the live root")
             continue
         live_size = path.stat().st_size
+        if _head_signature_chain(entry_path) is not None:
+            # Replaced by every keyed record, this run's gate record included,
+            # so its bytes say nothing; authenticated in the backup below.
+            continue
         if _is_append_only(entry_path):
             if live_size < backed_up:
                 problems.append(
@@ -1477,6 +1565,10 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
                 f"docs/RESTORE.md step 3 removes it before the store comes back, because "
                 f"{why.split(':')[0]}"
             )
+
+    # The backed-up chains, authenticated where their signatures still mean
+    # something; the live ones below show only that each continues cleanly.
+    problems.extend(_backed_up_chain_problems(backup, manifest))
 
     # Chains: entries may only GROW, and must still verify.
     chains = _verify_chains(root)
