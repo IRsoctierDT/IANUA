@@ -46,11 +46,14 @@ from ingest import normalize
 from scripts.run_backup import (
     ATTESTATION_FIELDS,
     CHAIN_FILES,
+    GATE_CHAIN,
+    GATE_SIGNATURE,
     HEAD_SIGNATURES,
     LOCK_SIDECARS,
     MANIFEST_FORMAT,
     SUPERSEDED_FORMATS,
     _live_tree_inventory,
+    _signature_judged,
 )
 from scripts.run_backup import main as backup_main
 from store import EventStore
@@ -1185,12 +1188,15 @@ def test_a_signed_restore_with_a_flipped_byte_in_the_audit_log_is_refused(
 def test_a_forged_head_signature_is_refused_by_its_chain_under_a_key(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Judged by meaning means the meaning is actually checked.
+    """A signature the gate never rewrites is refused twice under a key.
 
-    The pipeline chain's signature is one the gate never rewrites, so a forged one
-    survives to the check. Its bytes are no longer compared, and the refusal has to
-    come from ``_verify_chains`` verifying it under the key — not from a byte
-    comparison that would mask whether the meaning check exists at all.
+    The pipeline chain's signature survives to the check untouched by this
+    command, so a forged one is caught by both checks independently: its bytes
+    (nothing rewrites that chain in this window, so they must match the backup)
+    and its meaning (``_verify_chains`` verifying it under the key). The first
+    version of this test asserted the byte finding was *absent*, under a rule that
+    excused every ``valid`` signature's bytes; a third review round showed that
+    excused fields the meaning check never reads.
     """
     source, live = tmp_path / "source", tmp_path / "live"
     _seed(source)
@@ -1202,16 +1208,58 @@ def test_a_forged_head_signature_is_refused_by_its_chain_under_a_key(
     assert _verify_restore(live, backup) == 1
     out = capsys.readouterr().out
     assert "data/pipeline/audit.log: chain does not verify: head signature invalid" in out, out
-    assert f"ALTERED: {_PIPELINE_SIGNATURE}" not in out and "REWRITTEN" not in out, out
+    assert f"ALTERED: {_PIPELINE_SIGNATURE}" in out, out
 
 
 @pytest.mark.security
-@pytest.mark.parametrize("forged", [False, True], ids=["correct", "forged"])
+@pytest.mark.usefixtures("audit_key")
+def test_the_gate_signature_is_refused_by_its_chain_when_forged_after_the_gate_wrote_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Judged by meaning means the meaning is actually checked.
+
+    ``data/events/audit.log.sig`` is the one signature excused its bytes, because
+    the gate decision rewrites it before the comparison. Forging it before the
+    pass therefore proves nothing (the gate overwrites the forgery), so this
+    forges it in the only window where it could differ: after the file loop read
+    it and before the chain report. The refusal has to come from
+    ``_verify_chains`` verifying it under the key.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+
+    import scripts.run_backup as run_backup
+
+    real = run_backup._verify_chains
+
+    def forge_then_verify(root: Path) -> dict[str, object]:
+        if root == live:
+            _forge_signature(live / _EVENTS_SIGNATURE)
+        return real(root)
+
+    monkeypatch.setattr(run_backup, "_verify_chains", forge_then_verify)
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "data/events/audit.log: chain does not verify: head signature invalid" in out, out
+    assert f"ALTERED: {_EVENTS_SIGNATURE}" not in out, (
+        "the gate's own signature is judged by its chain; its byte finding is noise here"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "forged",
+    [None, _PIPELINE_SIGNATURE, _EVENTS_SIGNATURE],
+    ids=["correct", "forged-pipeline", "forged-gate-signature"],
+)
 def test_without_a_key_a_head_signature_is_compared_exactly(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
-    forged: bool,
+    forged: str | None,
 ) -> None:
     """With no key, the bytes are the only check left — so they are still compared.
 
@@ -1220,7 +1268,8 @@ def test_without_a_key_a_head_signature_is_compared_exactly(
     writer has no signer). Skipping the comparison outright would have let a
     forged signature through here, where the old prefix comparison caught it; the
     exact comparison keeps that, and passes the correct restore because the bytes
-    are untouched.
+    are untouched. Parametrized over the gate's own signature too, since it is the
+    one a key would excuse.
     """
     monkeypatch.setenv("AUDIT_HMAC_KEY", secrets.token_hex(32))
     source, live = tmp_path / "source", tmp_path / "live"
@@ -1229,8 +1278,8 @@ def test_without_a_key_a_head_signature_is_compared_exactly(
     backup = _take(source)
     _restore(backup, live)
     _drop_keys(monkeypatch)
-    if forged:
-        _forge_signature(live / _PIPELINE_SIGNATURE)
+    if forged is not None:
+        _forge_signature(live / forged)
     untouched = (live / _EVENTS_SIGNATURE).read_bytes()
 
     code = _verify_restore(live, backup)
@@ -1238,9 +1287,9 @@ def test_without_a_key_a_head_signature_is_compared_exactly(
     assert (live / _EVENTS_SIGNATURE).read_bytes() == untouched, (
         "something re-signed a chain with no key set; the exact comparison now false-alarms"
     )
-    if forged:
+    if forged is not None:
         assert code == 1, out
-        assert f"ALTERED: {_PIPELINE_SIGNATURE}" in out, out
+        assert f"ALTERED: {forged}" in out, out
     else:
         assert code == 0, out
         assert "restore verified" in out, out
@@ -1507,7 +1556,9 @@ def test_no_read_follows_the_chain_verdict(
     import scripts.run_backup as run_backup
 
     real = run_backup._digest_file
-    signature, stream = live / _PIPELINE_SIGNATURE, live / _PIPELINE_CHAIN
+    # The gate's own signature: the one whose finding is decided after the chain
+    # report, and so the one whose read could drift back behind it.
+    signature, stream = live / _EVENTS_SIGNATURE, live / _PIPELINE_CHAIN
     fired: list[Path] = []
 
     def digest_then_append(path: Path) -> str:
@@ -1525,3 +1576,99 @@ def test_no_read_follows_the_chain_verdict(
     assert fired, "premise: the signature's bytes were read, so the append happened"
     assert code == 1, out
     assert "data/pipeline/audit.log: chain does not verify" in out, out
+
+
+# --- review round 3 (Codex on 5a94aa6) ----------------------------------------------
+
+
+def _edit_signature(path: Path, edit: str) -> None:
+    """Change a field the signature check does not read, keeping the sidecar valid JSON."""
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if edit == "algo":
+        document["algo"] = "ed25519" if document["algo"] != "ed25519" else "hmac-sha256"
+    else:
+        document["note"] = "planted"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+@pytest.mark.security
+@pytest.mark.usefixtures("audit_key")
+@pytest.mark.parametrize("edit", ["algo", "extra-key"])
+def test_a_signature_the_gate_did_not_rewrite_is_compared_exactly_under_a_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], edit: str
+) -> None:
+    """Only the signature this command re-signs may differ from the backup.
+
+    Found by a third review round. The meaning check reads ``seq``,
+    ``head_hash`` and ``signature`` and nothing else, so excusing the bytes of
+    every ``valid`` signature excused every other field too: measured on
+    ``5a94aa6``, editing a pipeline sidecar's ``algo`` (or adding a key) kept it
+    ``valid`` and verified at exit 0. Nothing rewrites the collect, pipeline or
+    compliance chain in this window, so their signatures are compared exactly,
+    key or not; only ``data/events/audit.log.sig``, which the gate decision
+    re-signs, is judged by meaning.
+    """
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    _rotated_chain(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _edit_signature(live / _PIPELINE_SIGNATURE, edit)
+    report = AuditLogger(live / _PIPELINE_CHAIN, signing_key=signing_key_from_env()).verify_report()
+    assert report.signature == "valid", "premise: the meaning check cannot see this edit"
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert f"ALTERED: {_PIPELINE_SIGNATURE}" in out, out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("state", "judged"),
+    [
+        pytest.param({"present": True, "intact": True, "signature": "valid"}, True, id="valid"),
+        pytest.param({"present": True, "intact": False, "signature": "stale"}, True, id="broken"),
+        pytest.param(
+            {"present": True, "intact": False, "signature": "unchecked"}, True, id="unchecked"
+        ),
+        pytest.param({"present": True, "intact": True, "signature": "empty"}, False, id="empty"),
+        pytest.param(
+            {"present": True, "intact": True, "signature": "unsigned"}, False, id="unsigned"
+        ),
+        pytest.param({"present": False}, False, id="absent"),
+        pytest.param(None, False, id="no-state"),
+    ],
+)
+def test_the_gate_signature_is_excused_only_where_skipping_cannot_turn_the_verdict_green(
+    state: object, judged: bool
+) -> None:
+    """The predicate's contract, pinned directly.
+
+    The pruned-chain case that found the ``empty`` hole is no longer reachable
+    through the CLI — the gate decision always adds an entry to its own chain, and
+    no other chain's signature consults this — so the rule it established is held
+    here instead: a signature is excused its bytes only when it verified, or when
+    its chain is already a finding.
+    """
+    assert _signature_judged(state) is judged
+
+
+@pytest.mark.security
+@pytest.mark.usefixtures("audit_key")
+def test_the_gate_signature_is_the_one_this_command_writes(tmp_path: Path) -> None:
+    """``GATE_SIGNATURE`` is the sidecar the gate decision's own record produces.
+
+    The rule excuses exactly one file by name, so the name is pinned against what
+    a signed pass actually writes: if the gate moved to another chain, that chain's
+    signature would be byte-compared again and every signed restore would fail.
+    """
+    assert HEAD_SIGNATURES[GATE_SIGNATURE] == GATE_CHAIN
+    source = tmp_path / "source"
+    _seed(source)
+    _take(source)
+    written = sorted(
+        str(path.relative_to(source))
+        for path in source.rglob("*.sig")
+        if "backups" not in path.parts
+    )
+    assert written == [str(GATE_SIGNATURE)], written

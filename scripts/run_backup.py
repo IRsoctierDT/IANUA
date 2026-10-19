@@ -219,11 +219,21 @@ CHAIN_FILES: tuple[Path, ...] = COPIED_FILES[:4]
 
 #: The detached head signature beside each chain (``AuditLogger``'s
 #: ``<chain>.sig``), mapped to the chain it signs. Copied and declared like any
-#: other sibling, but neither append-only nor stable: every signed ``record()``
-#: replaces it whole. See :func:`_verify_restore` for how it is compared instead.
+#: other sibling, and not append-only: every signed ``record()`` replaces it whole.
 HEAD_SIGNATURES: dict[Path, Path] = {
     chain.with_name(chain.name + ".sig"): chain for chain in CHAIN_FILES
 }
+
+#: The one chain this CLI writes — ``_run`` records each pass's gate decision
+#: here before anything is verified — and so the one head signature that
+#: legitimately differs from the backup's after a correct restore. Nothing else
+#: writes a chain between ``docs/RESTORE.md`` steps 4 and 5, so every other
+#: signature must be byte-identical to the backup's, key or not. Excusing any
+#: other ``valid`` one would excuse every field the signature check does not read
+#: (``algo``, or a key nobody declared) — measured, an edited ``algo`` verified at
+#: exit 0 (found by review). See :func:`_verify_restore`.
+GATE_CHAIN: Path = AUDIT_SUBDIR / AUDIT_FILE
+GATE_SIGNATURE: Path = GATE_CHAIN.with_name(AUDIT_FILE + ".sig")
 
 #: ``AuditLogger``'s lock sidecar beside each declared file. Never copied:
 #: ``docs/RESTORE.md`` has always said ``*.lock`` does not land in a backup, and
@@ -447,9 +457,11 @@ def _is_append_only(relative: Path) -> bool:
 
 
 def _signature_judged(state: object) -> bool:
-    """May this chain's head signature go byte-uncompared, because its report covers it?
+    """May :data:`GATE_SIGNATURE` go byte-uncompared, because its chain report covers it?
 
-    In exactly two states, and in both the verdict stays honest without the
+    Asked of that one signature only: every other is compared exactly, because
+    nothing rewrites its chain in this window. In exactly two states, and in both
+    the verdict stays honest without the
     bytes: the signature verified (``valid`` — under a key, present and covering
     the current head), or the chain is already a finding (``intact`` false), so
     the pass is red whatever the bytes say and comparing them would only add a
@@ -1332,16 +1344,17 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     any attestation field is refused by :func:`_attestation_gaps` rather than
     compared on what is left.
 
-    **A head signature is judged by its chain, not by its bytes, when a key is
-    set** — and that is a fix, not a relaxation. The old classifier
+    **The gate's own head signature is judged by its chain, not by its bytes,
+    when a key is set** — and that is a fix, not a relaxation. The old classifier
     prefix-compared it, so with ``AUDIT_HMAC_KEY`` set this gate failed every
     correct restore: the gate decision re-signs ``data/events/audit.log`` before
-    the comparison reads its ``.sig``. The signature must still be present, and
-    is excused its bytes only where :func:`_verify_chains` found it valid for the
-    current head (or the chain is already a finding) — see
-    :func:`_signature_judged`. Otherwise (no key, or a chain pruned to its
-    checkpoint with nothing to sign) it is compared exactly, which is what still
-    catches a forged one then.
+    the comparison reads its ``.sig``. That one signature
+    (:data:`GATE_SIGNATURE`) must still be present, and is excused its bytes only
+    where :func:`_verify_chains` found it valid for the current head (or the
+    chain is already a finding) — see :func:`_signature_judged`. With no key
+    nothing re-signed it, so it is compared exactly. **Every other signature is
+    compared exactly, key or not**: nothing rewrites its chain in this window, and
+    the signature check reads three fields of the sidecar and no others.
     """
     manifest = _load_manifest(backup)
 
@@ -1494,7 +1507,7 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # equality for everything else. See _is_append_only for why the allow-list
     # is on the growing side.
     declared: set[Path] = set()
-    signatures: list[tuple[Path, str | None]] = []
+    gate_signature: str | None = None
     for entry in manifest["files"]:
         entry_path = Path(str(entry["path"]))
         unsafe = _unsafe_manifest_path(root, entry_path, what="manifest path")
@@ -1507,12 +1520,13 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         if not path.is_file():
             problems.append(f"{entry['path']} is missing from the live root")
             continue
-        if entry_path in HEAD_SIGNATURES:
-            # Present, as its manifest entry requires. Its bytes are compared NOW,
-            # so the chain report below is the last read this pass makes; whether
-            # the finding stands is decided from that report without touching the
-            # disk again (a second review round found the reads after it).
-            signatures.append((entry_path, _altered(entry, path)))
+        if entry_path == GATE_SIGNATURE:
+            # The one signature this command re-signs (see GATE_SIGNATURE); every
+            # other falls through to the exact comparison below. Its bytes are
+            # compared NOW, so the chain report is the last read this pass makes,
+            # and whether the finding stands is decided from that report without
+            # touching the disk again (a second review round found reads after it).
+            gate_signature = _altered(entry, path)
             continue
         if not _is_append_only(entry_path):
             if (altered := _altered(entry, path)) is not None:
@@ -1573,17 +1587,14 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     # order; nothing below touches the disk.
     chains = _verify_chains(root)
 
-    # Head signatures, from that same report. Where it verified the signature —
-    # present, under the key, covering the current head — or already reports the
-    # chain broken, the byte finding is dropped: every signed record() replaces
-    # the file whole, and this command's own gate decision has done exactly that
-    # to data/events/audit.log.sig, which failed every correct signed restore as
-    # REWRITTEN. Otherwise nothing re-signed it, so it must be the backed-up file.
-    for entry_path, altered in signatures:
-        if altered is not None and not _signature_judged(
-            chains.get(str(HEAD_SIGNATURES[entry_path]))
-        ):
-            problems.append(altered)
+    # The gate's own signature, from that same report. Where it verified the
+    # signature — present, under the key, covering the current head — or already
+    # reports the chain broken, the byte finding is dropped: this command's gate
+    # decision replaced data/events/audit.log.sig whole before any of this ran,
+    # which failed every correct signed restore as REWRITTEN. Otherwise (no key)
+    # nothing re-signed it, so it must be the backed-up file.
+    if gate_signature is not None and not _signature_judged(chains.get(str(GATE_CHAIN))):
+        problems.append(gate_signature)
 
     # Chains: entries may only GROW, and must still verify.
     for name, state in sorted(chains.items()):

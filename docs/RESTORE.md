@@ -139,7 +139,7 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `SUBSTITUTED` | the attested count exactly, but different rows — a different set of events, **or the same number of observables with different values** (the observables digest differs). Not this backup |
 | `ADDED` | more events or observables than attested. Re-collection (step 5) is the expected cause — but a count plus a whole-set digest **cannot tell re-collection from substitution plus addition**, since the digest necessarily differs once rows were added. If you have **not** run step 5, treat this as `SUBSTITUTED` |
 | `TRUNCATED` / `REWRITTEN` | a declared **append-only stream** — one of the four `audit.log` chains or `evidence.jsonl`, never a file beside one — shrank, or its history was replaced rather than appended to |
-| `ALTERED` | a declared file that is **not** an append-only stream — a report, a rotated archive, a checkpoint, or a head signature the key did not verify — differs in size or digest. None of them grows, and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
+| `ALTERED` | a declared file that is **not** an append-only stream — a report, a rotated archive, a checkpoint, or a head signature (every one except `data/events/audit.log.sig`, and that one too when no key verified it) — differs in size or digest. None of them grows, and nothing writes one during this window, so any difference means the live copy is not the backed-up one |
 | `…: chain does not verify: head signature …` | with a key set, a chain's head signature is missing, forged (`invalid`) or covers an older head (`stale`). Run the gate with the key the chains were signed with; a different one reads as `invalid` on every signed chain |
 | `UNDECLARED` | a file is in the live root that the manifest never listed, **or `data/reports` is itself a symlink**. Step 4's `cp -a` **merges**, so this is a file from before the restore that outlived it. **Not** store evidence loss — remove it, then re-run |
 | *unusable observable count* | the manifest does not state an integer `observables`, so the completeness check cannot run. A damaged or edited manifest; the gate refuses rather than skipping the check |
@@ -156,17 +156,22 @@ What it refuses, each with the direction named rather than a bare mismatch:
 | `contains a NUL byte` / `cannot be checked (…)` | a manifest path the verifier could not look up, reported beside the other findings rather than replacing the report. Read the name in parentheses: `contains a NUL byte`, `(UnicodeEncodeError)` (a lone surrogate) or `(OSError)` (an overlong name) mean a damaged or edited manifest. `(PermissionError)` means a directory on the path is not searchable by this account, so the manifest is probably fine: check the backup's or the live root's modes and ownership first |
 | `the live store data/events/events.sqlite3 passes through the symlink …` | under `--verify-restore`, the live store file itself is a symlink, so it was not opened (a symlinked `data/` or `data/events` is refused earlier, at exit `2`: see "Taking a backup"). Step 4's `cp -a` wrote through the link, so its target outside the root now holds the backup's store and not what it held before. Repeating step 4 leaves the link in place, and this finding with it. Remove the link (`test -L <root>/data/events/events.sqlite3 && rm <root>/data/events/events.sqlite3`), repeat step 4, then re-run 4b |
 
-**Why a head signature is checked by its chain and not by its bytes.** Every signed
+**Why one head signature is checked by its chain and not by its bytes.** Every signed
 `record()` replaces `audit.log.sig` whole, and this command's own gate decision re-signs
 `data/events/audit.log` before the comparison runs. Measured on the earlier rule, which
 prefix-compared it like a stream: with `AUDIT_HMAC_KEY` set, **every correct restore
-failed** with `REWRITTEN: data/events/audit.log.sig`. The signature must still be present,
-and with the key it must verify and cover the current head, or the chain is reported broken.
-That is what it means, so that is what is checked. Where the key did not verify it, nothing
-re-signed it either, so it is compared exactly instead. That covers two cases. With no key,
-it is the one check that still catches a forged signature. With a chain pruned to its
-checkpoint (`--retain-segments 0`), there is no entry to sign, so verification never reads
-the signature at all.
+failed** with `REWRITTEN: data/events/audit.log.sig`. So that one signature,
+`data/events/audit.log.sig`, is judged by what it means. It must still be present, and with
+the key it must verify and cover the current head, or the chain is reported broken. With no
+key nothing re-signs it, so it is compared exactly, which is the one check that still catches
+a forged signature then.
+
+**Every other signature is compared byte for byte, key or not.** Nothing writes the collect,
+pipeline or compliance chain during this window, so their signatures must be exactly the
+backed-up files. The key check is not a substitute there: it reads a signature's sequence,
+head hash and value, and no other field. Measured on an earlier rule that excused every
+signature the key verified: editing a sidecar's `algo` field, or adding a key to it, still
+verified at exit 0.
 
 **Why `LOSS` covers observables separately.** The completeness digest is a sha256 over the
 `event_id` set only, so a restore that loses rows from `observables` and none from `events`

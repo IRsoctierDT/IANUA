@@ -210,13 +210,16 @@ All notable changes to this project. Versions correspond to git tags.
   replaces that file whole, and the gate's own decision re-signs `data/events/audit.log`
   before the comparison runs: `REWRITTEN: data/events/audit.log.sig`, exit 1, on a restore
   nothing had touched. No test set a key, so the suite stayed green. Now only the five
-  declared streams may grow. A head signature must be present, and it skips the byte
-  comparison only where its chain verified it under the key (or the chain is already a
-  finding). Otherwise it is compared exactly: with no key, that still catches a forged
-  signature, and a chain pruned to its checkpoint has nothing for the key to verify. The
-  chain verdict is the last read the pass makes, after every stream, report and signature
-  comparison, so an unquiesced writer's append cannot slip in behind it. Two review rounds
-  found these gaps in earlier versions of this fix. The same rule had granted growth to rotated
+  declared streams may grow. Every head signature must be present. Only the one this
+  command re-signs, `data/events/audit.log.sig`, may skip the byte comparison, and only
+  where its chain verified it under the key (or the chain is already a finding). Every other
+  signature is compared exactly, key or not: nothing writes those chains in this window, and
+  the key check reads three fields of a signature and no others. The chain verdict is the
+  last read the pass makes, after every stream, report and signature comparison, so an
+  unquiesced writer's append cannot slip in behind it. Three review rounds found gaps in
+  earlier versions of this fix: a signature beside a fully pruned chain that nothing
+  checked, chain verdicts taken before later reads, and edits to signature fields the key
+  check never reads. The same rule had granted growth to rotated
   archives and checkpoints, which never grow: blank lines appended to an archive, or
   whitespace to a checkpoint, verified green. Both are exact now. On the backup side the rule
   copied `audit.log.lock` into every backup, despite `docs/RESTORE.md` saying `*.lock` never
