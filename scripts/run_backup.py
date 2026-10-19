@@ -151,7 +151,7 @@ from store import (  # noqa: E402
     EventStore,
     StoreError,
 )
-from store.paths import confine, validated_root  # noqa: E402
+from store.paths import confine, sidecar_problem, validated_root  # noqa: E402
 
 #: Where backups live: a sibling of the state they copy, inside the same
 #: gitignored root, so a backup can never be the thing that commits evidence.
@@ -823,7 +823,7 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
             f"no event store at {source_db}; refusing to write a backup that "
             "would restore as an empty store indistinguishable from a real one"
         )
-    sidecar = _sidecar_problem(source_db, what=f"the live store {source_db}")
+    sidecar = sidecar_problem(source_db, what=f"the live store {source_db}")
     if sidecar is not None:
         # Before the backup directory is created, so a refused take leaves no
         # partial copy; the gate's allow record is already in the chain, with no
@@ -1197,76 +1197,6 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
     return checked
 
 
-#: The files SQLite opens beside a database, and reads or writes through.
-_SIDECARS = ("-wal", "-journal", "-shm")
-
-#: How a non-regular sidecar is named in a finding.
-_KINDS = (
-    (stat.S_ISLNK, "a symlink"),
-    (stat.S_ISDIR, "a directory"),
-    (stat.S_ISFIFO, "a FIFO"),
-    (stat.S_ISSOCK, "a socket"),
-    (stat.S_ISCHR, "a character device"),
-    (stat.S_ISBLK, "a block device"),
-)
-
-
-def _sidecar_problem(db: Path, *, what: str) -> str | None:
-    """Why a file beside ``db`` makes it unsafe to hand to SQLite, or ``None``.
-
-    SQLite opens every sidecar with the database: it checkpoints a ``-wal``,
-    replays a ``-journal``, and truncates and rewrites a ``-shm`` as its WAL
-    index. Each must therefore be absent or a regular file with a single link.
-    Measured, found by independent review:
-
-    - a FIFO ``-journal`` hung both verifiers, and a plain take, inside the
-      open while they held the backup lock, so every later pass skipped at
-      exit 0; a FIFO ``-wal`` was deleted;
-    - a symlinked, FIFO or directory ``-shm`` replaced the report with a bare
-      SQLite error and left a new ``-wal`` in the tree under inspection;
-    - a ``-shm`` **hard-linked** to another file had that file overwritten
-      with 32 KiB of WAL index: the backup's own manifest, and the live
-      store, were each destroyed under a run that exited 0 "verified".
-
-    A hard link is a regular file, which is why the link count is checked
-    with the type, and why this is one ``lstat`` per name. It is a check on
-    the path, so a sidecar swapped in between it and the open is not caught:
-    that needs write access to the directory, the same window
-    :func:`_unsafe_to_open` already leaves.
-
-    Every offending sidecar is named, with what is wrong with it, because the
-    remedies differ: a FIFO or a symlink is never benign, while a second link
-    can come from a hard-link copy of the tree (``cp -al``, ``rsync
-    --link-dest``) and the size says whether a ``-wal`` holds frames (found by
-    review: the first version named only the first sidecar, and only as "not a
-    regular file with a single link").
-    """
-    reasons: list[str] = []
-    for suffix in _SIDECARS:
-        side = db.with_name(db.name + suffix)
-        try:
-            found = os.lstat(side)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            reasons.append(f"its {suffix} cannot be checked ({type(exc).__name__})")
-            continue
-        if not stat.S_ISREG(found.st_mode):
-            kind = next((name for test, name in _KINDS if test(found.st_mode)), "unrecognised")
-            reasons.append(f"its {suffix} is {kind}, not a regular file")
-        elif found.st_nlink != 1:
-            reasons.append(
-                f"its {suffix} ({found.st_size} bytes) has {found.st_nlink} links: another "
-                "name shares the file, and SQLite would write through both"
-            )
-    if not reasons:
-        return None
-    return (
-        f"{what} cannot be opened safely: {'; '.join(reasons)}. SQLite opens every "
-        "sidecar with the store, so the store was not opened"
-    )
-
-
 #: SQLite's file header begins with this magic; bytes 18 and 19 are the write
 #: and read format versions, both ``2`` for a WAL-mode database.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
@@ -1292,7 +1222,7 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
     it at **exit 0**, "every file digest match the manifest", sha256 changed.
 
     So the facts ``open`` would act on are read first, without a connection
-    that can write: size, the sidecars (:func:`_sidecar_problem`), the header
+    that can write: size, the sidecars (:func:`store.paths.sidecar_problem`), the header
     bytes, and the schema catalogue through ``immutable=1``. Not ``mode=ro`` — measured, that left
     ``-wal`` and ``-shm`` behind in the backup after close; ``immutable=1``
     touched nothing. It ignores a WAL, which is why a non-empty one is refused
@@ -1305,7 +1235,7 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
             f"{what} is 0 bytes, a truncated transfer; SQLite treats an empty file as a "
             "new database and opening it would initialise it, so it was not opened"
         )
-    sidecar = _sidecar_problem(db, what=what)
+    sidecar = sidecar_problem(db, what=what)
     if sidecar is not None:
         return sidecar
     wal = db.with_name(db.name + "-wal")

@@ -280,9 +280,10 @@ def test_a_database_that_cannot_be_stated_is_refused_not_taken_as_absent(
 def test_the_store_helper_says_exactly_what_run_backup_says(
     tmp_path: Path, suffix: str, shape: str
 ) -> None:
-    """``store.paths.sidecar_problem`` is ``run_backup._sidecar_problem`` moved down a
-    layer, and ``docs/RESTORE.md``'s findings table quotes its sentences. Until
-    ``run_backup`` imports it, the two copies must agree word for word."""
+    """``store.paths.sidecar_problem`` is ``run_backup``'s former ``_sidecar_problem``
+    moved down a layer, and ``docs/RESTORE.md``'s findings table quotes its
+    sentences, so ``run_backup`` imports this one rather than keeping a copy that
+    could drift from it."""
     from scripts import run_backup
 
     db = tmp_path / "events.sqlite3"
@@ -294,7 +295,7 @@ def test_the_store_helper_says_exactly_what_run_backup_says(
     moved = store.paths.sidecar_problem(db, what=what)
 
     assert moved is not None and _named(suffix, shape, victim) in moved, moved
-    assert moved == run_backup._sidecar_problem(db, what=what)
+    assert run_backup.sidecar_problem is store.paths.sidecar_problem
 
 
 @pytest.mark.security

@@ -992,6 +992,7 @@ def test_a_sidecar_that_cannot_be_checked_is_refused_not_taken_as_absent(
     """Found by review: nothing pinned this branch, so treating any ``lstat`` error as
     "absent" passed every test. Not walkable is not safe."""
     import scripts.run_backup as run_backup
+    import store.paths
 
     db = tmp_path / "events.sqlite3"
     db.write_bytes(b"x")
@@ -1002,8 +1003,8 @@ def test_a_sidecar_that_cannot_be_checked_is_refused_not_taken_as_absent(
             raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[call-overload]
         return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(run_backup.os, "lstat", refusing)
-    reason = run_backup._sidecar_problem(db, what="the store")
+    monkeypatch.setattr(store.paths.os, "lstat", refusing)
+    reason = run_backup.sidecar_problem(db, what="the store")
     assert reason is not None and f"its {suffix} cannot be checked (PermissionError)" in reason
 
 
@@ -1164,6 +1165,7 @@ def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.Mo
     ``lstat`` stands in, the approach ``test_cli_startup_failclosed.py`` takes. A block
     device has no node guaranteed on every runner and is left unexercised."""
     import scripts.run_backup as run_backup
+    import store.paths
 
     db = tmp_path / "events.sqlite3"
     db.write_bytes(b"x")
@@ -1175,6 +1177,6 @@ def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.Mo
             return device
         return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(run_backup.os, "lstat", as_device)
-    reason = run_backup._sidecar_problem(db, what="the store")
+    monkeypatch.setattr(store.paths.os, "lstat", as_device)
+    reason = run_backup.sidecar_problem(db, what="the store")
     assert reason is not None and "its -wal is a character device, not a regular file" in reason
