@@ -217,6 +217,18 @@ All notable changes to this project. Versions correspond to git tags.
   instead of leaving the restored chain's head unsigned. Measured red before on `main`:
   14 of the 17 new cases in `tests/security/test_audit_writer_signer.py`, including every
   writer end to end.
+- **The egress allow-list's reasons no longer depend on the Python patch release.** For an
+  IPv4-mapped address (`::ffff:0.0.0.0`, `::ffff:169.254.169.254`), `is_unspecified`,
+  `is_link_local` and `is_multicast` read False on 3.12.3 (Ubuntu 24.04's system Python) and
+  the IPv4 class on 3.11.17 and 3.13.16. Every such address was refused either way, but on
+  3.12.3 as "IPv4-mapped" rather than for what it is. `parse_address` now classifies the IPv4
+  address a mapped form carries. A new test installs 3.12.3's semantics on any interpreter,
+  so CI catches this too.
+- **A symlink-loop corpus root reads "cannot be resolved" on Python 3.13 as on 3.11 and
+  3.12.** On 3.13, `Path.resolve()` no longer raises on a loop and `is_dir()` swallows the
+  `ELOOP`, so the root read "not a directory". The root now asks `stat()` for `ELOOP`
+  directly.
+
 - **`--verify-restore` failed every correct restore whenever `AUDIT_HMAC_KEY` was set.**
   `_is_append_only` granted growth to every file whose name starts with a declared stream's,
   so the head signature `audit.log.sig` was prefix-compared. But every signed `record()`

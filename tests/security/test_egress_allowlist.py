@@ -260,8 +260,13 @@ def test_every_spelling_of_unspecified_is_refused(spelling: str, tmp_path: Path)
     code so it cannot regress into prose again. The refusal reads the **parsed**
     value's ``is_unspecified``, which is why all six fail rather than only the one
     anybody thinks to type.
+
+    The premise unwraps an IPv4-mapped form first, as the control does. Asked of
+    ``::ffff:0.0.0.0`` itself, ``is_unspecified`` is True on 3.11.17 and 3.13.16
+    and False on 3.12.3, so the premise as first written failed on Ubuntu 24.04's
+    system Python while the control refused the address correctly.
     """
-    assert ipaddress.ip_address(spelling).is_unspecified, (
+    assert _native(ipaddress.ip_address(spelling)).is_unspecified, (
         f"{spelling} is not actually unspecified — this test's premise is wrong"
     )
     path = _write(tmp_path, {"version": 1, "hosts": [_one_host(address=spelling)]})
@@ -299,9 +304,58 @@ def test_shapes_that_cannot_mean_one_peer_are_refused(
     would allow multicast. The rules are refusals for that reason.
     """
     path = _write(tmp_path, {"version": 1, "hosts": [_one_host(address=address)]})
-    with pytest.raises(EgressAllowlistError):
+    with pytest.raises(EgressAllowlistError, match=why):
         EgressAllowlist.load(path)
-    assert why  # names the case in a failure
+
+
+def _native(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """The IPv4 address an IPv4-mapped form carries, or the address itself."""
+    mapped = address.ipv4_mapped if isinstance(address, ipaddress.IPv6Address) else None
+    return mapped if mapped is not None else address
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("address", "why"),
+    [
+        ("::ffff:0.0.0.0", "unspecified"),
+        ("::ffff:169.254.169.254", "link-local"),
+        ("::ffff:224.0.0.1", "multicast"),
+        ("::ffff:255.255.255.255", "limited-broadcast"),
+    ],
+)
+def test_a_mapped_form_is_refused_for_its_ipv4_class_on_every_interpreter(
+    address: str, why: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason must not depend on the Python that loaded the file.
+
+    The stdlib's answer for an IPv4-mapped form changed between patch releases:
+    measured, ``is_unspecified``, ``is_link_local``, ``is_multicast`` and
+    ``is_loopback`` of ``::ffff:<v4>`` all read False on 3.12.3 and the IPv4 class
+    on 3.11.17 and 3.13.16. This test installs 3.12.3's semantics (classify the
+    128-bit value as IPv6 only) so it reproduces that interpreter wherever it runs,
+    CI included. Before the control classified the IPv4 address a mapped form
+    carries, every case here read "IPv4-mapped" under those semantics: refused,
+    but for a reason that hid what the address was.
+    """
+    v6 = ipaddress.IPv6Address
+    monkeypatch.setattr(v6, "is_unspecified", property(lambda self: int(self) == 0))
+    monkeypatch.setattr(
+        v6, "is_link_local", property(lambda self: self in ipaddress.IPv6Network("fe80::/10"))
+    )
+    monkeypatch.setattr(
+        v6, "is_multicast", property(lambda self: self in ipaddress.IPv6Network("ff00::/8"))
+    )
+    parsed = ipaddress.ip_address(address)
+    assert not (parsed.is_unspecified or parsed.is_link_local or parsed.is_multicast), (
+        "premise: the mapped form is unclassified, as on 3.12.3"
+    )
+
+    path = _write(tmp_path, {"version": 1, "hosts": [_one_host(address=address)]})
+    with pytest.raises(EgressAllowlistError, match=why):
+        EgressAllowlist.load(path)
 
 
 @pytest.mark.security

@@ -152,21 +152,30 @@ def parse_address(value: Any) -> _AddressType:
             "socket goes wherever resolution says. Declare the address"
         ) from exc
 
-    if address.is_unspecified:
+    # Classified by the IPv4 address an IPv4-mapped form carries, because the
+    # stdlib's answer for the mapped form depends on the interpreter. Measured:
+    # ip_address("::ffff:0.0.0.0").is_unspecified is True on 3.11.17 and 3.13.16
+    # and False on 3.12.3 (Ubuntu 24.04's system Python), and so are is_loopback,
+    # is_link_local and is_multicast for their mapped forms. Every mapped form is
+    # refused below whichever way, but the reason an operator reads should not
+    # depend on the Python that happened to load the file.
+    native = address.ipv4_mapped if isinstance(address, ipaddress.IPv6Address) else None
+    classified = native if native is not None else address
+    if classified.is_unspecified:
         raise EgressAllowlistError(
             f"refused: {value!r} parses as the unspecified address ({address}), which "
             "is not a host — on Linux a connect to it reaches loopback"
         )
-    if address.is_multicast:
+    if classified.is_multicast:
         raise EgressAllowlistError(
             f"refused: {value!r} is multicast, so one send reaches every subscriber "
             "rather than the single declared peer"
         )
-    if address == _IPV4_BROADCAST:
+    if classified == _IPV4_BROADCAST:
         raise EgressAllowlistError(
             f"refused: {value!r} is the limited-broadcast address, not a single host"
         )
-    if address.is_link_local:
+    if classified.is_link_local:
         raise EgressAllowlistError(
             f"refused: {value!r} is link-local. 169.254.169.254 is the cloud "
             "instance-metadata address and fe80::/10 is its IPv6 counterpart; "
