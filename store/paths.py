@@ -269,6 +269,40 @@ def kind_of(mode: int) -> str:
     return next((name for test, name in _KINDS if test(mode)), "unrecognised")
 
 
+def linked_database_problem(db: Path, links: int, *, what: str) -> str:
+    """The refusal for a live database file that has ``links - 1`` other names.
+
+    A hard-link copy of a live store is not a backup, whatever made it
+    (``cp -al``, ``cp -l``, ``ln``, ``rsync --link-dest`` pointed at the live
+    tree, or a restore done with any of those). Measured, found by independent
+    review: every write through either name changes both, so the "copy" moves
+    with the store; a pass run against the copy's root writes into the live
+    store's file; and opening the copy after the live store has moved on
+    replays the stale log it kept — one read-only ``SELECT`` rolled the live
+    store back from 60 events to 40 with ``quick_check`` clean. A take of the
+    copy's root did the same at exit 0. Whether a given log beside a shared
+    file is the store's own or a copy's stale one cannot be told from either
+    directory, so a live store with a second name is refused outright, which
+    is deterministic rather than dependent on which passes overlap.
+
+    A hard-link snapshot farm of ``data/backups`` is the one correct deployment
+    that links a store, and it links backups, never the live store; the
+    verifier opts out for those (``EventStore.open(..., allow_linked=True)``).
+    rsnapshot and an incremental ``rsync --link-dest`` link snapshots to each
+    other and never to the tree they copy (measured with rsnapshot's rotation
+    reproduced), so they do not reach this.
+    """
+    others = links - 1
+    return (
+        f"{what} shares its file with {others} other name{'s' if others > 1 else ''}, "
+        "so the store was not opened. A hard-link copy of a live store is not a backup: "
+        "a write through either name changes both, and opening the copy later replays its "
+        f"stale log into this store. Find the other names with find <mount> -xdev "
+        f"-samefile {db} and remove them without opening anything there; see "
+        "docs/RESTORE.md"
+    )
+
+
 def sidecar_problem(db: Path, *, what: str) -> str | None:
     """Why a file beside ``db`` makes it unsafe to hand to SQLite, or ``None``.
 

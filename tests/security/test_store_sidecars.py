@@ -348,18 +348,19 @@ def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 @pytest.mark.security
-def test_a_database_with_a_second_hard_link_is_still_opened(tmp_path: Path) -> None:
-    """Deliberately not refused on its own. A hard-link snapshot farm of ``data/backups``
-    gives every backup's store a second name, and a hard-link copy of the tree (``cp -al``,
-    ``ln``) gives the live one a second name for as long as the copy exists; refusing that
-    would fail every ``--verify`` or every scheduled pass. A control, so it is green before
-    and after the fix: what it pins is the absence of a false alarm."""
+def test_a_linked_database_is_refused_live_and_opened_for_a_backup(tmp_path: Path) -> None:
+    """A hard-link copy of a live store is not a backup (see the rollback test below), so
+    a live store with a second name is refused, deterministically; a hard-link snapshot
+    farm of ``data/backups`` links every backup's store, and the verifier, which only
+    reads, opts out. The opt-out side is a control: green before and after."""
     root, db = _seed(tmp_path)
     snapshot = tmp_path / "snapshot.sqlite3"
     os.link(db, snapshot)
     assert db.stat().st_nlink == 2
 
-    with EventStore.open(root) as events:
+    with pytest.raises(StorePathError, match=r"shares its file with 1 other name, so the store"):
+        EventStore.open(root)
+    with EventStore.open(root, allow_linked=True) as events:
         assert events.count() == _SEEDED
     assert db.samefile(snapshot)
 
@@ -502,8 +503,11 @@ def test_a_special_file_at_the_store_path_is_named_by_every_store_indicator(
 
 
 @pytest.mark.security
+@pytest.mark.parametrize(
+    ("shape", "kind"), [("fifo", "a FIFO"), ("directory", "a directory"), ("socket", "a socket")]
+)
 def test_run_backup_names_a_special_file_at_the_store_path(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], shape: str, kind: str
 ) -> None:
     """The take said "no event store", ``--verify`` said the store "is missing", and
     ``--verify-restore`` said "the restore did not put one there", whose remedy is
@@ -513,26 +517,27 @@ def test_run_backup_names_a_special_file_at_the_store_path(
     root, db = _seed(tmp_path)
     assert backup_main(["--root", str(root), "--name", "probe", "--caller", "test"]) == 0
     backup = root / "data" / "backups" / "probe"
+    victim = _victim(tmp_path)
     db.rename(tmp_path / "aside.sqlite3")
-    os.mkfifo(db, 0o600)
+    _plant(db, shape, victim)
     capsys.readouterr()
 
     assert backup_main(["--root", str(root), "--name", "second", "--caller", "test"]) == 1
-    assert f"the live store {db} is a FIFO, not a regular file" in capsys.readouterr().err
+    assert f"the live store {db} is {kind}, not a regular file" in capsys.readouterr().err
 
     argv = ["--root", str(root), "--caller", "test", "--verify-restore", str(backup)]
     assert backup_main(argv) == 1
     out = capsys.readouterr().out
-    assert f"the live store {db} is a FIFO, not a regular file" in out, out
+    assert f"the live store {db} is {kind}, not a regular file" in out, out
     assert "no store at" not in out, out
 
     (backup / _STORE).unlink()
-    os.mkfifo(backup / _STORE, 0o600)
+    _plant(backup / _STORE, shape, victim)
     clean = tmp_path / "clean"
     clean.mkdir()
     assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 1
     out = capsys.readouterr().out
-    assert f"{_STORE} is a FIFO, not a regular file" in out, out
+    assert f"{_STORE} is {kind}, not a regular file" in out, out
 
 
 # -- a database file with a second name ----------------------------------------------------
@@ -569,7 +574,9 @@ def test_a_hard_link_copy_of_a_live_root_cannot_roll_the_live_store_back(tmp_pat
         _link_tree(root, copy)
     finally:
         writer.close()
-    with EventStore.open(root) as later:
+    # The live store has a second name now too, so a later pass is the one place
+    # that opts out here: this builds the state the refusal exists to stop.
+    with EventStore.open(root, allow_linked=True) as later:
         _append(later, 200, 20)
         expected = later.count()
     copied = copy / _STORE
@@ -577,17 +584,21 @@ def test_a_hard_link_copy_of_a_live_root_cannot_roll_the_live_store_back(tmp_pat
     assert copied.stat().st_nlink == 2, "the premise: the copy shares the database file"
     assert copied_wal.stat().st_size > 0 and copied_wal.stat().st_nlink == 1, "the premise"
 
-    with pytest.raises(StoreSidecarError, match=r"shares its file with 1 other name and has a"):
+    with pytest.raises(StorePathError, match=r"shares its file with 1 other name, so the store"):
         EventStore.open(copy)
+    # And the backup verifier's opt-out still refuses it, because of the stale log.
+    with pytest.raises(StoreSidecarError, match=r"shares its file with 1 other name and has a"):
+        EventStore.open(copy, allow_linked=True)
 
-    with EventStore.open(root) as live:
+    with EventStore.open(root, allow_linked=True) as live:
         assert live.count() == expected == _SEEDED + 40
         live.verify_integrity()
 
 
 @pytest.mark.security
+@pytest.mark.parametrize("allow_linked", [False, True])
 def test_an_empty_database_with_a_second_name_is_not_initialised_through_it(
-    tmp_path: Path,
+    tmp_path: Path, allow_linked: bool
 ) -> None:
     """SQLite initialises an empty file as a new database, in place: measured before this
     refusal, a 0-byte file outside the root hard-linked in at the database path became a
@@ -601,8 +612,13 @@ def test_an_empty_database_with_a_second_name_is_not_initialised_through_it(
     os.link(victim, db)
     before = _fingerprint(victim)
 
-    with pytest.raises(StoreSidecarError, match=r"is empty and shares its file with 1 other"):
-        EventStore.open(root)
+    expected = (
+        r"is empty and shares its file with 1 other"
+        if allow_linked
+        else r"shares its file with 1 other name, so the store"
+    )
+    with pytest.raises(StorePathError, match=expected):
+        EventStore.open(root, allow_linked=allow_linked)
     assert _fingerprint(victim) == before
 
 
@@ -640,7 +656,7 @@ def test_deleting_a_hard_link_copy_of_the_live_root_is_the_remedy(
         wal = db.with_name(db.name + "-wal")
         assert wal.stat().st_size > 0, "the premise: committed events are in the -wal"
         _link_tree(root, copy)
-        with pytest.raises(StoreSidecarError, match=r"its -wal \(\d+ bytes\) has 2 links"):
+        with pytest.raises(StorePathError, match=r"shares its file with 1 other name, so"):
             EventStore.open(root)
 
         shutil.rmtree(copy)
@@ -650,3 +666,123 @@ def test_deleting_a_hard_link_copy_of_the_live_root_is_the_remedy(
     finally:
         if holder is not None:
             holder.close()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
+@pytest.mark.parametrize("size", [0, 1])
+def test_a_backup_opt_out_still_refuses_a_log_it_would_replay_into_every_name(
+    tmp_path: Path, suffix: str, size: int
+) -> None:
+    """Under ``allow_linked``, a log beside a shared file is replayed into every name, so a
+    non-empty one is refused at either name; an empty one holds nothing to replay. (Found
+    by review: neither arm, nor the size threshold, was pinned.)"""
+    root, db = _seed(tmp_path)
+    os.link(db, tmp_path / "snapshot.sqlite3")
+    log = db.with_name(db.name + suffix)
+    log.write_bytes(b"\0" * size)
+
+    if size:
+        with pytest.raises(StoreSidecarError, match=rf"has a 1-byte {suffix} beside it"):
+            EventStore.open(root, allow_linked=True)
+    else:
+        with EventStore.open(root, allow_linked=True) as events:
+            assert events.count() == _SEEDED
+
+
+@pytest.mark.security
+def test_a_backup_opt_out_refuses_a_log_it_cannot_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, db = _seed(tmp_path)
+    os.link(db, tmp_path / "snapshot.sqlite3")
+    real_lstat = os.lstat
+    calls = {"-wal": 0}
+
+    def refusing(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if os.fspath(path).endswith("-wal"):  # type: ignore[call-overload]
+            calls["-wal"] += 1
+            if calls["-wal"] > 1:  # the sidecar check's own lstat passes; the log check's fails
+                raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[call-overload]
+        return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    db.with_name(db.name + "-wal").write_bytes(b"")
+    monkeypatch.setattr(store.events.os, "lstat", refusing)
+    monkeypatch.setattr(store.paths.os, "lstat", refusing)
+    with pytest.raises(StoreSidecarError, match=r"its -wal cannot be checked \(PermissionError\)"):
+        EventStore.open(root, allow_linked=True)
+
+
+@pytest.mark.security
+def test_a_take_of_a_hard_link_copy_cannot_roll_the_live_store_back(tmp_path: Path) -> None:
+    """Found by review, high: the take reads its source through a plain connection, which
+    ``EventStore.open``'s refusal never sees, and measured, a take of a hard-link copy's
+    root replayed the copy's stale ``-wal`` into the shared file and rolled the live store
+    back from 60 events to 40, at exit 0."""
+    from scripts.run_backup import main as backup_main
+
+    root, _db = _seed(tmp_path)
+    copy = tmp_path / "copy"
+    writer = EventStore.open(root)
+    try:
+        _append(writer, 100, 20)
+        _link_tree(root, copy)
+    finally:
+        writer.close()
+    with EventStore.open(root, allow_linked=True) as later:
+        _append(later, 200, 20)
+        expected = later.count()
+
+    assert backup_main(["--root", str(copy), "--name", "of-copy", "--caller", "test"]) == 1
+    assert not (copy / "data" / "backups" / "of-copy").exists()
+    with EventStore.open(root, allow_linked=True) as live:
+        assert live.count() == expected == _SEEDED + 40
+
+
+@pytest.mark.security
+def test_verify_restore_names_a_live_store_linked_to_something_else(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``LINKED`` covers a live store that is the backup's own; any other second name is a
+    finding too, rather than ``EventStore.open``'s refusal replacing the report."""
+    import shutil as _shutil
+
+    from scripts.run_backup import main as backup_main
+
+    root, _db = _seed(tmp_path)
+    assert backup_main(["--root", str(root), "--name", "probe", "--caller", "test"]) == 0
+    backup = root / "data" / "backups" / "probe"
+    live = tmp_path / "live"
+    (live / "data").mkdir(parents=True)
+    _shutil.copytree(backup / "data", live / "data", dirs_exist_ok=True)
+    os.link(live / _STORE, tmp_path / "elsewhere.sqlite3")
+    capsys.readouterr()
+
+    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+    assert backup_main(argv) == 1
+    captured = capsys.readouterr()
+    assert f"the live store {live / _STORE} shares its file with 1 other name" in captured.out
+    assert captured.err == "", captured.err
+
+
+@pytest.mark.security
+def test_a_store_path_that_cannot_be_checked_is_not_read_as_absent_by_the_slis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found by review: nothing pinned the SLI guard's non-absence error branch."""
+    import sli.indicators
+
+    root, db = _seed(tmp_path)
+    real_lstat = os.lstat
+
+    def refusing(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if os.fspath(path) == str(db):  # type: ignore[call-overload]
+            raise PermissionError(13, "Permission denied", os.fspath(path))  # type: ignore[call-overload]
+        return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sli.indicators.os, "lstat", refusing)
+    indicators = {item.objective.id: item for item in measure(root, now=time.time()).indicators}
+    for objective in _STORE_INDICATORS:
+        indicator = indicators[objective]
+        assert indicator.value is None, indicator.detail
+        assert "cannot be checked (PermissionError)" in indicator.detail, indicator.detail

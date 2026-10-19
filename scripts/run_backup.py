@@ -151,7 +151,13 @@ from store import (  # noqa: E402
     EventStore,
     StoreError,
 )
-from store.paths import confine, kind_of, sidecar_problem, validated_root  # noqa: E402
+from store.paths import (  # noqa: E402
+    confine,
+    kind_of,
+    linked_database_problem,
+    sidecar_problem,
+    validated_root,
+)
 
 #: Where backups live: a sibling of the state they copy, inside the same
 #: gitignored root, so a backup can never be the thing that commits evidence.
@@ -608,8 +614,9 @@ def _special_store(db: Path, *, what: str) -> str | None:
     ``None`` for absent and for a regular file, which the callers' own
     ``is_file()`` checks then handle. Without this, ``is_file()`` read a FIFO,
     a directory or a socket at the store path as no store at all, and under
-    ``--verify-restore`` that sent an operator back to step 4, whose ``cp -a``
-    onto a FIFO blocks (measured; found by independent review).
+    ``--verify-restore`` that sent an operator back to step 4, which does not
+    reliably replace one: ``cp -a`` onto a FIFO blocks (measured; found by
+    independent review).
     """
     try:
         found = os.lstat(db)
@@ -620,8 +627,7 @@ def _special_store(db: Path, *, what: str) -> str | None:
         return None
     return (
         f"{what} is {kind_of(found.st_mode)}, not a regular file, so it was not opened. "
-        "Move it out of the root (mv) and keep it for investigation; nothing copies "
-        "onto it"
+        "Move it out of the root (mv) and keep it for investigation; see docs/RESTORE.md"
     )
 
 
@@ -848,6 +854,16 @@ def _take_backup(root: Path, destination: Path) -> dict[str, object]:
         raise StoreError(
             f"no event store at {source_db}; refusing to write a backup that "
             "would restore as an empty store indistinguishable from a real one"
+        )
+    links = source_db.stat().st_nlink
+    if links > 1:
+        # The online backup API opens the source with a plain connection, which
+        # EventStore.open's refusal never sees: measured, a take of a hard-link
+        # copy's root replayed the copy's stale -wal into the file the live
+        # store shares and rolled it back from 60 events to 40, at exit 0
+        # (found by independent review).
+        raise StoreError(
+            linked_database_problem(source_db, links, what=f"the live store {source_db}")
         )
     sidecar = sidecar_problem(source_db, what=f"the live store {source_db}")
     if sidecar is not None:
@@ -1367,7 +1383,9 @@ def _verify_backup(directory: Path) -> dict[str, object]:
             # the size already says this is not the store that was backed up.
             pass
         else:
-            with EventStore.open(directory) as copy:
+            # A hard-link snapshot farm of data/backups links every backup's
+            # store, and this only reads it: the one caller that may opt out.
+            with EventStore.open(directory, allow_linked=True) as copy:
                 attested = copy.attest().to_dict()
             # Compared only when every field is there. The first version of this
             # change still indexed `expected["events"]` below after reporting it
@@ -1538,6 +1556,10 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         # equal to itself. Not opened, so nothing here touches the backup's own
         # file. See _linked_to_backup.
         problems.append(_linked(EVENTS_SUBDIR / DEFAULT_FILENAME))
+    elif (links := db.stat().st_nlink) > 1:
+        # Linked to something other than this backup: the live store is still
+        # shared, and EventStore.open below would refuse it with a bare error.
+        problems.append(linked_database_problem(db, links, what=f"the live store {db}"))
     elif (unopenable := _unsafe_to_open(db, what=f"the live store {db}")) is not None:
         problems.append(unopenable)
     else:

@@ -101,15 +101,21 @@ def _store_path(root: Path) -> Path:
 def _no_store(root: Path) -> str | None:
     """Why there is no store file to measure, or ``None`` when something is there.
 
-    The guard exists so a probe never creates a store, which ``EventStore.open``
-    does for an absent one, so only absence belongs here. It used ``is_file()``,
-    which also read a FIFO, a directory or a socket at the database path as
-    absent: measured, all five store indicators said "no event store" while the
-    collector, on the same tree, said the store "is a FIFO, not a regular file"
-    (found by independent review). So anything present goes to
-    ``EventStore.open``, whose refusal names it, as a symlink always did, since
-    ``is_file()`` follows one. One ``lstat``, and an error other than absence is
-    not read as absence.
+    The guard exists so a probe never creates a store from nothing, which
+    ``EventStore.open`` does for an absent one, so only absence belongs here.
+    It used ``is_file()``, which also read a FIFO, a directory or a socket at
+    the database path as absent: measured, all five store indicators said "no
+    event store" while the collector, on the same tree, said the store "is a
+    FIFO, not a regular file" (found by independent review). So anything
+    present goes to ``EventStore.open``, whose refusal names it; a dangling
+    symlink, which ``is_file()`` also read as absent, now reaches its symlink
+    refusal too. One ``lstat``, and an error other than absence is not read as
+    absence.
+
+    **A 0-byte regular file is present, and is opened**, which initialises it
+    as an empty store in place. That is deliberate and pinned, so an aborted
+    copy cannot read as a healthy SOC
+    (``tests/security/test_sli_hardening.py::test_an_aborted_copy_cannot_produce_a_healthy_report``).
     """
     path = _store_path(root)
     try:
