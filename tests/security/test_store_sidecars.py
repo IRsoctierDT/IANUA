@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from ingest import normalize
+from scripts.run_backup import _SIDECARS
 from scripts.run_backup import main as backup_main
 from store import (
     SIDECAR_SUFFIXES,
@@ -158,8 +159,10 @@ def test_open_refuses_a_fifo_sidecar_without_blocking(tmp_path: Path, suffix: st
     raised a bare ``disk I/O error``. All three must now be the same refusal."""
     root = _seeded(tmp_path)
     side = _plant(root / _STORE, suffix, "fifo", tmp_path / "unused")
+    # The root goes on the child's sys.path by name: `-c` adds the working directory
+    # only when PYTHONSAFEPATH is unset (as `_run_isolated` records for the backup tests).
     code = (
-        "import sys\n"
+        f"import sys\nsys.path.insert(0, {str(_REPO_ROOT)!r})\n"
         "from pathlib import Path\n"
         "from store import EventStore, StoreSidecarError\n"
         "try:\n"
@@ -224,6 +227,15 @@ def test_a_live_writers_sidecars_are_accepted(tmp_path: Path) -> None:
             assert reader.count() == 13
 
 
+@pytest.mark.security
+def test_the_backup_cli_and_the_store_check_the_same_sidecars() -> None:
+    """Two implementations of one rule: the backup take reads the live store through
+    ``sqlite3.connect``, not ``EventStore.open``, so it keeps its own check. They must
+    not drift on which names they cover, which is how one copy stays fixed and the
+    other does not."""
+    assert set(_SIDECARS) == set(SIDECAR_SUFFIXES)
+
+
 # -- every CLI that opens the live store ----------------------------------------
 
 _CLIS = [
@@ -269,6 +281,9 @@ def test_every_cli_refuses_the_sidecar_instead_of_hanging_or_writing_through(
 
     Exit 1 is the "damage, page someone" code every one of these CLIs already uses for a
     store that will not open. It is what the hang used to turn into "skipped" at exit 0.
+    The backup CLI refuses through its own ``_sidecar_problem`` (same rule, and it names
+    every offending sidecar), the rest through ``EventStore.open``; both name the suffix
+    and say the store was not opened, which is what is asserted.
     """
     root = _seeded(tmp_path)
     log = root / "logs" / "auth.log"
@@ -288,7 +303,7 @@ def test_every_cli_refuses_the_sidecar_instead_of_hanging_or_writing_through(
 
     out = result.stdout + result.stderr
     assert result.returncode == 1, out[-600:]
-    assert f"{suffix} beside it that" in out, out[-600:]
+    assert suffix in out and "the store was not opened" in out, out[-600:]
     if cli == "sli":
         assert "StoreSidecarError" in out, out[-600:]
     assert _fingerprint(db) == db_before

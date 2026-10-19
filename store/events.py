@@ -412,7 +412,13 @@ def refuse_unsafe_sidecars(database: Path) -> None:
     size and content are not this check's business (``scripts/run_backup.py``
     refuses a non-empty ``-wal`` and ``-journal`` for its own reasons).
 
-    Why each rule, all measured through the CLIs before this existed:
+    ``scripts/run_backup.py`` keeps its own ``_sidecar_problem`` with the same
+    rule, because its take reads the live store through ``sqlite3.connect``
+    and never reaches this function; a security test pins that the two cover
+    the same names.
+
+    Why each rule, all measured through the CLIs before this check or the
+    backup CLI's own existed:
 
     * **Not a FIFO, socket or device.** SQLite's hot-journal probe opens and
       reads ``-journal`` on every open, WAL mode included, and a FIFO with no

@@ -36,7 +36,8 @@ class StoreSidecarError(StorePathError):
     SQLite opens ``-journal``, ``-wal`` and ``-shm`` *by name* beside the
     database, so whoever can create a name in the events directory chooses
     what the store's own open reads and writes. Measured through every CLI
-    that opens the live store, before this check existed: a FIFO
+    that opens the live store, before this check or the backup CLI's own
+    ``_sidecar_problem`` existed: a FIFO
     ``-journal`` hung the collector, the pipeline, retention, the backup take
     and the SLI reporter inside SQLite's open, and the four that hold a
     single-instance lock held it while blocked, so every later scheduled pass
@@ -50,9 +51,8 @@ class StoreSidecarError(StorePathError):
     A subclass of :class:`StorePathError` because it is the same refusal:
     raised before any file is opened, and every first-party handler catches
     :class:`StoreError`, so no caller changes. ``suffix`` and ``problem`` are
-    kept separately so a caller that reports rather than raises
-    (``scripts/run_backup.py``'s verifiers) can phrase the finding in its own
-    terms without parsing the message.
+    kept separately so a caller that reports rather than raises can phrase the
+    finding in its own terms without parsing the message.
     """
 
     def __init__(self, message: str, *, suffix: str, problem: str) -> None:

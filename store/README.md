@@ -86,11 +86,15 @@ create a name in `data/events/` chooses what the store's own open touches.
 `EventStore.open` therefore runs `refuse_unsafe_sidecars` before `sqlite3.connect`:
 each name must be absent, or a regular file with exactly one link. Size and content
 are not checked, because a live writer legitimately leaves a non-empty `-wal` and a
-`-shm` behind. `scripts/run_backup.py` runs the same check before its take, which
-reads the live store through `sqlite3.connect` rather than `EventStore.open`.
+`-shm` behind. `scripts/run_backup.py` keeps its own `_sidecar_problem` with the same
+rule, because its take reads the live store through `sqlite3.connect` rather than
+`EventStore.open`; it runs before the take and in both verifiers, and names every
+offending sidecar rather than the first. A security test pins that the two cover the
+same names.
 
 What happened before the check, measured through the collector, the pipeline,
-retention, the backup take, both backup verifiers and the SLI reporter. The SLI
+retention, the backup take, both backup verifiers and the SLI reporter, on the tree
+before either this check or the backup CLI's own (#255) existed. The SLI
 reporter's exit code reflects all of its objectives, so its rows below describe what
 happened to the files rather than an exit code.
 
