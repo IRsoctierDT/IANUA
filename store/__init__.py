@@ -48,6 +48,7 @@ from store.errors import (
     StoreError,
     StoreIntegrityError,
     StorePathError,
+    StoreSidecarError,
 )
 from store.events import (
     ALL,
@@ -90,6 +91,7 @@ __all__ = [
     "StoreError",
     "StoreIntegrityError",
     "StorePathError",
+    "StoreSidecarError",
     "StoredEvent",
     "canonical_json",
     "event_id",

@@ -34,6 +34,12 @@ Security considerations (AGENTS.md §3, §5):
 * **Lab-scoped data path.** The database lives under the gitignored
   ``data/events/`` root. A filename that escapes it is refused, not
   normalized (:class:`store.errors.StorePathError`).
+* **Nothing SQLite would open beside it is taken on trust.** The database
+  path and its ``-wal``, ``-journal`` and ``-shm`` are each ``lstat``-ed
+  before the connection exists, and a special file or a sidecar sharing its
+  inode is refused (:class:`store.errors.StoreSidecarError`), because SQLite
+  blocks on a FIFO and writes through a hard link
+  (:func:`store.paths.sidecar_problem`).
 * **Parameterized SQL only.** Every value reaches SQLite as a bound
   parameter; no statement is assembled from caller input. Asserted over this
   module's AST in ``tests/security/test_store_hardening.py``, at each
@@ -55,8 +61,10 @@ import functools
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,8 +78,9 @@ from store.errors import (
     StoreCorruptionError,
     StoreIntegrityError,
     StorePathError,
+    StoreSidecarError,
 )
-from store.paths import confine
+from store.paths import confine, kind_of, sidecar_problem
 from store.schema import (
     DDL,
     DIGEST_PREFIX,
@@ -399,6 +408,57 @@ def _narrow(path: Path, mode: int) -> None:
         pass
 
 
+def _refuse_unsafe_files(path: Path) -> None:
+    """Refuse a database path, or a sidecar beside it, that SQLite must not open.
+
+    The database first, with one ``lstat``: absent is a fresh store, a regular
+    file is the store, and anything else is refused by kind. Measured through
+    :meth:`EventStore.open` before the check: a FIFO at the database path
+    raised a bare ``OperationalError`` ("disk I/O error") and a directory
+    raised another ("unable to open database file"), neither naming what was
+    wrong. :func:`confine` has already refused a symlink here; this check sees
+    one only in a race and refuses it with the rest.
+
+    **A second link to the database is not refused**, deliberately and unlike a
+    sidecar's. A hard-link copy of the tree (``cp -al``, ``rsync
+    --link-dest``, rsnapshot) gives the live database a second name for as
+    long as the copy exists, and refusing it would fail every scheduled pass
+    until someone noticed. The cost, measured rather than assumed: a 0-byte
+    file outside the root, hard-linked in at the database path before the
+    first open, was **initialised in place** (0 -> 61440 bytes, mode 0o644 ->
+    0o600), because to SQLite an empty file is a new database. Planting that
+    needs write access to ``data/events/``, which is 0o700, and whatever
+    shares the inode then holds the store — that is the trade.
+
+    Then every sidecar, through :func:`store.paths.sidecar_problem`, which
+    carries the measurements. :class:`StoreSidecarError` for those, because
+    their remedy (``docs/RESTORE.md``, "cannot be opened safely") differs from
+    a database path that is itself wrong.
+
+    Raises:
+        StorePathError: for a database path that exists and is not a regular
+            file, or that cannot be stated for a reason other than absence.
+        StoreSidecarError: for any sidecar :func:`sidecar_problem` refuses.
+    """
+    what = f"the event store {path}"
+    try:
+        found: os.stat_result | None = os.lstat(path)
+    except FileNotFoundError:
+        found = None
+    except OSError as exc:
+        raise StorePathError(
+            f"{what} cannot be checked ({type(exc).__name__}), so it was not opened"
+        ) from exc
+    if found is not None and not stat.S_ISREG(found.st_mode):
+        raise StorePathError(
+            f"{what} is {kind_of(found.st_mode)}, not a regular file; SQLite would open "
+            "it as the database, so the store was not opened"
+        )
+    reason = sidecar_problem(path, what=what)
+    if reason is not None:
+        raise StoreSidecarError(reason)
+
+
 def _finite(value: object, what: str) -> float:
     """Convert ``value`` to a float once and refuse a non-finite result.
 
@@ -458,9 +518,13 @@ class EventStore:
         """Open (creating if absent) the store under ``root/data/events/``.
 
         Raises :class:`StorePathError` for a filename that is not a plain
-        filename or that resolves outside the events directory, and
-        :class:`SchemaVersionError` if the database was written by a different
-        schema version.
+        filename or that resolves outside the events directory, or for a
+        database path that exists and is not a regular file;
+        :class:`StoreSidecarError` (a :class:`StorePathError`) for a ``-wal``,
+        ``-journal`` or ``-shm`` beside it that SQLite must not be handed
+        (:func:`store.paths.sidecar_problem`) — both before any connection
+        exists; and :class:`SchemaVersionError` if the database was written by
+        a different schema version.
         """
         path = cls._resolve(root, filename)
         # Owner-only, matching the cursor, the offsets and the audit log. The
@@ -476,6 +540,12 @@ class EventStore:
         # that already exists, so the mode is also set explicitly. Same reason
         # `pipeline/cursor.py` chmods rather than relying on a creation mode.
         _narrow(path.parent, _DIR_MODE)
+        # Immediately before the connect and outside the `try`: there is no
+        # connection to close yet, and `connect` touches no sidecar, so the
+        # first one SQLite opens is at the `journal_mode` PRAGMA below. The window
+        # between this check and that PRAGMA is the one `sidecar_problem`
+        # names; the directory was narrowed to 0o700 just above.
+        _refuse_unsafe_files(path)
         conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
         try:

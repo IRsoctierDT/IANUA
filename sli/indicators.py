@@ -55,6 +55,7 @@ from store import (
     EventStore,
     Query,
     StoreError,
+    StorePathError,
 )
 
 #: The hash chains under the lab-data root, relative to it.
@@ -325,7 +326,10 @@ def measure_store_intact(root: Path, now: float) -> Measurement:
     was read and it said the evidence is damaged; that is a measured breach and
     the most actionable thing this package can report. ``None`` is reserved for
     a store that is not there or will not open, which is a different
-    conversation with the operator.
+    conversation with the operator — including one ``EventStore.open`` refuses
+    with a :class:`store.StorePathError` (a symlinked component, a special
+    file at the database path, or a sidecar SQLite must not be handed), whose
+    database was never read and so cannot have been found damaged.
 
     Cost is why this is affordable at the documented ``*/5`` cadence:
     ``quick_check`` is roughly linear at 1.1-1.5 ms/MiB (24 ms at 16.7 MiB,
@@ -342,6 +346,16 @@ def measure_store_intact(root: Path, now: float) -> Measurement:
     try:
         with EventStore.open(root) as store:
             store.verify_integrity()
+    except StorePathError as exc:
+        # Before `StoreError`, which it subclasses: a store `open` refused is a
+        # store that "will not open", the case the docstring reserves `None`
+        # for. Measured with the sidecar refusal in `store/` and without this
+        # clause: a hard-linked `-shm` or a directory `-wal` beside an intact
+        # store read BREACHED 0.0, "the store's database is damaged", sending
+        # an operator to the backups for a file the refusal had just
+        # protected; and a symlinked `data/events`, which `confine` refused
+        # long before the sidecar check existed, read the same.
+        return Measurement(None, f"the store could not be opened ({type(exc).__name__}): {exc}")
     except StoreError as exc:
         return Measurement(0.0, f"the store's database is damaged: {exc}")
     except OSError as exc:
@@ -389,6 +403,10 @@ def measure_store_readable(root: Path, now: float) -> Measurement:
         with EventStore.open(root) as store:
             newest = store.query(Query(limit=READABILITY_SAMPLE))
             oldest = store.query(Query(limit=READABILITY_SAMPLE, newest_first=False))
+    except StorePathError as exc:
+        # Unmeasurable, not unreadable, for the reason `measure_store_intact`
+        # gives: nothing was read, so nothing can be graded.
+        return Measurement(None, f"the store could not be opened ({type(exc).__name__}): {exc}")
     except StoreError as exc:
         return Measurement(0.0, f"the store cannot be read: {type(exc).__name__}: {exc}")
     except OSError as exc:

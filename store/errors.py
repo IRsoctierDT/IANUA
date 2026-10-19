@@ -30,6 +30,27 @@ class StorePathError(StoreError):
     """
 
 
+class StoreSidecarError(StorePathError):
+    """A file beside the database makes it unsafe to hand to SQLite.
+
+    SQLite opens a ``-wal``, ``-journal`` and ``-shm`` with every database, so
+    one that is a FIFO, a socket, a directory, a symlink, or a regular file
+    sharing its inode with another name is refused before the connection
+    exists — see :func:`store.paths.sidecar_problem` for what each did when it
+    was not: a hang that held three CLIs' locks for good, and a file outside
+    the root overwritten with WAL index at exit 0.
+
+    A subclass of :class:`StorePathError`, deliberately, and for the reason
+    :class:`StoreCorruptionError` subclasses its parent: every caller already
+    catches :class:`StoreError`, and ``sli/indicators.py`` treats a path the
+    store will not open as unmeasurable rather than damaged, so subclassing
+    changes no handler while the type name says which file to look at. The
+    remedy differs from a symlinked ``data/``: nothing was opened, so the
+    database is as it was found, and the runbook row is ``docs/RESTORE.md``'s
+    "cannot be opened safely".
+    """
+
+
 class SchemaVersionError(StoreError):
     """The database was written by a different schema version.
 

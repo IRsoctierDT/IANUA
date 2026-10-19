@@ -65,6 +65,11 @@ table under "Verifying a restore" says what each means. In the live root, never 
 **regular** `-wal`, `-journal` or `-shm` to clear it: a `-wal` holds committed events. A special
 file at a sidecar name holds none; move it aside as its row says.
 
+The collector, the pipeline and retention refuse the same sidecars at exit `1`, with the same
+sentence, because the check lives in `EventStore.open`; follow the take's remedy in that row.
+`scripts/report_sli.py` reads its five store indicators `UNKNOWN`, not `BREACHED`, because the
+store was not read. `--verify-restore` names a sidecar on the live store with its own check, first.
+
 Every mode — a take, `--verify` and `--verify-restore` — refuses at exit `2`, before it writes
 anything, when `data/`, `data/events` or `data/events/audit.log` is a symlink, because its first
 write is the gate decision in that chain. A `data/events` this account cannot search is exit `1`,

@@ -34,16 +34,36 @@ Security considerations (AGENTS.md §3, §5):
 * **The caller's error type is raised**, so each package keeps its own
   taxonomy and a caller catching ``CursorPathError`` does not have to know
   this module exists.
+
+The SQLite sidecar check (:func:`sidecar_problem`) lives here for the same
+reason, one layer down: it is a check on *names beside a path*, it imports
+nothing first-party, and it had one copy in ``scripts/run_backup.py`` while
+the four scheduled entry points that open the live store ran with none.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 from pathlib import Path
 
 #: One path component: no separator, no traversal, no leading dot. Shared by
 #: every caller so a filename safe for one is safe for all.
 SAFE_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+#: The files SQLite opens beside a database, and reads or writes through.
+SIDECARS = ("-wal", "-journal", "-shm")
+
+#: How a file that is not a regular one is named in a finding.
+_KINDS = (
+    (stat.S_ISLNK, "a symlink"),
+    (stat.S_ISDIR, "a directory"),
+    (stat.S_ISFIFO, "a FIFO"),
+    (stat.S_ISSOCK, "a socket"),
+    (stat.S_ISCHR, "a character device"),
+    (stat.S_ISBLK, "a block device"),
+)
 
 
 def confine(
@@ -236,3 +256,108 @@ def validated_root(root: Path, *, error: type[Exception], what: str = "lab-data 
             'unset is exactly "/"'
         )
     return resolved
+
+
+def kind_of(mode: int) -> str:
+    """How a file of ``mode`` that is not a regular file is named in a finding.
+
+    ``"a FIFO"``, ``"a symlink"`` and so on, or ``"unrecognised"`` for a type
+    the table does not name. One table, shared by :func:`sidecar_problem` and
+    by ``EventStore.open``'s check of the database file itself, so the two
+    cannot describe one file type two ways.
+    """
+    return next((name for test, name in _KINDS if test(mode)), "unrecognised")
+
+
+def sidecar_problem(db: Path, *, what: str) -> str | None:
+    """Why a file beside ``db`` makes it unsafe to hand to SQLite, or ``None``.
+
+    SQLite opens every sidecar with the database: it checkpoints a ``-wal``,
+    replays a ``-journal``, and truncates and rewrites a ``-shm`` as its WAL
+    index. Each must therefore be absent or a regular file with a single link.
+    Measured in ``scripts/run_backup.py``, found by independent review:
+
+    - a FIFO ``-journal`` hung both verifiers, and a plain take, inside the
+      open while they held the backup lock, so every later pass skipped at
+      exit 0; a FIFO ``-wal`` was deleted;
+    - a symlinked, FIFO or directory ``-shm`` replaced the report with a bare
+      SQLite error and left a new ``-wal`` in the tree under inspection;
+    - a ``-shm`` **hard-linked** to another file had that file overwritten
+      with 32 KiB of WAL index: the backup's own manifest, and the live
+      store, were each destroyed under a run that exited 0 "verified".
+
+    And measured through ``EventStore.open`` on the live store, which had no
+    check at all, so every scheduled entry point that opens it — the
+    collector, the pipeline, retention and ``scripts/report_sli.py`` — carried
+    each of these (uid 0, Python 3.11.17, SQLite 3.45.1):
+
+    - a FIFO ``-journal`` blocked the open in ``open(2)`` for good, and three
+      of the four hold their single-instance lock across it, so every later
+      scheduled pass printed "skipped" at exit 0 for as long as the FIFO
+      stayed — a collector that never collects again, reading as idle;
+    - a ``-shm`` hard-linked to a file outside the root left that file
+      65536 -> 32768 bytes of WAL index, a new sha256 and mode 0o644 -> 0o600,
+      at exit 0 — and SQLite unlinked the ``-shm`` name on close, so nothing
+      was left in the tree to show it had happened. A hard-linked ``-wal`` was
+      chmodded the same way through an open alone, and the collector, which
+      writes, overwrote it with WAL frames;
+    - a symlinked or directory ``-wal``, ``-journal`` or ``-shm`` raised a bare
+      ``OperationalError`` ("unable to open database file", "disk I/O
+      error"), which the collector reported *against the log source* it
+      happened to be reading. A directory ``-shm`` opened without error for a
+      reader and left a new ``-wal`` behind.
+
+    A hard link is a regular file, which is why the link count is checked
+    with the type, and why this is one ``lstat`` per name. It is a check on
+    the path, so a sidecar swapped in between it and the open is not caught:
+    that needs write access to the directory holding the database, which the
+    store keeps at 0o700.
+
+    Every offending sidecar is named, with what is wrong with it, because the
+    remedies differ: a FIFO or a symlink is never benign, while a second link
+    can come from a hard-link copy of the tree (``cp -al``, ``rsync
+    --link-dest``) and the size says whether a ``-wal`` holds frames (found by
+    review: the first version named only the first sidecar, and only as "not a
+    regular file with a single link").
+
+    Args:
+        db: The database path. Only the names beside it are examined; the
+            file itself is the caller's to check, because what is safe there
+            differs — a second link to a database is a snapshot farm, not a
+            hazard, while a second link to a ``-shm`` is a file SQLite will
+            overwrite.
+        what: How the database is named in the reason, e.g.
+            ``"the event store /srv/ianua/data/events/events.sqlite3"``.
+
+    Returns:
+        ``None`` when every sidecar is absent or a regular file with one link,
+        otherwise one sentence naming each one that is not. A reason, not a
+        raise, so a caller that reports rather than refuses (``--verify``) can
+        keep the rest of its report.
+    """
+    reasons: list[str] = []
+    for suffix in SIDECARS:
+        side = db.with_name(db.name + suffix)
+        try:
+            found = os.lstat(side)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            # Not walkable is not safe: an error other than "absent" is a
+            # sidecar nothing here could look at, and treating it as absent
+            # would hand SQLite a name this check never saw.
+            reasons.append(f"its {suffix} cannot be checked ({type(exc).__name__})")
+            continue
+        if not stat.S_ISREG(found.st_mode):
+            reasons.append(f"its {suffix} is {kind_of(found.st_mode)}, not a regular file")
+        elif found.st_nlink != 1:
+            reasons.append(
+                f"its {suffix} ({found.st_size} bytes) has {found.st_nlink} links: another "
+                "name shares the file, and SQLite would write through both"
+            )
+    if not reasons:
+        return None
+    return (
+        f"{what} cannot be opened safely: {'; '.join(reasons)}. SQLite opens every "
+        "sidecar with the store, so the store was not opened"
+    )
