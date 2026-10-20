@@ -1143,7 +1143,10 @@ class AuditLogger:
             for line_no, line in enumerate(lines, start=1):
                 where = f"{segment.name}:{line_no}"
                 if line_no == torn_at:
-                    return _report(f"malformed entry at {where} (unterminated line)", "unchecked")
+                    return (
+                        _report(f"malformed entry at {where} (unterminated line)", "unchecked"),
+                        segment_texts,
+                    )
                 if not line.strip():
                     continue
                 try:
@@ -1165,16 +1168,19 @@ class AuditLogger:
                     # Corruption is tampering until proven otherwise: locate it,
                     # fail closed, never raise out of verification. The head
                     # signature is not consulted past a break ("unchecked").
-                    return _report(f"malformed entry at {where}", "unchecked")
+                    return _report(f"malformed entry at {where}", "unchecked"), segment_texts
                 if seq != expected_seq or prev != expected_prev:
                     return _report(
                         f"chain break at {where}: expected seq {expected_seq} "
                         f"continuing from {expected_prev[:12]}…, found seq {seq} "
                         f"with prev {prev[:12]}…",
                         "unchecked",
-                    )
+                    ), segment_texts
                 if recomputed != stored_hash:
-                    return _report(f"entry hash mismatch at {where} (seq {seq})", "unchecked")
+                    return (
+                        _report(f"entry hash mismatch at {where} (seq {seq})", "unchecked"),
+                        segment_texts,
+                    )
                 entries += 1
                 head_seq, head_hash = seq, stored_hash
                 expected_prev = stored_hash
