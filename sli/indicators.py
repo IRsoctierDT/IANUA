@@ -472,6 +472,20 @@ def measure_store_readable(root: Path, now: float) -> Measurement:
     one grade. A ``StoreError`` from either query is still ``0.0``: a query
     that raises is exactly what this measures.
 
+    **The objective's own headline failure had the same leak, and the same
+    fix.** A row that hashes to its ``event_id`` and has a field past its
+    bound (the over-long ``message`` this objective's rationale cites) made
+    ``query`` raise the reader's ``MalformedProjectionError``. That is an
+    ``IngestError``, so this ``except`` missed it, and the report read
+    ``unknown ... the probe raised MalformedProjectionError``: "could not
+    measure" for the one failure this indicator exists to measure. ``store/``
+    now raises it as :class:`store.StoreIntegrityError` chained from the
+    reader's error, so it reads ``0.0`` with the reader's bounded sentence
+    naming the field. It is a ``StoreError`` from a query rather than from the
+    open, so it lands on the ``0.0`` branch the paragraph above keeps. Fixed in
+    ``store/`` and not here, for the reason given for the ``DatabaseError``
+    leak: a monitor catching a driver's or a reader's type is the wrong shape.
+
     **The sample is still a sample, and ``store-intact`` is what covers it.**
     Measured on a 1200-event / 525-page store: 116 of 524 single-page losses
     leave this probe reading ``1.0`` and the sentence "read 50 newest and 50

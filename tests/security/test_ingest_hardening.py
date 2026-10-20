@@ -2585,6 +2585,24 @@ def test_the_unrenderable_probe_is_actually_unrenderable_here() -> None:
         float(_UNRENDERABLE_INT)
 
 
+@pytest.mark.security
+def test_from_dict_refuses_a_timestamp_float_cannot_hold_with_its_documented_error() -> None:
+    """The reader's one documented refusal, for the number ``float`` cannot hold.
+
+    ``_coerce.epoch`` guarded this conversion on the parse side. The reader's
+    ``_optional_epoch`` did not, so ``from_dict`` raised ``OverflowError``
+    instead of ``MalformedProjectionError``. A hash-valid stored row carrying
+    it escaped ``store``'s read path as that error, and ``sli`` graded it "the
+    probe raised OverflowError". The same probe as the parse-side tests above,
+    so the two cannot come to disagree about what "too large" means.
+    """
+    payload = normalize("sshd: session opened for user root").to_dict()
+    payload["timestamp"] = _UNRENDERABLE_INT
+    with pytest.raises(MalformedProjectionError, match="too large") as raised:
+        NormalizedEvent.from_dict(payload)
+    assert isinstance(raised.value.__cause__, OverflowError)
+
+
 #: ``(id, record, raised_before_the_fix)`` for every shape by which an
 #: unrenderable number can reach this layer. The four JSON rows are the only
 #: ones a *collector* can deliver, since it passes log lines as ``str``, and

@@ -41,7 +41,8 @@ from typing import Any
 
 import pytest
 
-from agents.policies.audit import AuditLogger, signing_key_from_env
+from agents.policies.audit import AuditLogger, signer_from_env, signing_key_from_env
+from agents.policies.signing import generate_ed25519_keypair
 from ingest import normalize
 from scripts.run_backup import (
     ATTESTATION_FIELDS,
@@ -1062,7 +1063,7 @@ def _rotated_chain(root: Path) -> None:
         root / _PIPELINE_CHAIN,
         max_bytes=600,
         retain_segments=1,
-        signing_key=signing_key_from_env(),
+        signer=signer_from_env(),
     )
     for index in range(12):
         chain.record(
@@ -1672,3 +1673,95 @@ def test_the_gate_signature_is_the_one_this_command_writes(tmp_path: Path) -> No
         if "backups" not in path.parts
     )
     assert written == [str(GATE_SIGNATURE)], written
+
+
+# --- an Ed25519 deployment -------------------------------------------------------------
+#
+# Every writer was HMAC-only until signer_from_env, so a deployment configured for
+# Ed25519 wrote unsigned heads and this gate could never pass there: its own gate
+# decision appended an unsigned entry, and a public-key verifier read every chain
+# as broken. The node that runs --verify-restore is the one being promoted, and it
+# holds the private key to write at all.
+
+
+def _ed25519(monkeypatch: pytest.MonkeyPatch) -> tuple[str, str]:
+    """A throwaway Ed25519 pair for this test, set as the node's only key material."""
+    private, public = (half.hex() for half in generate_ed25519_keypair())
+    monkeypatch.setenv("AUDIT_ED25519_PRIVATE_KEY", private)
+    monkeypatch.setenv("AUDIT_ED25519_PUBLIC_KEY", public)
+    return private, public
+
+
+@pytest.mark.security
+def test_an_ed25519_signed_restore_verifies(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deployment the gap broke, end to end: Ed25519 keys and no HMAC key.
+
+    Red before signer_from_env: the backup's chains were written unsigned, so
+    the manifest recorded every one as broken under the public key, and the
+    gate's own unsigned append made the restored events chain ``stale``.
+    """
+    _ed25519(monkeypatch)
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    _rotated_chain(source)
+    backup = _take(source)
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    for chain in ("data/events/audit.log", "data/pipeline/audit.log"):
+        recorded = manifest["chains"][chain]
+        assert recorded["signature"] == "valid" and recorded["intact"], (chain, recorded)
+    sidecar = json.loads((backup / _EVENTS_SIGNATURE).read_text(encoding="utf-8"))
+    assert sidecar["algo"] == "ed25519", "premise: the backup was signed with Ed25519"
+    _restore(backup, live)
+
+    assert _verify_restore(live, backup) == 0
+    out = capsys.readouterr().out
+    assert "restore verified" in out, out
+
+
+@pytest.mark.security
+def test_a_forged_signature_is_refused_in_an_ed25519_deployment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control direction: Ed25519 signatures are checked as HMAC ones are."""
+    _ed25519(monkeypatch)
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    _rotated_chain(source)
+    backup = _take(source)
+    _restore(backup, live)
+    _forge_signature(live / _PIPELINE_SIGNATURE)
+
+    assert _verify_restore(live, backup) == 1
+    out = capsys.readouterr().out
+    assert "data/pipeline/audit.log: chain does not verify: head signature invalid" in out, out
+    assert f"ALTERED: {_PIPELINE_SIGNATURE}" in out, out
+
+
+@pytest.mark.security
+def test_a_verify_only_node_refuses_verify_restore_before_writing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A node with the public key alone cannot sign the gate decision, so it does not write it.
+
+    Measured before this refusal: the pass appended an unsigned entry to the
+    restored events chain and then reported that chain ``stale``, a red verdict
+    it caused itself, in the chain it was asked to inspect. Now it refuses first,
+    names the variable to set, and leaves the restored chain byte-identical.
+    """
+    _ed25519(monkeypatch)
+    source, live = tmp_path / "source", tmp_path / "live"
+    _seed(source)
+    backup = _take(source)
+    _restore(backup, live)
+    monkeypatch.delenv("AUDIT_ED25519_PRIVATE_KEY")
+    chain = live / "data" / "events" / "audit.log"
+    before = (chain.read_bytes(), (live / _EVENTS_SIGNATURE).read_bytes())
+
+    assert _verify_restore(live, backup) == 1
+    err = capsys.readouterr().err
+    assert "cannot sign (no AUDIT_ED25519_PRIVATE_KEY)" in err, err
+    assert (chain.read_bytes(), (live / _EVENTS_SIGNATURE).read_bytes()) == before, (
+        "the refusal must come before the gate decision is written"
+    )

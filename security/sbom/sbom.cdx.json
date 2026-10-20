@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:22635e36-0f6d-5ba1-8707-555c016c9b02",
+  "serialNumber": "urn:uuid:d6a99b28-fb6a-52e0-ba2e-2358df308dee",
   "version": 1,
   "metadata": {
     "timestamp": "2026-10-13T17:12:21Z",
@@ -252,13 +252,6 @@
       "purl": "pkg:pypi/httpcore@1.0.9"
     },
     {
-      "bom-ref": "pkg:pypi/httptools@0.8.0",
-      "name": "httptools",
-      "type": "library",
-      "version": "0.8.0",
-      "purl": "pkg:pypi/httptools@0.8.0"
-    },
-    {
       "bom-ref": "pkg:pypi/httpx@0.28.1",
       "name": "httpx",
       "type": "library",
@@ -280,11 +273,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.168.5",
+      "bom-ref": "pkg:pypi/hypothesis@6.170.0",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.168.5",
-      "purl": "pkg:pypi/hypothesis@6.168.5"
+      "version": "6.170.0",
+      "purl": "pkg:pypi/hypothesis@6.170.0"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -623,11 +616,11 @@
       "purl": "pkg:pypi/portalocker@3.2.0"
     },
     {
-      "bom-ref": "pkg:pypi/pre-commit@4.6.2",
+      "bom-ref": "pkg:pypi/pre-commit@4.7.0",
       "name": "pre-commit",
       "type": "library",
-      "version": "4.6.2",
-      "purl": "pkg:pypi/pre-commit@4.6.2"
+      "version": "4.7.0",
+      "purl": "pkg:pypi/pre-commit@4.7.0"
     },
     {
       "bom-ref": "pkg:pypi/protobuf@7.35.1",
@@ -784,11 +777,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.17.0",
+      "bom-ref": "pkg:pypi/ruff@0.17.1",
       "name": "ruff",
       "type": "library",
-      "version": "0.17.0",
-      "purl": "pkg:pypi/ruff@0.17.0"
+      "version": "0.17.1",
+      "purl": "pkg:pypi/ruff@0.17.1"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
@@ -861,11 +854,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.65.0",
+      "bom-ref": "pkg:pypi/streamlit@1.66.0",
       "name": "streamlit",
       "type": "library",
-      "version": "1.65.0",
-      "purl": "pkg:pypi/streamlit@1.65.0"
+      "version": "1.66.0",
+      "purl": "pkg:pypi/streamlit@1.66.0"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
@@ -887,13 +880,6 @@
       "type": "library",
       "version": "0.22.2",
       "purl": "pkg:pypi/tokenizers@0.22.2"
-    },
-    {
-      "bom-ref": "pkg:pypi/toml@0.10.2",
-      "name": "toml",
-      "type": "library",
-      "version": "0.10.2",
-      "purl": "pkg:pypi/toml@0.10.2"
     },
     {
       "bom-ref": "pkg:pypi/tomli-w@1.2.0",

@@ -177,7 +177,7 @@ from agents.policies.audit import (  # noqa: E402
     AuditFieldError,
     AuditLogger,
     escape_delimiter,
-    signing_key_from_env,
+    signer_from_env,
 )
 from agents.policies.bundle import (  # noqa: E402
     DEFAULT_BUNDLE_PATH,
@@ -761,9 +761,7 @@ def _run(
         label = f"{ACTION_NAME}:{'apply' if args.apply else 'dry-run'}"
 
     try:
-        audit = AuditLogger(
-            args.root / LOCK_SUBDIR / AUDIT_FILE, signing_key=signing_key_from_env()
-        )
+        audit = AuditLogger(args.root / LOCK_SUBDIR / AUDIT_FILE, signer=signer_from_env())
     except (OSError, ValueError) as exc:
         print(f"error: audit log unusable, refusing to run: {exc}", file=sys.stderr)
         return 1

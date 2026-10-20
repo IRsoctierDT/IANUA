@@ -204,6 +204,36 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **`store-readable` graded its own headline failure as unmeasurable.** A stored row that
+  hashes to its `event_id` and has a field past its bound (the over-long `message` the
+  objective's rationale cites) made `query` raise the reader's `MalformedProjectionError`,
+  an `IngestError` rather than a `StoreError`, so the probe read `unknown … the probe
+  raised MalformedProjectionError` and `detection-backlog` the same. `_rebuild` now raises
+  it as `StoreIntegrityError` chained from the reader's error, so `store-readable` reads
+  `breached` with the field named, the query-failure branch #258 kept at `0.0`. Two sibling
+  escapes are closed with it (an integer timestamp past float range, and JSON nested past
+  the decoder), and the reader's sentence is bounded at 200 characters because two of its
+  shapes quote the row.
+- **Every chain writer signs with Ed25519 when that is the configured scheme.** All five
+  writers (`run_backup`, `run_retention`, `run_pipeline`, `run_collector`,
+  `compliance.evidence`) resolved the HMAC-only `signing_key_from_env`, so an Ed25519
+  deployment wrote every chain head unsigned and its public-key verifiers reported every
+  chain broken, despite `.env.example` telling operators to "sign with the private key".
+  The new `agents.policies.audit.signer_from_env` has `verifier_from_env`'s precedence (HMAC,
+  then `AUDIT_ED25519_PRIVATE_KEY`). `verifier_from_env` now also verifies with the private
+  key on a node that holds only that. A pair that is not one pair is refused on both sides,
+  and every unusable key raises the `ValueError` the writers already turn into "refusing to
+  run". `--verify-restore` on a node holding only the public key now refuses before writing,
+  instead of leaving the restored chain's head unsigned. `compliance.evidence.record_run`
+  resolves the signer before appending any evidence line, so a refused run leaves no
+  unchained record for `score_history` to count, and the dashboard reports a refused key on
+  both the run and the evidence trail instead of a traceback (both found by review). Measured
+  red before on `main`: 19 of the 22 new cases in `tests/security/test_audit_writer_signer.py`,
+  including every writer end to end and every writer's refusal.
+- **A symlink-loop corpus root reads "cannot be resolved" on Python 3.13 as on 3.11 and
+  3.12.** On 3.13, `Path.resolve()` no longer raises on a loop and `is_dir()` swallows the
+  `ELOOP`, so the root read "not a directory". The root now asks `stat()` for `ELOOP`
+  directly.
 - **The egress allow-list's mapped-address refusals no longer depend on the CPython patch
   release.** `tests/security/test_egress_allowlist.py` was red on CPython 3.12.3, Ubuntu
   24.04's system Python and inside `requires-python`, so a contributor running §7 locally
@@ -225,6 +255,23 @@ All notable changes to this project. Versions correspond to git tags.
   and the lab-host bullet) and DESIGN.md boundary 15 carried the same measured claim and
   now say where it holds. The listener's future bind refusal is told it owes the same
   unwrap.
+- **The SLI reporter called a store that would not open "damaged".** `store-intact`
+  graded every `StoreError` as `0.0` with "the store's database is damaged", so since #257
+  a FIFO `-journal` read "the store's database is damaged: … has a -journal beside it that
+  is not a regular file (a FIFO)". The detail named the real cause, but the label pointed
+  at the restore branch, and a restore replaces the SOC's memory with an older copy of a
+  database nothing had touched. The same mislabel already applied to a symlinked `data/`
+  (`StorePathError`), a schema version this build does not speak, and a store whose
+  version row was removed (`SchemaVersionError`). Measured on `9ff3604`, all four read
+  `breached` on `store-intact` and `store-readable` alike. They now read `unknown` with
+  "the store could not be opened" and the store's own reason. Damage SQLite reports
+  itself (`StoreIntegrityError`, so `StoreCorruptionError` included) is still `0.0`
+  whether `open`, a query or the quick check meets it. `UNKNOWN` is not a pass, so
+  `scripts/report_sli.py` still exits `1` in every case. The damage verdict is now an
+  allow-list of one class: a `StoreError` added later reads `unknown` until someone
+  decides it means damage. `tests/security/test_sli_hardening.py` pins the four refusals
+  in-process, the FIFO through the CLI in a subprocess, and damage at each of its three
+  stages. Six planted regressions each turn at least one of those tests red.
 - **`--verify-restore` failed every correct restore whenever `AUDIT_HMAC_KEY` was set.**
   `_is_append_only` granted growth to every file whose name starts with a declared stream's,
   so the head signature `audit.log.sig` was prefix-compared. But every signed `record()`

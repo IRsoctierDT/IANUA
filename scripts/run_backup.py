@@ -134,7 +134,7 @@ from agents.policies.audit import (  # noqa: E402
     AuditFieldError,
     AuditLogger,
     escape_delimiter,
-    signing_key_from_env,
+    signer_from_env,
     verifier_from_env,
 )
 from agents.policies.bundle import (  # noqa: E402
@@ -1315,8 +1315,8 @@ def _verify_chains(root: Path, *, skip: dict[Path, str] | None = None) -> dict[s
     # Ed25519 deployment (the scheme whose point is that a verifier holds only
     # the public key) no signer was configured, the head signature came back
     # ``unsigned``, and a stale or forged one was recorded here as ``intact``.
-    # The writer below keeps ``signing_key_from_env``, because a verifier
-    # cannot sign.
+    # The writer in ``_run`` resolves ``signer_from_env`` instead, because a
+    # verifier cannot sign; the two share one precedence.
     chains: dict[str, object] = {}
     verifier = verifier_from_env()
     for relative in CHAIN_FILES:
@@ -2799,7 +2799,22 @@ def _run(
         return 1
 
     try:
-        audit = AuditLogger(root / AUDIT_SUBDIR / AUDIT_FILE, signing_key=signing_key_from_env())
+        signer = signer_from_env()
+        if mode == "verify-restore" and signer is None and verifier_from_env() is not None:
+            # A verify-only node (AUDIT_ED25519_PUBLIC_KEY alone). The gate
+            # decision below is appended to the restored events chain before
+            # anything is verified, and this node cannot sign it: the restored
+            # head would be left unsigned and then reported stale, a red verdict
+            # this pass caused, written into the chain it was asked to inspect.
+            # Refused before that write instead.
+            raise ValueError(
+                "this node can verify Ed25519 signatures (AUDIT_ED25519_PUBLIC_KEY) but cannot "
+                "sign (no AUDIT_ED25519_PRIVATE_KEY). --verify-restore records its gate "
+                f"decision in {GATE_CHAIN} first, which would leave the restored chain's head "
+                "unsigned. Run it where the private key is set (the node being promoted needs "
+                "it to write anyway), or check the chains read-only with scripts.audit_verify"
+            )
+        audit = AuditLogger(root / AUDIT_SUBDIR / AUDIT_FILE, signer=signer)
     except (OSError, ValueError, MemoryError, RecursionError) as exc:
         print(
             f"error: audit log unusable, refusing to run: {_printable(str(exc))}", file=sys.stderr

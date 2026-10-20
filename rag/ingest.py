@@ -11,6 +11,7 @@ are abstracted behind protocols so the default build performs NO network egress.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from collections.abc import Iterable, Sequence
@@ -59,6 +60,23 @@ def _corpus_relative(root: Path, entry: object) -> str:
     return name if len(name) <= 200 else name[:200] + "..."
 
 
+def _is_symlink_loop(path: Path) -> bool:
+    """Does ``path`` fail to resolve because of a symlink loop?
+
+    Asked directly, because whether ``Path.resolve()`` raises on a loop depends
+    on the interpreter. Measured: 3.11.17 and 3.12.3 raise ``RuntimeError``
+    ("Symlink loop"), while 3.13.16 returns the path unchanged and ``is_dir()``
+    then reports ``False`` with the ``ELOOP`` swallowed. ``stat()`` raises
+    ``ELOOP`` on every version. Anything else (a missing path, a plain file)
+    is not a loop and keeps its own message.
+    """
+    try:
+        path.stat()
+    except OSError as exc:
+        return exc.errno == errno.ELOOP
+    return False
+
+
 def discover_documents(corpus_root: Path) -> list[Path]:
     """List allow-listed files under a trusted corpus root.
 
@@ -82,6 +100,10 @@ def discover_documents(corpus_root: Path) -> list[Path]:
         is_dir = root.is_dir()
     except (OSError, RuntimeError) as exc:
         raise ValidationError(f"corpus root cannot be resolved: {corpus_root!r}") from exc
+    if not is_dir and _is_symlink_loop(root):
+        # 3.13 resolves a loop without raising (3.11 and 3.12 raise RuntimeError),
+        # and is_dir() swallows the ELOOP, so the loop read "not a directory".
+        raise ValidationError(f"corpus root cannot be resolved: {corpus_root!r}")
     if not is_dir:
         raise ValidationError(f"corpus root is not a directory: {corpus_root!r}")
     found: list[Path] = []

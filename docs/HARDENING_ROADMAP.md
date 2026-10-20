@@ -134,6 +134,16 @@ the optional `[crypto]` extra (`cryptography`), lazy-imported so the core audit 
 hard crypto dependency; keys come from `AUDIT_ED25519_PRIVATE_KEY` / `AUDIT_ED25519_PUBLIC_KEY`.
 Covered by `tests/security/test_ed25519_signing.py`.
 
+**Correction: no writer signed with Ed25519 until `signer_from_env`.** The paragraph above
+described the signer classes, and every chain writer (`run_backup`, `run_retention`,
+`run_pipeline`, `run_collector` and `compliance.evidence`) still resolved the HMAC-only
+`signing_key_from_env`. So an Ed25519 deployment wrote unsigned heads that its public-key
+verifiers reported broken. Writers now resolve `agents.policies.audit.signer_from_env`, with
+`verifier_from_env`'s precedence: HMAC, then the Ed25519 private key. A node holding only the
+private key also verifies with it, and a mismatched pair is refused on both sides. Covered by
+`tests/security/test_audit_writer_signer.py`, including each writer end to end, plus an AST
+guard that no production `AuditLogger` call passes the HMAC-only `signing_key=`.
+
 **Remaining (optional).** Nothing outstanding — the audit trail is hash-chained, signed
 (HMAC or Ed25519), rotated, retained (checkpoint-anchored), and enforceable on a schedule.
 A sigstore-cosign / transparency-log backend is a possible future direction.
