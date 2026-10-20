@@ -1874,7 +1874,9 @@ def _audit_anchor_path_problem(
                     return f"audit anchor family has more than {AUDIT_ANCHOR_FILES_CAP} files"
                 family_info = entry.stat(follow_symlinks=False)
                 if not stat.S_ISREG(family_info.st_mode) or family_info.st_nlink != 1:
-                    return f"audit anchor family file {entry.path} is not a singly linked regular file"
+                    return (
+                        f"audit anchor family file {entry.path} is not a singly linked regular file"
+                    )
                 total_bytes += family_info.st_size
                 if total_bytes > AUDIT_ANCHOR_BYTES_CAP:
                     return f"audit anchor family exceeds {AUDIT_ANCHOR_BYTES_CAP} bytes"
