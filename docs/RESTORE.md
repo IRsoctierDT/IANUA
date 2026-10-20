@@ -109,11 +109,21 @@ What does not, and will not:
 | `data/pipeline/cursor.json` | never needs restoring; re-correlating is at-least-once |
 | `*.lock` | the lock is the open descriptor, not the file — including each audit chain's `audit.log.lock`, which earlier versions copied by mistake (a restore of such a backup still verifies) |
 
-The backup's own integrity is anchored in the audit chain: the record it appends carries the
-manifest's sha256, and the chain is hash-linked, so a manifest edited afterwards no longer
-matches an entry an operator can verify. Set `AUDIT_HMAC_KEY` to get a head signature too —
-**without one, an audit chain missing its most recent entries verifies as intact**, which is
-exactly the shape a mid-write capture produces.
+The backup's manifest digest is anchored by a take record in the source `data/events/audit.log`.
+`--verify` checks the raw manifest bytes against that record in the current root's verified
+events chain. With a signing key configured, the chain's head signature authenticates the
+record too. **Without a signing key the check is only internal chain consistency**: someone
+able to rewrite the source chain can rewrite its history and anchor, and a truncated unsigned
+chain can still appear intact. The `--verify` report names the anchor's signature state; an
+`unsigned` result is not cryptographic authentication.
+
+For a full-node loss, `--verify` accepts `--audit-anchor` pointing to an independently
+preserved source events-chain family outside both `--root` and the backup. The backup's
+included events chain predates its own manifest-digest record and is not a substitute. A
+disaster-recovery plan must therefore retain that source chain family separately after a
+take; without it, the manifest cannot be authenticated and verification fails closed.
+Same-node step 4a preserves the current family for the restore in progress, but it cannot
+recover an anchor that was lost with the node.
 
 ### Verifying one
 
@@ -121,8 +131,9 @@ exactly the shape a mid-write capture produces.
 python -m scripts.run_backup --root /srv/ianua --verify /srv/ianua/data/backups/backup-20261015T0200Z
 ```
 
-Re-attests the store, re-hashes every file, and re-verifies every chain against the
-manifest. Exit `1` and a list of problems on any mismatch. **Verify before you need it** —
+Re-attests the store, re-hashes every file, re-verifies every chain against the
+manifest, and checks the raw manifest digest against the current root's events audit chain.
+Exit `1` and a list of problems on any mismatch. **Verify before you need it** —
 on the schedule, not during the incident. **A pass is the `verified …` line with exit `0`.**
 A verify that finds another verify holding `data/backups/verify.lock` prints "skipped: …
 Nothing was verified." and exits `4`, never `0` (under `--json`, `{"skipped": true,
@@ -194,7 +205,8 @@ fresh signed backup as soon as a live store exists.
 ### Verifying a restore (the promotion gate)
 
 ```bash
-python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup
+python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup \
+  --audit-anchor /srv/ianua-kept-20261020T013000Z/events/audit.log
 ```
 
 `--verify` and `--verify-restore` sit at opposite ends of a restore and are not
@@ -203,8 +215,17 @@ restore put it there?"* — comparing the **live root** against the attestation 
 carried. It exists because step 4 is a bare `cp -a` whose failure is invisible: a store
 missing most of its pages opens through `EventStore.open()` without raising and reports a
 plausible count, 353 of 400 in one measurement. Structure cannot catch that; only the
-carried expectation can. `EventStore.attest()` gates on `PRAGMA quick_check` on the way, so
-the integrity read is free.
+carried expectation can. It also verifies the raw manifest digest against the take record in
+the **independently preserved source events chain**. `--audit-anchor` must name the original
+`data/events/audit.log` moved outside both the live root and backup in step 4a; it must be an
+absolute path to a singly linked regular file, not a symlink. Preserve its archives,
+checkpoint and signature beside it, but not its `.lock`; the chain family is capped at
+256 MiB across at most 4096 files, and its directory at 16384 entries, before it is read.
+The anchor's chain must verify, and its take record must contain this manifest's exact
+SHA-256. With a signing key configured,
+the audit chain is cryptographically authenticated; unsigned chain verification is only
+internal consistency and does not protect against an attacker able to rewrite that chain.
+`EventStore.attest()` gates on `PRAGMA quick_check` on the way, so the integrity read is free.
 
 What it refuses, each with the direction named rather than a bare mismatch:
 
@@ -347,6 +368,8 @@ done
 python -m scripts.run_backup --root /srv/ianua --verify /path/to/backup
 #    must print "verified …" and exit 0. "skipped … Nothing was verified." exits 4:
 #    something still holds a lock (step 1b), so nothing was checked.
+#    If the source root was lost, add:
+#    --audit-anchor /path/to/independently-preserved/events/audit.log
 
 # 3. THE ORDERING RULE. Remove the positions before the store comes back.
 rm -f /srv/ianua/data/collect/offsets.json /srv/ianua/data/pipeline/cursor.json
@@ -358,7 +381,8 @@ rm -f /srv/ianua/data/collect/offsets.json /srv/ianua/data/pipeline/cursor.json
 #     archive or checkpoint beside it, which 4b then names UNDECLARED. Locks are not
 #     moved: they hold nothing. A NEW directory every run, owner-only, which `mkdir`
 #     refuses to reuse, so a repeat of this step or a later incident never overwrites
-#     what an earlier run kept.
+#     what an earlier run kept. The preserved events/audit.log and its adjacent
+#     signature/checkpoint/archive files are also the manifest trust anchor for 4b.
 kept=/srv/ianua-kept-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -m 700 "$kept" && for c in collect events pipeline compliance; do
   mkdir -m 700 "$kept/$c"
@@ -380,7 +404,8 @@ cp -a --no-preserve=links /path/to/backup/data/. /srv/ianua/data/
 #     missing most of its pages opens cleanly and reports a plausible count,
 #     so this compares the live root against the attestation the backup
 #     carried rather than checking that the database looks healthy.
-python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup
+python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup \
+  --audit-anchor "$kept/events/audit.log"
 #     must print "restore verified: …" and exit 0; a skip exits 4 and verified nothing.
 
 # 5. Re-collect. Every source is re-read; content addressing stores only what is new.

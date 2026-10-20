@@ -38,7 +38,7 @@ import pytest
 
 from ingest import normalize
 from scripts.run_backup import _SIDECARS
-from scripts.run_backup import main as backup_main
+from tests._backup_cli import backup_main, with_audit_anchor
 from store import (
     SIDECAR_SUFFIXES,
     EventStore,
@@ -96,6 +96,7 @@ def _plant(db: Path, suffix: str, kind: str, victim: Path) -> Path:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    argv = with_audit_anchor(argv)
     try:
         return subprocess.run(  # noqa: S603 - fixed interpreter, literal argv, test paths
             [sys.executable, *argv],

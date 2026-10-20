@@ -36,7 +36,7 @@ from ingest import normalize
 from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import FILE_MODE, prepare_lock, single_instance
 from scripts.run_backup import LOCK_FILE, MANIFEST_CAP, VERIFY_LOCK_FILE
-from scripts.run_backup import main as backup_main
+from tests._backup_cli import backup_main, with_audit_anchor
 from store import EventStore
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +83,7 @@ def _run_bounded(argv: list[str], *, timeout: float = 60.0) -> subprocess.Comple
     makes that a prompt ``MemoryError`` here rather than a question for the
     container's overcommit policy.
     """
+    argv = with_audit_anchor(argv)
     code = (
         "import resource, sys\n"
         f"resource.setrlimit(resource.RLIMIT_AS, ({_ADDRESS_SPACE}, {_ADDRESS_SPACE}))\n"

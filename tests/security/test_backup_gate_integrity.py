@@ -30,7 +30,7 @@ from agents.policies.audit import AuditLogger, signing_key_from_env
 from ingest import normalize
 from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import prepare_lock, single_instance
-from scripts.run_backup import main as backup_main
+from tests._backup_cli import backup_main, with_audit_anchor
 from store import EventStore
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -128,6 +128,7 @@ def _sparse(path: Path, size: int) -> None:
 
 def _child(argv: list[str], *, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
     """The CLI in a child with a timeout and an address-space limit."""
+    argv = with_audit_anchor(argv)
     code = (
         "import resource, sys\n"
         f"resource.setrlimit(resource.RLIMIT_AS, ({_ADDRESS_SPACE}, {_ADDRESS_SPACE}))\n"

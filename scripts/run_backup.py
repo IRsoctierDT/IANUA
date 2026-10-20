@@ -186,6 +186,11 @@ LIVE_CHAIN_GROWTH = 16 * 1024 * 1024
 #: the segment belongs is _undeclared_chain_segments' finding. Far above any
 #: rotation size this platform configures.
 LIVE_SEGMENT_CAP = 256 * 1024 * 1024
+# The post-restore trust anchor is outside the backup manifest, so bound the
+# entire chain family before AuditLogger reads its segments and sidecars.
+AUDIT_ANCHOR_BYTES_CAP = 256 * 1024 * 1024
+AUDIT_ANCHOR_FILES_CAP = 4096
+AUDIT_ANCHOR_DIRECTORY_ENTRIES_CAP = 16384
 #: The exit a skipped --verify or --verify-restore returns: nothing was
 #: verified, so it must never read as a pass, and it is retryable, not a page.
 EXIT_SKIPPED_VERIFY = EXIT_RETRYABLE
@@ -1696,7 +1701,7 @@ def _store_path_problem(backup: Path, store_entry: dict[str, Any]) -> str | None
     return _unsafe_manifest_path(backup, Path(path), what="manifest store path")
 
 
-def _load_manifest(directory: Path) -> dict[str, Any]:
+def _load_manifest_with_digest(directory: Path) -> tuple[dict[str, Any], str]:
     """Read ``directory``'s manifest and check its **shape**, or raise ``StoreError``.
 
     A manifest is data inside the artifact being verified (see
@@ -1799,7 +1804,130 @@ def _load_manifest(directory: Path) -> dict[str, Any]:
                 "present, an integer entries",
             )
     checked: dict[str, Any] = manifest  # a dict: _require_format refused anything else
-    return checked
+    return checked, hashlib.sha256(raw).hexdigest()
+
+
+def _load_manifest(directory: Path) -> dict[str, Any]:
+    """Read and shape-check a manifest when its exact source bytes are not needed."""
+    return _load_manifest_with_digest(directory)[0]
+
+
+def _audit_anchor_path_problem(
+    anchor: Path, *, root: Path, backup: Path, external: bool
+) -> str | None:
+    """Why an independently retained audit-chain anchor cannot be used."""
+    if not anchor.is_absolute():
+        return f"audit anchor {anchor} must be an absolute path"
+    try:
+        info = anchor.lstat()
+    except OSError as exc:
+        return f"audit anchor {anchor} cannot be inspected ({type(exc).__name__})"
+    if stat.S_ISLNK(info.st_mode):
+        return f"audit anchor {anchor} is a symlink"
+    if not stat.S_ISREG(info.st_mode):
+        return f"audit anchor {anchor} is not a regular file"
+    if info.st_nlink != 1:
+        return f"audit anchor {anchor} has {info.st_nlink} hard links"
+    if external:
+        try:
+            resolved = Path(os.path.realpath(anchor))
+        except (OSError, RecursionError, ValueError):
+            return f"audit anchor {anchor} cannot be resolved safely"
+        if resolved == root or root in resolved.parents:
+            return "the --audit-anchor must be outside --root"
+        if resolved == backup or backup in resolved.parents:
+            return "the --audit-anchor must be outside the backup"
+    signature = anchor.with_name(anchor.name + ".sig")
+    checkpoint = anchor.with_name(anchor.name + ".checkpoint")
+    lock = anchor.with_name(anchor.name + ".lock")
+    if external:
+        try:
+            lock.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            return (
+                f"audit anchor lock sidecar {lock} cannot be inspected "
+                f"({type(exc).__name__})"
+            )
+        else:
+            return (
+                f"audit anchor lock sidecar {lock} is present; preserve the chain family "
+                "without its lock files"
+            )
+    archive_prefix = anchor.name + "."
+    total_bytes = 0
+    family_files = 0
+    directory_entries = 0
+    try:
+        with os.scandir(anchor.parent) as entries:
+            for entry in entries:
+                directory_entries += 1
+                if directory_entries > AUDIT_ANCHOR_DIRECTORY_ENTRIES_CAP:
+                    return (
+                        "audit anchor directory has more than "
+                        f"{AUDIT_ANCHOR_DIRECTORY_ENTRIES_CAP} entries"
+                    )
+                name = entry.name
+                archive = name.startswith(archive_prefix) and name[len(archive_prefix) :].isdigit()
+                if name not in {anchor.name, signature.name, checkpoint.name} and not archive:
+                    continue
+                family_files += 1
+                if family_files > AUDIT_ANCHOR_FILES_CAP:
+                    return (
+                        f"audit anchor family has more than {AUDIT_ANCHOR_FILES_CAP} files"
+                    )
+                family_info = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(family_info.st_mode) or family_info.st_nlink != 1:
+                    return (
+                        f"audit anchor family file {entry.path} is not a singly linked "
+                        "regular file"
+                    )
+                total_bytes += family_info.st_size
+                if total_bytes > AUDIT_ANCHOR_BYTES_CAP:
+                    return (
+                        f"audit anchor family exceeds {AUDIT_ANCHOR_BYTES_CAP} bytes"
+                    )
+    except OSError as exc:
+        return (
+            f"audit anchor family beside {anchor} cannot be inspected "
+            f"({type(exc).__name__})"
+        )
+    return None
+
+
+def _manifest_anchor_problem(
+    anchor: Path, manifest_sha256: str
+) -> tuple[str | None, str | None]:
+    """Require the exact manifest digest in a verified take record.
+
+    A configured audit verifier makes the record cryptographically verifiable;
+    without one, the caller reports the unsigned chain-only posture explicitly.
+    """
+    logger = AuditLogger(anchor, signer=verifier_from_env())
+    report, found = logger.find_record(
+        lambda record: (
+            record.get("decision") == "allow"
+            and record.get("action_class") == BACKUP_CLASS
+            and isinstance(record.get("action"), str)
+            and str(record["action"]).startswith(f"{ACTION_NAME}:take:")
+            and isinstance(record.get("reason"), str)
+            and str(record["reason"]).endswith(f"manifest sha256 {manifest_sha256}")
+        )
+    )
+    if not report.intact:
+        return (
+            f"manifest audit anchor {anchor} does not verify: "
+            f"{report.failure or report.signature}",
+            report.signature,
+        )
+    if not found:
+        return (
+            f"manifest sha256 {manifest_sha256} has no matching take record in "
+            f"audit anchor {anchor}",
+            report.signature,
+        )
+    return None, report.signature
 
 
 #: The files SQLite opens beside a database, and reads or writes through.
@@ -2005,12 +2133,15 @@ def _unsafe_to_open(db: Path, *, what: str) -> str | None:
     return None
 
 
-def _verify_backup(directory: Path) -> dict[str, object]:
-    """Re-check a backup against its own manifest, and report every mismatch.
+def _verify_backup(directory: Path, *, audit_anchor: Path) -> dict[str, object]:
+    """Re-check a backup against its manifest and the source-chain digest anchor.
 
     Collects findings rather than raising on the first, because an operator
     deciding whether to restore from this copy needs to know everything that
     is wrong with it, not the first thing.
+
+    The audit anchor is the live source events chain; this check refuses a
+    manifest whose raw bytes were not recorded by the take.
 
     **What this writes, stated exactly.** The *bytes* of every file it reads,
     the store included, are left as found — :func:`_unsafe_to_open` names the
@@ -2020,9 +2151,14 @@ def _verify_backup(directory: Path) -> dict[str, object]:
     :func:`_take_backup` writes), and the WAL sidecars it creates while open
     are removed on close. Content-neutral is the claim; metadata-neutral is not.
     """
-    manifest = _load_manifest(directory)
+    manifest, manifest_sha256 = _load_manifest_with_digest(directory)
 
     problems: list[str] = []
+    anchor_problem, anchor_signature = _manifest_anchor_problem(
+        audit_anchor, manifest_sha256
+    )
+    if anchor_problem is not None:
+        problems.append(anchor_problem)
 
     store_entry: dict[str, Any] = manifest["store"]  # shape-checked by _load_manifest
     # Bound before the branches below: the return reads it on every path, and
@@ -2143,13 +2279,18 @@ def _verify_backup(directory: Path) -> dict[str, object]:
         "verified": not problems,
         "problems": problems,
         "chains": chains,
+        "manifest_anchor_signature": anchor_signature,
     }
 
 
-def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
+def _verify_restore(
+    root: Path, backup: Path, *, audit_anchor: Path
+) -> dict[str, object]:
     """Verify the **live** ``root`` holds what ``backup``'s manifest attested.
 
-    The promotion gate. ``--verify`` checks a backup against its own manifest
+    The promotion gate. The independent ``audit_anchor`` is the source events
+    chain preserved outside the live root and backup before step 4. ``--verify``
+    checks a backup against its manifest
     *before* a restore; nothing checked the live tree *after* one, and
     ``docs/RESTORE.md`` step 4 is a bare ``cp -a``. That is the dangerous
     direction, measured: a store missing most of its pages **opens cleanly
@@ -2213,9 +2354,14 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
     compared exactly, key or not**: nothing rewrites its chain in this window, and
     the signature check reads three fields of the sidecar and no others.
     """
-    manifest = _load_manifest(backup)
+    manifest, manifest_sha256 = _load_manifest_with_digest(backup)
 
     problems: list[str] = []
+    anchor_problem, anchor_signature = _manifest_anchor_problem(
+        audit_anchor, manifest_sha256
+    )
+    if anchor_problem is not None:
+        problems.append(anchor_problem)
     store_entry: dict[str, Any] = manifest["store"]  # shape-checked by _load_manifest
     expected = store_entry.get("attestation", _MISSING)
     gaps = _attestation_gaps(expected)
@@ -2547,6 +2693,7 @@ def _verify_restore(root: Path, backup: Path) -> dict[str, object]:
         "verified": not problems,
         "problems": problems,
         "chains": chains,
+        "manifest_anchor_signature": anchor_signature,
     }
 
 
@@ -2598,7 +2745,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Verify an existing backup directory against its manifest instead "
             "of taking a new one. Re-attests the store and re-verifies every "
-            "chain; exits 1 on any mismatch."
+            "chain, and checks the raw manifest digest against the source "
+            "events audit chain (current --root by default); exits 1 on any mismatch."
         ),
     )
     parser.add_argument(
@@ -2610,8 +2758,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "Verify that --root's LIVE tree holds what BACKUP's manifest attested, "
             "instead of taking a backup. The promotion gate: --verify checks a backup "
             "before a restore, this checks the restored root after one. Run it between "
-            "steps 4 and 5 of docs/RESTORE.md; exits 1 on any mismatch. It speaks only "
-            "about the copy and says nothing about whether exactly one node is active."
+            "steps 4 and 5 of docs/RESTORE.md; exits 1 on any mismatch. Requires "
+            "--audit-anchor, the independently preserved source audit chain from step 4a. "
+            "It speaks only about the copy and says nothing about whether exactly one "
+            "node is active."
+        ),
+    )
+    parser.add_argument(
+        "--audit-anchor",
+        type=Path,
+        default=None,
+        metavar="AUDIT_LOG",
+        help=(
+            "The independently preserved source data/events/audit.log. Required for "
+            "--verify-restore; optional for --verify when the source --root is unavailable. "
+            "Must be an absolute path outside --root and the backup."
         ),
     )
     parser.add_argument(
@@ -2636,6 +2797,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "--verify and --verify-restore do different things: --verify checks a backup "
             "against its own manifest BEFORE a restore, --verify-restore checks the live "
             "--root AFTER one. Pass one."
+        )
+    if args.audit_anchor is not None and args.verify is None and args.verify_restore is None:
+        parser.error("--audit-anchor is only used with --verify or --verify-restore")
+    if args.verify_restore is not None and args.audit_anchor is None:
+        parser.error(
+            "--verify-restore requires --audit-anchor: pass the independently preserved "
+            "source data/events/audit.log from docs/RESTORE.md step 4a"
         )
     return args
 
@@ -2686,6 +2854,38 @@ def main(argv: list[str] | None = None) -> int:
         if inside is not None:
             print(f"error: {_printable(inside)}", file=sys.stderr)
             return 2
+        if args.verify_restore is not None and resolved is not None:
+            if args.audit_anchor is None:
+                print(
+                    "error: --verify-restore requires --audit-anchor",
+                    file=sys.stderr,
+                )
+                return 2
+            refusal = _audit_anchor_path_problem(
+                args.audit_anchor, root=root, backup=resolved, external=True
+            )
+            if refusal is not None:
+                print(f"error: {_printable(refusal)}", file=sys.stderr)
+                return 1
+        elif args.verify is not None:
+            if args.audit_anchor is not None:
+                external_anchor = True
+                verify_anchor = args.audit_anchor
+            else:
+                external_anchor = False
+                verify_anchor = root / GATE_CHAIN
+            if external_anchor and not verify_anchor.is_absolute():
+                print("error: --audit-anchor must be an absolute path", file=sys.stderr)
+                return 1
+            refusal = _audit_anchor_path_problem(
+                verify_anchor,
+                root=root,
+                backup=resolved or root,
+                external=external_anchor,
+            )
+            if refusal is not None:
+                print(f"error: {_printable(refusal)}", file=sys.stderr)
+                return 1
         engine = load_bundle(args.policy)
         # Last in the startup try, deliberately: the only statement here that
         # opens a descriptor, so nothing can fail after it and abandon the handle.
@@ -2781,9 +2981,13 @@ def _run(
     # (found by independent review).
     restore_from: Path | None = None
     verify_from: Path | None = None
+    restore_anchor: Path | None = None
     try:
         if mode == "verify-restore":
             restore_from = _resolve_argument(args.verify_restore)
+            if not args.audit_anchor.is_absolute():
+                raise StoreError("--audit-anchor must be an absolute path")
+            restore_anchor = args.audit_anchor
         elif mode == "verify":
             verify_from = _resolve_argument(args.verify)
     except StoreError as exc:
@@ -2797,6 +3001,32 @@ def _run(
     if refusal is not None:
         print(f"error: {_printable(refusal)}", file=sys.stderr)
         return 1
+    if restore_from is not None and restore_anchor is not None:
+        refusal = _audit_anchor_path_problem(
+            restore_anchor, root=root, backup=restore_from, external=True
+        )
+        if refusal is not None:
+            print(f"error: {_printable(refusal)}", file=sys.stderr)
+            return 1
+    verify_anchor = root / GATE_CHAIN
+    if verify_from is not None:
+        if args.audit_anchor is not None:
+            external_anchor = True
+            if not args.audit_anchor.is_absolute():
+                print("error: --audit-anchor must be an absolute path", file=sys.stderr)
+                return 1
+            verify_anchor = args.audit_anchor
+        else:
+            external_anchor = False
+        refusal = _audit_anchor_path_problem(
+            verify_anchor,
+            root=root,
+            backup=verify_from,
+            external=external_anchor,
+        )
+        if refusal is not None:
+            print(f"error: {_printable(refusal)}", file=sys.stderr)
+            return 1
 
     try:
         signer = signer_from_env()
@@ -2844,9 +3074,10 @@ def _run(
 
     try:
         if verify_from is not None:
-            payload = _verify_backup(verify_from)
+            payload = _verify_backup(verify_from, audit_anchor=verify_anchor)
         elif restore_from is not None:
-            payload = _verify_restore(root, restore_from)
+            assert restore_anchor is not None
+            payload = _verify_restore(root, restore_from, audit_anchor=restore_anchor)
         else:
             manifest = _take_backup(root, destination)
             manifest_path = destination / MANIFEST_FILE
@@ -2958,6 +3189,14 @@ def _print_text(payload: dict[str, object], *, mode: str) -> None:
             else (str(payload["backup"]))
         )
         if payload["verified"]:
+            signature = str(payload.get("manifest_anchor_signature", "unknown"))
+            say(f"  manifest audit-anchor signature: {signature}")
+            if signature in {"unsigned", "empty"}:
+                say(
+                    "  NOTE: the source audit chain is internally consistent but unsigned; "
+                    "it does not cryptographically authenticate the manifest against an "
+                    "attacker able to rewrite that chain."
+                )
             if restored:
                 say(
                     f"restore verified: {payload['root']} holds the "

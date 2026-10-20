@@ -35,7 +35,7 @@ import pytest
 
 from ingest import normalize
 from scripts.run_backup import MANIFEST_FORMAT
-from scripts.run_backup import main as backup_main
+from tests._backup_cli import backup_main, with_audit_anchor
 from store import EventStore, StoreFileError
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
@@ -93,6 +93,7 @@ def _run_isolated(
     child's ``sys.path`` by name, because ``-c`` adds the working directory only when
     ``PYTHONSAFEPATH`` is unset (found by review).
     """
+    argv = with_audit_anchor(argv)
     code = (
         f"import sys\nsys.path.insert(0, {str(_REPO_ROOT)!r})\n"
         f"from scripts.run_backup import main\nsys.exit(main({argv!r}))\n"

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import shutil
 import time
@@ -32,7 +33,9 @@ from pathlib import Path
 import pytest
 
 from ingest import normalize
-from scripts.run_backup import main as backup_main
+from scripts.run_backup import AUDIT_ANCHOR_BYTES_CAP
+from scripts.run_backup import main as raw_backup_main
+from tests._backup_cli import _preserve_source_chain, backup_main
 from store import EventStore
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
@@ -183,6 +186,168 @@ def test_an_unsigned_backup_verified_without_a_key_still_passes(
     capsys.readouterr()
 
     assert _verify_restore(live, backup) == 0, capsys.readouterr().out
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("signed", [True, False])
+def test_backup_can_be_verified_after_source_root_loss_with_preserved_anchor(
+    tmp_path: Path,
+    key: str,
+    signed: bool,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The independently preserved chain works with optional signing from a fresh root."""
+    if not signed:
+        monkeypatch.delenv("AUDIT_HMAC_KEY")
+    source = tmp_path / "source"
+    recovery = tmp_path / "recovery"
+    source.mkdir()
+    recovery.mkdir()
+    _seed(source)
+    backup = _take(source, "probe")
+    anchor = _preserve_source_chain(backup)
+    capsys.readouterr()
+
+    assert backup_main(
+        [
+            "--root",
+            str(recovery),
+            "--caller",
+            "test",
+            "--verify",
+            str(backup),
+            "--audit-anchor",
+            str(anchor),
+        ]
+    ) == 0
+    output = capsys.readouterr().out
+    assert "verified" in output
+    expected_signature = "valid" if signed else "unsigned"
+    assert f"manifest audit-anchor signature: {expected_signature}" in output
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("mode", ["verify", "verify-restore"])
+def test_consistent_store_and_manifest_rewrite_lacks_the_source_chain_anchor(
+    tmp_path: Path, key: str, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    """An internally consistent replacement store is not the taken backup."""
+    source, live = tmp_path / "source", tmp_path / "live"
+    source.mkdir()
+    _seed(source)
+    backup = _take(source, "probe")
+
+    with EventStore.open(backup) as store:
+        store.append(
+            normalize(_RECORD % 999),
+            ingested_at=store.next_stamp(time.time() + 3600),
+        )
+        attestation = store.attest().to_dict()
+    db = backup / "data" / "events" / "events.sqlite3"
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["store"]["size"] = db.stat().st_size
+    manifest["store"]["sha256"] = hashlib.sha256(db.read_bytes()).hexdigest()
+    manifest["store"]["attestation"] = attestation
+    for entry in manifest["files"]:
+        if entry["path"] == "data/events/events.sqlite3":
+            entry["size"] = db.stat().st_size
+            entry["sha256"] = hashlib.sha256(db.read_bytes()).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    capsys.readouterr()
+
+    if mode == "verify":
+        code = backup_main(["--root", str(source), "--caller", "test", "--verify", str(backup)])
+    else:
+        _restore(backup, live)
+        code = _verify_restore(live, backup)
+    assert code == 1
+    output = capsys.readouterr().out
+    assert "has no matching take record in audit anchor" in output, output
+    assert "SUBSTITUTED" not in output and "LOSS" not in output, output
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "anchor_location",
+    [
+        "live",
+        "backup",
+        "symlink",
+        "hardlink",
+        "lock-sidecar",
+        "oversized-family",
+    ],
+)
+def test_restore_verification_requires_an_independent_anchor_before_writing(
+    tmp_path: Path,
+    anchor_location: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A restored or backup-local chain cannot authenticate the manifest."""
+    source, live = tmp_path / "source", tmp_path / "live"
+    source.mkdir()
+    _seed(source)
+    backup = _take(source, "probe")
+    _restore(backup, live)
+    live_chain = live / _CHAIN
+    before = live_chain.read_bytes()
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as missing:
+        raw_backup_main(
+            ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
+        )
+    assert missing.value.code == 2
+    assert live_chain.read_bytes() == before
+    assert not (live / "data" / "backups" / "backup.lock").exists()
+
+    if anchor_location == "live":
+        anchor = live_chain
+        finding = "must be outside"
+    elif anchor_location == "backup":
+        anchor = backup / _CHAIN
+        finding = "must be outside"
+    elif anchor_location == "symlink":
+        anchor = tmp_path / "anchor-link"
+        anchor.symlink_to(source / _CHAIN)
+        finding = "is a symlink"
+    elif anchor_location == "hardlink":
+        anchor = tmp_path / "anchor-hardlink"
+        os.link(source / _CHAIN, anchor)
+        finding = "hard links"
+    elif anchor_location == "lock-sidecar":
+        anchor = tmp_path / "preserved" / "events" / "audit.log"
+        anchor.parent.mkdir(parents=True)
+        shutil.copy2(source / _CHAIN, anchor)
+        anchor.with_name(anchor.name + ".lock").touch()
+        finding = "lock sidecar"
+    else:
+        anchor = tmp_path / "oversized" / "events" / "audit.log"
+        anchor.parent.mkdir(parents=True)
+        shutil.copy2(source / _CHAIN, anchor)
+        oversized = anchor.with_name(anchor.name + ".1")
+        oversized.touch()
+        os.truncate(oversized, AUDIT_ANCHOR_BYTES_CAP + 1)
+        finding = "audit anchor family exceeds"
+    assert backup_main(
+        [
+            "--root",
+            str(live),
+            "--caller",
+            "test",
+            "--verify-restore",
+            str(backup),
+            "--audit-anchor",
+            str(anchor),
+        ]
+    ) == 1
+    assert finding in capsys.readouterr().err
+    assert live_chain.read_bytes() == before
+    assert not (live / "data" / "backups" / "backup.lock").exists()
 
 
 @pytest.mark.security
