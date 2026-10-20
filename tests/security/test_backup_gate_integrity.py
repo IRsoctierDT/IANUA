@@ -31,7 +31,7 @@ from ingest import normalize
 from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import prepare_lock, single_instance
 from store import EventStore
-from tests._backup_cli import backup_main, with_audit_anchor
+from tests._backup_cli import _preserve_source_chain, backup_main, with_audit_anchor
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
@@ -297,7 +297,8 @@ def test_an_argument_too_deep_to_resolve_writes_no_gate_record(
     """Found by review: the identity check fell open on a link chain too deep to follow,
     and the gate record was appended before the argument was refused. It is resolved
     first now, so nothing is written."""
-    _root, (backup,) = _source(tmp_path)
+    source_root, (backup,) = _source(tmp_path)
+    audit_anchor = _preserve_source_chain(source_root)
     live = tmp_path / "live"
     _restore(backup, live)
     links = tmp_path / "links"
@@ -316,7 +317,16 @@ def test_an_argument_too_deep_to_resolve_writes_no_gate_record(
     before = _fingerprint(live / _CHAIN)
     capsys.readouterr()
 
-    argv = ["--root", str(live), "--caller", "test", "--verify-restore", str(target)]
+    argv = [
+        "--root",
+        str(live),
+        "--caller",
+        "test",
+        "--verify-restore",
+        str(target),
+        "--audit-anchor",
+        str(audit_anchor),
+    ]
     assert backup_main(argv) == 1
     assert "more symbolic links than can be followed" in capsys.readouterr().err
     assert _fingerprint(live / _CHAIN) == before, "a gate record was written"
