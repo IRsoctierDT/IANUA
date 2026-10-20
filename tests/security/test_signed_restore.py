@@ -209,18 +209,21 @@ def test_backup_can_be_verified_after_source_root_loss_with_preserved_anchor(
     anchor = _preserve_source_chain(backup)
     capsys.readouterr()
 
-    assert backup_main(
-        [
-            "--root",
-            str(recovery),
-            "--caller",
-            "test",
-            "--verify",
-            str(backup),
-            "--audit-anchor",
-            str(anchor),
-        ]
-    ) == 0
+    assert (
+        backup_main(
+            [
+                "--root",
+                str(recovery),
+                "--caller",
+                "test",
+                "--verify",
+                str(backup),
+                "--audit-anchor",
+                str(anchor),
+            ]
+        )
+        == 0
+    )
     output = capsys.readouterr().out
     assert "verified" in output
     expected_signature = "valid" if signed else "unsigned"
@@ -298,9 +301,7 @@ def test_restore_verification_requires_an_independent_anchor_before_writing(
     capsys.readouterr()
 
     with pytest.raises(SystemExit) as missing:
-        raw_backup_main(
-            ["--root", str(live), "--caller", "test", "--verify-restore", str(backup)]
-        )
+        raw_backup_main(["--root", str(live), "--caller", "test", "--verify-restore", str(backup)])
     assert missing.value.code == 2
     assert live_chain.read_bytes() == before
     assert not (live / "data" / "backups" / "backup.lock").exists()
@@ -333,18 +334,21 @@ def test_restore_verification_requires_an_independent_anchor_before_writing(
         oversized.touch()
         os.truncate(oversized, AUDIT_ANCHOR_BYTES_CAP + 1)
         finding = "audit anchor family exceeds"
-    assert backup_main(
-        [
-            "--root",
-            str(live),
-            "--caller",
-            "test",
-            "--verify-restore",
-            str(backup),
-            "--audit-anchor",
-            str(anchor),
-        ]
-    ) == 1
+    assert (
+        backup_main(
+            [
+                "--root",
+                str(live),
+                "--caller",
+                "test",
+                "--verify-restore",
+                str(backup),
+                "--audit-anchor",
+                str(anchor),
+            ]
+        )
+        == 1
+    )
     assert finding in capsys.readouterr().err
     assert live_chain.read_bytes() == before
     assert not (live / "data" / "backups" / "backup.lock").exists()

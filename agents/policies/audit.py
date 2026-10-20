@@ -1128,8 +1128,7 @@ class AuditLogger:
                 # fail-closed verdict, not an exception out of verification.
                 return (
                     _report(
-                        f"unreadable segment {segment.name} "
-                        "(undecodable or inaccessible)",
+                        f"unreadable segment {segment.name} (undecodable or inaccessible)",
                         "unchecked",
                     ),
                     segment_texts,

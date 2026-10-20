@@ -1846,10 +1846,7 @@ def _audit_anchor_path_problem(
         except FileNotFoundError:
             pass
         except OSError as exc:
-            return (
-                f"audit anchor lock sidecar {lock} cannot be inspected "
-                f"({type(exc).__name__})"
-            )
+            return f"audit anchor lock sidecar {lock} cannot be inspected ({type(exc).__name__})"
         else:
             return (
                 f"audit anchor lock sidecar {lock} is present; preserve the chain family "
@@ -1874,31 +1871,19 @@ def _audit_anchor_path_problem(
                     continue
                 family_files += 1
                 if family_files > AUDIT_ANCHOR_FILES_CAP:
-                    return (
-                        f"audit anchor family has more than {AUDIT_ANCHOR_FILES_CAP} files"
-                    )
+                    return f"audit anchor family has more than {AUDIT_ANCHOR_FILES_CAP} files"
                 family_info = entry.stat(follow_symlinks=False)
                 if not stat.S_ISREG(family_info.st_mode) or family_info.st_nlink != 1:
-                    return (
-                        f"audit anchor family file {entry.path} is not a singly linked "
-                        "regular file"
-                    )
+                    return f"audit anchor family file {entry.path} is not a singly linked regular file"
                 total_bytes += family_info.st_size
                 if total_bytes > AUDIT_ANCHOR_BYTES_CAP:
-                    return (
-                        f"audit anchor family exceeds {AUDIT_ANCHOR_BYTES_CAP} bytes"
-                    )
+                    return f"audit anchor family exceeds {AUDIT_ANCHOR_BYTES_CAP} bytes"
     except OSError as exc:
-        return (
-            f"audit anchor family beside {anchor} cannot be inspected "
-            f"({type(exc).__name__})"
-        )
+        return f"audit anchor family beside {anchor} cannot be inspected ({type(exc).__name__})"
     return None
 
 
-def _manifest_anchor_problem(
-    anchor: Path, manifest_sha256: str
-) -> tuple[str | None, str | None]:
+def _manifest_anchor_problem(anchor: Path, manifest_sha256: str) -> tuple[str | None, str | None]:
     """Require the exact manifest digest in a verified take record.
 
     A configured audit verifier makes the record cryptographically verifiable;
@@ -1917,8 +1902,7 @@ def _manifest_anchor_problem(
     )
     if not report.intact:
         return (
-            f"manifest audit anchor {anchor} does not verify: "
-            f"{report.failure or report.signature}",
+            f"manifest audit anchor {anchor} does not verify: {report.failure or report.signature}",
             report.signature,
         )
     if not found:
@@ -2154,9 +2138,7 @@ def _verify_backup(directory: Path, *, audit_anchor: Path) -> dict[str, object]:
     manifest, manifest_sha256 = _load_manifest_with_digest(directory)
 
     problems: list[str] = []
-    anchor_problem, anchor_signature = _manifest_anchor_problem(
-        audit_anchor, manifest_sha256
-    )
+    anchor_problem, anchor_signature = _manifest_anchor_problem(audit_anchor, manifest_sha256)
     if anchor_problem is not None:
         problems.append(anchor_problem)
 
@@ -2283,9 +2265,7 @@ def _verify_backup(directory: Path, *, audit_anchor: Path) -> dict[str, object]:
     }
 
 
-def _verify_restore(
-    root: Path, backup: Path, *, audit_anchor: Path
-) -> dict[str, object]:
+def _verify_restore(root: Path, backup: Path, *, audit_anchor: Path) -> dict[str, object]:
     """Verify the **live** ``root`` holds what ``backup``'s manifest attested.
 
     The promotion gate. The independent ``audit_anchor`` is the source events
@@ -2357,9 +2337,7 @@ def _verify_restore(
     manifest, manifest_sha256 = _load_manifest_with_digest(backup)
 
     problems: list[str] = []
-    anchor_problem, anchor_signature = _manifest_anchor_problem(
-        audit_anchor, manifest_sha256
-    )
+    anchor_problem, anchor_signature = _manifest_anchor_problem(audit_anchor, manifest_sha256)
     if anchor_problem is not None:
         problems.append(anchor_problem)
     store_entry: dict[str, Any] = manifest["store"]  # shape-checked by _load_manifest
