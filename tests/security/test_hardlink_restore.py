@@ -29,7 +29,7 @@ import pytest
 
 from ingest import normalize
 from store import EventStore
-from tests._backup_cli import backup_main
+from tests._backup_cli import _preserve_source_chain, backup_main
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 _CHAIN = Path("data") / "events" / "audit.log"
@@ -76,7 +76,8 @@ def _verify_restore(live: Path, backup: Path) -> int:
 def test_a_hard_link_restore_is_refused_before_the_gate_writes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _source, backup = _source_with_backup(tmp_path)
+    source, backup = _source_with_backup(tmp_path)
+    audit_anchor = _preserve_source_chain(source)
     live = tmp_path / "live"
     _link_tree(backup / "data", live / "data")
     chain = _fingerprint(backup / _CHAIN)
@@ -90,9 +91,19 @@ def test_a_hard_link_restore_is_refused_before_the_gate_writes(
     assert _fingerprint(backup / _CHAIN) == chain, "the gate record was written into the backup"
     # And the backup is still a backup once the linked tree is gone. While it exists
     # the backup's store has a second name, which --verify refuses (#259).
-    assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 1
+    verify = [
+        "--root",
+        str(clean),
+        "--caller",
+        "test",
+        "--verify",
+        str(backup),
+        "--audit-anchor",
+        str(audit_anchor),
+    ]
+    assert backup_main(verify) == 1
     shutil.rmtree(live)
-    assert backup_main(["--root", str(clean), "--caller", "test", "--verify", str(backup)]) == 0
+    assert backup_main(verify) == 0
 
 
 @pytest.mark.security

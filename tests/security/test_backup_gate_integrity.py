@@ -263,7 +263,10 @@ def test_a_live_chain_with_a_second_name_is_refused_before_the_gate_record(
         argv += [mode, str(backup)]
     assert backup_main(argv) == 1
     err = capsys.readouterr().err
-    assert f"the live {_CHAIN} shares its file with 1 other name(s)" in err, err
+    if mode == "--verify":
+        assert f"audit anchor {live / _CHAIN} has 2 hard links" in err, err
+    else:
+        assert f"the live {_CHAIN} shares its file with 1 other name(s)" in err, err
     assert _fingerprint(staged / _CHAIN) == before, "the gate record went into the copy"
 
 

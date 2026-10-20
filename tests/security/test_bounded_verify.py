@@ -32,12 +32,13 @@ from pathlib import Path
 
 import pytest
 
+from agents.policies.audit import AuditLogger
 from ingest import normalize
 from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import FILE_MODE, prepare_lock, single_instance
-from scripts.run_backup import LOCK_FILE, MANIFEST_CAP, VERIFY_LOCK_FILE
+from scripts.run_backup import ACTION_NAME, BACKUP_CLASS, LOCK_FILE, MANIFEST_CAP, VERIFY_LOCK_FILE
 from store import EventStore
-from tests._backup_cli import backup_main, with_audit_anchor
+from tests._backup_cli import _preserve_source_chain, backup_main, with_audit_anchor
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
@@ -209,9 +210,27 @@ def test_a_manifest_one_byte_over_the_cap_is_refused_and_one_at_it_is_parsed(
     original = path.read_bytes()
     clean = tmp_path / "clean"
     clean.mkdir()
-    argv = ["--root", str(clean), "--caller", "test", "--verify", str(backup)]
 
     path.write_bytes(original + b" " * (MANIFEST_CAP - len(original)))
+    manifest_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    AuditLogger(root / _CHAIN).record(
+        actor="test",
+        action=f"{ACTION_NAME}:take:12",
+        action_class=BACKUP_CLASS,
+        decision="allow",
+        reason=f"wrote backup {backup} holding 12 event(s); manifest sha256 {manifest_sha256}",
+    )
+    audit_anchor = _preserve_source_chain(root)
+    argv = [
+        "--root",
+        str(clean),
+        "--caller",
+        "test",
+        "--verify",
+        str(backup),
+        "--audit-anchor",
+        str(audit_anchor),
+    ]
     capsys.readouterr()
     assert backup_main(argv) == 0, capsys.readouterr().out[-600:]
 
@@ -332,7 +351,7 @@ def test_verify_does_not_wait_for_a_take_and_a_take_does_not_wait_for_verify(
         capsys.readouterr()
         assert backup_main(verify) == 0
         out = capsys.readouterr().out
-        assert out.startswith("verified "), out
+        assert any(line.startswith("verified ") for line in out.splitlines()), out
 
     with prepare_lock(locks, VERIFY_LOCK_FILE) as handle, single_instance(handle) as held:
         assert held, "the premise: this test holds the verifier's lock"

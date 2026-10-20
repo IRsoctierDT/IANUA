@@ -206,7 +206,7 @@ def test_backup_can_be_verified_after_source_root_loss_with_preserved_anchor(
     recovery.mkdir()
     _seed(source)
     backup = _take(source, "probe")
-    anchor = _preserve_source_chain(backup)
+    anchor = _preserve_source_chain(source)
     capsys.readouterr()
 
     assert (

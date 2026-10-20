@@ -45,7 +45,9 @@ from agents.policies.audit import AuditLogger, signer_from_env, signing_key_from
 from agents.policies.signing import generate_ed25519_keypair
 from ingest import normalize
 from scripts.run_backup import (
+    ACTION_NAME,
     ATTESTATION_FIELDS,
+    BACKUP_CLASS,
     CHAIN_FILES,
     GATE_CHAIN,
     GATE_SIGNATURE,
@@ -57,7 +59,7 @@ from scripts.run_backup import (
     _signature_judged,
 )
 from store import EventStore
-from tests._backup_cli import backup_main
+from tests._backup_cli import _preserve_source_chain, backup_main
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 _EVENTS = 40
@@ -1377,6 +1379,15 @@ def test_a_backup_an_earlier_version_took_with_its_lock_still_verifies(
             {"path": str(lock), "size": 0, "sha256": hashlib.sha256(b"").hexdigest()}
         ),
     )
+    manifest_sha256 = hashlib.sha256((backup / "manifest.json").read_bytes()).hexdigest()
+    AuditLogger(source / GATE_CHAIN, signer=signer_from_env()).record(
+        actor="test",
+        action=f"{ACTION_NAME}:take:40",
+        action_class=BACKUP_CLASS,
+        decision="allow",
+        reason=f"wrote backup {backup} holding 40 event(s); manifest sha256 {manifest_sha256}",
+    )
+    _preserve_source_chain(source)
     _restore(backup, live)
 
     assert _verify_restore(live, backup) == 0

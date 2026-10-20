@@ -41,7 +41,6 @@ import pytest
 
 from ingest import normalize
 from scripts.run_backup import _database_problem
-from scripts.run_backup import main as backup_main
 from store import (
     EventStore,
     StoreError,
@@ -50,6 +49,7 @@ from store import (
     StoreSidecarError,
     refuse_unsafe_database,
 )
+from tests._backup_cli import backup_main, with_audit_anchor
 from tests.security.test_store_sidecars import (
     _CLIS,
     _RECORD,
@@ -108,6 +108,7 @@ def _sidecars(db: Path) -> list[str]:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    argv = with_audit_anchor(argv)
     try:
         return subprocess.run(  # noqa: S603 - fixed interpreter, literal argv, test paths
             [sys.executable, *argv],
