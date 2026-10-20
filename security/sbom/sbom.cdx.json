@@ -1,7 +1,7 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:3c2e9920-cce9-5593-bc06-30274b30870d",
+  "serialNumber": "urn:uuid:d6a99b28-fb6a-52e0-ba2e-2358df308dee",
   "version": 1,
   "metadata": {
     "timestamp": "2026-10-13T17:12:21Z",
@@ -250,13 +250,6 @@
       "type": "library",
       "version": "1.0.9",
       "purl": "pkg:pypi/httpcore@1.0.9"
-    },
-    {
-      "bom-ref": "pkg:pypi/httptools@0.8.0",
-      "name": "httptools",
-      "type": "library",
-      "version": "0.8.0",
-      "purl": "pkg:pypi/httptools@0.8.0"
     },
     {
       "bom-ref": "pkg:pypi/httpx@0.28.1",
@@ -861,11 +854,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.65.0",
+      "bom-ref": "pkg:pypi/streamlit@1.66.0",
       "name": "streamlit",
       "type": "library",
-      "version": "1.65.0",
-      "purl": "pkg:pypi/streamlit@1.65.0"
+      "version": "1.66.0",
+      "purl": "pkg:pypi/streamlit@1.66.0"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
@@ -887,13 +880,6 @@
       "type": "library",
       "version": "0.22.2",
       "purl": "pkg:pypi/tokenizers@0.22.2"
-    },
-    {
-      "bom-ref": "pkg:pypi/toml@0.10.2",
-      "name": "toml",
-      "type": "library",
-      "version": "0.10.2",
-      "purl": "pkg:pypi/toml@0.10.2"
     },
     {
       "bom-ref": "pkg:pypi/tomli-w@1.2.0",
