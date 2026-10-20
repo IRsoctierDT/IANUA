@@ -2985,6 +2985,8 @@ def _run(
     try:
         if mode == "verify-restore":
             restore_from = _resolve_argument(args.verify_restore)
+            if args.audit_anchor is None:
+                raise StoreError("--verify-restore requires --audit-anchor")
             if not args.audit_anchor.is_absolute():
                 raise StoreError("--audit-anchor must be an absolute path")
             restore_anchor = args.audit_anchor
@@ -3076,7 +3078,8 @@ def _run(
         if verify_from is not None:
             payload = _verify_backup(verify_from, audit_anchor=verify_anchor)
         elif restore_from is not None:
-            assert restore_anchor is not None
+            if restore_anchor is None:
+                raise StoreError("--verify-restore requires --audit-anchor")
             payload = _verify_restore(root, restore_from, audit_anchor=restore_anchor)
         else:
             manifest = _take_backup(root, destination)

@@ -56,8 +56,8 @@ from scripts.run_backup import (
     _live_tree_inventory,
     _signature_judged,
 )
-from tests._backup_cli import backup_main
 from store import EventStore
+from tests._backup_cli import backup_main
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 _EVENTS = 40

@@ -36,8 +36,8 @@ from ingest import normalize
 from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import FILE_MODE, prepare_lock, single_instance
 from scripts.run_backup import LOCK_FILE, MANIFEST_CAP, VERIFY_LOCK_FILE
-from tests._backup_cli import backup_main, with_audit_anchor
 from store import EventStore
+from tests._backup_cli import backup_main, with_audit_anchor
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'

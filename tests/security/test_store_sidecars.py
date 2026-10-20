@@ -38,7 +38,6 @@ import pytest
 
 from ingest import normalize
 from scripts.run_backup import _SIDECARS
-from tests._backup_cli import backup_main, with_audit_anchor
 from store import (
     SIDECAR_SUFFIXES,
     EventStore,
@@ -46,6 +45,7 @@ from store import (
     StorePathError,
     StoreSidecarError,
 )
+from tests._backup_cli import backup_main, with_audit_anchor
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 _REPO_ROOT = Path(__file__).resolve().parents[2]

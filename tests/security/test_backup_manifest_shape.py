@@ -35,8 +35,8 @@ import pytest
 
 from ingest import normalize
 from scripts.run_backup import MANIFEST_FORMAT
-from tests._backup_cli import backup_main, with_audit_anchor
 from store import EventStore, StoreFileError
+from tests._backup_cli import backup_main, with_audit_anchor
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 # The current format, so each hostile manifest reaches the shape check it names

@@ -35,8 +35,8 @@ import pytest
 from ingest import normalize
 from scripts.run_backup import AUDIT_ANCHOR_BYTES_CAP
 from scripts.run_backup import main as raw_backup_main
-from tests._backup_cli import _preserve_source_chain, backup_main
 from store import EventStore
+from tests._backup_cli import _preserve_source_chain, backup_main
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 _CHAIN = "data/events/audit.log"

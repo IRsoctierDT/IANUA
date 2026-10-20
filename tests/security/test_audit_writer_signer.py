@@ -27,7 +27,12 @@ from pathlib import Path
 import pytest
 
 import agents.policies.signing as signing
-from agents.policies.audit import AuditLogger, VerificationReport, signer_from_env, verifier_from_env
+from agents.policies.audit import (
+    AuditLogger,
+    VerificationReport,
+    signer_from_env,
+    verifier_from_env,
+)
 from agents.policies.signing import (
     Ed25519Signer,
     Ed25519Verifier,

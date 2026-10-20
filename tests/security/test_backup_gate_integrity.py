@@ -30,8 +30,8 @@ from agents.policies.audit import AuditLogger, signing_key_from_env
 from ingest import normalize
 from scripts._exit_codes import EXIT_RETRYABLE
 from scripts._locking import prepare_lock, single_instance
-from tests._backup_cli import backup_main, with_audit_anchor
 from store import EventStore
+from tests._backup_cli import backup_main, with_audit_anchor
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
