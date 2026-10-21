@@ -204,6 +204,22 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **A corrupt high-water mark escaped as a bare `ValueError` or was obeyed silently, and a
+  NaN query bound read as a quiet period.** `EventStore.high_water_mark` converted the stored
+  `meta` mark, and in its no-`meta` fallback `MAX(ingested_at)`, with `float()`. Garbage text
+  raised a bare `ValueError` from `high_water_mark`, `next_stamp`, `append` and `attest`, so
+  `sli` graded `ingest-freshness`, `detection-lag` and `detection-backlog` "the probe raised".
+  A BLOB `b'1.5'` and `±inf` were accepted, and a stored `nan` was worse: every comparison
+  against it is false, so an append behind every stored row succeeded and rewrote the mark
+  lower, and `scripts/run_retention.py --apply` skipped its clock-fault guard and deleted 5 of
+  10 events at exit 0, where the same store with an intact mark is refused at exit 2. Both
+  branches now raise `StoreIntegrityError` for anything that is not a finite number, without
+  echoing the stored text, and `sli` names the mark rather than saying the store "could not be
+  opened". Separately, `Query`'s `since`, `until`, `ingested_from` and both keyset bounds now
+  go through `_finite`, as `prune` and `count_before` already did: a NaN bound returned no
+  rows with no error and now raises `ValueError` (`TypeError` for text, which `float()` used
+  to parse). `run_cycle` refuses a non-finite `lookback` as the CLI already did; called
+  directly, `nan` correlated 10 events against the default's 50.
 - **A corrupt `ingested_at` read as "could not measure", and NaN or infinite timestamps
   were accepted on both sides.** `ingested_at` is the one column the read path converts that
   the content hash does not cover. A stored row whose value was text or a BLOB escaped `query`

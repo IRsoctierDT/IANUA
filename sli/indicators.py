@@ -137,14 +137,24 @@ def _high_water_mark(root: Path) -> tuple[float | None, str | None]:
     if missing is not None:
         return None, missing
     try:
-        with EventStore.open(root) as store:
-            mark = store.high_water_mark()
+        store = EventStore.open(root)
     except StorePathError as exc:
         # With its message: the class name alone does not say which file to
         # look at (found by review).
         return None, f"the event store could not be opened ({type(exc).__name__}): {exc}"
     except (StoreError, OSError) as exc:
         return None, f"the event store could not be opened ({type(exc).__name__})"
+    # The read is outside the open's handler, so a refusal from it is not
+    # relabelled "could not be opened" — the rule `_open_store` states. A
+    # corrupt mark opens fine and then raises `StoreIntegrityError`, whose
+    # message names the type or the infinity and never the stored text.
+    with store:
+        try:
+            mark = store.high_water_mark()
+        except StoreError as exc:
+            return None, (
+                f"the event store's high-water mark is unreadable ({type(exc).__name__}): {exc}"
+            )
     if mark is None:
         return None, "the event store holds no events yet"
     return mark, None
