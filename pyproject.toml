@@ -53,7 +53,7 @@ dev = [
 ]
 
 dashboard = [
-  "streamlit>=1.66.0",
+  "streamlit>=1.66.1",
   "qdrant-client>=1.19.1",
   "sentence-transformers>=6.1.0",
 ]

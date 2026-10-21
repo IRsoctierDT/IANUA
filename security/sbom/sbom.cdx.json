@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:d6a99b28-fb6a-52e0-ba2e-2358df308dee",
+  "serialNumber": "urn:uuid:a9cc6d56-69ec-5ef1-af76-d2bc58e86faa",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-13T17:12:21Z",
+    "timestamp": "2026-10-21T23:11:28Z",
     "tools": {
       "components": [
         {
@@ -98,11 +98,11 @@
       "purl": "pkg:pypi/cachecontrol@0.14.4"
     },
     {
-      "bom-ref": "pkg:pypi/certifi@2026.6.17",
+      "bom-ref": "pkg:pypi/certifi@2026.10.19",
       "name": "certifi",
       "type": "library",
-      "version": "2026.6.17",
-      "purl": "pkg:pypi/certifi@2026.6.17"
+      "version": "2026.10.19",
+      "purl": "pkg:pypi/certifi@2026.10.19"
     },
     {
       "bom-ref": "pkg:pypi/cffi@2.1.0",
@@ -560,11 +560,11 @@
       "purl": "pkg:pypi/pathspec@1.1.1"
     },
     {
-      "bom-ref": "pkg:pypi/pillow@12.3.0",
+      "bom-ref": "pkg:pypi/pillow@13.0.0",
       "name": "pillow",
       "type": "library",
-      "version": "12.3.0",
-      "purl": "pkg:pypi/pillow@12.3.0"
+      "version": "13.0.0",
+      "purl": "pkg:pypi/pillow@13.0.0"
     },
     {
       "bom-ref": "pkg:pypi/pip-api@0.0.34",
@@ -854,11 +854,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.66.0",
+      "bom-ref": "pkg:pypi/streamlit@1.66.1",
       "name": "streamlit",
       "type": "library",
-      "version": "1.66.0",
-      "purl": "pkg:pypi/streamlit@1.66.0"
+      "version": "1.66.1",
+      "purl": "pkg:pypi/streamlit@1.66.1"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
@@ -959,11 +959,11 @@
       "purl": "pkg:pypi/uvicorn@0.49.0"
     },
     {
-      "bom-ref": "pkg:pypi/virtualenv@21.14.5",
+      "bom-ref": "pkg:pypi/virtualenv@21.14.12",
       "name": "virtualenv",
       "type": "library",
-      "version": "21.14.5",
-      "purl": "pkg:pypi/virtualenv@21.14.5"
+      "version": "21.14.12",
+      "purl": "pkg:pypi/virtualenv@21.14.12"
     },
     {
       "bom-ref": "pkg:pypi/watchdog@6.0.0",
