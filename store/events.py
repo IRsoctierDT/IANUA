@@ -1414,7 +1414,8 @@ class EventStore:
         The ``limit`` is clamped to :data:`store.schema.MAX_QUERY_LIMIT` rather
         than honored, and a non-positive limit yields nothing rather than
         everything — a caller computing a limit arithmetically should get an
-        empty page from a bad computation, not the whole store.
+        empty page from a bad computation, not the whole store. The time
+        bounds are checked first, so an empty limit cannot hide a bad window.
 
         Raises:
             ValueError: for a time bound that is not finite — ``since``,
@@ -1433,8 +1434,6 @@ class EventStore:
                 parsed text, so ``since="5"`` used to be read as ``5.0``.
         """
         limit = min(spec.limit, MAX_QUERY_LIMIT)
-        if limit <= 0:
-            return ()
         clauses: list[str] = []
         params: list[Any] = []
         # Each fragment below is a literal; only values are bound. There is no
@@ -1482,6 +1481,10 @@ class EventStore:
                 "EXISTS (SELECT 1 FROM observables o WHERE o.event_id = e.event_id AND o.value = ?)"
             )
             params.append(spec.observable)
+        # After the bounds, not before: an empty limit returned first used to
+        # hide a NaN window behind `()`, the silence the checks above refuse.
+        if limit <= 0:
+            return ()
         # The statement is assembled only from literals declared in this
         # module: _SELECT, the _PREDICATE fragments, and one of two _ORDER
         # constants. No caller value is ever concatenated into SQL text — the

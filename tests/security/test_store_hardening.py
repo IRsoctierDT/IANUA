@@ -2230,6 +2230,11 @@ def test_a_non_finite_query_bound_is_refused(tmp_path: Path, bound: str, bad: fl
         assert _bounded_store(store) == 2
         with pytest.raises(ValueError, match=f"{bound} must be finite"):
             store.query(_QUERY_BOUNDS[bound](bad))
+        # An empty limit returns `()` without a query, and used to do so before
+        # any bound was checked, so a bad window under it read as a quiet period.
+        empty = dataclasses.replace(_QUERY_BOUNDS[bound](bad), limit=0)
+        with pytest.raises(ValueError, match=f"{bound} must be finite"):
+            store.query(empty)
 
 
 @pytest.mark.security
@@ -2246,6 +2251,9 @@ def test_a_textual_query_bound_is_refused(tmp_path: Path, bound: str, text: obje
         assert _bounded_store(store) == 2
         with pytest.raises(TypeError, match=f"{bound} must be a real number"):
             store.query(_QUERY_BOUNDS[bound](text))
+        empty = dataclasses.replace(_QUERY_BOUNDS[bound](text), limit=0)
+        with pytest.raises(TypeError, match=f"{bound} must be a real number"):
+            store.query(empty)
 
 
 @pytest.mark.security
