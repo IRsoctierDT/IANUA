@@ -27,7 +27,12 @@ from pathlib import Path
 import pytest
 
 import agents.policies.signing as signing
-from agents.policies.audit import AuditLogger, signer_from_env, verifier_from_env
+from agents.policies.audit import (
+    AuditLogger,
+    VerificationReport,
+    signer_from_env,
+    verifier_from_env,
+)
 from agents.policies.signing import (
     Ed25519Signer,
     Ed25519Verifier,
@@ -126,6 +131,45 @@ def test_a_public_key_alone_verifies_and_cannot_sign(monkeypatch: pytest.MonkeyP
     _env(monkeypatch, AUDIT_ED25519_PUBLIC_KEY=public)
     assert signer_from_env() is None
     assert isinstance(verifier_from_env(), Ed25519Verifier)
+
+
+@pytest.mark.security
+def test_find_record_matches_the_same_captured_bytes_it_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-verification replacement cannot inject a record into the lookup."""
+    chain = tmp_path / "audit.log"
+    signed = AuditLogger(chain, signing_key=secrets.token_bytes(32))
+    signed.record(
+        actor="test",
+        action="backup_state:take:1",
+        action_class="read_only",
+        decision="allow",
+        reason="manifest sha256 original",
+    )
+    signed._lock_path.unlink()
+    capture_snapshot = AuditLogger._verify_snapshot_locked
+
+    def replace_after_snapshot(
+        logger: AuditLogger, *, capture_segments: bool
+    ) -> tuple[VerificationReport, list[tuple[Path, str]]]:
+        report, segment_texts = capture_snapshot(logger, capture_segments=capture_segments)
+        AuditLogger(chain).record(
+            actor="test",
+            action="backup_state:take:1",
+            action_class="read_only",
+            decision="allow",
+            reason="manifest sha256 forged",
+        )
+        return report, segment_texts
+
+    monkeypatch.setattr(AuditLogger, "_verify_snapshot_locked", replace_after_snapshot)
+    report, found = signed.find_record(
+        lambda event: str(event.get("reason", "")).endswith("manifest sha256 forged")
+    )
+
+    assert report.intact and report.signature == "valid"
+    assert not found
 
 
 # --- refusals -----------------------------------------------------------------------

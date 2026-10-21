@@ -38,6 +38,7 @@ import pytest
 from scripts.run_backup import main as backup_main
 from scripts.run_collector import main as collect_main
 from store import EventStore
+from tests._backup_cli import _preserve_source_chain
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LINES = 600
@@ -84,6 +85,7 @@ def test_a_destroyed_lab_root_recovers_with_no_loss(tmp_path: Path) -> None:
 
     assert backup_main(["--root", str(root), "--name", "drill", "--json"]) == 0
     backup = root / "data" / "backups" / "drill"
+    audit_anchor = _preserve_source_chain(root)
     # Kept outside the root, because the next step destroys the root — which
     # is also the point an operator has to get right.
     held = tmp_path / "offsite" / "drill"
@@ -105,7 +107,20 @@ def test_a_destroyed_lab_root_recovers_with_no_loss(tmp_path: Path) -> None:
     assert not (root / "data" / "pipeline" / "cursor.json").exists()
     assert _count(root) == _BACKUP_AT, "the restored store is the backup, not the live store"
 
-    assert backup_main(["--root", str(root), "--verify", str(held), "--json"]) == 0
+    assert (
+        backup_main(
+            [
+                "--root",
+                str(root),
+                "--verify",
+                str(held),
+                "--audit-anchor",
+                str(audit_anchor),
+                "--json",
+            ]
+        )
+        == 0
+    )
 
     # Re-collection closes the gap: every line is re-read, and content
     # addressing stores only the ones the backup did not already have.

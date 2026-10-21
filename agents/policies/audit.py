@@ -43,7 +43,7 @@ import json
 import os
 import re
 import stat
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -592,6 +592,22 @@ class AuditLogger:
         finally:
             os.close(descriptor)
 
+    def reading(self) -> contextlib.AbstractContextManager[None]:
+        """Hold the chain still for a reader outside this class.
+
+        The shared lock :meth:`verify_report` takes, for a caller that must
+        read the chain and its sidecars as one consistent set:
+        ``scripts/run_backup.py``'s take, which copied ``audit.log`` and
+        ``audit.log.sig`` as two separate reads. Measured, a record landing
+        between them, which became possible once ``--verify`` stopped
+        sharing the take's lock, left a backup whose head signature was stale
+        and which could never pass ``--verify`` or the promotion gate (found by
+        independent review). Blocking, like the writer's lock, and it never
+        creates the lock file. Do not call :meth:`record` on the same chain
+        while holding it: the lock is not reentrant.
+        """
+        return self._shared()
+
     # ---------------------------------------------------------------- segments
     @staticmethod
     def _is_segment(path: Path) -> bool:
@@ -954,13 +970,29 @@ class AuditLogger:
         if head_seq < 0:
             return "empty"
         try:
-            sig = json.loads(_read_regular_text(self._sig_path))
+            signature_text = _read_regular_text(self._sig_path)
+        except FileNotFoundError:
+            return "missing"
+        except (UnicodeDecodeError, OSError):
+            signature_text = ""
+        return self._signature_status_from_text(head_seq, head_hash, signature_text)
+
+    def _signature_status_from_text(
+        self, head_seq: int, head_hash: str, signature_text: str | None
+    ) -> str:
+        """Check one captured signature sidecar against a known chain head."""
+        if self._signer is None:
+            return "unsigned"
+        if head_seq < 0:
+            return "empty"
+        if signature_text is None:
+            return "missing"
+        try:
+            sig = json.loads(signature_text)
             stored_seq = int(sig["seq"])
             stored_hash = str(sig["head_hash"])
             stored_signature = str(sig["signature"])
-        except FileNotFoundError:
-            return "missing"
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             return "malformed"
         # The signature must verify AND cover the *current* head.
         message = self._head_message(stored_seq, stored_hash)
@@ -1006,23 +1038,65 @@ class AuditLogger:
         with self._shared():
             return self._verify_report_locked()
 
+    def find_record(
+        self, predicate: Callable[[Mapping[str, object]], bool]
+    ) -> tuple[VerificationReport, bool]:
+        """Verify the chain and search its retained records under one shared lock.
+
+        Verification and lookup use the same captured segment bytes, checkpoint
+        and signature. The shared lock also excludes cooperative writers; the
+        snapshot keeps an external writer that ignores the lock from swapping a
+        different chain between the integrity verdict and lookup. The predicate
+        receives each decoded JSON object; callers must still interpret its
+        fields as untrusted unless the report's signature is ``valid``.
+        """
+        with self._shared():
+            report, segment_texts = self._verify_snapshot_locked(capture_segments=True)
+            if not report.intact:
+                return report, False
+            for _segment, text in segment_texts:
+                for line in text.splitlines():
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    if isinstance(record, dict) and predicate(record):
+                        return report, True
+            return report, False
+
     def _verify_report_locked(self) -> VerificationReport:
         """The verification itself. Caller holds :meth:`_shared` if available."""
+        return self._verify_snapshot_locked(capture_segments=False)[0]
+
+    def _verify_snapshot_locked(
+        self, *, capture_segments: bool
+    ) -> tuple[VerificationReport, list[tuple[Path, str]]]:
+        """Verify chain bytes, retaining them only when a caller must search them."""
         segments = self._segments_in_order()
+        segment_texts: list[tuple[Path, str]] = []
         try:
-            checkpoint = self._read_checkpoint()
+            if self._is_segment(self._checkpoint_path):
+                checkpoint_data = json.loads(_read_regular_text(self._checkpoint_path))
+                checkpoint = (
+                    int(checkpoint_data["pruned_through_seq"]),
+                    str(checkpoint_data["pruned_through_hash"]),
+                )
+            else:
+                checkpoint = None
         except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
             # A truncated/garbled checkpoint sidecar is diagnosed exactly like a
             # malformed entry: a located fail-closed verdict, never an exception.
-            return VerificationReport(
-                intact=False,
-                entries=0,
-                segments=len(segments),
-                head_seq=-1,
-                head_hash=_GENESIS_HASH,
-                checkpoint_seq=None,
-                signature="unchecked",
-                failure=f"malformed checkpoint sidecar at {self._checkpoint_path.name}",
+            return (
+                VerificationReport(
+                    intact=False,
+                    entries=0,
+                    segments=len(segments),
+                    head_seq=-1,
+                    head_hash=_GENESIS_HASH,
+                    checkpoint_seq=None,
+                    signature="unchecked",
+                    failure=f"malformed checkpoint sidecar at {self._checkpoint_path.name}",
+                ),
+                segment_texts,
             )
         if checkpoint is None:
             expected_seq, expected_prev = 0, _GENESIS_HASH
@@ -1052,10 +1126,15 @@ class AuditLogger:
             except (UnicodeDecodeError, OSError):
                 # Non-UTF-8 corruption (or an unreadable file) is a located
                 # fail-closed verdict, not an exception out of verification.
-                return _report(
-                    f"unreadable segment {segment.name} (undecodable or inaccessible)",
-                    "unchecked",
+                return (
+                    _report(
+                        f"unreadable segment {segment.name} (undecodable or inaccessible)",
+                        "unchecked",
+                    ),
+                    segment_texts,
                 )
+            if capture_segments:
+                segment_texts.append((segment, text))
             lines = text.splitlines()
             # Every entry is written with its "\n", so an unterminated final
             # line is a write that did not finish, whatever it holds — a complete
@@ -1064,7 +1143,10 @@ class AuditLogger:
             for line_no, line in enumerate(lines, start=1):
                 where = f"{segment.name}:{line_no}"
                 if line_no == torn_at:
-                    return _report(f"malformed entry at {where} (unterminated line)", "unchecked")
+                    return (
+                        _report(f"malformed entry at {where} (unterminated line)", "unchecked"),
+                        segment_texts,
+                    )
                 if not line.strip():
                     continue
                 try:
@@ -1086,27 +1168,38 @@ class AuditLogger:
                     # Corruption is tampering until proven otherwise: locate it,
                     # fail closed, never raise out of verification. The head
                     # signature is not consulted past a break ("unchecked").
-                    return _report(f"malformed entry at {where}", "unchecked")
+                    return _report(f"malformed entry at {where}", "unchecked"), segment_texts
                 if seq != expected_seq or prev != expected_prev:
                     return _report(
                         f"chain break at {where}: expected seq {expected_seq} "
                         f"continuing from {expected_prev[:12]}…, found seq {seq} "
                         f"with prev {prev[:12]}…",
                         "unchecked",
-                    )
+                    ), segment_texts
                 if recomputed != stored_hash:
-                    return _report(f"entry hash mismatch at {where} (seq {seq})", "unchecked")
+                    return (
+                        _report(f"entry hash mismatch at {where} (seq {seq})", "unchecked"),
+                        segment_texts,
+                    )
                 entries += 1
                 head_seq, head_hash = seq, stored_hash
                 expected_prev = stored_hash
                 expected_seq += 1
 
+        signature_text: str | None = None
+        if self._signer is not None:
+            try:
+                signature_text = _read_regular_text(self._sig_path)
+            except FileNotFoundError:
+                pass
+            except (UnicodeDecodeError, OSError):
+                signature_text = ""
         if entries == 0:
             # Empty (or fully pruned) log: trivially intact; nothing to sign.
             signature = "empty" if self._signer is not None else "unsigned"
-            return _report(None, signature)
+            return _report(None, signature), segment_texts
 
-        signature = self._signature_status(head_seq, head_hash)
+        signature = self._signature_status_from_text(head_seq, head_hash, signature_text)
         if self._signer is not None and signature != "valid":
-            return _report(f"head signature {signature}", signature)
-        return _report(None, signature)
+            return _report(f"head signature {signature}", signature), segment_texts
+        return _report(None, signature), segment_texts

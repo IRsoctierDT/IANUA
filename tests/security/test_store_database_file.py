@@ -41,7 +41,6 @@ import pytest
 
 from ingest import normalize
 from scripts.run_backup import _database_problem
-from scripts.run_backup import main as backup_main
 from store import (
     EventStore,
     StoreError,
@@ -50,6 +49,7 @@ from store import (
     StoreSidecarError,
     refuse_unsafe_database,
 )
+from tests._backup_cli import backup_main, with_audit_anchor
 from tests.security.test_store_sidecars import (
     _CLIS,
     _RECORD,
@@ -108,6 +108,7 @@ def _sidecars(db: Path) -> list[str]:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    argv = with_audit_anchor(argv)
     try:
         return subprocess.run(  # noqa: S603 - fixed interpreter, literal argv, test paths
             [sys.executable, *argv],
@@ -314,10 +315,9 @@ def test_every_cli_refuses_the_database_instead_of_hanging_or_writing_through(
     Exit 1 is the "damage, page someone" code these CLIs already use for a store that
     will not open, and it is what the hang used to turn into "skipped" at exit 0. Every
     one except the SLI reporter names the problem and says the store was not opened.
-    The SLI reporter checks ``is_file()`` before it opens anything, so a FIFO never
-    reaches the store there: it reports "no event store", which is unmeasured and exit 1
-    by its contract, and that cell pins behaviour that was already fail-closed. A hard
-    link does reach ``EventStore.open`` and is reported as ``StoreFileError``.
+    The SLI reporter's guard is an ``lstat``, so a FIFO, like a hard link, reaches
+    ``EventStore.open`` and is reported as ``StoreFileError``; only absence reads as
+    "no event store". Both are unmeasured, so exit 1 by its contract.
     """
     root = _seeded(tmp_path)
     log = root / "logs" / "auth.log"
@@ -339,7 +339,9 @@ def test_every_cli_refuses_the_database_instead_of_hanging_or_writing_through(
     out = result.stdout + result.stderr
     assert result.returncode == 1, out[-600:]
     if cli == "sli" and case == "fifo":
-        assert "no event store at data/events/events.sqlite3" in out, out[-600:]
+        # Named, not read as absent: the SLI guard is an lstat now, so a FIFO reaches
+        # EventStore.open's refusal like the other CLIs' (it used to say "no event store").
+        assert "StoreFileError" in out and "is not a regular file (a FIFO)" in out, out[-600:]
     elif cli == "sli":
         assert "StoreFileError" in out and "has 2 hard links" in out, out[-600:]
     else:

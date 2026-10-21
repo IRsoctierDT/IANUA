@@ -35,8 +35,8 @@ import pytest
 
 from ingest import normalize
 from scripts.run_backup import MANIFEST_FORMAT
-from scripts.run_backup import main as backup_main
 from store import EventStore, StoreFileError
+from tests._backup_cli import backup_main, with_audit_anchor
 
 _RECORD = 'type=USER_AUTH msg=audit(1760000000.1:1): acct="svc-%d" addr=203.0.113.9 res=failed'
 # The current format, so each hostile manifest reaches the shape check it names
@@ -93,6 +93,7 @@ def _run_isolated(
     child's ``sys.path`` by name, because ``-c`` adds the working directory only when
     ``PYTHONSAFEPATH`` is unset (found by review).
     """
+    argv = with_audit_anchor(argv)
     code = (
         f"import sys\nsys.path.insert(0, {str(_REPO_ROOT)!r})\n"
         f"from scripts.run_backup import main\nsys.exit(main({argv!r}))\n"
@@ -1009,7 +1010,8 @@ def test_a_sidecar_that_cannot_be_checked_is_refused_not_taken_as_absent(
         return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(run_backup.os, "lstat", refusing)
-    reason = run_backup._sidecar_problem(db, what="the store")
+    # Through run_backup's own call site, so this pins that it passes the reason on.
+    reason = run_backup._unsafe_to_open(db, what="the store")
     assert reason is not None and f"its {suffix} cannot be checked (PermissionError)" in reason
 
 
@@ -1182,5 +1184,5 @@ def test_a_device_sidecar_is_named_as_one(tmp_path: Path, monkeypatch: pytest.Mo
         return real_lstat(path, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(run_backup.os, "lstat", as_device)
-    reason = run_backup._sidecar_problem(db, what="the store")
+    reason = run_backup._unsafe_to_open(db, what="the store")
     assert reason is not None and "its -wal is a character device, not a regular file" in reason
