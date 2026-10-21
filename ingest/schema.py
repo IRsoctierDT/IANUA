@@ -547,7 +547,7 @@ def _optional_epoch(payload: Mapping[str, Any], key: str, where: str) -> float |
 
 
 def _storable_epoch(value: float | None) -> float | None:
-    """``value`` if the reader accepts it as a timestamp, otherwise ``None``.
+    """The reader's own reading of ``value`` as a timestamp, or ``None``.
 
     The write-side twin of :func:`_optional_epoch`, for
     :meth:`NormalizedEvent.bounded`. It calls the reader rather than restating
@@ -556,12 +556,19 @@ def _storable_epoch(value: float | None) -> float | None:
     carried no usable timestamp", so an unusable one is dropped rather than
     replaced with a clock reading, the same rule ``_coerce.epoch`` applies when
     parsing.
+
+    It returns what the reader returned, not ``value``, so the value checked is
+    the value kept, which is the rule ``store.events._finite`` states. Returning
+    ``value`` kept the wrong one for a ``float`` subclass whose ``__float__``
+    answers ``1.0`` over an infinite payload: the check saw ``1.0``,
+    ``bounded()`` kept the infinity, ``json`` wrote it as ``Infinity``, and
+    ``append`` refused the event ``bounded()`` exists to make storable.
+    Measured, and found by review.
     """
     try:
-        _optional_epoch({"timestamp": value}, "timestamp", "event")
+        return _optional_epoch({"timestamp": value}, "timestamp", "event")
     except MalformedProjectionError:
         return None
-    return value
 
 
 def _literal(payload: Mapping[str, Any], key: str, allowed: frozenset[str], where: str) -> str:

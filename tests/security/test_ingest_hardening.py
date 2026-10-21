@@ -2649,6 +2649,31 @@ def test_bounded_drops_only_a_timestamp_the_reader_refuses() -> None:
         assert kept.bounded() == kept, usable
 
 
+class _LyingFloat(float):
+    """A float whose payload is infinite while ``__float__`` answers ``1.0``."""
+
+    def __float__(self) -> float:
+        return 1.0
+
+
+@pytest.mark.security
+def test_bounded_keeps_the_timestamp_value_the_reader_checked() -> None:
+    """The value checked is the value kept, or ``bounded()`` output is unstorable.
+
+    ``_storable_epoch`` validated ``float(value)`` and then returned ``value``,
+    so this object passed as ``1.0`` and kept its infinity. ``json.dumps`` reads
+    the payload, not ``__float__``, so it wrote ``Infinity``, and the read-back
+    ``append`` runs refused the event. The round trip below is that read-back.
+    Found by review.
+    """
+    lying = _LyingFloat("inf")
+    assert float(lying) == 1.0 and float.__repr__(lying) == "inf", "precondition"
+    event = dataclasses.replace(normalize("sshd: session opened for user root"), timestamp=lying)
+    repaired = event.bounded()
+    assert type(repaired.timestamp) is float and repaired.timestamp == 1.0
+    NormalizedEvent.from_dict(json.loads(json.dumps(repaired.to_dict())))
+
+
 #: ``(id, record, raised_before_the_fix)`` for every shape by which an
 #: unrenderable number can reach this layer. The four JSON rows are the only
 #: ones a *collector* can deliver, since it passes log lines as ``str``, and
