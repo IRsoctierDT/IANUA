@@ -129,6 +129,11 @@ class StoreIntegrityError(StoreError):
     ``MalformedProjectionError`` is its ``__cause__``. It used to reach callers
     bare, and as an ``IngestError`` it slipped past every ``except
     StoreError``, including the ``store-readable`` probe that exists for it.
+
+    And covers a row whose ``ingested_at`` is not a finite number. That column
+    is outside the hash, and no write path stores text, bytes or an infinity
+    in it, so one that holds them was written outside the API. Its cause is the
+    ``TypeError`` or ``ValueError`` from ``store.events._finite``.
     """
 
 

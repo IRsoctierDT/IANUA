@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import json
+import math
 import sqlite3
 import typing
 from collections.abc import Callable
@@ -1210,6 +1211,11 @@ _UNREADABLE: dict[str, dict[str, Any]] = {
     "too_many_observables": {
         "observables": tuple(f"10.0.0.{index}" for index in range(MAX_OBSERVABLES + 1))
     },
+    # Not lengths, but bounds `from_dict` enforces all the same, and both
+    # sides accepted all three before the reader refused them.
+    "nan_timestamp": {"timestamp": math.nan},
+    "positive_infinite_timestamp": {"timestamp": math.inf},
+    "negative_infinite_timestamp": {"timestamp": -math.inf},
 }
 
 
@@ -1279,9 +1285,11 @@ def test_a_batch_holding_one_unreadable_event_is_refused_whole(tmp_path: Path) -
         assert store.append_many((good,), ingested_at=1.0) == 1
 
 
-#: Fields no value can overfill: two closed vocabularies and an epoch float.
-#: Named so the reflection below cannot quietly cover nothing and pass.
-_UNOVERFILLABLE = frozenset({"source_type", "parse_status", "timestamp"})
+#: Fields no value can overfill: two closed vocabularies. Named so the
+#: reflection below cannot quietly cover nothing and pass. ``timestamp`` was a
+#: third, "an epoch float", until the reader refused NaN and the infinities:
+#: now a value can put it outside its bound, so it is exercised below.
+_UNOVERFILLABLE = frozenset({"source_type", "parse_status"})
 
 
 def _one_overfilled_field(name: str) -> NormalizedEvent:
@@ -1297,6 +1305,8 @@ def _one_overfilled_field(name: str) -> NormalizedEvent:
     hints = typing.get_type_hints(NormalizedEvent)
     annotation = hints[name]
     long_text = "A" * (MAX_FIELD_LEN + 1)
+    if name == "timestamp":
+        return _hand_built(timestamp=math.nan)
     if name == "raw_excerpt":
         return _hand_built(raw_excerpt="A" * (MAX_RAW_EXCERPT + 1))
     if dataclasses.is_dataclass(annotation) and isinstance(annotation, type):
@@ -1351,12 +1361,14 @@ def test_the_reflection_above_covers_every_field_it_can() -> None:
             _one_overfilled_field(name)
 
 
-def _plant(store: EventStore, projection: str, *, ingested_at: float) -> str:
+def _plant(store: EventStore, projection: str, *, ingested_at: float | str | bytes) -> str:
     """Write a row the API would refuse, under an ``event_id`` that matches it.
 
     The hash is recomputed on purpose. ``event_id`` is an unkeyed sha256, so a
     matching hash is what a row from an earlier build and a forged row both
-    carry, and the hash check is not what stops either of them.
+    carry, and the hash check is not what stops either of them. ``ingested_at``
+    takes text and bytes too, because the column is outside the hash and SQLite
+    stores whatever storage class it is given.
     """
     identifier = event_id(projection)
     with store._conn:
@@ -1467,6 +1479,65 @@ def test_a_forged_row_cannot_write_its_content_into_the_refusal(tmp_path: Path, 
     assert len(message) < 500, f"{len(message)} chars of a forged row's refusal"
     assert "q" * 300 not in message
     assert f"({len(reader)} chars, cut)" in message, "a cut must say that it is one"
+
+
+#: ``ingested_at`` values no write path stores, as SQLite keeps them in a REAL
+#: column, with the reader's exception for each. The column is outside the
+#: hash, so each needs nothing but write access to the file.
+_CORRUPT_STAMPS: dict[str, tuple[str | bytes | float, type[Exception]]] = {
+    # Raised a bare ValueError from float(), so `sli` read "the probe raised".
+    "text": ("PLANTED-STAMP", TypeError),
+    "blob": (b"PLANTED-STAMP", TypeError),
+    # Read back *silently* before: float() parses bytes, and +/-inf converts.
+    "numeric_blob": (b"1.5", TypeError),
+    "positive_infinity": (math.inf, ValueError),
+    "negative_infinity": (-math.inf, ValueError),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_CORRUPT_STAMPS), ids=lambda value: value)
+def test_a_corrupt_ingestion_stamp_is_a_store_integrity_error(tmp_path: Path, case: str) -> None:
+    """The one column the read path converts and the hash does not cover.
+
+    A refusal that names the corruption, rather than a runtime ``ValueError``
+    that ``sli`` cannot tell from a bug in the probe. And it covers the two
+    shapes ``float()`` accepted without complaint, a numeric BLOB and an
+    infinity, which a fix catching only ``ValueError`` would still have let
+    through. The planted text must not reach the message: a forged row
+    chooses it.
+    """
+    value, cause = _CORRUPT_STAMPS[case]
+    projection = canonical_json(normalize(_RECORD).to_dict())
+    with EventStore.open(tmp_path) as store:
+        identifier = _plant(store, projection, ingested_at=value)
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    assert not isinstance(raised.value, StoreCorruptionError), "a row, not a damaged file"
+    assert isinstance(raised.value.__cause__, cause)
+    message = str(raised.value)
+    assert identifier in message
+    assert "ingested_at" in message
+    assert "PLANTED" not in message
+
+
+@pytest.mark.security
+def test_a_finite_ingestion_stamp_in_any_numeric_spelling_still_reads(tmp_path: Path) -> None:
+    """The control, or every refusal above is satisfied by refusing all rows.
+
+    An integer is a legitimate stamp: the column's REAL affinity stores it as
+    a float, which is what a reader must accept. And NaN is not a read case at
+    all, because SQLite stores NaN as NULL and the column is NOT NULL. That is
+    asserted rather than assumed, so a SQLite that changed it would fail here
+    instead of leaving a gap the cases above do not cover.
+    """
+    projection = canonical_json(normalize(_RECORD).to_dict())
+    with EventStore.open(tmp_path) as store:
+        _plant(store, projection, ingested_at=5)
+        (stored,) = store.query()
+        assert stored.ingested_at == 5.0
+        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+            _plant(store, canonical_json(normalize(_OTHER_RECORD).to_dict()), ingested_at=math.nan)
 
 
 @pytest.mark.security

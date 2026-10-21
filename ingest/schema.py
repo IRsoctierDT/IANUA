@@ -319,9 +319,17 @@ class NormalizedEvent:
         drop the only copy of a value that lives nowhere else (a CloudTrail
         ``mfaAuthenticated``, a Defender ``ThreatTypes``), and a reader must
         be able to tell a complete summary from a cut one.
+
+        ``timestamp`` is the one bound that is not a length. A value the reader
+        refuses (NaN, an infinity, an integer past float range) becomes
+        ``None``, through the reader itself (:func:`_storable_epoch`). No parser
+        produces one, so on ``ingest.normalize``'s path this never changes an
+        event. It exists so a direct caller can make any event storable, which
+        is what this method is for.
         """
         return replace(
             self,
+            timestamp=_storable_epoch(self.timestamp),
             vendor=self.vendor[:MAX_FIELD_LEN],
             vendor_event_id=_clip(self.vendor_event_id),
             message=self.message[:MAX_FIELD_LEN],
@@ -481,6 +489,10 @@ def _optional_text(payload: Mapping[str, Any], key: str, where: str) -> str | No
     return _text(payload, key, where, required=False)
 
 
+#: The bound :func:`_optional_epoch`'s finiteness test compares against.
+_INFINITY = float("inf")
+
+
 def _optional_epoch(payload: Mapping[str, Any], key: str, where: str) -> float | None:
     """``None`` or epoch seconds.
 
@@ -495,6 +507,21 @@ def _optional_epoch(payload: Mapping[str, Any], key: str, where: str) -> float |
     and ``sli`` graded it "the probe raised OverflowError". It is now refused
     like any other malformed field. ``ingest/_coerce.py::epoch`` already
     guards the same conversion on the parse side.
+
+    **NaN and the infinities are refused**, and that is a decision, not a
+    tidy-up, because both sides used to accept them. ``json`` reads and writes
+    ``NaN``, ``Infinity`` and ``-Infinity`` by default, so a hand-built event
+    with one appended without error and read back unchanged. Measured through
+    the store, each one corrupts the time model rather than failing: NaN is
+    stored with ``occurred_at`` NULL, because SQLite stores NaN as NULL, so it
+    drops out of every time window while its projection still carries a time.
+    ``+inf`` is inside every ``since=`` window and ``-inf`` inside every
+    ``until=`` window. None of them is a time any telemetry describes, and no
+    parser produces one, since ``_coerce._plausible`` bounds every parsed
+    timestamp. This is the read check, and ``EventStore.append`` runs the
+    reader on every projection before it writes, so one check refuses them on
+    both sides. :meth:`NormalizedEvent.bounded` maps them to ``None`` through
+    this same function.
     """
     value = payload[key]
     if value is None:
@@ -504,11 +531,37 @@ def _optional_epoch(payload: Mapping[str, Any], key: str, where: str) -> float |
             f"{where}.{key}: expected epoch seconds, got {type(value).__name__}"
         )
     try:
-        return float(value)
+        seconds = float(value)
     except OverflowError as exc:
         raise MalformedProjectionError(
             f"{where}.{key}: an integer too large for epoch seconds"
         ) from exc
+    # NaN fails every comparison and each infinity fails its own, so this one
+    # chain is the finiteness test. It is written as a comparison, the same
+    # way ``_coerce._plausible`` is, because ingest's import allow-list does
+    # not carry ``math``, and widening a security control for one call is the
+    # wrong trade.
+    if not -_INFINITY < seconds < _INFINITY:
+        raise MalformedProjectionError(f"{where}.{key}: epoch seconds must be finite")
+    return seconds
+
+
+def _storable_epoch(value: float | None) -> float | None:
+    """``value`` if the reader accepts it as a timestamp, otherwise ``None``.
+
+    The write-side twin of :func:`_optional_epoch`, for
+    :meth:`NormalizedEvent.bounded`. It calls the reader rather than restating
+    its rules, for the reason ``EventStore._project`` gives: a second list of
+    bounds is what drifts. ``None`` is the schema's own meaning for "the source
+    carried no usable timestamp", so an unusable one is dropped rather than
+    replaced with a clock reading, the same rule ``_coerce.epoch`` applies when
+    parsing.
+    """
+    try:
+        _optional_epoch({"timestamp": value}, "timestamp", "event")
+    except MalformedProjectionError:
+        return None
+    return value
 
 
 def _literal(payload: Mapping[str, Any], key: str, allowed: frozenset[str], where: str) -> str:

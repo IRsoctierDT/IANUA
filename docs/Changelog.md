@@ -204,6 +204,18 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **A corrupt `ingested_at` read as "could not measure", and NaN or infinite timestamps
+  were accepted on both sides.** `ingested_at` is the one column the read path converts that
+  the content hash does not cover. A stored row whose value was text or a BLOB escaped `query`
+  as a bare `ValueError` (graded `unknown … the probe raised ValueError`), while a numeric
+  BLOB (`b'1.5'`) and `±inf` read back silently as stamps. `_rebuild` now converts it
+  through `store.events._finite` and raises `StoreIntegrityError` for all of them, so
+  `store-readable` reads `breached` with the column named and the stored value never echoed.
+  Separately, a hand-built event with a NaN, `+inf` or `-inf` timestamp was stored without
+  error and read back unchanged: NaN dropped out of every time window, `+inf` sat in every
+  `since=` window and `-inf` in every `until=` one. The reader now refuses them, which covers
+  both sides, since `append` runs the reader before it writes. `bounded()` maps them to
+  `None`. No parser produces one, so no store written through `ingest/` is affected.
 - **`store-readable` graded its own headline failure as unmeasurable.** A stored row that
   hashes to its `event_id` and has a field past its bound (the over-long `message` the
   objective's rationale cites) made `query` raise the reader's `MalformedProjectionError`,
