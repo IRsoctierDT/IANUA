@@ -1540,6 +1540,10 @@ def _rebuild(row: sqlite3.Row) -> StoredEvent:
     Only ``MalformedProjectionError`` is mapped, because it is the one refusal
     ``from_dict`` documents. Anything else it raises is a defect in the reader
     and surfaces as itself.
+
+    The same holds for ``ingested_at``, the one column read here that the hash
+    does not cover: a value that is not a finite number is a
+    :class:`StoreIntegrityError`, not a bare ``ValueError`` from ``float()``.
     """
     projection = str(row["projection"])
     identifier = str(row["event_id"])
@@ -1566,8 +1570,22 @@ def _rebuild(row: sqlite3.Row) -> StoredEvent:
             f"event {identifier}: projection hashes to its event_id but does not "
             f"rebuild: {_rebuild_reason(exc)}"
         ) from exc
-    return StoredEvent(
-        event_id=identifier,
-        ingested_at=float(row["ingested_at"]),
-        event=event,
-    )
+    # The one column read here that the hash does not cover. Through `_finite`
+    # rather than `float()`, because `float()` both raised and accepted the
+    # wrong things. Measured on rows inserted outside the API: TEXT 'x' and a
+    # BLOB b'x' raised a bare ValueError, which `sli` graded "the probe
+    # raised", while a BLOB b'1.5' parsed silently as 1.5 and +/-inf read
+    # back as stamps. Every write path refuses all of them (`append` stamps
+    # with `float()` and `_require_monotonic` refuses a non-finite stamp), and
+    # SQLite stores NaN as NULL, which NOT NULL refuses. So each one is a
+    # corrupt row, and `_finite` refuses each: TypeError for text and bytes,
+    # ValueError for an infinity. Its message names the type or the infinity
+    # and never the stored text, which a forged row chooses.
+    try:
+        ingested_at = _finite(row["ingested_at"], "ingested_at")
+    except (TypeError, ValueError) as exc:
+        raise StoreIntegrityError(
+            f"event {identifier}: {exc}; every write path refuses that, so the "
+            "database was modified outside this platform"
+        ) from exc
+    return StoredEvent(event_id=identifier, ingested_at=ingested_at, event=event)

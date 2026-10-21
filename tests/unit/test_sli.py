@@ -608,6 +608,46 @@ def test_a_hash_valid_row_past_its_bound_breaches_store_readable(tmp_path: Path)
 
 
 @pytest.mark.unit
+def test_a_corrupt_ingestion_stamp_breaches_store_readable(tmp_path: Path) -> None:
+    """A text ``ingested_at`` is measured and failing, not unmeasurable.
+
+    The column is outside the hash, so a row can carry a valid projection and
+    a stamp no write path stores. ``_rebuild`` converted it with ``float()``,
+    whose bare ``ValueError`` escaped this probe's ``except StoreError``, and
+    the report read ``unknown ... the probe raised ValueError``. The store now
+    raises :class:`store.StoreIntegrityError` for it, which grades ``0.0``.
+    """
+    root = _root(tmp_path)
+    with EventStore.open(root) as store:
+        store.append(normalize(_AUDITD), ingested_at=1_760_000_000.0)
+    projection = canonical_json(normalize(_CLOUD).to_dict())
+    connection = sqlite3.connect(root / "data" / "events" / "events.sqlite3")
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+                "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+                "VALUES (?, ?, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+                (event_id(projection), "not-a-stamp", projection),
+            )
+    finally:
+        connection.close()
+
+    report = measure(root, now=1_760_000_100.0)
+    by_id = {indicator.objective.id: indicator for indicator in report.indicators}
+    readable = by_id["store-readable"]
+    assert readable.status is Status.BREACHED, readable.detail
+    assert readable.value == 0.0
+    assert readable.detail.startswith("the store cannot be read: StoreIntegrityError: "), (
+        readable.detail
+    )
+    assert "ingested_at must be a real number, not str" in readable.detail
+    assert "not-a-stamp" not in readable.detail
+    escaped = [i.objective.id for i in report.indicators if i.detail.startswith("the probe raised")]
+    assert not escaped, f"a store refusal escaped its measurer in {escaped}"
+
+
+@pytest.mark.unit
 def test_store_intact_is_unmeasurable_rather_than_sound_when_there_is_no_store(
     tmp_path: Path,
 ) -> None:

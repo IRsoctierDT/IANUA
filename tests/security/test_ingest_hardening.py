@@ -2603,6 +2603,77 @@ def test_from_dict_refuses_a_timestamp_float_cannot_hold_with_its_documented_err
     assert isinstance(raised.value.__cause__, OverflowError)
 
 
+#: The three non-finite floats. ``json`` reads and writes all three by
+#: default, which is how they reached a stored projection before the reader
+#: refused them.
+_NON_FINITE = (float("nan"), float("inf"), float("-inf"))
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("value", _NON_FINITE, ids=repr)
+def test_from_dict_refuses_a_non_finite_timestamp(value: float) -> None:
+    """Refused on read, and so on write, since ``append`` runs this reader.
+
+    Both sides accepted these before, and each one corrupts the time model
+    rather than failing: NaN is stored with ``occurred_at`` NULL and drops out
+    of every window, ``+inf`` sits inside every ``since=`` window and ``-inf``
+    inside every ``until=`` one. Checked on the decoded projection as well as
+    on the dict, because the stored form is JSON text and ``json.loads`` is
+    what produces the float the reader sees.
+    """
+    payload = normalize("sshd: session opened for user root").to_dict()
+    payload["timestamp"] = value
+    with pytest.raises(MalformedProjectionError, match="must be finite"):
+        NormalizedEvent.from_dict(payload)
+    with pytest.raises(MalformedProjectionError, match="must be finite"):
+        NormalizedEvent.from_dict(json.loads(json.dumps(payload)))
+
+
+@pytest.mark.security
+def test_bounded_drops_only_a_timestamp_the_reader_refuses() -> None:
+    """``bounded()`` makes any event storable, so it maps these to ``None``.
+
+    ``None`` is the schema's meaning for "no usable timestamp", the same thing
+    ``_coerce.epoch`` returns for one it cannot parse, rather than a clock
+    reading. A finite stamp, the epoch itself included, must come through
+    unchanged, or ``_finalize``'s ``bounded == event`` test would note a
+    truncation on every parsed event.
+    """
+    event = normalize("sshd: session opened for user root")
+    for unusable in (*_NON_FINITE, _UNRENDERABLE_INT):
+        repaired = dataclasses.replace(event, timestamp=unusable).bounded()
+        assert repaired.timestamp is None, unusable
+        assert NormalizedEvent.from_dict(repaired.to_dict()) == repaired
+    for usable in (0.0, 1.0, 1_760_000_000.5, None):
+        kept = dataclasses.replace(event, timestamp=usable)
+        assert kept.bounded() == kept, usable
+
+
+class _LyingFloat(float):
+    """A float whose payload is infinite while ``__float__`` answers ``1.0``."""
+
+    def __float__(self) -> float:
+        return 1.0
+
+
+@pytest.mark.security
+def test_bounded_keeps_the_timestamp_value_the_reader_checked() -> None:
+    """The value checked is the value kept, or ``bounded()`` output is unstorable.
+
+    ``_storable_epoch`` validated ``float(value)`` and then returned ``value``,
+    so this object passed as ``1.0`` and kept its infinity. ``json.dumps`` reads
+    the payload, not ``__float__``, so it wrote ``Infinity``, and the read-back
+    ``append`` runs refused the event. The round trip below is that read-back.
+    Found by review.
+    """
+    lying = _LyingFloat("inf")
+    assert float(lying) == 1.0 and float.__repr__(lying) == "inf", "precondition"
+    event = dataclasses.replace(normalize("sshd: session opened for user root"), timestamp=lying)
+    repaired = event.bounded()
+    assert type(repaired.timestamp) is float and repaired.timestamp == 1.0
+    NormalizedEvent.from_dict(json.loads(json.dumps(repaired.to_dict())))
+
+
 #: ``(id, record, raised_before_the_fix)`` for every shape by which an
 #: unrenderable number can reach this layer. The four JSON rows are the only
 #: ones a *collector* can deliver, since it passes log lines as ``str``, and
