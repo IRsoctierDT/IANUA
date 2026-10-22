@@ -61,7 +61,7 @@ from store import (
     canonical_json,
     event_id,
 )
-from store.schema import HIGH_WATER_KEY
+from store.schema import HIGH_WATER_KEY, VERSION_KEY
 from tests.security import _sql_provenance as sqlprov
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1551,6 +1551,135 @@ def test_a_query_limit_cannot_exceed_the_ceiling(tmp_path: Path) -> None:
             assert store.query(Query(limit=limit)) == ()
 
 
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "limit",
+    [math.nan, 2.5, 5.0, math.inf, "5", b"5", None],
+    ids=["nan", "fraction", "integral_float", "inf", "text", "bytes", "none"],
+)
+def test_a_non_integer_query_limit_is_a_type_error(tmp_path: Path, limit: object) -> None:
+    """A count that is not an integer is a caller's bad argument, said as one.
+
+    Measured before: NaN and ``2.5`` raised a raw ``sqlite3.IntegrityError``
+    ("datatype mismatch"), the class ``_refuse_corruption`` keeps for the
+    append-only trigger; ``inf`` was taken silently as the ceiling; text, bytes
+    and ``None`` failed inside ``min()``; and ``5.0`` worked by accident. A
+    float is refused whatever its value, so the rule is about the type.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1.0)
+        with pytest.raises(TypeError, match="limit must be an integer"):
+            store.query(Query(limit=limit))  # type: ignore[arg-type]
+
+
+@pytest.mark.security
+def test_an_integer_query_limit_still_reads(tmp_path: Path) -> None:
+    """The control: the index protocol takes every integer the old code took."""
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1.0)
+        store.append(normalize(_OTHER_RECORD), ingested_at=2.0)
+        assert len(store.query(Query(limit=1))) == 1
+        assert len(store.query(Query(limit=10**30))) == 2, "a huge limit is clamped, not refused"
+        assert store.query(Query(limit=0)) == ()
+
+
+#: Bytes that are not UTF-8. Bound as a BLOB and cast in SQL, because a
+#: ``CAST`` to TEXT keeps the bytes and Python cannot bind such a ``str``.
+#: The ``PLANTED`` prefix is what a refusal must not repeat.
+_NOT_UTF8 = b"PLANTED\xff"
+
+
+def _plant_not_utf8(store: EventStore, where: str) -> None:
+    """Put non-UTF-8 TEXT where ``where`` names, as anything holding the file can.
+
+    Rows go in through ``INSERT``, which the append-only triggers allow, so the
+    schema is not touched. ``meta`` has no trigger: its mark moves on every write.
+    """
+    projection = canonical_json(normalize(_OTHER_RECORD).to_dict())
+    tail = ", NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL)"
+    insert = (
+        "INSERT INTO events (event_id, ingested_at, projection, occurred_at, source_type, "
+        "vendor, parse_status, user_name, hostname, src_ip, dst_ip) VALUES "
+    )
+    with store._conn:
+        if where == "high_water_mark":
+            store._conn.execute(
+                "UPDATE meta SET value = CAST(? AS TEXT) WHERE key = ?", (_NOT_UTF8, HIGH_WATER_KEY)
+            )
+        elif where == "schema_version":
+            store._conn.execute(
+                "UPDATE meta SET value = CAST(? AS TEXT) WHERE key = ?", (_NOT_UTF8, VERSION_KEY)
+            )
+        elif where == "projection":
+            store._conn.execute(
+                insert + "(?, 2.0, CAST(? AS TEXT)" + tail, (event_id(projection), _NOT_UTF8)
+            )
+        else:
+            store._conn.execute(insert + "(CAST(? AS TEXT), 2.0, ?" + tail, (_NOT_UTF8, projection))
+
+
+#: Where the bytes are planted, and every public read that decodes that column.
+_NOT_UTF8_ROUTES: dict[str, tuple[str, ...]] = {
+    "high_water_mark": ("high_water_mark", "next_stamp", "append", "attest"),
+    "schema_version": ("open",),
+    "projection": ("query",),
+    "event_id": ("query", "attest"),
+}
+
+
+def _read_route(store: EventStore, root: Path, route: str) -> object:
+    calls: dict[str, Callable[[], object]] = {
+        "high_water_mark": store.high_water_mark,
+        "next_stamp": lambda: store.next_stamp(9.0),
+        "append": lambda: store.append(
+            normalize("sshd: session opened for user root"), ingested_at=9.0
+        ),
+        "attest": store.attest,
+        "query": store.query,
+        "open": lambda: EventStore.open(root).close(),
+    }
+    return calls[route]()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("where", "route"),
+    [(where, route) for where, routes in _NOT_UTF8_ROUTES.items() for route in routes],
+)
+def test_non_utf8_text_is_a_store_integrity_error_that_does_not_quote_it(
+    tmp_path: Path, where: str, route: str
+) -> None:
+    """Every TEXT column the store decodes, through every public read of it.
+
+    ``sqlite3``'s own decoder raised a raw ``OperationalError``, which no
+    first-party ``except StoreError`` catches, and its message quoted the bytes
+    (``… with text 'PLANTED�'``). No write path stores non-UTF-8, because every
+    write binds ``str``, so this is a row written outside the platform.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1.0)
+        _plant_not_utf8(store, where)
+        held = store._conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+        with pytest.raises(StoreIntegrityError) as raised:
+            _read_route(store, tmp_path, route)
+        assert not isinstance(raised.value, StoreCorruptionError), "a row, not a damaged file"
+        assert "not valid UTF-8" in str(raised.value)
+        assert "PLANTED" not in str(raised.value), "the refusal quoted the stored bytes"
+        assert raised.value.__cause__ is None and raised.value.__suppress_context__
+        if route == "append":
+            assert store._conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"] == held
+
+
+@pytest.mark.security
+def test_non_ascii_utf8_text_still_round_trips(tmp_path: Path) -> None:
+    """The control, or the refusal above is satisfied by refusing all text."""
+    event = _hand_built(message="café ✓ 日本")
+    with EventStore.open(tmp_path) as store:
+        store.append(event, ingested_at=1.0)
+        (stored,) = store.query()
+    assert stored.event.message == "café ✓ 日本"
+
+
 # --------------------------------------------------------------------------
 # Inherited invariant: no message body, including on the read path
 # --------------------------------------------------------------------------
@@ -1980,6 +2109,150 @@ def test_a_corrupt_derived_high_water_mark_is_a_store_integrity_error(
             assert "no high-water mark is stored" in message, route
             assert "PLANTED" not in message, f"{route} echoed the stored text"
         assert store.count() == held, "a refused append still wrote a row"
+
+
+@pytest.mark.security
+def test_a_stored_mark_below_the_rows_is_a_store_integrity_error(tmp_path: Path) -> None:
+    """A finite mark can be forged too, and below the rows it re-opens the window.
+
+    Measured before: ``meta`` set to ``'1.0'`` over rows at 1000 to 1002 let
+    ``append(ingested_at=5.0)`` succeed behind all three and moved the mark to
+    5.0. The refusals above all concern a mark that is not a number; this one
+    is a number no write path leaves, because every write raises the mark with
+    its rows under one write lock. Above the rows stays legitimate, which
+    ``test_the_stored_mark_wins_over_the_derived_one`` pins.
+    """
+    with EventStore.open(tmp_path) as store:
+        for index, record in enumerate((_RECORD, _OTHER_RECORD)):
+            store.append(normalize(record), ingested_at=1_000.0 + index)
+        _plant_mark(store, "1.0")
+        held = store.count()
+        routes: dict[str, Callable[[], object]] = {
+            "high_water_mark": store.high_water_mark,
+            "next_stamp": lambda: store.next_stamp(2_000.0),
+            "append": lambda: store.append(
+                normalize("sshd: session opened for user root"), ingested_at=5.0
+            ),
+            "attest": store.attest,
+        }
+        for route, call in routes.items():
+            with pytest.raises(StoreIntegrityError, match="below the newest stored") as raised:
+                call()
+            assert not isinstance(raised.value, StoreCorruptionError), route
+        assert store.count() == held, "a refused append still wrote a row"
+        stored = store._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
+        ).fetchone()
+        assert stored["value"] == "1.0", "a refused append rewrote the mark"
+        # Equal to the newest row is the ordinary state after any write.
+        _plant_mark(store, "1001.0")
+        assert store.high_water_mark() == 1_001.0
+
+
+@pytest.mark.security
+def test_a_corrupt_newest_stamp_is_refused_under_a_valid_stored_mark(tmp_path: Path) -> None:
+    """The ``MAX`` the invariant reads is converted the way the fallback's is.
+
+    TEXT sorts above every REAL, so one planted row is the ``MAX`` whatever
+    the stored mark says, and comparing a float with it would raise a bare
+    ``TypeError``.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1_000.0)
+        _plant(store, canonical_json(normalize(_OTHER_RECORD).to_dict()), ingested_at="PLANTED")
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.high_water_mark()
+    assert isinstance(raised.value.__cause__, TypeError)
+    assert "no high-water mark is stored" not in str(raised.value), "a mark is stored"
+    assert "PLANTED" not in str(raised.value)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("method", ["append", "append_many"])
+def test_a_second_writer_cannot_interleave_between_the_mark_check_and_the_insert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """The ordering check and the insert are one decision, so they share one lock.
+
+    Measured before: the connection's default transaction handling opens a
+    transaction before an ``INSERT`` and never before a ``SELECT``, so the
+    mark was read outside the transaction its insert then opened. A second
+    writer committing at 200 between the first writer's check at 150 and its
+    insert left a row at 150 behind a stored row at 200, regressed the mark to
+    150, and ``append_many`` reported the other writer's row as its own. Driven
+    deterministically from inside the first writer's check. The second writer's
+    busy timeout is zero so contention is immediate rather than five seconds.
+    """
+    with EventStore.open(tmp_path) as seed:
+        seed.append(normalize(_RECORD), ingested_at=100.0)
+    first, second = EventStore.open(tmp_path), EventStore.open(tmp_path)
+    second._conn.execute("PRAGMA busy_timeout = 0")
+    original = EventStore._require_monotonic
+    interleaved: list[BaseException | None] = []
+
+    def check_then_interleave(self: EventStore, stamp: float) -> None:
+        original(self, stamp)
+        if self is first and not interleaved:
+            try:
+                second.append(normalize(_OTHER_RECORD), ingested_at=200.0)
+                interleaved.append(None)
+            except sqlite3.OperationalError as exc:
+                interleaved.append(exc)
+
+    monkeypatch.setattr(EventStore, "_require_monotonic", check_then_interleave)
+    third = normalize("sshd: session opened for user root")
+    try:
+        if method == "append":
+            first.append(third, ingested_at=150.0)
+        else:
+            assert first.append_many((third,), ingested_at=150.0) == 1, (
+                "append_many counted another writer's row as its own"
+            )
+        (outcome,) = interleaved
+        assert isinstance(outcome, sqlite3.OperationalError), (
+            "the second writer committed between the first writer's check and its insert"
+        )
+        assert outcome.sqlite_errorname == "SQLITE_BUSY"
+        mark = first.high_water_mark()
+        newest = first._conn.execute("SELECT MAX(ingested_at) AS m FROM events").fetchone()["m"]
+        assert mark == newest == 150.0
+    finally:
+        first.close()
+        second.close()
+
+
+@pytest.mark.security
+def test_append_many_counts_only_the_rows_it_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new-row count is taken inside the write lock, not before it.
+
+    The interleaving above is now refused, but a second writer may still
+    commit just before the first takes its lock, which is ordinary contention.
+    ``append_many`` counted the store before its transaction, so that commit
+    landed between its two counts: measured, a batch of one new event reported
+    2 when the count sat outside the lock.
+    """
+    with EventStore.open(tmp_path) as seed:
+        seed.append(normalize(_RECORD), ingested_at=100.0)
+    first, second = EventStore.open(tmp_path), EventStore.open(tmp_path)
+    original = EventStore._begin_write
+
+    def let_the_other_writer_in_first(self: EventStore) -> None:
+        if self is first:
+            second.append(normalize(_OTHER_RECORD), ingested_at=200.0)
+        original(self)
+
+    monkeypatch.setattr(EventStore, "_begin_write", let_the_other_writer_in_first)
+    try:
+        added = first.append_many(
+            (normalize("sshd: session opened for user root"),), ingested_at=300.0
+        )
+        assert first.count() == 3, "the fixture did not put both writers' rows in"
+        assert added == 1, f"append_many reported {added} new rows for a batch of one"
+    finally:
+        first.close()
+        second.close()
 
 
 @pytest.mark.security

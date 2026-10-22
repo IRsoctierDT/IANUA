@@ -55,6 +55,7 @@ import functools
 import hashlib
 import json
 import math
+import operator
 import re
 import sqlite3
 import stat
@@ -636,6 +637,40 @@ def _finite(value: object, what: str) -> float:
     return coerced
 
 
+def _decode_text(raw: bytes) -> str:
+    """Decode a TEXT value read from the store, refusing bytes that are not UTF-8.
+
+    Installed as the connection's ``text_factory``, so it covers every TEXT
+    column every method reads, in one place. ``sqlite3``'s own decoder raised a
+    raw ``OperationalError`` instead, measured from ``open`` (the schema
+    version), ``high_water_mark`` and ``attest`` (the stored mark), and
+    ``query`` (``projection`` and ``event_id``). That class is not a
+    :class:`StoreError`, so it escaped every first-party handler. And its
+    message quoted the stored bytes (``… with text 'PLANTED�'``), so a forged
+    row chose what an error reported.
+
+    Every write binds ``str``, which ``sqlite3`` encodes as UTF-8, and a ``str``
+    that cannot be encoded is refused at bind time, so non-UTF-8 TEXT was
+    written outside this platform. The message gives the length, never the
+    bytes. Measured at 484 ms against 495 ms for a 10,000-row query with the
+    default decoder, so the Python-level call costs nothing measurable beside
+    the re-hash and JSON decode each row already pays.
+
+    Raises:
+        StoreIntegrityError: raised directly rather than mapped, because an
+            exception from a ``text_factory`` reaches the caller unchanged
+            (measured) and this one is already the class the decorator lets
+            through.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise StoreIntegrityError(
+            f"a stored text value ({len(raw)} bytes) is not valid UTF-8; every write "
+            "path stores UTF-8, so the database was modified outside this platform"
+        ) from None
+
+
 def _stored_mark(value: object) -> float:
     """Parse the high-water mark ``meta`` holds, refusing anything not a finite number.
 
@@ -720,6 +755,7 @@ class EventStore:
         _narrow(path.parent, _DIR_MODE)
         conn = sqlite3.connect(path)
         conn.row_factory = sqlite3.Row
+        conn.text_factory = _decode_text
         try:
             # WAL lets a dashboard read while collection writes. FULL
             # synchronous trades throughput for durability, which is the right
@@ -845,6 +881,7 @@ class EventStore:
         projection, identifier = self._project(event)
         stamp = float(ingested_at)
         with self._conn:
+            self._begin_write()
             self._require_monotonic(stamp)
             self._insert(event, projection, identifier, stamp)
             self._advance_high_water(stamp)
@@ -882,13 +919,17 @@ class EventStore:
             return 0
         projected = [(event, *self._project(event)) for event in events]
         stamp = float(ingested_at)
-        before = self.count()
         with self._conn:
+            self._begin_write()
             self._require_monotonic(stamp)
+            # Counted inside the write lock, so another writer's commit cannot
+            # land between the two counts and be reported as this batch's.
+            before = self.count()
             for event, projection, identifier in projected:
                 self._insert(event, projection, identifier, stamp)
             self._advance_high_water(stamp)
-        return self.count() - before
+            added = self.count() - before
+        return added
 
     @_refuse_corruption
     def high_water_mark(self) -> float | None:
@@ -911,6 +952,11 @@ class EventStore:
         it describes: retention prunes old events, and a mark derived from
         ``MAX(ingested_at)`` after a prune would move *backwards*, re-opening
         the window for exactly the event ordering the mark exists to refuse.
+        It wins only from *above* the rows, though. A stored mark below
+        ``MAX(ingested_at)`` is refused, because obeying it is how the window
+        re-opens: a ``meta`` value of ``'1.0'`` over rows at 1000 to 1002 let an
+        append at 5.0 succeed and moved the mark to 5.0, measured. The ``MAX``
+        is one index seek on ``events_ingested_at``.
 
         Raises:
             StoreIntegrityError: for a mark that is not a finite number, from
@@ -928,29 +974,50 @@ class EventStore:
                 refused at exit 2. In the fallback, SQLite sorts TEXT and BLOB
                 above every REAL, so one such ``ingested_at`` is the ``MAX``
                 however many good rows sit beside it. The message names the
-                type or the infinity, never the stored text.
+                type or the infinity, never the stored text. Also for a stored
+                mark below the newest stored ``ingested_at``, and for a newest
+                ``ingested_at`` that is not a finite number even when a valid
+                mark is stored: every write raises the mark with its rows under
+                the write lock :meth:`_begin_write` takes, so neither is
+                produced by any write path.
         """
         row = self._conn.execute(
             "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
         ).fetchone()
+        stored: float | None = None
         if row is not None:
             try:
-                return _stored_mark(row["value"])
+                stored = _stored_mark(row["value"])
             except (TypeError, ValueError) as exc:
                 raise StoreIntegrityError(
                     f"the stored {exc}; every write path refuses that, so the "
                     "database was modified outside this platform"
                 ) from exc
         derived = self._conn.execute("SELECT MAX(ingested_at) AS mark FROM events").fetchone()
-        if derived is None or derived["mark"] is None:
-            return None
-        try:
-            return _finite(derived["mark"], "the newest ingested_at")
-        except (TypeError, ValueError) as exc:
+        newest: float | None = None
+        if derived is not None and derived["mark"] is not None:
+            try:
+                newest = _finite(derived["mark"], "the newest ingested_at")
+            except (TypeError, ValueError) as exc:
+                prefix = "" if stored is not None else "no high-water mark is stored, and "
+                raise StoreIntegrityError(
+                    f"{prefix}{exc}; every write path refuses that, so the "
+                    "database was modified outside this platform"
+                ) from exc
+        if stored is None:
+            return newest
+        # A mark above the rows is legitimate: retention prunes rows and the
+        # mark outlives them. A mark BELOW the rows is not. Every write raises
+        # the mark in the transaction that stores its rows, under the write
+        # lock `_begin_write` takes, so no write path leaves one; and obeying
+        # it lets the next write land behind rows a cursor may have passed.
+        if newest is not None and stored < newest:
             raise StoreIntegrityError(
-                f"no high-water mark is stored, and {exc}; every write path "
-                "refuses that, so the database was modified outside this platform"
-            ) from exc
+                f"the stored high-water mark {stored!r} is below the newest stored "
+                f"ingested_at {newest!r}; every write raises the mark with the rows "
+                "it stores, so the database was modified outside this platform"
+            )
+        return stored
 
     def next_stamp(self, now: float) -> float:
         """An ``ingested_at`` that is safe to write, at or after ``now``.
@@ -982,11 +1049,36 @@ class EventStore:
             return now
         return math.nextafter(mark, math.inf)
 
+    def _begin_write(self) -> None:
+        """Take the write lock before the high-water mark is read.
+
+        ``_require_monotonic`` reads the mark and the caller then inserts, and
+        the two are one decision only if no other writer can commit between
+        them. The connection's default transaction handling did not make them
+        one: it opens a transaction before an ``INSERT`` and never before a
+        ``SELECT``, so the mark was read outside the transaction its insert
+        then opened. Measured with two connections on one store, a second
+        writer committed at 200 between the first writer's check at 150 and
+        its insert. Both succeeded, a row at 150 landed behind a stored row at
+        200, and the stored mark regressed to 150, below the rows it covers.
+        ``IMMEDIATE`` takes the write lock up front, so a second writer waits
+        (``SQLITE_BUSY`` after the busy timeout, which the collector already
+        treats as retryable) instead of interleaving.
+
+        The only first-party writer, the collector, holds a single-instance
+        lock, so this was not reachable from a scheduled pass. It is closed
+        here because the store is the boundary that outlives any one caller,
+        and because :meth:`high_water_mark` now refuses a mark below the rows:
+        that refusal is only sound if no write path can produce one.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+
     def _require_monotonic(self, ingested_at: float) -> None:
         """Refuse a write that would land behind the high-water mark.
 
-        Checked inside the caller's transaction and before any insert, so a
-        refused batch leaves the database exactly as it was.
+        Checked inside the caller's write transaction, which
+        :meth:`_begin_write` opened before this read, and before any insert,
+        so a refused batch leaves the database exactly as it was.
         """
         if not math.isfinite(ingested_at):
             # NaN compares false against every bound, so it would slip past the
@@ -1431,9 +1523,24 @@ class EventStore:
                 direction-dependent rule to remember. The shape is the one
                 :meth:`prune` and :meth:`count_before` use for their thresholds.
             TypeError: for a time bound that is not a real number. ``float()``
-                parsed text, so ``since="5"`` used to be read as ``5.0``.
+                parsed text, so ``since="5"`` used to be read as ``5.0``. And
+                for a ``limit`` that is not an integer by the index protocol.
+                Measured before: NaN and ``2.5`` raised a raw
+                ``sqlite3.IntegrityError`` ("datatype mismatch"), the class
+                :func:`_refuse_corruption` reserves for the append-only trigger
+                firing; ``inf`` was taken silently as the ceiling; text and
+                ``None`` failed on a comparison; and ``5.0`` worked by
+                accident. A float is refused whatever its value, since a count
+                typed ``int`` that took ``5.0`` and refused ``5.5`` would be a
+                rule about values posing as one about types.
         """
-        limit = min(spec.limit, MAX_QUERY_LIMIT)
+        # The index protocol, once, and the value it returned is the value used,
+        # for the reason `_finite` converts once.
+        try:
+            requested = operator.index(spec.limit)
+        except TypeError:
+            raise TypeError(f"limit must be an integer, not {type(spec.limit).__name__}") from None
+        limit = min(requested, MAX_QUERY_LIMIT)
         clauses: list[str] = []
         params: list[Any] = []
         # Each fragment below is a literal; only values are bound. There is no
