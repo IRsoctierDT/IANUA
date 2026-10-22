@@ -2256,6 +2256,46 @@ def test_append_many_counts_only_the_rows_it_wrote(
 
 
 @pytest.mark.security
+def test_a_commit_between_the_mark_and_the_rows_is_not_read_as_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mark and ``MAX(ingested_at)`` come from one snapshot.
+
+    The invariant above compares two values, and the first version read them
+    with two autocommit ``SELECT``s, each with its own snapshot. A collector
+    committing between them gave a reader the old mark beside the new ``MAX``,
+    and a healthy store raised "modified outside this platform". Found by
+    review, reproduced by committing at 200 from inside the parse of a mark
+    of 100. That is an ordinary path: ``sli``, retention and the backup
+    verifier all read while the collector writes. The reader must return its
+    snapshot's mark, and the next read the new one.
+    """
+    import store.events as events_module
+
+    with EventStore.open(tmp_path) as seed:
+        seed.append(normalize(_RECORD), ingested_at=100.0)
+    reader, writer = EventStore.open(tmp_path), EventStore.open(tmp_path)
+    original = events_module._stored_mark
+    committed: list[bool] = []
+
+    def commit_while_parsing(value: object) -> float:
+        # Flagged before the append, whose own mark read comes back through here.
+        if not committed:
+            committed.append(True)
+            writer.append(normalize(_OTHER_RECORD), ingested_at=200.0)
+        return original(value)
+
+    monkeypatch.setattr(events_module, "_stored_mark", commit_while_parsing)
+    try:
+        assert reader.high_water_mark() == 100.0
+        assert committed, "the fixture never committed in between"
+        assert reader.high_water_mark() == 200.0
+    finally:
+        reader.close()
+        writer.close()
+
+
+@pytest.mark.security
 def test_an_equal_timestamp_is_accepted(tmp_path: Path) -> None:
     """Batches share one ``ingested_at`` by design, so equality must pass.
 

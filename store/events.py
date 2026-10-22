@@ -956,7 +956,8 @@ class EventStore:
         ``MAX(ingested_at)`` is refused, because obeying it is how the window
         re-opens: a ``meta`` value of ``'1.0'`` over rows at 1000 to 1002 let an
         append at 5.0 succeed and moved the mark to 5.0, measured. The ``MAX``
-        is one index seek on ``events_ingested_at``.
+        is one index seek on ``events_ingested_at``, read in the same statement
+        as the mark so that both come from one snapshot.
 
         Raises:
             StoreIntegrityError: for a mark that is not a finite number, from
@@ -981,23 +982,30 @@ class EventStore:
                 the write lock :meth:`_begin_write` takes, so neither is
                 produced by any write path.
         """
-        row = self._conn.execute(
-            "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
+        # One statement, so one snapshot. Two autocommit SELECTs each took their
+        # own, and a collector committing between them made a healthy store
+        # read as tampered: the old mark beside the new MAX. Found by review and
+        # reproduced. A read transaction cannot do this job, because this runs
+        # inside `_begin_write`'s transaction and `attest`'s snapshot too.
+        # `meta.value` is NOT NULL, so a NULL `stored` means no row.
+        both = self._conn.execute(
+            "SELECT (SELECT value FROM meta WHERE key = ?) AS stored, "
+            "(SELECT MAX(ingested_at) FROM events) AS newest",
+            (HIGH_WATER_KEY,),
         ).fetchone()
         stored: float | None = None
-        if row is not None:
+        if both["stored"] is not None:
             try:
-                stored = _stored_mark(row["value"])
+                stored = _stored_mark(both["stored"])
             except (TypeError, ValueError) as exc:
                 raise StoreIntegrityError(
                     f"the stored {exc}; every write path refuses that, so the "
                     "database was modified outside this platform"
                 ) from exc
-        derived = self._conn.execute("SELECT MAX(ingested_at) AS mark FROM events").fetchone()
         newest: float | None = None
-        if derived is not None and derived["mark"] is not None:
+        if both["newest"] is not None:
             try:
-                newest = _finite(derived["mark"], "the newest ingested_at")
+                newest = _finite(both["newest"], "the newest ingested_at")
             except (TypeError, ValueError) as exc:
                 prefix = "" if stored is not None else "no high-water mark is stored, and "
                 raise StoreIntegrityError(
