@@ -1839,6 +1839,149 @@ def test_the_stored_mark_wins_over_the_derived_one(tmp_path: Path) -> None:
         )
 
 
+def _plant_mark(store: EventStore, value: object) -> None:
+    """Overwrite the stored high-water mark, as anything holding the file can.
+
+    ``meta`` carries no append-only trigger: the mark has to move on every
+    write, so the store's own control over it is what it accepts on read.
+    """
+    with store._conn:
+        store._conn.execute("UPDATE meta SET value = ? WHERE key = ?", (value, HIGH_WATER_KEY))
+
+
+#: Stored marks no write path produces, as SQLite keeps them in a TEXT column,
+#: with the reader's exception for each. ``_advance_high_water`` writes
+#: ``repr(float)`` of a stamp ``_require_monotonic`` has already checked.
+_CORRUPT_MARKS: dict[str, tuple[str | bytes, type[Exception]]] = {
+    # Raised a bare ValueError from float(), so `sli` read "the probe raised".
+    "text": ("PLANTED-MARK", ValueError),
+    # Each read back silently. NaN compares false against every stamp, so an
+    # append behind every stored row went through and rewrote the mark lower;
+    # an infinity refused every later append as out of order.
+    "nan": ("nan", ValueError),
+    "positive_infinity": ("inf", ValueError),
+    "negative_infinity": ("-inf", ValueError),
+    "overflowing_text": ("1e400", ValueError),
+    # TEXT affinity leaves a BLOB a BLOB, and float() parses bytes.
+    "blob": (b"PLANTED-MARK", TypeError),
+    "numeric_blob": (b"1.5", TypeError),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_CORRUPT_MARKS), ids=lambda value: value)
+def test_a_corrupt_stored_high_water_mark_is_a_store_integrity_error(
+    tmp_path: Path, case: str
+) -> None:
+    """A mark that is not a finite number is refused by every route that reads it.
+
+    The ``nan`` case is the one that matters most and the one the original
+    report did not name: before this, ``append(ingested_at=500.0)`` under a
+    stored ``nan`` succeeded behind a row stamped 1000, which is the silent
+    blind spot the ordering control exists to refuse, and then rewrote the mark
+    to 500. So the refused append is asserted to write nothing, mark included.
+    The planted text must not reach the message: a forged row chooses it.
+    """
+    value, cause = _CORRUPT_MARKS[case]
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1_000.0)
+        _plant_mark(store, value)
+        held = store.count()
+        routes: dict[str, Callable[[], object]] = {
+            "high_water_mark": store.high_water_mark,
+            "next_stamp": lambda: store.next_stamp(2_000.0),
+            "append": lambda: store.append(normalize(_OTHER_RECORD), ingested_at=500.0),
+            "attest": store.attest,
+        }
+        for route, call in routes.items():
+            with pytest.raises(StoreIntegrityError) as raised:
+                call()
+            assert not isinstance(raised.value, StoreCorruptionError), (
+                f"{route}: a row, not a damaged file"
+            )
+            assert isinstance(raised.value.__cause__, cause), route
+            message = str(raised.value)
+            assert "high-water mark" in message, route
+            assert "PLANTED" not in message, f"{route} echoed the stored text"
+            assert "PLANTED" not in str(raised.value.__cause__), f"{route}'s cause echoed it"
+        assert store.count() == held, "a refused append still wrote a row"
+        stored = store._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
+        ).fetchone()
+        assert stored["value"] == value, "a refused append rewrote the mark"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("spelling", ["1000.0", "1000", "1e3", 1000])
+def test_a_stored_mark_in_any_finite_numeric_spelling_still_reads(
+    tmp_path: Path, spelling: object
+) -> None:
+    """The control, or every refusal above is satisfied by refusing every mark.
+
+    ``1000.0`` is what the writer produces. An integer is what TEXT affinity
+    makes of ``UPDATE meta SET value = 1000``, and is planted as one so that
+    conversion is exercised rather than assumed. The ordering control must
+    still hold against the parsed value, or "it reads" is true of a mark that
+    no longer guards anything.
+    """
+    from store import IngestionOrderError
+
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1_000.0)
+        _plant_mark(store, spelling)
+        assert store.high_water_mark() == 1_000.0
+        with pytest.raises(IngestionOrderError):
+            store.append(normalize(_OTHER_RECORD), ingested_at=500.0)
+
+
+#: ``ingested_at`` values a store with no stored mark derives one from. The
+#: same shapes #268 refuses in ``_rebuild``, reached here through ``MAX()``.
+_CORRUPT_NEWEST_STAMPS: dict[str, tuple[str | bytes | float, type[Exception]]] = {
+    "text": ("PLANTED-STAMP", TypeError),
+    "blob": (b"PLANTED-STAMP", TypeError),
+    "numeric_blob": (b"1.5", TypeError),
+    "positive_infinity": (math.inf, ValueError),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_CORRUPT_NEWEST_STAMPS), ids=lambda value: value)
+def test_a_corrupt_derived_high_water_mark_is_a_store_integrity_error(
+    tmp_path: Path, case: str
+) -> None:
+    """The fallback for a store with rows and no stored mark — an upgraded one.
+
+    SQLite sorts TEXT and BLOB above every REAL, so one corrupt ``ingested_at``
+    is the ``MAX`` however many good rows sit beside it; the good row below is
+    there to show that. Before this, text raised a bare ``ValueError``, while a
+    numeric BLOB read back silently as ``1.5`` (an append behind the good row
+    then succeeded) and ``+inf`` refused every later append as out of order.
+    """
+    value, cause = _CORRUPT_NEWEST_STAMPS[case]
+    with EventStore.open(tmp_path) as store:
+        _plant(store, canonical_json(normalize(_RECORD).to_dict()), ingested_at=1_000.0)
+        _plant(store, canonical_json(normalize(_OTHER_RECORD).to_dict()), ingested_at=value)
+        assert (
+            store._conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
+            ).fetchone()
+            is None
+        ), "the fixture stored a mark, so the fallback is not what is under test"
+        held = store.count()
+        third = normalize("sshd: session opened for user root")
+        for route, call in (
+            ("high_water_mark", store.high_water_mark),
+            ("append", lambda: store.append(third, ingested_at=500.0)),
+        ):
+            with pytest.raises(StoreIntegrityError) as raised:
+                call()
+            assert isinstance(raised.value.__cause__, cause), route
+            message = str(raised.value)
+            assert "no high-water mark is stored" in message, route
+            assert "PLANTED" not in message, f"{route} echoed the stored text"
+        assert store.count() == held, "a refused append still wrote a row"
+
+
 @pytest.mark.security
 def test_an_equal_timestamp_is_accepted(tmp_path: Path) -> None:
     """Batches share one ``ingested_at`` by design, so equality must pass.
@@ -2039,6 +2182,120 @@ def test_a_textual_retention_threshold_is_still_refused(tmp_path: Path, text: ob
         with pytest.raises(TypeError, match="real number"):
             store.prune(before=text)  # type: ignore[arg-type]
         assert store.count() == held, "a refused prune removed rows"
+
+
+#: Each time bound ``Query`` carries, built around one value. The keyset pairs
+#: take an empty ``event_id`` because only the timestamp is under test.
+_QUERY_BOUNDS: dict[str, Callable[[Any], Query]] = {
+    "since": lambda at: Query(since=at),
+    "until": lambda at: Query(until=at),
+    "ingested_from": lambda at: Query(ingested_from=at),
+    "ingested_after": lambda at: Query(ingested_after=(at, "")),
+    "ingested_before": lambda at: Query(ingested_before=(at, "")),
+}
+
+#: A finite value per bound that every event in ``_bounded_store`` satisfies,
+#: so the control below proves the refusals are not "refuse every bound".
+_INCLUSIVE: dict[str, float] = {
+    "since": 0.0,
+    "until": 4e9,
+    "ingested_from": 0.0,
+    "ingested_after": 0.0,
+    "ingested_before": 4e9,
+}
+
+
+def _bounded_store(store: EventStore) -> int:
+    """Two events with source timestamps, since ``since``/``until`` skip undated ones."""
+    store.append(_hand_built(message="a", timestamp=1_760_000_000.0), ingested_at=100.0)
+    store.append(_hand_built(message="b", timestamp=1_760_000_100.0), ingested_at=300.0)
+    return store.count()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf], ids=["nan", "inf", "-inf"])
+@pytest.mark.parametrize("bound", sorted(_QUERY_BOUNDS))
+def test_a_non_finite_query_bound_is_refused(tmp_path: Path, bound: str, bad: float) -> None:
+    """A bad window is a caller error, not a quiet period.
+
+    Measured on five stored events before this: NaN in any of the five bounds
+    returned **0** rows with no error, because SQLite binds NaN as NULL and a
+    comparison with NULL matches nothing; so did an infinity on the closed side
+    (``since=inf``, ``until=-inf``, ``ingested_from=inf``, ``ingested_after``
+    at ``inf``, ``ingested_before`` at ``-inf``). An infinity on the open side
+    returned all five, which an unset field already says, so all three are
+    refused alike — the rule ``prune`` and ``count_before`` already follow.
+    """
+    with EventStore.open(tmp_path) as store:
+        assert _bounded_store(store) == 2
+        with pytest.raises(ValueError, match=f"{bound} must be finite"):
+            store.query(_QUERY_BOUNDS[bound](bad))
+        # An empty limit returns `()` without a query, and used to do so before
+        # any bound was checked, so a bad window under it read as a quiet period.
+        empty = dataclasses.replace(_QUERY_BOUNDS[bound](bad), limit=0)
+        with pytest.raises(ValueError, match=f"{bound} must be finite"):
+            store.query(empty)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("text", ["5", b"5"])
+@pytest.mark.parametrize("bound", sorted(_QUERY_BOUNDS))
+def test_a_textual_query_bound_is_refused(tmp_path: Path, bound: str, text: object) -> None:
+    """``float()`` parsed text, so ``since="5"`` was read as ``5.0`` and matched.
+
+    The fields are annotated ``float``, which a type checker enforces on
+    first-party code and nothing enforces at runtime, where a value built from
+    configuration or JSON arrives.
+    """
+    with EventStore.open(tmp_path) as store:
+        assert _bounded_store(store) == 2
+        with pytest.raises(TypeError, match=f"{bound} must be a real number"):
+            store.query(_QUERY_BOUNDS[bound](text))
+        empty = dataclasses.replace(_QUERY_BOUNDS[bound](text), limit=0)
+        with pytest.raises(TypeError, match=f"{bound} must be a real number"):
+            store.query(empty)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("bound", sorted(_QUERY_BOUNDS))
+def test_a_finite_query_bound_still_selects(tmp_path: Path, bound: str) -> None:
+    """The control: every bound still accepts a finite value, an integer included."""
+    with EventStore.open(tmp_path) as store:
+        held = _bounded_store(store)
+        assert len(store.query(_QUERY_BOUNDS[bound](_INCLUSIVE[bound]))) == held
+        assert len(store.query(_QUERY_BOUNDS[bound](int(_INCLUSIVE[bound])))) == held
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("bound", "first", "then"),
+    [("ingested_after", 200.0, 100.0), ("ingested_before", 200.0, 300.0)],
+)
+def test_a_keyset_bound_is_converted_once_for_both_placeholders(
+    tmp_path: Path, bound: str, first: float, then: float
+) -> None:
+    """A keyset pair binds its timestamp twice, and both must be the checked value.
+
+    ``query`` used to bind ``float(at), float(at)``, two conversions, so one
+    object could put different values in the strict comparison and in the
+    equality tie-break. ``then`` is a stamp a stored row holds, which is what
+    makes a wrong second answer select an extra row: the tie-break's
+    ``event_id`` bound (``""`` after, ``"g"`` before) admits any hex id. The
+    oracle is the plain float the object first answers.
+    """
+    edge = "" if bound == "ingested_after" else "g"
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=100.0)
+        store.append(normalize(_OTHER_RECORD), ingested_at=300.0)
+        build = {
+            "ingested_after": lambda at: Query(ingested_after=(at, edge)),
+            "ingested_before": lambda at: Query(ingested_before=(at, edge)),
+        }[bound]
+        expected = len(store.query(build(first)))
+        assert expected == 1, "the fixture does not split at the first answer"
+        value = _StatefulFloat(first, then)
+        assert len(store.query(build(value))) == expected, "a later answer was bound"
+        assert value.calls == 1, f"{bound} was converted {value.calls} times"
 
 
 @pytest.mark.security

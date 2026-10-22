@@ -636,6 +636,36 @@ def _finite(value: object, what: str) -> float:
     return coerced
 
 
+def _stored_mark(value: object) -> float:
+    """Parse the high-water mark ``meta`` holds, refusing anything not a finite number.
+
+    :meth:`EventStore._advance_high_water` writes ``repr(float)`` into a TEXT
+    column, so the value is parsed and not merely converted — :func:`_finite`
+    refuses ``str`` by design, and must keep doing so for its other callers.
+    The parse is lenient about spelling and strict about meaning: any text
+    ``float()`` reads as a finite number is accepted, because a finite forged
+    mark cannot be told from a real one by its format, and the hazards measured
+    were all non-numbers and non-finite numbers. ``nan`` silently disabled the
+    ordering control (an append behind every stored row succeeded and rewrote
+    the mark lower), and ``inf`` refused every later append as out of order.
+
+    Raises:
+        TypeError: for a value that is not text. TEXT affinity converts a
+            number to text on the way in, so only a BLOB arrives here, and
+            ``float()`` would otherwise parse one (``b'1.5'`` read as ``1.5``).
+        ValueError: for text that is not a number, or is not finite. Raised
+            fresh rather than chained from ``float()``, whose message quotes
+            the stored text, which a forged row chooses.
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"high-water mark must be text, not {type(value).__name__}")
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise ValueError("high-water mark is not a number") from None
+    return _finite(parsed, "high-water mark")
+
+
 class EventStore:
     """An open, append-only event database.
 
@@ -881,16 +911,46 @@ class EventStore:
         it describes: retention prunes old events, and a mark derived from
         ``MAX(ingested_at)`` after a prune would move *backwards*, re-opening
         the window for exactly the event ordering the mark exists to refuse.
+
+        Raises:
+            StoreIntegrityError: for a mark that is not a finite number, from
+                either branch. Every write path refuses one (``append`` stamps
+                with ``float()`` and :meth:`_require_monotonic` refuses a
+                non-finite stamp), so it was written outside this platform.
+                Both branches used to convert with ``float()``, which raised a
+                bare ``ValueError`` for text — ``sli`` graded three indicators
+                "the probe raised" — and accepted the rest silently: a BLOB
+                ``b'1.5'``, ``nan`` and ``±inf``. A ``nan`` mark disabled every
+                comparison made against it, measured twice: an append behind
+                every stored row succeeded, and ``scripts/run_retention.py
+                --apply`` skipped its clock-fault guard and deleted 5 of 10
+                events at exit 0, where the same store with an intact mark is
+                refused at exit 2. In the fallback, SQLite sorts TEXT and BLOB
+                above every REAL, so one such ``ingested_at`` is the ``MAX``
+                however many good rows sit beside it. The message names the
+                type or the infinity, never the stored text.
         """
         row = self._conn.execute(
             "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
         ).fetchone()
         if row is not None:
-            return float(row["value"])
+            try:
+                return _stored_mark(row["value"])
+            except (TypeError, ValueError) as exc:
+                raise StoreIntegrityError(
+                    f"the stored {exc}; every write path refuses that, so the "
+                    "database was modified outside this platform"
+                ) from exc
         derived = self._conn.execute("SELECT MAX(ingested_at) AS mark FROM events").fetchone()
         if derived is None or derived["mark"] is None:
             return None
-        return float(derived["mark"])
+        try:
+            return _finite(derived["mark"], "the newest ingested_at")
+        except (TypeError, ValueError) as exc:
+            raise StoreIntegrityError(
+                f"no high-water mark is stored, and {exc}; every write path "
+                "refuses that, so the database was modified outside this platform"
+            ) from exc
 
     def next_stamp(self, now: float) -> float:
         """An ``ingested_at`` that is safe to write, at or after ``now``.
@@ -1354,21 +1414,39 @@ class EventStore:
         The ``limit`` is clamped to :data:`store.schema.MAX_QUERY_LIMIT` rather
         than honored, and a non-positive limit yields nothing rather than
         everything — a caller computing a limit arithmetically should get an
-        empty page from a bad computation, not the whole store.
+        empty page from a bad computation, not the whole store. The time
+        bounds are checked first, so an empty limit cannot hide a bad window.
+
+        Raises:
+            ValueError: for a time bound that is not finite — ``since``,
+                ``until``, ``ingested_from``, or the timestamp of either keyset
+                pair. Measured on five stored events, before this check: NaN in
+                any of the five returned **0** rows, because SQLite binds NaN as
+                NULL and a comparison with NULL matches nothing, and so did an
+                infinity on the closed side of a bound (``since=inf``,
+                ``until=-inf``). A caller that computed a bad window read "nothing
+                happened" from it. The open-side infinities returned all five,
+                which is what leaving the field unset already says, so refusing
+                every non-finite bound costs no expressiveness and leaves no
+                direction-dependent rule to remember. The shape is the one
+                :meth:`prune` and :meth:`count_before` use for their thresholds.
+            TypeError: for a time bound that is not a real number. ``float()``
+                parsed text, so ``since="5"`` used to be read as ``5.0``.
         """
         limit = min(spec.limit, MAX_QUERY_LIMIT)
-        if limit <= 0:
-            return ()
         clauses: list[str] = []
         params: list[Any] = []
         # Each fragment below is a literal; only values are bound. There is no
         # path by which caller input becomes SQL text.
+        # Every time bound goes through `_finite`, which converts once and binds
+        # the value it checked, so a keyset bound is no longer converted twice
+        # for its two placeholders.
         if spec.since is not None:
             clauses.append("e.occurred_at IS NOT NULL AND e.occurred_at >= ?")
-            params.append(float(spec.since))
+            params.append(_finite(spec.since, "since"))
         if spec.until is not None:
             clauses.append("e.occurred_at IS NOT NULL AND e.occurred_at < ?")
-            params.append(float(spec.until))
+            params.append(_finite(spec.until, "until"))
         for column, value in (
             ("source_type", spec.source_type),
             ("vendor", spec.vendor),
@@ -1385,22 +1463,28 @@ class EventStore:
             # Strictly after the pair, in the same total order as the ORDER BY.
             clauses.append(_INGESTED_AFTER)
             at, identifier = spec.ingested_after
-            params.extend((float(at), float(at), identifier))
+            bound = _finite(at, "ingested_after")
+            params.extend((bound, bound, identifier))
         if spec.ingested_before is not None:
             # Strictly before the pair, in the same total order as the ORDER BY.
             clauses.append(_INGESTED_BEFORE)
             at, identifier = spec.ingested_before
-            params.extend((float(at), float(at), identifier))
+            bound = _finite(at, "ingested_before")
+            params.extend((bound, bound, identifier))
         if spec.ingested_from is not None:
             # Inclusive, so the lower edge of a lookback window is not itself
             # the thing that falls out of it.
             clauses.append(_INGESTED_FROM)
-            params.append(float(spec.ingested_from))
+            params.append(_finite(spec.ingested_from, "ingested_from"))
         if spec.observable is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM observables o WHERE o.event_id = e.event_id AND o.value = ?)"
             )
             params.append(spec.observable)
+        # After the bounds, not before: an empty limit returned first used to
+        # hide a NaN window behind `()`, the silence the checks above refuse.
+        if limit <= 0:
+            return ()
         # The statement is assembled only from literals declared in this
         # module: _SELECT, the _PREDICATE fragments, and one of two _ORDER
         # constants. No caller value is ever concatenated into SQL text — the

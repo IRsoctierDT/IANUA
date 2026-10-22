@@ -31,7 +31,7 @@ line once, between `ingest/` (normalize) and `correlation/` (resolve).
 |---|---|
 | **Append-only** | SQLite `BEFORE UPDATE` triggers raise. Not an API convention — anything holding the file open would otherwise be able to rewrite history. |
 | **Idempotent** | `event_id` is the SHA-256 of the canonical projection. Appending the same event twice stores it once. |
-| **Tamper-evident** | Every row is re-hashed on read; a projection that does not match its `event_id` raises `StoreIntegrityError`. So does one that matches and still will not rebuild (a field past its bound), chained from the reader's `MalformedProjectionError`, since `event_id` is an unkeyed hash and a match does not prove which build wrote the row. So does an `ingested_at` that is not a finite number: that column is outside the hash, and no write path stores text, bytes or an infinity in it. |
+| **Tamper-evident** | Every row is re-hashed on read; a projection that does not match its `event_id` raises `StoreIntegrityError`. So does one that matches and still will not rebuild (a field past its bound), chained from the reader's `MalformedProjectionError`, since `event_id` is an unkeyed hash and a match does not prove which build wrote the row. So does an `ingested_at` that is not a finite number: that column is outside the hash, and no write path stores text, bytes or an infinity in it. So does a high-water mark that is not a finite number, stored or derived: a `nan` mark compared false against every stamp and silently disabled the ordering control. |
 | **No ambient clock** | `ingested_at` is a required keyword argument. The store never asks the host what time it is. |
 | **Contained** | The database lives under gitignored `data/events/`. A filename with a separator, a traversal, or a leading dot is refused. |
 | **No hostile database file** | Before SQLite opens it, `events.sqlite3` itself must be absent (a fresh root, which then creates it) or a regular file with one link (`lstat`, never followed). Anything else raises `StoreFileError`. See [The database file itself](#the-database-file-itself). |
@@ -64,7 +64,10 @@ with EventStore.open(Path(".")) as events:
     removed = events.prune(before=time.time() - 90 * 86_400)
 ```
 
-`Query` filters AND together. Unset means unfiltered.
+`Query` filters AND together. Unset means unfiltered. A time bound (`since`, `until`,
+`ingested_from`, or either keyset pair's timestamp) that is not a finite number raises
+`ValueError`, and one that is not a number raises `TypeError`; leave a side unset to leave it
+unbounded. A NaN bound used to return no rows with no error, which reads as a quiet period.
 
 ## Two behaviours worth knowing before you rely on them
 

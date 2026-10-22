@@ -134,6 +134,11 @@ class StoreIntegrityError(StoreError):
     is outside the hash, and no write path stores text, bytes or an infinity
     in it, so one that holds them was written outside the API. Its cause is the
     ``TypeError`` or ``ValueError`` from ``store.events._finite``.
+
+    And a high-water mark that is not a finite number, whether the one stored
+    in ``meta`` or the ``MAX(ingested_at)`` a store without one derives it
+    from. No write path stores one, and a ``nan`` mark silently disabled the
+    ordering control every append relies on.
     """
 
 

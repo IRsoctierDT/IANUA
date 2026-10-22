@@ -37,6 +37,7 @@ from sli import (
 from sli.indicators import BACKUP_SUBDIR, MANIFEST_FILE
 from sli.report import Indicator, SliReport
 from store import EventStore, canonical_json, event_id
+from store.schema import HIGH_WATER_KEY
 
 _AUDITD = "type=SYSCALL msg=audit(1760000001.200:2): node=web-01 auid=svc-deploy comm=bash"
 _CLOUD = json.dumps(
@@ -643,6 +644,64 @@ def test_a_corrupt_ingestion_stamp_breaches_store_readable(tmp_path: Path) -> No
     )
     assert "ingested_at must be a real number, not str" in readable.detail
     assert "not-a-stamp" not in readable.detail
+    escaped = [i.objective.id for i in report.indicators if i.detail.startswith("the probe raised")]
+    assert not escaped, f"a store refusal escaped its measurer in {escaped}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("case", ["stored_text", "stored_nan", "derived_text"])
+def test_a_corrupt_high_water_mark_is_named_by_every_indicator_that_reads_it(
+    tmp_path: Path, case: str
+) -> None:
+    """Three indicators read the mark, and each says the mark is what failed.
+
+    ``ingest-freshness`` and ``detection-lag`` read it through
+    ``_high_water_mark``, ``detection-backlog`` directly. A garbage mark used to
+    reach all three as ``float()``'s bare ``ValueError``, graded "the probe
+    raised". The store now raises :class:`store.StoreIntegrityError`, from the
+    stored mark or from the ``MAX(ingested_at)`` a store without one derives.
+    Mapped there, not caught here, as #262 did for ``_rebuild``.
+
+    ``UNKNOWN`` is the right grade: neither figure can be computed without the
+    mark. What the detail must not say is "could not be opened" — the store
+    opened, and that sentence sends an operator to the wrong file.
+    """
+    root = _root(tmp_path)
+    with EventStore.open(root) as store:
+        store.append(normalize(_AUDITD), ingested_at=1_760_000_000.0)
+    connection = sqlite3.connect(root / "data" / "events" / "events.sqlite3")
+    try:
+        with connection:
+            if case == "derived_text":
+                connection.execute("DELETE FROM meta WHERE key = ?", (HIGH_WATER_KEY,))
+                projection = canonical_json(normalize(_CLOUD).to_dict())
+                connection.execute(
+                    "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+                    "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+                    "VALUES (?, ?, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+                    (event_id(projection), "PLANTED-STAMP", projection),
+                )
+            else:
+                planted = "PLANTED-MARK" if case == "stored_text" else "nan"
+                connection.execute(
+                    "UPDATE meta SET value = ? WHERE key = ?", (planted, HIGH_WATER_KEY)
+                )
+    finally:
+        connection.close()
+
+    report = measure(root, now=1_760_000_100.0)
+    by_id = {indicator.objective.id: indicator for indicator in report.indicators}
+    for objective in ("ingest-freshness", "detection-lag"):
+        indicator = by_id[objective]
+        assert indicator.status is Status.UNKNOWN, (objective, indicator.detail)
+        assert indicator.detail.startswith(
+            "the event store's high-water mark is unreadable (StoreIntegrityError): "
+        ), (objective, indicator.detail)
+        assert "PLANTED" not in indicator.detail, (objective, indicator.detail)
+    backlog = by_id["detection-backlog"]
+    assert backlog.status is Status.UNKNOWN, backlog.detail
+    assert "could not be queried (StoreIntegrityError)" in backlog.detail
+    assert not report.healthy
     escaped = [i.objective.id for i in report.indicators if i.detail.startswith("the probe raised")]
     assert not escaped, f"a store refusal escaped its measurer in {escaped}"
 

@@ -36,6 +36,7 @@ in CI, the same discipline as ``as_of`` in ``intel/`` and ``ingested_at`` in
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 
 from correlation import DEFAULT_THRESHOLDS, Incident, Thresholds, assemble
@@ -178,6 +179,14 @@ def run_cycle(
     allowed and means "no overlap", which is the old partitioning behaviour and
     is occasionally what a backfill wants.
 
+    A non-finite ``lookback`` is refused too, as ``scripts/run_pipeline.py``
+    already refuses ``--lookback nan``. Called directly, ``nan`` fails the
+    ``lookback > 0`` gate and ran as ``0``: measured with a cursor and ten new
+    events inside the default window, **10** correlated against **50**, the
+    partitioning the overlap exists to prevent, with nothing in the result
+    saying so. ``inf`` worked by accident, as a context read from ``-inf``,
+    and the store now refuses that bound rather than reading it as "unset".
+
     A ``batch`` above the ceiling is still *clamped* rather than refused, as it
     always was: asking for more than the store will serve is a cap and not a
     caller error, and the reserve above means the clamp now also protects the
@@ -187,6 +196,8 @@ def run_cycle(
     """
     if batch < 1:
         raise ValueError(f"batch must be >= 1, got {batch}")
+    if not math.isfinite(lookback):
+        raise ValueError(f"lookback must be finite, got {lookback}")
     if lookback < 0:
         raise ValueError(f"lookback must be >= 0 seconds, got {lookback}")
 
