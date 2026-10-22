@@ -225,9 +225,7 @@ All notable changes to this project. Versions correspond to git tags.
   non-ASCII `event_id`. **The limit**: `nan` and `2.5` raised a raw `sqlite3.IntegrityError`
   ("datatype mismatch"), `True` returned one row and `False` none, and `inf` was clamped. A
   limit must now be an integer by `__index__`, and anything else, a `bool` included, is a
-  `TypeError`. Every bound is also checked before a non-positive limit returns `()`, so
-  `Query(limit=0, since=nan)` raises instead of returning nothing. Eighteen plants, eighteen
-  red, four of them controls.
+  `TypeError`. Seventeen plants, seventeen red, four of them controls.
 - **A corrupt high-water mark escaped as a bare `ValueError` or was obeyed silently, and a
   NaN query bound read as a quiet period.** `EventStore.high_water_mark` converted the stored
   `meta` mark, and in its no-`meta` fallback `MAX(ingested_at)`, with `float()`. Garbage text

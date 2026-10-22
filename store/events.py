@@ -1602,13 +1602,8 @@ class EventStore:
         The ``limit`` is clamped to :data:`store.schema.MAX_QUERY_LIMIT` rather
         than honored, and a non-positive limit yields nothing rather than
         everything — a caller computing a limit arithmetically should get an
-        empty page from a bad computation, not the whole store.
-
-        **Every argument is checked before an empty limit returns.** The early
-        return used to come first, so ``Query(limit=0, since=nan)`` returned
-        ``()`` where the same bound with a positive limit raised: a malformed
-        window went silent in exactly the case where the computed limit was
-        empty too. Found by review.
+        empty page from a bad computation, not the whole store. The time
+        bounds are checked first, so an empty limit cannot hide a bad window.
 
         Raises:
             ValueError: for a time bound that is not finite — ``since``,
@@ -1679,7 +1674,8 @@ class EventStore:
                 "EXISTS (SELECT 1 FROM observables o WHERE o.event_id = e.event_id AND o.value = ?)"
             )
             params.append(spec.observable)
-        # After every bound has been checked, not before. See the docstring.
+        # After the bounds, not before: an empty limit returned first used to
+        # hide a NaN window behind `()`, the silence the checks above refuse.
         if limit <= 0:
             return ()
         # The statement is assembled only from literals declared in this

@@ -2443,6 +2443,11 @@ def test_a_non_finite_query_bound_is_refused(tmp_path: Path, bound: str, bad: fl
         assert _bounded_store(store) == 2
         with pytest.raises(ValueError, match=f"{bound} must be finite"):
             store.query(_QUERY_BOUNDS[bound](bad))
+        # An empty limit returns `()` without a query, and used to do so before
+        # any bound was checked, so a bad window under it read as a quiet period.
+        empty = dataclasses.replace(_QUERY_BOUNDS[bound](bad), limit=0)
+        with pytest.raises(ValueError, match=f"{bound} must be finite"):
+            store.query(empty)
 
 
 @pytest.mark.security
@@ -2459,6 +2464,9 @@ def test_a_textual_query_bound_is_refused(tmp_path: Path, bound: str, text: obje
         assert _bounded_store(store) == 2
         with pytest.raises(TypeError, match=f"{bound} must be a real number"):
             store.query(_QUERY_BOUNDS[bound](text))
+        empty = dataclasses.replace(_QUERY_BOUNDS[bound](text), limit=0)
+        with pytest.raises(TypeError, match=f"{bound} must be a real number"):
+            store.query(empty)
 
 
 @pytest.mark.security
@@ -2721,26 +2729,6 @@ def test_an_integer_limit_still_selects(tmp_path: Path) -> None:
         assert len(store.query(Query(limit=MAX_QUERY_LIMIT + 1))) == held
         assert store.query(Query(limit=0)) == ()
         assert store.query(Query(limit=-5)) == ()
-
-
-@pytest.mark.security
-@pytest.mark.parametrize("limit", [0, -1])
-@pytest.mark.parametrize("bound", sorted(_QUERY_BOUNDS))
-def test_a_bad_bound_is_refused_even_when_the_limit_is_empty(
-    tmp_path: Path, bound: str, limit: int
-) -> None:
-    """Every argument is checked before an empty limit returns ``()``.
-
-    The early return came first, so ``Query(limit=0, since=nan)`` returned
-    ``()`` where the same bound with a positive limit raised: a malformed window
-    went silent in exactly the case where the computed limit was empty too.
-    Found by review.
-    """
-    with EventStore.open(tmp_path) as store:
-        _bounded_store(store)
-        spec = dataclasses.replace(_QUERY_BOUNDS[bound](math.nan), limit=limit)
-        with pytest.raises(ValueError, match=f"{bound} must be finite"):
-            store.query(spec)
 
 
 @pytest.mark.security
