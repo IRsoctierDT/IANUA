@@ -882,6 +882,17 @@ _REFUSALS: dict[str, tuple[Callable[[Path, Path], None], str, str]] = {
         "SchemaVersionError",
         "no recorded schema version",
     ),
+    # The removed row's sibling: rewritten, with bytes that are not UTF-8. The
+    # store refuses it as a row written outside the platform, and it read
+    # "damaged" here until the damage verdict became the corruption class alone.
+    "version-row-not-utf8": (
+        _rewrite_meta(
+            "UPDATE meta SET value = CAST(x'504c414e544544ff' AS TEXT) WHERE key = ?",
+            VERSION_KEY,
+        ),
+        "StoreIntegrityError",
+        "is not valid UTF-8",
+    ),
 }
 
 
@@ -895,11 +906,12 @@ def test_a_refused_open_is_unmeasured_on_both_store_objectives(
     Measured before the open was classified: every one of these read
     ``store-intact: breached`` with "the store's database is damaged", and
     ``store-readable: breached`` with "the store cannot be read". None of them is
-    damage — the path and sidecar refusals come before SQLite reads a byte, and
-    a schema refusal reads a sound file of another version — while "damaged"
-    sends an operator to restore from a backup, which replaces the SOC's memory
-    with an older copy. Still not a pass: ``UNKNOWN`` is unhealthy, so the CLI
-    must still exit ``1``, and that is asserted rather than assumed.
+    damage — the path and sidecar refusals come before SQLite reads a byte, a
+    schema refusal reads a sound file of another version, and a tampered
+    version row is a row to investigate — while "damaged" sends an operator to
+    restore from a backup, which replaces the SOC's memory with an older copy.
+    Still not a pass: ``UNKNOWN`` is unhealthy, so the CLI must still exit
+    ``1``, and that is asserted rather than assumed.
     """
     from scripts.report_sli import main
 
@@ -917,6 +929,7 @@ def test_a_refused_open_is_unmeasured_on_both_store_objectives(
         assert f"{raised}: " in indicator.detail, indicator.detail
         assert reason in indicator.detail, indicator.detail
         assert _DAMAGED not in indicator.detail, indicator.detail
+        assert "PLANTED" not in indicator.detail, "a refusal quoted the planted bytes"
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):

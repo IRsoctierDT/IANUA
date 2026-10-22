@@ -54,6 +54,7 @@ from store import (
     MAX_QUERY_LIMIT,
     EventStore,
     Query,
+    StoreCorruptionError,
     StoreError,
     StoreIntegrityError,
     StorePathError,
@@ -366,17 +367,29 @@ def _open_store(root: Path) -> EventStore:
     """Open the store for a measurement, telling a refusal apart from damage.
 
     ``EventStore.open`` raises two kinds of :class:`StoreError`, and they
-    belong to different runbook branches. :class:`StoreIntegrityError` — on
-    this path always :class:`store.StoreCorruptionError`, which ``open`` raises
-    when SQLite reads the file and calls it malformed — is the file itself
-    reporting damage, and propagates unchanged. Everything else is a refusal
-    that says nothing about whether the file's pages are sound:
+    belong to different runbook branches. :class:`store.StoreCorruptionError`,
+    which ``open`` raises when SQLite reads the file and calls it malformed, is
+    the file itself reporting damage, and propagates unchanged. Everything else
+    is a refusal that says nothing about whether the file's pages are sound:
     :class:`store.StorePathError` for a path that leaves the root (a symlinked
     ``data/``), its subclass :class:`store.StoreSidecarError` for a FIFO,
-    linked or non-regular ``-journal``/``-wal``/``-shm``, and
-    :class:`store.SchemaVersionError` for a version this build does not speak.
-    Each is re-raised as :class:`_OpenRefused`, which a store measurer grades
+    linked or non-regular ``-journal``/``-wal``/``-shm``,
+    :class:`store.SchemaVersionError` for a version this build does not speak,
+    and a plain :class:`StoreIntegrityError` for a row written outside the
+    platform, such as a schema-version row whose bytes are not UTF-8. Each is
+    re-raised as :class:`_OpenRefused`, which a store measurer grades
     ``UNKNOWN``.
+
+    The allow-list used to be :class:`StoreIntegrityError`, on the stated
+    ground that on this path it was always the corruption subclass. That stopped
+    being true once the store's connection began decoding TEXT itself: a
+    non-UTF-8 schema-version row then made ``open`` raise the parent class, and
+    both store objectives read ``breached``, with ``store-intact`` saying "the
+    store's database is damaged". Measured. A tampered row is not damage. Its
+    branch is to investigate, and a restore would replace the SOC's memory with
+    an older copy before anyone had. A version row that was *removed* already
+    reads ``UNKNOWN`` here, as a :class:`store.SchemaVersionError`, and a version
+    row that was *rewritten* now reads the same.
 
     Measured before this split: all four refusals — a FIFO ``-journal``
     included, refused before SQLite read a byte — read ``store-intact:
@@ -392,7 +405,7 @@ def _open_store(root: Path) -> EventStore:
     """
     try:
         return EventStore.open(root)
-    except StoreIntegrityError:
+    except StoreCorruptionError:
         raise
     except StoreError as exc:
         raise _OpenRefused(f"{type(exc).__name__}: {exc}") from exc

@@ -220,6 +220,10 @@ All notable changes to this project. Versions correspond to git tags.
   protocol: NaN and `2.5` raised a raw `sqlite3.IntegrityError` and `inf` was taken silently as
   the ceiling, and each is now a `TypeError`. No first-party caller reached any of these. The
   collector is the only writer and holds a single-instance lock, and every limit passed is an `int`.
+  `sli` no longer reads that refusal as damage. A tampered schema-version row made `open` raise
+  `StoreIntegrityError`, which `_open_store` put on the damage side, so `store-intact` said "the
+  store's database is damaged", pointing an operator at a restore. Only `StoreCorruptionError` is
+  damage now, so a tampered row reads `unknown` with its reason, as a removed version row already did.
 - **A corrupt high-water mark escaped as a bare `ValueError` or was obeyed silently, and a
   NaN query bound read as a quiet period.** `EventStore.high_water_mark` converted the stored
   `meta` mark, and in its no-`meta` fallback `MAX(ingested_at)`, with `float()`. Garbage text
