@@ -32,6 +32,7 @@ import dataclasses
 import json
 import math
 import sqlite3
+import traceback
 import typing
 from collections.abc import Callable
 from pathlib import Path
@@ -48,10 +49,12 @@ from ingest.schema import (
     MAX_RAW_EXCERPT,
     NormalizedEvent,
 )
+from scripts._exit_codes import is_retryable_contention
 from store import (
     MAX_PROJECTION_BYTES,
     MAX_QUERY_LIMIT,
     EventStore,
+    IngestionOrderError,
     Query,
     SchemaVersionError,
     StoreCorruptionError,
@@ -61,7 +64,8 @@ from store import (
     canonical_json,
     event_id,
 )
-from store.schema import HIGH_WATER_KEY
+from store.events import HIGH_WATER_SQL
+from store.schema import HIGH_WATER_KEY, VERSION_KEY
 from tests.security import _sql_provenance as sqlprov
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1982,6 +1986,215 @@ def test_a_corrupt_derived_high_water_mark_is_a_store_integrity_error(
         assert store.count() == held, "a refused append still wrote a row"
 
 
+#: The stamps the recorded case was measured on, one per row.
+_SEEDED_STAMPS = (1_000.0, 1_001.0, 1_002.0)
+_LATE = "Failed password for bob from 10.0.0.7 port 22 ssh2"
+
+
+def _seed_three(store: EventStore) -> None:
+    """Three rows stamped 1000, 1001 and 1002, with the mark the API leaves at 1002."""
+    records = (_RECORD, _OTHER_RECORD, "sshd: session opened for user root")
+    for record, stamp in zip(records, _SEEDED_STAMPS, strict=True):
+        store.append(normalize(record), ingested_at=stamp)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "planted",
+    ["1.0", "1001.5", repr(math.nextafter(1_002.0, -math.inf))],
+    ids=["far_below", "among_the_rows", "one_ulp_below"],
+)
+def test_a_stored_mark_below_the_newest_row_is_refused(tmp_path: Path, planted: str) -> None:
+    """The case #269 recorded: a finite forged mark, which no type check can see.
+
+    Measured before this: ``'1.0'`` over rows stamped 1000 to 1002 let
+    ``append(..., ingested_at=5.0)`` succeed and moved the mark to 5.0, and a
+    cursor past 1002 never read that event. Every route that reads the mark now
+    refuses. The refused write leaves the rows and the planted mark as they
+    were, and ``query`` still works, because detection does not read the mark.
+    ``one_ulp_below`` is the tightest violation there is, so the comparison is
+    shown to be exact and not tolerant.
+    """
+    late = normalize(_LATE)
+    with EventStore.open(tmp_path) as store:
+        _seed_three(store)
+        _plant_mark(store, planted)
+        routes: dict[str, Callable[[], object]] = {
+            "high_water_mark": store.high_water_mark,
+            "next_stamp": lambda: store.next_stamp(5.0),
+            "append": lambda: store.append(late, ingested_at=5.0),
+            "append_many": lambda: store.append_many((late,), ingested_at=5.0),
+            "attest": store.attest,
+        }
+        for route, call in routes.items():
+            with pytest.raises(StoreIntegrityError, match="below the newest stored") as raised:
+                call()
+            assert not isinstance(raised.value, StoreCorruptionError), (
+                f"{route}: a row, not a damaged file"
+            )
+        assert store.count() == len(_SEEDED_STAMPS), "a refused append still wrote a row"
+        stored = store._conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (HIGH_WATER_KEY,)
+        ).fetchone()
+        assert stored["value"] == planted, "a refused append rewrote the mark"
+        assert len(store.query(Query(limit=10))) == len(_SEEDED_STAMPS), "detection was blocked"
+
+
+@pytest.mark.security
+def test_a_row_planted_above_the_stored_mark_is_refused(tmp_path: Path) -> None:
+    """The same inconsistency from the other side: a row the mark never covered.
+
+    A row inserted outside the API does not move the mark, so it sits above it,
+    which is a state no write path leaves. A later append between the two would
+    land behind that row.
+    """
+    with EventStore.open(tmp_path) as store:
+        _seed_three(store)
+        _plant(store, canonical_json(normalize(_LATE).to_dict()), ingested_at=5_000.0)
+        with pytest.raises(StoreIntegrityError, match=r"1002\.0 is below the newest stored"):
+            store.high_water_mark()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "planted", ["1002.0", "1002", "5000.0"], ids=["equal", "equal_integer_text", "above"]
+)
+def test_a_stored_mark_at_or_above_the_newest_row_still_reads(tmp_path: Path, planted: str) -> None:
+    """The control, or every refusal above is satisfied by refusing every mark.
+
+    Equality is what every batch leaves, since ``append_many`` stamps one time
+    across a whole commit. A mark above the rows is what deleting the newest
+    rows leaves, which ``test_the_stored_mark_wins_over_the_derived_one`` pins.
+    The ordering control must still hold against the mark that was read.
+    """
+    with EventStore.open(tmp_path) as store:
+        _seed_three(store)
+        _plant_mark(store, planted)
+        assert store.high_water_mark() == float(planted)
+        with pytest.raises(IngestionOrderError):
+            store.append(normalize(_LATE), ingested_at=5.0)
+        store.append(normalize(_LATE), ingested_at=float(planted))
+        assert store.high_water_mark() == float(planted)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_CORRUPT_NEWEST_STAMPS), ids=lambda value: value)
+def test_a_corrupt_newest_stamp_is_refused_even_under_a_valid_stored_mark(
+    tmp_path: Path, case: str
+) -> None:
+    """``mark >= MAX(ingested_at)`` means nothing unless the ``MAX`` is a number.
+
+    Before the invariant, a stored mark was returned without reading the rows,
+    so one corrupt ``ingested_at`` beside a valid mark was invisible to every
+    write route. SQLite sorts TEXT and BLOB above every REAL, so such a row is
+    the ``MAX`` however many good rows sit beside it.
+    """
+    value, cause = _CORRUPT_NEWEST_STAMPS[case]
+    third = normalize("sshd: session opened for user root")
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1_000.0)
+        _plant(store, canonical_json(normalize(_OTHER_RECORD).to_dict()), ingested_at=value)
+        held = store.count()
+        for route, call in (
+            ("high_water_mark", store.high_water_mark),
+            ("append", lambda: store.append(third, ingested_at=2_000.0)),
+        ):
+            with pytest.raises(StoreIntegrityError, match="cannot be checked against") as raised:
+                call()
+            assert isinstance(raised.value.__cause__, cause), route
+            assert "PLANTED" not in str(raised.value), f"{route} echoed the stored text"
+        assert store.count() == held, "a refused append still wrote a row"
+
+
+@pytest.mark.security
+def test_the_mark_and_the_newest_row_are_read_in_one_snapshot(tmp_path: Path) -> None:
+    """A commit that lands between two reads must not look like tampering.
+
+    ``sli`` and retention read the mark while the collector writes. With the
+    two values read by separate statements and a writer committing between
+    them, measured on a store nothing had touched, the mark read 1000 and the
+    ``MAX`` read 2000: a violation produced by an ordinary race. The trace
+    callback fires as a statement starts, before it opens a snapshot, so a
+    commit made from it when the ``MAX`` is about to be read lands before that
+    read's snapshot. In one statement, that snapshot is also the mark's.
+    """
+    with EventStore.open(tmp_path) as reader, EventStore.open(tmp_path) as writer:
+        writer.append(normalize(_RECORD), ingested_at=1_000.0)
+        committed: list[str] = []
+
+        def commit_before_max(statement: str) -> None:
+            if "MAX(ingested_at)" in statement and not committed:
+                writer.append(normalize(_OTHER_RECORD), ingested_at=2_000.0)
+                committed.append(statement)
+
+        reader._conn.set_trace_callback(commit_before_max)
+        try:
+            mark = reader.high_water_mark()
+        finally:
+            reader._conn.set_trace_callback(None)
+        assert committed, "the writer never committed, so nothing was interleaved"
+        assert mark == 2_000.0
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("route", ["append", "append_many"])
+def test_a_second_writer_cannot_move_the_mark_below_the_rows(tmp_path: Path, route: str) -> None:
+    """The ordering check and the write are one transaction.
+
+    Python's ``sqlite3`` opens its implicit transaction before the first
+    ``INSERT``, so the check used to run in autocommit. Driven
+    deterministically before ``BEGIN IMMEDIATE``: writer B read the mark at
+    1000, writer A committed a row at 2000, and B then wrote a row and the mark
+    at 1500, below A's row, with no error. That is the blind spot the mark
+    exists to prevent, and the invariant would now misreport it as an outside
+    write. With the write lock taken first, A cannot commit inside B's window.
+    It meets contention the CLIs already classify as retryable (a short
+    timeout keeps the test fast), and its write lands afterwards, in order.
+    """
+    later = normalize(_OTHER_RECORD)
+    newer = normalize("sshd: session opened for user root")
+    with EventStore.open(tmp_path) as first, EventStore.open(tmp_path) as second:
+        first._conn.execute("PRAGMA busy_timeout = 50")
+        first.append(normalize(_RECORD), ingested_at=1_000.0)
+        outcome: list[str] = []
+
+        def interleave(statement: str) -> None:
+            if statement.startswith("INSERT OR IGNORE INTO events") and not outcome:
+                try:
+                    first.append(newer, ingested_at=2_000.0)
+                    outcome.append("committed inside the window")
+                except sqlite3.OperationalError as exc:
+                    outcome.append("held off" if is_retryable_contention(exc) else repr(exc))
+
+        second._conn.set_trace_callback(interleave)
+        try:
+            if route == "append":
+                second.append(later, ingested_at=1_500.0)
+            else:
+                second.append_many((later,), ingested_at=1_500.0)
+        finally:
+            second._conn.set_trace_callback(None)
+        assert outcome == ["held off"], outcome
+        assert second.high_water_mark() == 1_500.0
+        first.append(newer, ingested_at=2_000.0)
+        assert first.high_water_mark() == 2_000.0
+
+
+@pytest.mark.security
+def test_the_high_water_read_is_two_index_searches(tmp_path: Path) -> None:
+    """It runs on every append, so it must stay an index probe and never become a scan."""
+    with EventStore.open(tmp_path) as store:
+        _seed_three(store)
+        plan = [
+            str(row["detail"])
+            for row in store._conn.execute(
+                "EXPLAIN QUERY PLAN " + HIGH_WATER_SQL, (HIGH_WATER_KEY,)
+            )
+        ]
+    assert "SEARCH events USING COVERING INDEX events_ingested_at" in plan, plan
+    assert not [line for line in plan if line.startswith("SCAN") and "CONSTANT" not in line], plan
+
+
 @pytest.mark.security
 def test_an_equal_timestamp_is_accepted(tmp_path: Path) -> None:
     """Batches share one ``ingested_at`` by design, so equality must pass.
@@ -2288,6 +2501,246 @@ def test_a_keyset_bound_is_converted_once_for_both_placeholders(
         value = _StatefulFloat(first, then)
         assert len(store.query(build(value))) == expected, "a later answer was bound"
         assert value.calls == 1, f"{bound} was converted {value.calls} times"
+
+
+#: Stored text that is not UTF-8, recognisable if a message quotes it, as the
+#: driver's own "Could not decode to UTF-8 column ... with text '...'" did.
+_NOT_UTF8 = b"PLANTED-\xff"
+
+_PLANTED_ROW = (
+    "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, vendor, "
+    "parse_status, projection) VALUES "
+)
+
+#: Each TEXT column the store reads, planted with :data:`_NOT_UTF8`, with any
+#: other bound values. Rows are stamped 1000, the seeded mark, so the high-water
+#: invariant holds and the decode is what is under test.
+_NOT_UTF8_PLANTS: dict[str, tuple[str, tuple[object, ...]]] = {
+    "meta_mark": ("UPDATE meta SET value = CAST(? AS TEXT) WHERE key = ?", (HIGH_WATER_KEY,)),
+    "event_id": (
+        _PLANTED_ROW + "(CAST(? AS TEXT), 1000.0, NULL, 'unknown', 'planted', 'text', '{}')",
+        (),
+    ),
+    "projection": (
+        _PLANTED_ROW + "('f00d', 1000.0, NULL, 'unknown', 'planted', 'text', CAST(? AS TEXT))",
+        (),
+    ),
+    "ingested_at": (
+        _PLANTED_ROW + "('f00d', CAST(? AS TEXT), NULL, 'unknown', 'planted', 'text', '{}')",
+        (),
+    ),
+}
+
+#: Every route that reads each planted column, measured before the fix: each
+#: raised the driver's bare ``sqlite3.OperationalError``. An ``ingested_at``
+#: TEXT row is the ``MAX``, because SQLite sorts TEXT above every REAL.
+_NOT_UTF8_ROUTES: dict[str, tuple[str, ...]] = {
+    "meta_mark": ("high_water_mark", "next_stamp", "append", "append_many", "attest"),
+    "event_id": ("query", "attest"),
+    "projection": ("query",),
+    "ingested_at": ("high_water_mark", "append", "query"),
+}
+
+
+def _store_route(store: EventStore, route: str) -> Callable[[], object]:
+    """One public route into a store, by name."""
+    late = normalize(_LATE)
+    routes: dict[str, Callable[[], object]] = {
+        "high_water_mark": store.high_water_mark,
+        "next_stamp": lambda: store.next_stamp(2_000.0),
+        "append": lambda: store.append(late, ingested_at=2_000.0),
+        "append_many": lambda: store.append_many((late,), ingested_at=2_000.0),
+        "attest": store.attest,
+        "query": lambda: store.query(Query(limit=10)),
+    }
+    return routes[route]
+
+
+def _printed(exc: BaseException) -> str:
+    """Everything a traceback shows for ``exc``, its chain included."""
+    return "".join(traceback.format_exception(exc))
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("column", "route"),
+    [(column, route) for column, routes in sorted(_NOT_UTF8_ROUTES.items()) for route in routes],
+    ids=lambda value: value,
+)
+def test_stored_text_that_is_not_utf8_is_a_store_integrity_error(
+    tmp_path: Path, column: str, route: str
+) -> None:
+    """The driver's decode, mapped by the connection's text factory.
+
+    The driver's ``OperationalError`` carries no ``sqlite_errorcode`` or
+    ``sqlite_errorname``, so no ``except StoreError`` caught it and nothing but
+    its message text could tell it apart. That message quoted the row. The
+    file is intact (``quick_check`` reads ``ok``), so the class is
+    :class:`StoreIntegrityError` and not :class:`StoreCorruptionError`.
+    """
+    statement, extra = _NOT_UTF8_PLANTS[column]
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1_000.0)
+        with store._conn:
+            store._conn.execute(statement, (_NOT_UTF8, *extra))
+        held = store.count()
+        with pytest.raises(StoreIntegrityError, match="not valid UTF-8") as raised:
+            _store_route(store, route)()
+        assert not isinstance(raised.value, StoreCorruptionError), "a row, not a damaged file"
+        assert raised.value.__cause__ is None, "the decode error is chained, and holds the bytes"
+        assert "PLANTED" not in _printed(raised.value), "the stored text reached the traceback"
+        assert store.count() == held, "a refused append still wrote a row"
+        assert store._conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+
+
+@pytest.mark.security
+def test_a_schema_version_that_is_not_utf8_refuses_the_open_as_a_version_error(
+    tmp_path: Path,
+) -> None:
+    """From ``open``, ``StoreIntegrityError`` is a damage verdict, so this is not one.
+
+    ``sli._open_store`` lets ``StoreIntegrityError`` through as damage, and
+    ``store-intact`` grades it "the store's database is damaged", which sends
+    an operator to a restore. This file is intact. It is the removed-version-
+    row case by another route, and is refused as that case is, so the report
+    grades it ``UNKNOWN`` and not ``breached``. Before, the driver's
+    ``OperationalError`` escaped ``open`` and quoted the row.
+    """
+    from sli.indicators import measure_store_intact
+
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1_000.0)
+        database = store.path
+    connection = sqlite3.connect(database)
+    with connection:
+        connection.execute(
+            "UPDATE meta SET value = CAST(? AS TEXT) WHERE key = ?", (_NOT_UTF8, VERSION_KEY)
+        )
+    connection.close()
+    with pytest.raises(SchemaVersionError, match="not valid UTF-8") as raised:
+        EventStore.open(tmp_path)
+    assert "PLANTED" not in _printed(raised.value), "the stored text reached the traceback"
+    measured = measure_store_intact(tmp_path, 0.0)
+    assert measured.value is None, measured
+    assert "SchemaVersionError" in measured.detail, measured
+
+
+@pytest.mark.security
+def test_a_non_ascii_event_id_is_refused_by_attest(tmp_path: Path) -> None:
+    """Valid UTF-8, so the text factory passes it, and the attestation's encode did not.
+
+    ``attest`` encodes each id as ASCII, and a non-ASCII one written outside the
+    API escaped as a bare ``UnicodeEncodeError``. ``query`` already refused the
+    same row, on its hash.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1_000.0)
+        with store._conn:
+            store._conn.execute(
+                _PLANTED_ROW + "(?, 1000.0, NULL, 'unknown', 'planted', 'text', '{}')",
+                ("é-PLANTED",),
+            )
+        with pytest.raises(StoreIntegrityError, match="event_id is not ASCII") as raised:
+            store.attest()
+        assert "PLANTED" not in _printed(raised.value), "the stored id reached the traceback"
+
+
+@pytest.mark.security
+def test_valid_non_ascii_text_still_round_trips(tmp_path: Path) -> None:
+    """The control: what is refused is bytes that are not UTF-8, not text that is not ASCII.
+
+    Telemetry carries non-ASCII hostnames and usernames, and ``canonical_json``
+    keeps them unescaped, so they reach the column as multi-byte UTF-8. An
+    observable is read back as bytes (``CAST(value AS BLOB)``), so ``attest``
+    never decodes one and is unaffected by the factory either way.
+    """
+    event = _hand_built(message="échec de connexion — 用户 ✓")
+    with EventStore.open(tmp_path) as store:
+        store.append(event, ingested_at=1_000.0)
+        assert [stored.event for stored in store.query(Query(limit=10))] == [event]
+        with store._conn:
+            store._conn.execute(
+                "INSERT INTO observables (event_id, value) SELECT event_id, CAST(? AS TEXT) "
+                "FROM events",
+                (_NOT_UTF8,),
+            )
+        assert store.attest().observables == 1
+
+
+#: Limits that are not integers, as arithmetic or configuration produces them.
+#: Measured before ``_row_limit``: ``nan`` and ``2.5`` raised a raw
+#: ``sqlite3.IntegrityError`` ("datatype mismatch"), ``True`` returned one row
+#: and ``False`` none, ``inf`` was clamped and ``-inf`` returned nothing,
+#: ``2.0`` was read as 2, and text and ``None`` raised a ``TypeError`` from
+#: ``min()`` that named no field.
+_BAD_LIMITS: dict[str, Any] = {
+    "nan": math.nan,
+    "inf": math.inf,
+    "negative_inf": -math.inf,
+    "fraction": 2.5,
+    "integral_float": 2.0,
+    "text": "5",
+    "bytes": b"5",
+    "none": None,
+    "true": True,
+    "false": False,
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_BAD_LIMITS))
+def test_a_limit_that_is_not_an_integer_is_a_type_error(tmp_path: Path, case: str) -> None:
+    """A caller's bad argument, so the caller's class, and named."""
+    with EventStore.open(tmp_path) as store:
+        assert _bounded_store(store) == 2
+        with pytest.raises(TypeError, match="limit must be an integer"):
+            store.query(Query(limit=_BAD_LIMITS[case]))
+
+
+class _Index:
+    """An integer by ``__index__`` alone, as a NumPy integer is."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+
+@pytest.mark.security
+def test_an_integer_limit_still_selects(tmp_path: Path) -> None:
+    """The control, or every refusal above is satisfied by refusing every limit.
+
+    A non-positive limit still returns nothing rather than everything, which
+    ``query``'s docstring promises a caller whose arithmetic went wrong.
+    """
+    with EventStore.open(tmp_path) as store:
+        held = _bounded_store(store)
+        assert len(store.query(Query(limit=1))) == 1
+        assert len(store.query(Query(limit=typing.cast(int, _Index(1))))) == 1
+        assert len(store.query(Query(limit=MAX_QUERY_LIMIT + 1))) == held
+        assert store.query(Query(limit=0)) == ()
+        assert store.query(Query(limit=-5)) == ()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("limit", [0, -1])
+@pytest.mark.parametrize("bound", sorted(_QUERY_BOUNDS))
+def test_a_bad_bound_is_refused_even_when_the_limit_is_empty(
+    tmp_path: Path, bound: str, limit: int
+) -> None:
+    """Every argument is checked before an empty limit returns ``()``.
+
+    The early return came first, so ``Query(limit=0, since=nan)`` returned
+    ``()`` where the same bound with a positive limit raised: a malformed window
+    went silent in exactly the case where the computed limit was empty too.
+    Found by review.
+    """
+    with EventStore.open(tmp_path) as store:
+        _bounded_store(store)
+        spec = dataclasses.replace(_QUERY_BOUNDS[bound](math.nan), limit=limit)
+        with pytest.raises(ValueError, match=f"{bound} must be finite"):
+            store.query(spec)
 
 
 @pytest.mark.security

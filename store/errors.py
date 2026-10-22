@@ -108,6 +108,13 @@ class SchemaVersionError(StoreError):
     other direction — reconstruct events with silently missing fields. A
     version mismatch is therefore a refusal with both versions named, and
     migration is an explicit, reviewed operation.
+
+    Also raised when the version cannot be known: the row was removed, or it
+    holds text that is not UTF-8. Neither is file damage, and from ``open`` a
+    :class:`StoreIntegrityError` is read as damage. ``sli`` grades
+    ``store-intact`` "the store's database is damaged" for it, which points an
+    operator at a restore, so the open path keeps that class for
+    :class:`StoreCorruptionError` alone.
     """
 
 
@@ -139,6 +146,21 @@ class StoreIntegrityError(StoreError):
     in ``meta`` or the ``MAX(ingested_at)`` a store without one derives it
     from. No write path stores one, and a ``nan`` mark silently disabled the
     ordering control every append relies on.
+
+    And a stored mark *below* ``MAX(ingested_at)``. Every write stores its rows
+    and the mark in one transaction, with the mark at least as high as the
+    rows, so ``mark >= MAX(ingested_at)`` holds for every store this platform
+    wrote. A finite forged mark under the rows was obeyed before, and let an
+    event land behind a cursor that had already passed it. It is refused, not
+    repaired, and ``store/README.md`` has the manual recovery.
+
+    And a stored text value that is not UTF-8, in any column the store reads.
+    The driver raised that as a bare ``sqlite3.OperationalError`` whose message
+    quoted the row. The connection's text factory now raises this class
+    instead, naming the offset and never the bytes. It is not a
+    :class:`StoreCorruptionError`, because ``quick_check`` reads such a file as
+    sound. From ``open``, an undecodable schema version is a
+    :class:`SchemaVersionError` instead, for the reason that class gives.
     """
 
 

@@ -31,7 +31,7 @@ line once, between `ingest/` (normalize) and `correlation/` (resolve).
 |---|---|
 | **Append-only** | SQLite `BEFORE UPDATE` triggers raise. Not an API convention — anything holding the file open would otherwise be able to rewrite history. |
 | **Idempotent** | `event_id` is the SHA-256 of the canonical projection. Appending the same event twice stores it once. |
-| **Tamper-evident** | Every row is re-hashed on read; a projection that does not match its `event_id` raises `StoreIntegrityError`. So does one that matches and still will not rebuild (a field past its bound), chained from the reader's `MalformedProjectionError`, since `event_id` is an unkeyed hash and a match does not prove which build wrote the row. So does an `ingested_at` that is not a finite number: that column is outside the hash, and no write path stores text, bytes or an infinity in it. So does a high-water mark that is not a finite number, stored or derived: a `nan` mark compared false against every stamp and silently disabled the ordering control. |
+| **Tamper-evident** | Every row is re-hashed on read; a projection that does not match its `event_id` raises `StoreIntegrityError`. So does one that matches and still will not rebuild (a field past its bound), chained from the reader's `MalformedProjectionError`, since `event_id` is an unkeyed hash and a match does not prove which build wrote the row. So does an `ingested_at` that is not a finite number: that column is outside the hash, and no write path stores text, bytes or an infinity in it. So does a high-water mark that is not a finite number, stored or derived: a `nan` mark compared false against every stamp and silently disabled the ordering control. So does a stored mark below `MAX(ingested_at)`, which no write path leaves (see [A high-water mark below its rows](#a-high-water-mark-below-its-rows)). So does a stored text value that is not UTF-8, in any column: the driver's own error was a bare `sqlite3.OperationalError` that quoted the row. |
 | **No ambient clock** | `ingested_at` is a required keyword argument. The store never asks the host what time it is. |
 | **Contained** | The database lives under gitignored `data/events/`. A filename with a separator, a traversal, or a leading dot is refused. |
 | **No hostile database file** | Before SQLite opens it, `events.sqlite3` itself must be absent (a fresh root, which then creates it) or a regular file with one link (`lstat`, never followed). Anything else raises `StoreFileError`. See [The database file itself](#the-database-file-itself). |
@@ -68,6 +68,11 @@ with EventStore.open(Path(".")) as events:
 `ingested_from`, or either keyset pair's timestamp) that is not a finite number raises
 `ValueError`, and one that is not a number raises `TypeError`; leave a side unset to leave it
 unbounded. A NaN bound used to return no rows with no error, which reads as a quiet period.
+`limit` must be an integer by `__index__`, Python's own rule for an integer parameter, so a
+float raises `TypeError` even when it is integral, and so does a `bool`. A NaN or fractional
+limit used to reach SQLite as a raw `sqlite3.IntegrityError`, and `limit=False` returned no rows.
+A non-positive limit still returns nothing, but only after every bound has been checked, so a
+bad window is refused even when the computed limit is empty.
 
 ## Two behaviours worth knowing before you rely on them
 
@@ -81,6 +86,45 @@ They remain reachable without a time filter; they are excluded, never lost.
 always present and is the only one of the two this platform controls. Keying
 retention on source-reported time would let a host with a skewed clock keep
 its events forever, or have them pruned the moment they arrived.
+
+## A high-water mark below its rows
+
+Every write stores its rows and the high-water mark in one transaction, with the mark at
+least as high as the rows. Retention only removes rows. So for any store this platform
+wrote, the mark stored in `meta` is at or above `MAX(ingested_at)`. A mark *below* the rows
+means the database was modified outside the platform: the `meta` row was edited, or a row
+was inserted directly, which does not move the mark.
+
+That state is not harmless. Measured: a mark of `1.0` over rows stamped 1000 to 1002 let
+`append(..., ingested_at=5.0)` succeed, and a pipeline cursor past 1002 never read that
+event. So `high_water_mark()` refuses it with `StoreIntegrityError`, and so does every route
+that reads the mark: `next_stamp`, `append`, `append_many` and `attest`. The store refuses
+to *repair* it. That decision was the owner's. The state is evidence of an outside write,
+and the true mark cannot be recovered from the rows: it may be above `MAX(ingested_at)` if
+the newest rows were deleted too.
+
+**What still works and what stops.** `query()` does not read the mark, so the detection
+cycle keeps running. Collection stops: every collector pass with new lines to store exits 1.
+Its offsets advance only after a source's events are durable, so the lines are collected
+again once the mark is reset, and nothing is lost in between. Retention exits 1. `ingest-freshness`, `detection-lag` and `detection-backlog` read `unknown`, which
+makes the SLI report unhealthy. `scripts/run_backup.py` cannot take the store, because its
+take calls `attest()`.
+
+**Recovery is manual, on purpose:**
+
+1. Stop the collector's timer so nothing contends for the file.
+2. Preserve the database as found before changing anything, because it is evidence. Use
+   SQLite's own backup (`.backup` in the `sqlite3` shell, or `Connection.backup`), since
+   `run_backup.py` refuses it. Record that you did so, as for any other integrity finding.
+3. Find the outside write. Compare the `ingested_high_water` row in `meta` with
+   `SELECT MAX(ingested_at) FROM events`, and list the rows above the stored mark. A row
+   that sits there was not written through this API, and its content is as suspect as the
+   mark.
+4. Reset the mark to the larger of `MAX(ingested_at)` and the `ingested_at` in
+   `data/pipeline/cursor.json`, if that file exists: `UPDATE meta SET value = '<that value>' WHERE key =
+   'ingested_high_water'`. Do not just delete the row. The store would then derive the mark
+   from `MAX(ingested_at)` alone, which can sit below a cursor that has read further.
+5. Confirm `high_water_mark()` reads, then restart the timer.
 
 ## Sidecars
 

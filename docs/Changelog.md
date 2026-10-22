@@ -204,6 +204,30 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **A forged high-water mark below the stored rows was obeyed, stored text that is not UTF-8
+  escaped as a raw `sqlite3.OperationalError`, and `Query.limit` was not validated.** The three
+  defects the entry below recorded and left open, all in `store/events.py`. **The mark**: a
+  `meta` value of `'1.0'` over rows stamped 1000 to 1002 let `append(..., ingested_at=5.0)`
+  succeed and moved the mark to 5.0, so a pipeline cursor past 1002 never read that event.
+  `high_water_mark` now checks `mark >= MAX(ingested_at)` on every read and, on the owner's
+  direction, refuses a violation with `StoreIntegrityError` rather than repairing it. It reads
+  both values in one statement, because with two reads a commit landing between them made a
+  healthy store fail the check (measured, 1000 against 2000). And `append`/`append_many` now
+  open their transaction with `BEGIN IMMEDIATE`. The ordering check used to run in autocommit,
+  despite its docstring, and a second writer committing between the check and the insert left
+  the mark at 1500 under a row at 2000. The shipped collector holds a single-instance lock, so
+  it never had a second writer. `store/README.md` documents the manual recovery. **Non-UTF-8
+  text**: the driver's error carries no SQLite error code, so the connection's text factory
+  now raises `StoreIntegrityError` itself, naming the offset and never the bytes. That covers
+  `meta`, `projection`, `event_id` and `ingested_at` on every route that reads them. A
+  non-UTF-8 schema version refuses `open` as `SchemaVersionError`, so `store-intact` reads
+  `unknown` and not "damaged", and `attest` no longer leaks a `UnicodeEncodeError` for a
+  non-ASCII `event_id`. **The limit**: `nan` and `2.5` raised a raw `sqlite3.IntegrityError`
+  ("datatype mismatch"), `True` returned one row and `False` none, and `inf` was clamped. A
+  limit must now be an integer by `__index__`, and anything else, a `bool` included, is a
+  `TypeError`. Every bound is also checked before a non-positive limit returns `()`, so
+  `Query(limit=0, since=nan)` raises instead of returning nothing. Eighteen plants, eighteen
+  red, four of them controls.
 - **A corrupt high-water mark escaped as a bare `ValueError` or was obeyed silently, and a
   NaN query bound read as a quiet period.** `EventStore.high_water_mark` converted the stored
   `meta` mark, and in its no-`meta` fallback `MAX(ingested_at)`, with `float()`. Garbage text
