@@ -138,7 +138,13 @@ class StoreIntegrityError(StoreError):
     And a high-water mark that is not a finite number, whether the one stored
     in ``meta`` or the ``MAX(ingested_at)`` a store without one derives it
     from. No write path stores one, and a ``nan`` mark silently disabled the
-    ordering control every append relies on.
+    ordering control every append relies on. And a stored mark below the
+    newest stored ``ingested_at``, which no write leaves either, since every
+    write raises the mark with its rows under one write lock.
+
+    And any stored TEXT that is not valid UTF-8, in any column. Every write
+    binds ``str``, which ``sqlite3`` encodes as UTF-8. The message gives the
+    length and never the bytes, which ``sqlite3``'s own error quoted.
     """
 
 

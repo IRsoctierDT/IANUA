@@ -649,7 +649,9 @@ def test_a_corrupt_ingestion_stamp_breaches_store_readable(tmp_path: Path) -> No
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("case", ["stored_text", "stored_nan", "derived_text"])
+@pytest.mark.parametrize(
+    "case", ["stored_text", "stored_nan", "stored_below_rows", "stored_not_utf8", "derived_text"]
+)
 def test_a_corrupt_high_water_mark_is_named_by_every_indicator_that_reads_it(
     tmp_path: Path, case: str
 ) -> None:
@@ -660,7 +662,10 @@ def test_a_corrupt_high_water_mark_is_named_by_every_indicator_that_reads_it(
     reach all three as ``float()``'s bare ``ValueError``, graded "the probe
     raised". The store now raises :class:`store.StoreIntegrityError`, from the
     stored mark or from the ``MAX(ingested_at)`` a store without one derives.
-    Mapped there, not caught here, as #262 did for ``_rebuild``.
+    Mapped there, not caught here, as #262 did for ``_rebuild``. Two later
+    cases arrive the same way: a finite mark below the stored rows, and a mark
+    whose bytes are not UTF-8, which ``sqlite3`` reported as a raw
+    ``OperationalError`` quoting the bytes.
 
     ``UNKNOWN`` is the right grade: neither figure can be computed without the
     mark. What the detail must not say is "could not be opened" — the store
@@ -681,8 +686,13 @@ def test_a_corrupt_high_water_mark_is_named_by_every_indicator_that_reads_it(
                     "VALUES (?, ?, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
                     (event_id(projection), "PLANTED-STAMP", projection),
                 )
+            elif case == "stored_not_utf8":
+                connection.execute(
+                    "UPDATE meta SET value = CAST(x'504c414e544544ff' AS TEXT) WHERE key = ?",
+                    (HIGH_WATER_KEY,),
+                )
             else:
-                planted = "PLANTED-MARK" if case == "stored_text" else "nan"
+                planted = {"stored_text": "PLANTED-MARK", "stored_nan": "nan"}.get(case, "1.0")
                 connection.execute(
                     "UPDATE meta SET value = ? WHERE key = ?", (planted, HIGH_WATER_KEY)
                 )

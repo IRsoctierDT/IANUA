@@ -204,6 +204,26 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **Two writers could interleave the ordering check, a finite forged mark below the rows was
+  obeyed, non-UTF-8 text escaped as a raw driver error quoting its bytes, and `Query.limit`
+  was not validated.** These are the three residuals #269 recorded. The connection's default
+  transaction handling read the high-water mark outside the transaction its insert then opened.
+  Measured with two connections, a second writer committing at 200 between the first writer's
+  check and insert at 150 left a row behind a stored row and regressed the mark below the rows.
+  `append` and `append_many` now take the write lock (`BEGIN IMMEDIATE`) first, so the second
+  writer gets `SQLITE_BUSY`, and `append_many` counts its new rows inside that lock. With no
+  write path able to leave one, a stored mark below `MAX(ingested_at)` is now a
+  `StoreIntegrityError`. Before, `'1.0'` over rows at 1000 to 1002 let an append at 5.0 through.
+  The connection now decodes TEXT itself and raises `StoreIntegrityError` for bytes that are
+  not UTF-8. `sqlite3`'s own `OperationalError` escaped `open`, `query`, `attest` and
+  `high_water_mark` and quoted the planted bytes. `Query.limit` now goes through the index
+  protocol: NaN and `2.5` raised a raw `sqlite3.IntegrityError` and `inf` was taken silently as
+  the ceiling, and each is now a `TypeError`. No first-party caller reached any of these. The
+  collector is the only writer and holds a single-instance lock, and every limit passed is an `int`.
+  `sli` no longer reads that refusal as damage. A tampered schema-version row made `open` raise
+  `StoreIntegrityError`, which `_open_store` put on the damage side, so `store-intact` said "the
+  store's database is damaged", pointing an operator at a restore. Only `StoreCorruptionError` is
+  damage now, so a tampered row reads `unknown` with its reason, as a removed version row already did.
 - **A corrupt high-water mark escaped as a bare `ValueError` or was obeyed silently, and a
   NaN query bound read as a quiet period.** `EventStore.high_water_mark` converted the stored
   `meta` mark, and in its no-`meta` fallback `MAX(ingested_at)`, with `float()`. Garbage text
