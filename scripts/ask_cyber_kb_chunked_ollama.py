@@ -47,9 +47,14 @@ results = client.query_points(
 context_blocks = []
 
 for i, point in enumerate(results.points, start=1):
-    source = point.payload.get("source", "unknown")
-    chunk = point.payload.get("chunk_index", "unknown")
-    text = point.payload.get("text", "")
+    # Same rule as search_cyber_kb.py: a non-dict payload, or a ``text`` that is
+    # absent, null or not a str, contributes an empty passage instead of an
+    # AttributeError, or a repr formatted into the prompt.
+    payload = point.payload if isinstance(point.payload, dict) else {}
+    source = payload.get("source", "unknown")
+    chunk = payload.get("chunk_index", "unknown")
+    text = payload.get("text")
+    text = text if isinstance(text, str) else ""
 
     context_blocks.append(
         f"[Source {i}]\n"

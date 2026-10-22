@@ -574,3 +574,46 @@ def test_search_scripts_print_every_result_whatever_its_text_value(
     assert "knowledge-base/next.md" in out and "NEXT-PASSAGE" in out
     assert ("knowledge-base/x.md" in out) == isinstance(payload, dict)
     assert max(len(line) for line in out.splitlines()) <= 1200
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("script", _ASK_SCRIPTS)
+@pytest.mark.parametrize(
+    "payload",
+    [None, ["x"], {"source": "knowledge-base/x.md"}]
+    + [{"source": "knowledge-base/x.md", "text": value} for value in _TEXT_VALUES],
+)
+def test_ask_scripts_build_the_prompt_whatever_a_payload_holds(
+    script: str,
+    payload: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rule the two scripts above follow, for the two that send text to a model.
+
+    ``qdrant-client`` types ``ScoredPoint.payload`` as ``dict[str, Any] | None``,
+    and these scripts called ``.get`` on it unguarded, which ``mypy`` reported
+    with the ``dashboard`` extra installed. Measured before the fix: a ``None``
+    or list payload raised ``AttributeError`` before anything was generated,
+    and a ``text`` that is not a ``str`` was formatted into the prompt as its
+    ``repr``. A retrieved passage is untrusted content (DESIGN.md section 5,
+    boundary 3), so a structured value has no business reaching the model as
+    prose. Here it contributes nothing, and the later result still arrives.
+    """
+    _install_stubs(monkeypatch, tmp_path)
+    after = {"source": "knowledge-base/next.md", "chunk_index": 1, "text": "NEXT-PASSAGE"}
+    _StubClient.canned_points = [
+        types.SimpleNamespace(score=0.5, payload=payload),
+        types.SimpleNamespace(score=0.4, payload=after),
+    ]
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "QUESTION-TEXT")
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+    calls: list[Any] = []
+    _fake_generation(monkeypatch, calls)
+    runpy.run_path(str(_SCRIPTS / script), run_name="__main__")
+    ((_url, body, _timeout),) = calls
+    prompt = str(body["prompt"])
+    assert "knowledge-base/next.md" in prompt and "NEXT-PASSAGE" in prompt
+    assert ("knowledge-base/x.md" in prompt) == isinstance(payload, dict)
+    # The first block's text is empty: the separator follows "Text:" directly.
+    assert "Text:\n\n\n---\n\n" in prompt, "a non-str text reached the prompt"
