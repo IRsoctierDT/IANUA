@@ -154,10 +154,13 @@ class StoreIntegrityError(StoreError):
     event land behind a cursor that had already passed it. It is refused, not
     repaired, and ``store/README.md`` has the manual recovery.
 
-    And a stored text value that is not UTF-8, in any column the store reads.
-    The driver raised that as a bare ``sqlite3.OperationalError`` whose message
-    quoted the row. The connection's text factory now raises this class
-    instead, naming the offset and never the bytes. It is not a
+    And a stored text value that is not UTF-8, in any column the store decodes
+    as text. The driver raised that as a bare ``sqlite3.OperationalError``
+    whose message quoted the row. The connection's text factory now raises
+    this class instead, naming the offset and never the bytes. That is every
+    column the store reads except ``observables.value``, which ``attest`` reads
+    as raw bytes by design: an undecodable observable attests and is not
+    refused, and ``observables_digest`` still commits to its bytes. It is not a
     :class:`StoreCorruptionError`, because ``quick_check`` reads such a file as
     sound. From ``open``, an undecodable schema version is a
     :class:`SchemaVersionError` instead, for the reason that class gives.
