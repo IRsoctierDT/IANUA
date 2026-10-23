@@ -268,22 +268,6 @@ def _rebuild_reason(exc: MalformedProjectionError) -> str:
     return f"{text[:_REASON_CHARS]}... ({len(text)} chars, cut)"
 
 
-def _bounded_repr(value: object, limit: int) -> str:
-    """``repr`` of a stored value a refusal quotes, cut at ``limit`` before ``repr``.
-
-    The one rule :func:`_quoted_version` and :func:`_quoted_id` share, kept in
-    one place because a second copy is what drifts. Cut *before* ``repr``, so
-    the bound is on what the row chooses rather than on what ``repr`` makes of
-    it: at most ``limit`` stored characters, which ``repr`` renders in at most
-    ten characters each (``'\\U000e0001'``), all printable, or ``limit`` bytes
-    in at most four each. A cut says that it is one and names the full length.
-    """
-    if isinstance(value, (str, bytes)) and len(value) > limit:
-        unit = "chars" if isinstance(value, str) else "bytes"
-        return f"{value[:limit]!r}... ({len(value)} {unit}, cut)"
-    return repr(value)
-
-
 #: How many characters (or bytes) of a stored schema version a refusal quotes.
 #: See :func:`_quoted_version`.
 _VERSION_CHARS = 32
@@ -308,42 +292,12 @@ def _quoted_version(value: object) -> str:
     The value is cut *before* ``repr``, so the bound is on what the row
     chooses rather than on what ``repr`` makes of it: at most ``_VERSION_CHARS``
     stored characters, which ``repr`` renders in at most ten characters each
-    (``'\\U000e0001'``), all printable. See :func:`_bounded_repr`.
+    (``'\\U000e0001'``), all printable.
     """
-    return _bounded_repr(value, _VERSION_CHARS)
-
-
-#: An ``event_id`` as every write produces it: :func:`store.schema.event_id`
-#: is a lowercase sha256 hex digest. See :func:`_quoted_id`.
-_EVENT_ID_SHAPE = re.compile(r"[0-9a-f]{64}")
-
-#: How many characters (or bytes) of a stored ``event_id`` without that shape a
-#: refusal quotes: a real id's length.
-_ID_CHARS = 64
-
-
-def _quoted_id(value: object) -> str:
-    """A stored ``event_id`` as a refusal names it: whole when write-shaped, else bounded.
-
-    Named as it is when it has the shape every write produces, because that is
-    the realistic tamper case (a projection edited, its id left alone) and the
-    id is how the operator finds the row. That keeps it unquoted, as the other
-    branches of :func:`_rebuild` print it. Anything else was written outside
-    the platform, and goes through :func:`_bounded_repr`, the shape
-    :func:`_quoted_version` uses for the version.
-
-    Measured before this bound, through ``query`` over a forged id: 50,008
-    characters made a 50,105-character refusal and a 50,152-character
-    ``store-readable`` detail; a 50,008-byte BLOB, read as ``bytes`` because
-    ``text_factory`` decodes TEXT only, made 50,108 as ``str(bytes)``; and an id
-    holding ``ESC[2J``, ``ESC[H``, CR and LF reached ``scripts/report_sli.py``'s
-    stdout raw, clearing the terminal above a forged ``ok: all met`` line.
-    ``fullmatch`` and not ``match``: ``match`` accepts any string that *starts*
-    with 64 hex digits, so a 50,000-digit hex id would be named raw and whole.
-    """
-    if isinstance(value, str) and _EVENT_ID_SHAPE.fullmatch(value):
-        return value
-    return _bounded_repr(value, _ID_CHARS)
+    if isinstance(value, (str, bytes)) and len(value) > _VERSION_CHARS:
+        unit = "chars" if isinstance(value, str) else "bytes"
+        return f"{value[:_VERSION_CHARS]!r}... ({len(value)} {unit}, cut)"
+    return repr(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1847,19 +1801,12 @@ def _rebuild(row: sqlite3.Row) -> StoredEvent:
     The same holds for ``ingested_at``, the one column read here that the hash
     does not cover: a value that is not a finite number is a
     :class:`StoreIntegrityError`, not a bare ``ValueError`` from ``float()``.
-
-    Every message names the row's ``event_id``, and only the first one can be
-    handed forged text: past the hash check the id equals
-    :func:`store.schema.event_id` of the projection, a 64-character hex
-    digest. So the first goes through :func:`_quoted_id` and the rest name it
-    as it is.
     """
     projection = str(row["projection"])
-    stored_id = row["event_id"]
-    identifier = str(stored_id)
+    identifier = str(row["event_id"])
     if event_id(projection) != identifier:
         raise StoreIntegrityError(
-            f"event {_quoted_id(stored_id)}: projection does not hash to its event_id; "
+            f"event {identifier}: projection does not hash to its event_id; "
             "the database was modified outside this platform"
         )
     try:
