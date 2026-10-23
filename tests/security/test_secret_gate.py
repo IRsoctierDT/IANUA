@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shlex
 import shutil
 import string
 import subprocess  # nosec B404 — fixed argv, shell=False, throwaway repositories
@@ -38,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.secret_gate import (
@@ -856,3 +858,50 @@ def test_the_repositorys_committed_baseline_passes_the_hook_at_exit_0(
         "exit 2 = the gate could not run here (see the message)"
     )
     assert _git(REPO_ROOT, "ls-files", "--stage", "--", str(BASELINE)) == index_before
+
+
+def _precommit_hook(hook_id: str) -> dict[str, Any]:
+    """One hook from the repository's committed ``.pre-commit-config.yaml``."""
+    config = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    hooks = [hook for repo in config["repos"] for hook in repo["hooks"] if hook["id"] == hook_id]
+    assert len(hooks) == 1, f"expected one {hook_id!r} hook, found {len(hooks)}"
+    hook: dict[str, Any] = hooks[0]
+    return hook
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("decoy_first", [True, False], ids=["decoy-first", "decoy-last"])
+def test_a_dash_named_file_cannot_turn_the_precommit_secret_scan_into_a_pass(
+    tmp_path: Path, decoy_first: bool
+) -> None:
+    """The pre-commit hook's own argv, rebuilt from the committed config.
+
+    pre-commit runs the hook's ``entry`` split like a shell would, then its
+    ``args``, then the staged filenames. Without a trailing ``--`` in ``args``,
+    a tracked file named ``--help`` is read as that option. Measured on
+    2026-10-23 in a throwaway repository with a private key staged beside such
+    a file, the hook printed its usage and pre-commit reported Passed at exit 0.
+    That is AGENTS.md §7.1's dash-led-filename hazard on the pre-commit path
+    rather than the ``xargs`` one. Because the argv comes from the committed
+    config, deleting the terminator there turns this red.
+    """
+    repo = _repo(tmp_path)
+    (repo / "planted.py").write_text(f'KEY = "{_key_shaped()}"\n', encoding="utf-8")
+    (repo / "--help").write_text("decoy\n", encoding="utf-8")
+    _git(repo, "add", "--", "planted.py", "--help")
+
+    hook = _precommit_hook("detect-secrets")
+    entry = shlex.split(hook["entry"])
+    assert entry[0] == "python", f"the hook's entry changed shape: {hook['entry']!r}"
+    files = ["--help", "planted.py"] if decoy_first else ["planted.py", "--help"]
+    result = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv, shell=False
+        [sys.executable, *entry[1:], *hook["args"], *files],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, (
+        f"the pre-commit secret scan passed with a key staged:\n{result.stdout}{result.stderr}"
+    )
+    assert "AWS Access Key" in result.stdout, result.stdout + result.stderr

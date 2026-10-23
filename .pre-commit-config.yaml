@@ -42,6 +42,13 @@ repos:
   # (docs/PATH_RECONCILIATION_AUDIT.md G2). `python -m` resolves each one
   # through the same interpreter as the drift gates below.
   # tests/unit/test_gate_scope_parity.py refuses a hosted repo for any of them.
+  #
+  # Every hook here that receives filenames ends its args with "--". pre-commit
+  # appends the filenames after the args, so without it a tracked file named
+  # like an option is read as one. Measured on 2026-10-23 in a throwaway repo:
+  # a file named `--help` staged beside a private key made the detect-secrets
+  # hook print its usage and pass at exit 0, the AGENTS.md §7.1 hazard on the
+  # pre-commit path. tests/security/test_secret_gate.py runs that invocation.
 
   # --- Lint + format (ruff) ----------------------------------------------
   - repo: local
@@ -49,13 +56,14 @@ repos:
       - id: ruff                      # lint; mirrors `ruff check .`
         name: ruff check (locked toolchain)
         entry: python -m ruff check --force-exclude
-        args: ["--fix"]
+        args: ["--fix", "--"]
         language: system
         types_or: [python, pyi]
         require_serial: true
       - id: ruff-format               # mirrors `ruff format --check .`
         name: ruff format (locked toolchain)
         entry: python -m ruff format --force-exclude
+        args: ["--"]
         language: system
         types_or: [python, pyi]
         require_serial: true
@@ -66,6 +74,7 @@ repos:
       - id: mypy
         name: mypy (locked toolchain)
         entry: python -m mypy
+        args: ["--"]
         language: system
         types_or: [python, pyi]
         require_serial: true
@@ -139,7 +148,7 @@ repos:
       - id: detect-secrets
         name: detect-secrets (locked toolchain)
         entry: python -m detect_secrets.pre_commit_hook   # the module behind `detect-secrets-hook`
-        args: ["--baseline", ".secrets.baseline"]
+        args: ["--baseline", ".secrets.baseline", "--"]
         language: system
         exclude: ^(\.secrets\.baseline|data/)
 
