@@ -10,7 +10,7 @@ reviewable engineering — suitable for a portfolio, a client engagement, or a p
 security operation.
 
 <!-- BEGIN GENERATED: release -->
-**Current release: v2.3.0** — see [`docs/Changelog.md`](./docs/Changelog.md).
+**Current release: v2.3.1** — see [`docs/Changelog.md`](./docs/Changelog.md).
 <!-- END GENERATED: release -->
 
 ---

@@ -10,11 +10,11 @@ from scripts import check_version_sync
 
 @pytest.mark.unit
 def test_release_version_surfaces_are_in_sync() -> None:
-    assert check_version_sync.check() == "2.3.0"
+    assert check_version_sync.check() == "2.3.1"
 
 
 @pytest.mark.unit
 def test_release_tag_must_be_canonical() -> None:
-    assert check_version_sync.check("v2.3.0") == "2.3.0"
+    assert check_version_sync.check("v2.3.1") == "2.3.1"
     with pytest.raises(check_version_sync.VersionSyncError):
-        check_version_sync.check("IANUA_v2.3.0")
+        check_version_sync.check("IANUA_v2.3.1")

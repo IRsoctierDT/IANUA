@@ -23,7 +23,7 @@
       "type": "application",
       "bom-ref": "root-component",
       "name": "ianua",
-      "version": "2.3.0",
+      "version": "2.3.1",
       "licenses": [
         {
           "license": {
