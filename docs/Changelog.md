@@ -4,6 +4,18 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Security
+- **`filelock` 4.2.4 and `setuptools` 84.2.1 close two advisories that turned `main` red.**
+  CVE-2026-112940 (`filelock` 3.29.4, fixed in 4.2.1) and GHSA-xmj3-9gf7-h52w (`setuptools`
+  83.0.0, fixed in 84.1.0) were published on 2026-10-23, after #292's checks passed and before
+  its merge commit's CI ran. CI's `pip-audit` gate failed on that commit and on every pull
+  request after it. Neither package is a direct dependency: `filelock` comes in through
+  `cachecontrol`, `huggingface-hub`, `python-discovery`, `torch` and `virtualenv`, and
+  `setuptools` through `torch`. `uv lock --upgrade-package` moved these two of 141 packages and
+  nothing else. Both cross a major version, and no dependent caps either. The derived locks and
+  the SBOM are regenerated. The build-system floor rises from `setuptools>=84.0.0` to
+  `>=84.1.0`, because the old floor still admitted the vulnerable 84.0.0.
+
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 
 ### Documentation
