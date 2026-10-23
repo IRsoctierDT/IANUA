@@ -151,6 +151,7 @@ from scripts._locking import (  # noqa: E402
     prepare_lock,
     single_instance,
 )
+from scripts._terminal import escape_unencodable  # noqa: E402
 from scripts._terminal import printable as _printable  # noqa: E402
 from store import (  # noqa: E402
     DEFAULT_FILENAME,
@@ -2789,10 +2790,8 @@ def main(argv: list[str] | None = None) -> int:
     # raised: measured, an accented letter in a manifest path under a
     # non-UTF-8 stdout cut the report off with a traceback (found by independent
     # review). _printable handles control characters; this handles the encoding.
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(errors="backslashreplace")
+    # One copy, in scripts/_terminal.py, which report_sli.py calls too.
+    escape_unencodable()
     args = _parse_args(argv)
     started_at = time.monotonic()
 

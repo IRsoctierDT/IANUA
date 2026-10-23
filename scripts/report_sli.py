@@ -32,6 +32,14 @@ line. A non-printable character is shown as its escape (``\\x1b``), never
 dropped. ``--json`` is escaped by ``json.dumps`` and keeps the exact value, so
 read that when the exact text matters.
 
+**A stream that cannot encode a character escapes it.** Before argument
+parsing, ``scripts._terminal.escape_unencodable`` sets stdout and stderr to
+``backslashreplace``. Every indicator line carries a ``—``, so on an ASCII
+stdout (a forwarded locale the host never generated is enough) every text
+report used to die with a traceback, and a healthy one exited ``1``. Now that
+line reads ``\\u2014`` and the exit code is the grade. A UTF-8 stdout is
+unchanged, and ``--json`` is ASCII already.
+
 **Why it appends no audit record.** Every other scheduled CLI records its run
 in a hash chain. This one deliberately does not. At the documented ``*/5``
 cadence it would write more chain entries than everything else in the
@@ -71,7 +79,7 @@ from agents.policies.bundle import (  # noqa: E402
     load_bundle,
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
-from scripts._terminal import printable  # noqa: E402
+from scripts._terminal import escape_unencodable, printable  # noqa: E402
 from sli import measure  # noqa: E402
 from store.paths import validated_root  # noqa: E402
 
@@ -111,6 +119,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     """Measure every objective and report. See the module docstring for exits."""
+    # First, so that `--help` and argparse's own errors are covered too.
+    escape_unencodable()
     args = _parse_args(argv)
 
     try:
