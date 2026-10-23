@@ -2,16 +2,20 @@
 
 ## Current Version
 
-v2.2.0 — **Release Automation & Control Integrity** — one-command release
-preparation with human-gated publication (`scripts/prepare_release.py` and
-`release-on-merge.yml`), session-only review of redacted broker scan reports
-with baseline/current comparison in the dashboard, and a round of repairs to
-controls that were not in force: the attestation-expiry gate now compares
-against the current date and warns 30 days ahead of a lapse, and Dependabot
-auto-merge is gated on the pushing actor rather than only the pull request's
-author. The agent roster is built out; work continues as enhancement of
-existing components, not new surface. See
-[`docs/Changelog.md`](./Changelog.md) for the full history.
+v2.3.0 — **Production SOC Foundations** — the platform gains a memory and
+runs on a schedule: a durable, append-only event store (`store/`),
+cross-domain entity resolution and incident assembly (`correlation/`), an
+at-least-once detection cycle (`scripts/run_pipeline.py`), read-only
+collection of this node's own declared log files (`scripts/run_collector.py`),
+retention that deletes only under a committed grant
+(`scripts/run_retention.py`), verifiable backup with a restore promotion gate
+(`scripts/run_backup.py`), and fail-closed service-level indicators for the
+platform itself (`scripts/report_sli.py`). Around them sits a long hardening
+pass, much of it closing places where a planted value reached an error
+message, a report or a terminal unbounded or unescaped, and controls that
+read healthy while they were not in force. GitHub Releases now publish the
+curated changelog section. See [`docs/Changelog.md`](./Changelog.md) for the
+full history, including the one known issue this release ships with.
 
 ## Operational Components
 
@@ -21,6 +25,22 @@ existing components, not new surface. See
 - Python virtual environment (`uv.lock` as the dependency source of truth)
 - Docker / Ollama / Qdrant local stack
 - VS Code development environment
+
+### SOC Platform
+
+- `store/` — durable, append-only event store (stdlib `sqlite3`), tamper-evident
+  on read and attestable for backup
+- `correlation/` — entity resolution across domains and incident assembly
+- `pipeline/` + `scripts/run_pipeline.py` — scheduled detection cycle
+  (at-least-once, resumable cursor)
+- `collect/` + `scripts/run_collector.py` — local log collection from
+  operator-declared, read-only sources
+- `scripts/run_retention.py` — retention that reports by default and deletes only
+  under a committed grant
+- `scripts/run_backup.py` — verifiable backup, `--verify`, and the
+  `--verify-restore` promotion gate (`docs/RESTORE.md`)
+- `sli/` + `scripts/report_sli.py` — service-level indicators for the platform
+  itself (fail-closed)
 
 ### AI Components
 

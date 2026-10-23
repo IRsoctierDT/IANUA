@@ -4,7 +4,93 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+## v2.3.0 — Production SOC Foundations — 2026-10-23
+
 ### Added
+- **`store/` is a durable, append-only event store, stage 1 of the production-SOC program.** It
+  uses stdlib `sqlite3` under gitignored `data/events/`, so `dependencies = []` stands. SQLite
+  triggers raise on `UPDATE`, and each row is keyed by the SHA-256 of its canonical projection,
+  so a re-read event is stored once and a row edited outside the platform raises
+  `StoreIntegrityError` on read. `EventStore.query` takes a fixed set of `Query` pivots (time,
+  source, vendor, user, host, IP, observable) and returns at most 10,000 rows.
+  `docs/PRODUCTION_SOC_PLAN.md` records all nine stages. (#198)
+- **`correlation/` resolves entities across telemetry domains and assembles incidents, stage
+  2.** References merge only on declared exact rules, never fuzzy ones: co-occurrence within one
+  event's actor or device, exact normalized equality, and a user principal whose local part
+  matches a bare username. The two ends of a connection never merge, nor does an address with a
+  host, and built-in principals such as uid `0` and display names never join. An entity in more
+  events than `Thresholds.max_entity_fanout` (default 50) is reported as context rather than
+  used to join. Every score contribution is recorded in `incident.reasons`. (#199)
+- **Audit records can name who asked: `agents.policies.Principal` is a caller identity carried
+  in the hashed `actor` field, stage 3.** It renders as `component` or `component/caller`, and a
+  component-only principal is byte-identical to the string `actor` held before, so the schema is
+  unchanged. Nothing authenticates it. The hash preimage joined fields with an unescaped `|`, so
+  a value containing `|` could make a deny record hash like an allow record.
+  `AuditLogger.record` now refuses `|` in `actor`, `action`, `action_class`, `decision` and
+  `reason`, and containment percent-encodes the target and detail it records. (#201)
+- **`scripts/run_pipeline.py` runs one detection cycle per invocation, for cron or a systemd
+  timer (stage 4).** A cycle reads the events after a stored `(ingested_at, event_id)` cursor
+  and correlates them with a trailing `--lookback` (default 900 s) of already-read history, so
+  an attack spread over several cycles within it is still assembled. The cursor advances only
+  after the cycle and its audit record succeed, so a crash re-reads a window rather than
+  skipping it. Cycles are gated `read_only` by the policy bundle, hold an exclusive lock, and
+  record a caller only from `--caller`. (#202)
+- **`scripts/run_collector.py` reads this node's own log files into the event store, stage 5 and
+  the first `AGENTS.md` §5 boundary crossing.** Each `--source` is an absolute path the operator
+  names: there is no glob or directory walk, and a symlinked log, a non-regular file or a path
+  on the credential deny-list is refused. Sources are opened read-only, a first run reads from
+  the beginning, and rotation and truncation in place are detected on resume. The new
+  `ingest/keyvalue.py` decodes auditd `key=value` lines into a mapping the existing auditd
+  signature claims. Collection is its own `collection` policy class, `allow` by default. (#204)
+- **`scripts/run_retention.py` gives `EventStore.prune` a caller: it reports by default and
+  deletes only on a grant.** A dry run is gated `read_only` and deletes nothing. `--apply` is
+  gated `destructive`, which the shipped bundle sets to `require_approval`, so it exits `3`
+  until an operator adds `retain_events:apply` to the bundle's `allow` list; a grant of the bare
+  `retain_events` does not match. The window is `--keep-days` (default 90), keyed on
+  `ingested_at`. A pruned event is not re-collected on a later pass, because the collector's
+  offsets are never rewound. (#208)
+- **`scripts/run_backup.py` takes a verifiable copy of the lab-data state, and `docs/RESTORE.md`
+  is the restore procedure.** The store is copied through SQLite's online backup API: a copy of
+  the main file alone, taken while a writer held the store, opened cleanly and reported 353 of
+  400 events. The new `EventStore.attest()` digests every `event_id` with the row count, and
+  `--verify` checks a backup against the manifest that carries it. Collector offsets and the
+  pipeline cursor are never backed up, and the runbook deletes both before the store is
+  restored. `store.append` now also refuses an event `query` could not read back. (#210)
+- **`sli/` and `scripts/report_sli.py` measure the platform's own service level, fail-closed.**
+  Eight objectives, from `collection-pending` to `backup-present`, grade `met`, `breached`, or
+  `unknown` when a signal cannot be read, and the report exits `1` if any is breached or
+  unknown. It opens nothing outside the lab-data root and creates nothing. Retention now stops
+  at the pipeline cursor, and deleting unprocessed events takes `--include-unprocessed` under a
+  separate `retain_events:apply-unprocessed` grant. A log line holding a 5000-digit integer
+  stalled its collector source on every run; it is now stored as `unrecognized`. (#217)
+- **GitHub Releases now publish the curated changelog section as their body.** `release.yml`
+  used `--generate-notes`, which lists merged pull requests, so a release's own section of
+  `docs/Changelog.md` was never published. The new `scripts/release_notes.py` composes the body
+  from that section verbatim plus a compare link to the previous release, and a missing,
+  duplicated or empty section fails the job rather than publishing blank notes.
+  `scripts/prepare_release.py` now prints an `ACTION NEEDED` notice on stderr for the
+  `docs/PROJECT_STATUS.md` prose a version bump leaves describing the previous release. (#193)
+- **Every tracked `.py` file carries an SPDX licence notice, and generated artifacts state their
+  origin.** The licence stays Apache-2.0; 249 tracked `.py` files gain `SPDX-FileCopyrightText`
+  and `SPDX-License-Identifier` lines, placed after any shebang. Incident reports gain a
+  provenance footer (version from `agents.__version__`, repository URL, licence, `NOTICE`
+  pointer), and `docs/status.html` and `docs/trust.html` gain attribution from their builders.
+  `tests/unit/test_attribution.py` fails the build on a new `.py` file without a notice.
+  `docs/IP_AND_LICENSING.md` §3.1.1 records why. (#200)
+- **`docs/RETENTION.md` is the retention runbook that four files already cited and none could
+  resolve.** It records that a prune returns no disk: a 20,889,600-byte store reported
+  `events_removed: 10200` of 12000 and was 20,889,600 bytes afterwards, because a `DELETE` frees
+  pages for reuse without shrinking the file. It documents the manual `VACUUM` that does return
+  bytes, that a dry run does not predict the `--apply` after it, and that `report_sli.py` cannot
+  see a prune. `tests/unit/test_docs_runbooks.py` checks that every `docs/*.md` reference in the
+  five citing files exists. (#220)
+- **`DESIGN.md` §11 records the approved active/passive HA decision before any replication code
+  exists.** `dependencies = []` stands: the consistency point is `sqlite3.Connection.backup`,
+  and transport is left to the operator. It crosses two charter boundaries instead: egress to a
+  declared peer, and an inbound listener. The platform has no fence: `flock` keys on an inode,
+  so two roots each acquire the single-instance lock, which
+  `tests/security/test_ha_fence_is_local.py` pins. The one fence today's charter allows is
+  procedural, the operator stopping the former active node's timers. (#229)
 - **`scripts/secret_gate.py` runs §7.1's secret gate end to end, including the re-scan
   after staging.** The documented procedure for a baseline refresh ended at "verify, then
   stage"; verifying proves the rewrite was a refresh and says nothing about whether the
@@ -31,6 +117,79 @@ All notable changes to this project. Versions correspond to git tags.
   demand with a stand-in named as such, and its last test requires this repository's
   committed baseline to pass the hook at exit 0 on every run (the hook's full run over the
   tree, 41 s here; a gate that is not run is a claim).
+- **"Lab host" is now defined, and the definition is a committed, empty allow-list.**
+  `AGENTS.md` §5 forbade "sending network requests to non-lab hosts" and §5.1 gated
+  "requests to any non-lab host" — and nothing said what a lab host *was*, so the term
+  the whole egress permission rests on was enforced by whoever was reading it.
+  `agents/policies/egress.py` answers it declaratively, because **no property of an
+  address can**: RFC1918 is not a proxy for "lab", a routable address is not a
+  disqualifier, and reverse DNS is whatever the other side says. A lab host is one named
+  in `agents/policies/egress.json` with its authorization basis recorded beside it, and
+  the file ships **empty**, so every destination is denied today. This is `collect/`'s
+  control with one word changed: declared, never discovered.
+  **No network code ships.** The module answers one question — is this destination
+  declared? — and a `tests/security` case AST-asserts it imports no `socket`, `ssl`,
+  `http`, `urllib` or `subprocess`, because the definition of a boundary must not also
+  be a way across it. First of the three pieces the stage 7 amendment ordered
+  (allow-list, then listener, then puller).
+  **IP literals only**, which is the SSRF decision rather than a formatting rule: a
+  hostname resolves at connect time, so the file would name a name while the socket goes
+  wherever resolution answers. Refused on the **parsed** value — unspecified in any of
+  its six spellings, multicast, limited-broadcast, link-local
+  (`169.254.169.254` is the cloud metadata address), IPv4-mapped and scoped IPv6 forms
+  (they alias: `::ffff:127.0.0.1 != 127.0.0.1`), duplicates after normalization, and an
+  entry with no authorization basis. Also refused: a non-string address, because
+  `ip_address` accepts integers and `bool` is an `int` subclass — `{"address":
+  3232235777}` would have loaded as `192.168.1.1`, a destination no reviewer can see in
+  a diff. **Loopback and routable addresses are declarable deliberately**; a control
+  that cannot be exercised is one an operator switches off.
+  Declaring a peer turns a `tests/security` test red on purpose: an edit to the egress
+  allow-list should not pass review unnoticed.
+- **`run_backup --verify-restore BACKUP`, the promotion gate.** `--verify` checked
+  a backup against its own manifest *before* a restore; `docs/RESTORE.md` step 4
+  then copied it into place with `cp -a` and nothing looked at the result. A
+  store missing most of its pages opens cleanly and reports a plausible count
+  (353 of 400, measured), so a half-finished copy left a working SOC quietly
+  short of evidence. The new mode re-attests the **live** root and requires the
+  manifest's digest and event count, reports `LOSS`/`SUBSTITUTED`/`ADDED`/
+  `TRUNCATED`/`REWRITTEN`/`POSITION PRESENT` so the direction is never
+  ambiguous, and states on success that it verifies the *copy* and says nothing
+  about whether exactly one node is active. Run it between steps 4 and 5.
+- **OpenSSF Scorecard runs as a workflow, with its egress off and every action
+  SHA-pinned** (`.github/workflows/scorecard.yml`) — which is where Scorecard's
+  own installation instructions put it. It grades the posture this repository
+  already claims in §3 and §8 — actions pinned by SHA, least-privilege workflow
+  tokens, dangerous-pattern detection, automated dependency updates, a SAST tool
+  — by a third party instead of by us, reporting into this repo's Code scanning
+  tab and as a run artifact.
+  **`publish_results: false`, deliberately.** True would POST results to the
+  OpenSSF REST API at `https://api.scorecard.dev` and enable a public badge —
+  outbound egress of repository metadata, which §5.1 classes as an
+  external-network action needing human approval with the URL shown in full. The
+  owner was shown it and chose `false`. `id-token: write` is absent for the same
+  reason — it exists only to sign *published* results — and the job holds exactly
+  one write, `security-events`, to upload the SARIF.
+  `tests/security/test_scorecard_boundary.py` asserts all of it, so turning
+  publishing on is a deliberate edit that fails a test until that §5.1 decision
+  is revisited.
+  **What that choice does not buy, since the first draft of this entry claimed
+  more than it should.** IANUA is a **public** repository, and the pinned
+  action's own README states that the Scorecard team scans public repositories
+  weekly and publishes those results regardless, with `publish_results: true`
+  merely *replacing* them with our own run's. So `false` means **this run is not
+  submitted to OpenSSF** — not "results are private", and not "no entry in the
+  public OpenSSF dataset", both of which this entry said and neither of which is
+  true. What is given up is the badge and having the public entry come from our
+  run rather than theirs. The same README notes the SARIF run artifact is
+  "available to anybody for five days after the run", so the `retention-days: 5`
+  upload is not a private channel either; it is the owner's choice (Code scanning
+  *and* the Actions tab) and it stays, now recorded accurately.
+  The endpoint was wrong too, in all four places it appeared: this entry, the
+  workflow header and twice in the security test. `api.securityscorecards.dev`
+  was written from memory; `https://api.scorecard.dev` is the pinned action's own
+  `internal_publish_base_url` default, read out of `action.yaml` at the exact SHA
+  this workflow pins. §5.1 requires the URL **shown in full**, so an approval
+  record naming the wrong host documents approval for something nobody proposed.
 
 ### Changed
 - **`AGENTS.md` keeps concurrent sessions apart.** On 2026-10-23 several sessions worked
@@ -118,7 +277,6 @@ All notable changes to this project. Versions correspond to git tags.
   audit chain and nothing else, and must, since a failed authentication is a
   security-relevant action §3 requires recording. It does not fence and cannot
   promote. `dependencies = []` is untouched.
-
   Review found **six** defects across two rounds and all six were confirmed, none
   refuted — the argument for amending before building rather than after, and the
   second round is the more useful half: a reviewed draft is not a correct one. The
@@ -130,90 +288,72 @@ All notable changes to this project. Versions correspond to git tags.
   only** (a replayed valid request takes the *accepted* path and needs no key, so one
   captured request could flood the hash chain — both outcomes are bounded now, and
   request freshness is server-enforced rather than echoed into the response).
-
-### Added
-- **"Lab host" is now defined, and the definition is a committed, empty allow-list.**
-  `AGENTS.md` §5 forbade "sending network requests to non-lab hosts" and §5.1 gated
-  "requests to any non-lab host" — and nothing said what a lab host *was*, so the term
-  the whole egress permission rests on was enforced by whoever was reading it.
-  `agents/policies/egress.py` answers it declaratively, because **no property of an
-  address can**: RFC1918 is not a proxy for "lab", a routable address is not a
-  disqualifier, and reverse DNS is whatever the other side says. A lab host is one named
-  in `agents/policies/egress.json` with its authorization basis recorded beside it, and
-  the file ships **empty**, so every destination is denied today. This is `collect/`'s
-  control with one word changed: declared, never discovered.
-
-  **No network code ships.** The module answers one question — is this destination
-  declared? — and a `tests/security` case AST-asserts it imports no `socket`, `ssl`,
-  `http`, `urllib` or `subprocess`, because the definition of a boundary must not also
-  be a way across it. First of the three pieces the stage 7 amendment ordered
-  (allow-list, then listener, then puller).
-
-  **IP literals only**, which is the SSRF decision rather than a formatting rule: a
-  hostname resolves at connect time, so the file would name a name while the socket goes
-  wherever resolution answers. Refused on the **parsed** value — unspecified in any of
-  its six spellings, multicast, limited-broadcast, link-local
-  (`169.254.169.254` is the cloud metadata address), IPv4-mapped and scoped IPv6 forms
-  (they alias: `::ffff:127.0.0.1 != 127.0.0.1`), duplicates after normalization, and an
-  entry with no authorization basis. Also refused: a non-string address, because
-  `ip_address` accepts integers and `bool` is an `int` subclass — `{"address":
-  3232235777}` would have loaded as `192.168.1.1`, a destination no reviewer can see in
-  a diff. **Loopback and routable addresses are declarable deliberately**; a control
-  that cannot be exercised is one an operator switches off.
-
-  Declaring a peer turns a `tests/security` test red on purpose: an edit to the egress
-  allow-list should not pass review unnoticed.
-
-- **`run_backup --verify-restore BACKUP`, the promotion gate.** `--verify` checked
-  a backup against its own manifest *before* a restore; `docs/RESTORE.md` step 4
-  then copied it into place with `cp -a` and nothing looked at the result. A
-  store missing most of its pages opens cleanly and reports a plausible count
-  (353 of 400, measured), so a half-finished copy left a working SOC quietly
-  short of evidence. The new mode re-attests the **live** root and requires the
-  manifest's digest and event count, reports `LOSS`/`SUBSTITUTED`/`ADDED`/
-  `TRUNCATED`/`REWRITTEN`/`POSITION PRESENT` so the direction is never
-  ambiguous, and states on success that it verifies the *copy* and says nothing
-  about whether exactly one node is active. Run it between steps 4 and 5.
-- **OpenSSF Scorecard runs as a workflow, with its egress off and every action
-  SHA-pinned** (`.github/workflows/scorecard.yml`) — which is where Scorecard's
-  own installation instructions put it. It grades the posture this repository
-  already claims in §3 and §8 — actions pinned by SHA, least-privilege workflow
-  tokens, dangerous-pattern detection, automated dependency updates, a SAST tool
-  — by a third party instead of by us, reporting into this repo's Code scanning
-  tab and as a run artifact.
-
-  **`publish_results: false`, deliberately.** True would POST results to the
-  OpenSSF REST API at `https://api.scorecard.dev` and enable a public badge —
-  outbound egress of repository metadata, which §5.1 classes as an
-  external-network action needing human approval with the URL shown in full. The
-  owner was shown it and chose `false`. `id-token: write` is absent for the same
-  reason — it exists only to sign *published* results — and the job holds exactly
-  one write, `security-events`, to upload the SARIF.
-  `tests/security/test_scorecard_boundary.py` asserts all of it, so turning
-  publishing on is a deliberate edit that fails a test until that §5.1 decision
-  is revisited.
-
-  **What that choice does not buy, since the first draft of this entry claimed
-  more than it should.** IANUA is a **public** repository, and the pinned
-  action's own README states that the Scorecard team scans public repositories
-  weekly and publishes those results regardless, with `publish_results: true`
-  merely *replacing* them with our own run's. So `false` means **this run is not
-  submitted to OpenSSF** — not "results are private", and not "no entry in the
-  public OpenSSF dataset", both of which this entry said and neither of which is
-  true. What is given up is the badge and having the public entry come from our
-  run rather than theirs. The same README notes the SARIF run artifact is
-  "available to anybody for five days after the run", so the `retention-days: 5`
-  upload is not a private channel either; it is the owner's choice (Code scanning
-  *and* the Actions tab) and it stays, now recorded accurately.
-
-  The endpoint was wrong too, in all four places it appeared: this entry, the
-  workflow header and twice in the security test. `api.securityscorecards.dev`
-  was written from memory; `https://api.scorecard.dev` is the pinned action's own
-  `internal_publish_base_url` default, read out of `action.yaml` at the exact SHA
-  this workflow pins. §5.1 requires the URL **shown in full**, so an approval
-  record naming the wrong host documents approval for something nobody proposed.
+- **The four scheduled CLIs now exit `4` for retryable SQLite contention**, where
+  they returned `1`. `1` had meant both "the evidence store is damaged, page
+  someone" and "another writer held the lock for five seconds, retry", which an
+  operator must treat oppositely — `docs/RETENTION.md` carried a paragraph
+  warning about the conflation rather than the code resolving it. Discrimination
+  is on SQLite's *primary* result code (`scripts/_exit_codes.py`), so it covers
+  all seven extended `SQLITE_BUSY`/`SQLITE_LOCKED` names without enumerating
+  them. Damage still returns `1`, so a wrapper testing `rc != 0` is unaffected
+  and one paging on `rc == 1` stops paging for contention. `run_collector`
+  reports `4` only when *every* failure in the pass was contention: one damaged
+  source alongside a busy one still returns `1`.
+- **A `flock` that fails for any reason other than contention is now a refusal,
+  not a benign skip.** `single_instance` caught bare `OSError` and yielded
+  "another pass holds the lock" for all of it, so on a lab-data root whose
+  filesystem cannot `flock` — or whose kernel lock table is exhausted — every
+  scheduled pass of all four CLIs printed its skip line and exited `0`, forever,
+  with no contention anywhere and no work ever done. The catch is now an
+  allow-list of one, `BlockingIOError`; everything else raises
+  `LockUnavailableError` and exits `2`.
+- **Exit `2` now documents the condition it can be returned for.** A broken lock
+  reaches `2`, and all nine statements of the exit-code contract said "bad
+  arguments" — the four CLI docstrings, `scripts/_exit_codes.py`,
+  `docs/RETENTION.md`, `docs/RESTORE.md` and `docs/PRODUCTION_SOC_PLAN.md`
+  twice — so an operator who got a `2` from a failing `flock` was told to check
+  their argv. Every operator-facing site now carries the literal message the
+  code emits, asserted against it rather than paraphrased. `ENOLCK` was weighed
+  for `4` and refused: the one errno covers both a transient kernel shortage and
+  a filesystem that cannot lock at all, and retrying the second forever while
+  nothing pages is the defect above with a non-zero code.
+- **`run_backup.py --verify-restore` now requires `--audit-anchor`, and both verifiers refuse
+  hard-link restores.** The manifest's sha256 must match a take record in the preserved source
+  `data/events/audit.log` (`docs/RESTORE.md` step 4a). A `cp -al` restore let the gate write
+  into the backup's chain; such files are now `LINKED`. Reads are bounded by the manifest's
+  sizes, `--verify` takes `verify.lock`, and a skipped verify exits `4` with "Nothing was
+  verified." (#266)
+- **Streamlit bumped 1.65.0 → 1.66.0, and the `dashboard` floor raised to `streamlit>=1.66.0`.**
+  Streamlit 1.66.0 drops its `httptools` and `toml` dependencies, so httptools 0.8.0 and toml
+  0.10.2 leave `uv.lock`, `requirements.lock` and the SBOM (now 227 components). The Security
+  entry below moves Streamlit on to 1.66.1. (#265)
+- **Dev toolchain bumped: ruff 0.17.0 → 0.17.1, hypothesis 6.168.5 → 6.170.0, pre-commit 4.6.2 →
+  4.7.0.** The `dev` extra in `pyproject.toml` now pins `ruff==0.17.1`. `uv.lock`, both pip
+  locks and the SBOM were regenerated. (#264)
+- **`github/codeql-action/upload-sarif` bumped 4.38.3 → 4.39.0 in the Scorecard workflow.** It
+  is still pinned by commit SHA in `.github/workflows/scorecard.yml`. (#263)
+- **`ContainmentExecutor`'s action method is renamed from `execute` to `perform`.**
+  `ContainmentToolkit` now calls `perform`, so a lab executor must define it. The old name was
+  the one non-SQL finding once `tests/security/test_sql_provenance.py`, which requires every
+  sqlite3 statement to trace to a string literal, began sweeping every shipped package. (#226)
+- **`ingest/` retains only what a parser modelled: `raw_excerpt` is rebuilt from declared
+  payload paths, never copied.** Each `Signature` declares the paths it reads in `fields`;
+  before, a Defender for O365 record's `Body` reached `raw_excerpt`. A record no signature
+  claims is projected through the union of every parser's declared paths, with a note naming the
+  withheld keys. Separately, an over-long `message` was stored and then made every later `query`
+  raise, stopping detection; `NormalizedEvent.bounded()` now applies every read-time bound to
+  each parsed event. `AGENTS.md` §5 gains a "What is retained" amendment. (#209)
+- **The dashboard binds `127.0.0.1`, pinned in `.streamlit/config.toml` and asserted by a new
+  control.** The address was unset, so the bind was whatever the installed Streamlit defaulted
+  to, and `dashboard/` authenticates no one. HIGH-severity control `CFG-02` fails on a missing
+  config, an unset address, or an address outside its loopback allow-list. Two tests now tie
+  `docs/trust.data.json` to `registry()`, so adding a control can no longer leave the trust page
+  claiming 16 controls where there are 17. (#207)
 
 ### Fixed
+Many of these fix components first added in this release, which no tagged version shipped.
+They are listed so the record of what changed stays complete.
+
 - **`scripts/report_sli.py` crashed on any stdout whose encoding is ASCII, with no planted data,
   and a healthy platform exited 1.** Every indicator line carries a `—`, so on an ASCII stdout (a
   forwarded locale the host never generated is enough) the report printed its headline and then a
@@ -424,7 +564,6 @@ All notable changes to this project. Versions correspond to git tags.
   copied `audit.log.lock` into every backup, despite `docs/RESTORE.md` saying `*.lock` never
   lands there; it no longer does, and older backups that carry one still verify. All of it
   measured red before and green after in `tests/security/test_promotion_verify.py`.
-
 - **The required pre-commit gate had been dead on `main` since #232, and the
   Scorecard action it carried could never have run.** #232 appended three lines
   to `.pre-commit-config.yaml`: a `- name:` / `uses:` pair, which is GitHub
@@ -437,15 +576,12 @@ All notable changes to this project. Versions correspond to git tags.
   were all silently skipped for every developer. A grep for `detect-secrets`
   passed throughout the outage, which is why "declared" is not the property that
   matters: the file has to **load**.
-
   `.github/workflows/ci.yml` now runs `pre-commit validate-config`, which is the
   gate that would have caught it. Two test layers back it up and are not
   redundant: `validate-config` proves the file loads, while
   `tests/unit/test_scorecard_workflow.py` proves nothing Actions-shaped has been
   pasted back and `tests/security/test_scorecard_boundary.py` asserts the two
   secret scanners are reachable *through a file that parses*.
-
-### Fixed
 - **`--verify-restore` exited `0` on three restores it should have refused, and in
   every case the manifest already carried the datum the check never read.** Found
   by review on the merged gate; all three measured through the shipped CLI before
@@ -455,7 +591,6 @@ All notable changes to this project. Versions correspond to git tags.
   258 lines; only the report comparison is inside the manifest loop, the reverse
   walk is a separate loop after it, and the observables check is a separate block
   before it. The observables fix could have shipped alone.
-
   **Observables were never compared.** The completeness digest is a sha256 over
   the `event_id` set only, so observables are not in the preimage. Measured: 20
   observable rows destroyed of 20, events untouched — `quick_check` ok, event
@@ -464,7 +599,6 @@ All notable changes to this project. Versions correspond to git tags.
   never reads `observables`, and an earlier version of this entry said it did. The number was
   sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
   it, with `ADDED` for the legitimate re-collection direction.
-
   **Report entries were compared by prefix.** `_digest_prefix` hashes only the
   first *n* bytes, which is right for an append-only stream and wrong for a
   report. Measured: a 40-byte declared report, 94 bytes live with the prefix
@@ -475,7 +609,6 @@ All notable changes to this project. Versions correspond to git tags.
   comparison without anyone remembering to ask: granting growth to something that
   cannot grow hides a rewrite, while demanding equality of something that does
   grow produces a loud finding an operator can read.
-
   **The manifest was walked in one direction only.** `docs/RESTORE.md` step 4 is a
   bare `cp -a`, which **merges** into a nonempty destination rather than replacing
   it, so a file written after the backup survives the restore — and the loop
@@ -487,13 +620,11 @@ All notable changes to this project. Versions correspond to git tags.
   compared against the manifest (`UNDECLARED`), scoped to `COPIED_TREES` because
   the rotation siblings beside the chains legitimately appear after a backup and a
   blanket reverse walk would false-alarm.
-
   Eight `tests/security` cases, each paired with a control direction, and the
   append-only/strict classifier is pinned from **both** sides: forcing everything
   strict reds `test_a_correct_restore_verifies` — this command's own gate decision
   appends to `data/events/audit.log` before the check reads it — and forcing
   everything prefix reds the two report cases.
-
   **Review then found two fail-opens in the fix itself**, which is the part worth
   recording. *A symlinked `data/reports` was skipped rather than reported*: the
   reverse walk's `continue` was lifted from the backup side, where refusing to
@@ -506,98 +637,173 @@ All notable changes to this project. Versions correspond to git tags.
   carried `"20"`, silently skipped the check — measured, deleting the field **and**
   every live observable row gave exit `0`. The manifest is untrusted input here, so
   both now fail closed.
-
-### Fixed
-- **`--verify-restore` exited `0` on three restores it should have refused, and in
-  every case the manifest already carried the datum the check never read.** Found
-  by review on the merged gate; all three measured through the shipped CLI before
-  anything was changed, and fixed together because they share that shape and two of
-  them turn on one classifier. An earlier version of this entry said they "live in
-  one ~60-line loop", and that was never measured. Measured: `_verify_restore` is
-  258 lines; only the report comparison is inside the manifest loop, the reverse
-  walk is a separate loop after it, and the observables check is a separate block
-  before it. The observables fix could have shipped alone.
-
-  **Observables were never compared.** The completeness digest is a sha256 over
-  the `event_id` set only, so observables are not in the preimage. Measured: 20
-  observable rows destroyed of 20, events untouched — `quick_check` ok, event
-  count equal, digest equal, **exit 0**. Indicator pivots return nothing on such
-  a store, because `correlation/entities.py` joins on that table. The number was
-  sitting in `manifest["store"]["attestation"]` the whole time. `LOSS` now covers
-  it, with `ADDED` for the legitimate re-collection direction.
-
-  **Report entries were compared by prefix.** `_digest_prefix` hashes only the
-  first *n* bytes, which is right for an append-only stream and wrong for a
-  report. Measured: a 40-byte declared report, 94 bytes live with the prefix
-  intact — **exit 0**; and the same with 512 NUL bytes appended — also **exit 0**.
-  Reports are now compared by exact size *and* digest (`ALTERED`), while the hash
-  chains and the evidence stream keep prefix semantics. The allow-list is on the
-  **growing** side, so a tree added to `COPIED_TREES` later gets the strict
-  comparison without anyone remembering to ask: granting growth to something that
-  cannot grow hides a rewrite, while demanding equality of something that does
-  grow produces a loud finding an operator can read.
-
-  **The manifest was walked in one direction only.** `docs/RESTORE.md` step 4 is a
-  bare `cp -a`, which **merges** into a nonempty destination rather than replacing
-  it, so a file written after the backup survives the restore — and the loop
-  iterated `manifest["files"]`, so it could not see one. Measured: a backup at 20
-  events with one declared report, a live root grown to 35 events and a second
-  report describing them, store deleted and `cp -a` applied — **exit 0**, with
-  that report still claiming "Correlated 35 events" over a store holding 20, in
-  the tree `dashboard/app.py` reads. The live inventory of the copied trees is now
-  compared against the manifest (`UNDECLARED`), scoped to `COPIED_TREES` because
-  the rotation siblings beside the chains legitimately appear after a backup and a
-  blanket reverse walk would false-alarm.
-
-  Eight `tests/security` cases, each paired with a control direction, and the
-  append-only/strict classifier is pinned from **both** sides: forcing everything
-  strict reds `test_a_correct_restore_verifies` — this command's own gate decision
-  appends to `data/events/audit.log` before the check reads it — and forcing
-  everything prefix reds the two report cases.
-
-  **Review then found two fail-opens in the fix itself**, which is the part worth
-  recording. *A symlinked `data/reports` was skipped rather than reported*: the
-  reverse walk's `continue` was lifted from the backup side, where refusing to
-  descend a link is correct, and on the verify side the same line is how the link
-  survives — measured, a backup declaring no reports restored over a root whose
-  `data/reports` points outside it exited `0`, with a planted file readable as this
-  node's report. Two guards exist for exactly that and each declined it for a
-  different reason. *And the new observables comparison was guarded by
-  `isinstance(...) and isinstance(...)`*, so a manifest that omitted the field, or
-  carried `"20"`, silently skipped the check — measured, deleting the field **and**
-  every live observable row gave exit `0`. The manifest is untrusted input here, so
-  both now fail closed.
-
-### Changed
-- **The four scheduled CLIs now exit `4` for retryable SQLite contention**, where
-  they returned `1`. `1` had meant both "the evidence store is damaged, page
-  someone" and "another writer held the lock for five seconds, retry", which an
-  operator must treat oppositely — `docs/RETENTION.md` carried a paragraph
-  warning about the conflation rather than the code resolving it. Discrimination
-  is on SQLite's *primary* result code (`scripts/_exit_codes.py`), so it covers
-  all seven extended `SQLITE_BUSY`/`SQLITE_LOCKED` names without enumerating
-  them. Damage still returns `1`, so a wrapper testing `rc != 0` is unaffected
-  and one paging on `rc == 1` stops paging for contention. `run_collector`
-  reports `4` only when *every* failure in the pass was contention: one damaged
-  source alongside a busy one still returns `1`.
-- **A `flock` that fails for any reason other than contention is now a refusal,
-  not a benign skip.** `single_instance` caught bare `OSError` and yielded
-  "another pass holds the lock" for all of it, so on a lab-data root whose
-  filesystem cannot `flock` — or whose kernel lock table is exhausted — every
-  scheduled pass of all four CLIs printed its skip line and exited `0`, forever,
-  with no contention anywhere and no work ever done. The catch is now an
-  allow-list of one, `BlockingIOError`; everything else raises
-  `LockUnavailableError` and exits `2`.
-- **Exit `2` now documents the condition it can be returned for.** A broken lock
-  reaches `2`, and all nine statements of the exit-code contract said "bad
-  arguments" — the four CLI docstrings, `scripts/_exit_codes.py`,
-  `docs/RETENTION.md`, `docs/RESTORE.md` and `docs/PRODUCTION_SOC_PLAN.md`
-  twice — so an operator who got a `2` from a failing `flock` was told to check
-  their argv. Every operator-facing site now carries the literal message the
-  code emits, asserted against it rather than paraphrased. `ENOLCK` was weighed
-  for `4` and refused: the one errno covers both a transient kernel shortage and
-  a filesystem that cannot lock at all, and retrying the second forever while
-  nothing pages is the defect above with a non-zero code.
+- **`EventStore.open` refuses a FIFO, linked or non-regular database or sidecar before SQLite
+  opens it.** A FIFO `-journal` hung every CLI that opens the live store, and a hard-linked
+  `-shm`, `-wal` or database had its other name written, some at exit 0. The database and its
+  `-journal`, `-wal` and `-shm` must each be absent or a regular file with one link; anything
+  else raises `StoreFileError` or `StoreSidecarError`, and every CLI exits 1. (#257, #259)
+- **`run_backup.py` checks every SQLite sidecar, fails the take closed, and escapes its
+  output.** A backup's `-shm` hard-linked to the live store let a plain `--verify` destroy it at
+  exit 0, and a FIFO `-journal` hung the take while it held the lock; each sidecar must now be a
+  regular file with one link. A `files[]` path carrying terminal escapes could forge report
+  lines; every printed line is escaped. A symlinked `data/events` is refused before the gate
+  record. (#255)
+- **The embedded Qdrant store is anchored at the source tree, and the KB scripts read the corpus
+  safely.** `QDRANT_PATH=` put the store in the working directory; unset or empty now means
+  `data/qdrant` under the tree, and a relative value outside `data/` raises `QdrantPathError`.
+  Corpus files are read through one bounded `O_NOFOLLOW` descriptor. `ingest_cyber_kb.py` ids
+  were directory positions and are now `uuid5` of the source path; old integer points are not
+  removed. (#254)
+- **The rename gate stays inside the repository, and the ATT&CK and YAML gates refuse hostile
+  input.** `rename_to_ianua.py --apply` rewrote files outside the checkout through links, and
+  reports under `data/`; it now uses `O_NOFOLLOW` descriptors, skips `data/` and fails `--check`
+  on a file that is not NUL-free UTF-8. `update_attack.py --build` validates the staged index
+  before any write. `build_attack_navigator.py` and `build_behavior_index.py` exit 2 on YAML
+  aliases, rules over 256 KiB and nesting past 32. (#253)
+- **The backup verifiers check a manifest's shape and do not open a store that opening would
+  write.** `--verify` created a store inside a backup whose `store.path` named another file, and
+  grew a 0-byte backup store to 61440 bytes; both are now findings. `run_pipeline.py --lookback
+  nan` ran as `--lookback 0`, and `run_retention.py --keep-days 1e305` failed at exit 1 after
+  the gate record; both now exit 2 first. `prepare_release.py` refuses a `--date` not spelled
+  `YYYY-MM-DD`. (#252)
+- **The pipeline refuses a non-finite cursor, and compliance and SLI checks no longer follow
+  links or misreport.** A `NaN` cursor made every cycle read zero events while
+  `detection-backlog` graded `met`; it is now a `CursorError`. The corpus check ran an `attack/`
+  package planted under the root it graded, a symlink at `evidence.jsonl` carried evidence
+  outside the root, and `backup-present` counted a symlinked backup; each is refused. A run with
+  no automated controls is chained as `attention`. (#251)
+- **Ingest claims BOM-prefixed records and recognizes auditd only on its own fields.** A JSON
+  record behind a UTF-8 BOM was carried verbatim, mail `Body` included; the mark and whitespace
+  are now stripped at both edges before detection. A known auditd `type` plus any `msg` was
+  claimed as auditd; `msg` now corroborates only when it starts with the
+  `audit(<epoch>.<ms>:<serial>)` stamp. On bytes, `MAX_RAW_BYTES` applies before decoding, and
+  ISO timestamps share the numeric plausibility window. (#250)
+- **The incident report escapes the AI narrative, and mapping, response and risk inputs are
+  validated.** Model output was written verbatim, so a heading, an image beacon or a NUL byte
+  reached the report and the PDF; it is now escaped like log fields. The mapping ruleset raises
+  `MappingStoreError` for every anomaly, refuses duplicate keys and applies `MAX_STORE_BYTES`
+  across all files. Technique ids must be ASCII `T1234` or `T1234.001`, and risk scores finite
+  and within 0..100. (#249)
+- **The Pages deploy runs only for a CI push to `main` in this repository, and write scopes sit
+  on the job.** A fork's pull request from a branch named `main` could enqueue a deploy under
+  the approval gate and cancel one already waiting. The gate now also checks the event, head
+  branch and head repository, the `pages` concurrency group is on the `deploy` job, and
+  `pages.yml` and `dependabot-automerge.yml` grant writes per job. A manual CI dispatch on
+  `main` no longer refreshes Pages; dispatch `pages.yml`. (#248)
+- **Correlation no longer joins hosts on placeholder or mis-shaped values, and `attest()` reads
+  one snapshot.** `10.0.0.5` and `10.0.0.7` in a hostname field both became host `10`, and
+  loopback spellings such as `0:0:0:0:0:0:0:1` were join keys; addresses are judged on the
+  parsed value and only a wholly DNS-shaped name is short-formed. `attest()` raised "attestation
+  is inconsistent" when a commit landed mid-read; it now reads in one transaction. `prune`
+  refuses a non-finite threshold, and the schema and its version row commit together. (#247)
+- **Containment refuses links, and the LLM adapter checks egress per request and fails closed.**
+  A quarantine path swapped for a symlink or hard link changed the mode of a file outside the
+  root; each act now uses one `O_NOFOLLOW` descriptor with one link. `agents/tools/llm.py`
+  checked `host` only at construction and followed redirects and `http_proxy`; it now checks
+  each request, refuses every 3xx, uses no proxy and raises `ValidationError` on a malformed
+  reply. A Sigma list under a bare field is any-of. (#246)
+- **The policy bundle loader is strict, and a planted file can no longer hang or half-write the
+  audit chain.** A repeated `allow` key enforced a grant the first key showed empty; duplicate
+  and unknown keys, a `version` other than the integer 1 and a non-`deny` `boundary_crossing`
+  are now refused. A FIFO at `audit.log.lock`, `audit.log` or `audit.log.sig` hung `record()` or
+  `verify_report()`; every chain open now refuses a symlink or non-regular file. The head
+  signature is staged before the append, so a failing signer leaves no unsigned entry. (#245)
+- **The intel single-source cap counts only feeds asserting `malicious`, and the intel and
+  ATT&CK loaders fail closed.** Feed A `benign` plus feed B `malicious` returned `malicious`
+  uncapped, as did an IP declared `md5`; only `EXEMPT_SHAPES` values escape the cap now, and an
+  upstream must be a lowercase hostname, not an IPv4 literal. Suppression missed
+  `::ffff:10.0.0.1`, and `never_flag.json` loaded `2886729729` as `172.16.0.1/32`; entries must
+  be canonical strings. Malformed JSON raises each loader's own error. (#244)
+- **The dashboard escapes log-derived text before Markdown and fails closed on a hostile audit
+  chain.** A `src_ip` holding a Markdown image reached `st.markdown` verbatim, so the analyst's
+  browser would fetch an attacker-chosen URL; such values now pass through
+  `dashboard/markdown_safety.py` and reports render with `st.code`. `load_chain_view` raised
+  tracebacks or hung on non-UTF-8, nested, FIFO or oversized chains; the approvals tab now shows
+  each as an error. `ensure_ollama_running()` tries `ollama serve` once per process. (#243)
+- **A lock path that is not a regular file makes the four scheduled CLIs exit 2 instead of
+  hanging or following it.** A FIFO with no reader hung every pass, one with a reader let the
+  pass run at exit 0, and a symlink had its target chmodded or, if dangling, created outside the
+  lab-data root. The lock is one `os.open` with `O_NOFOLLOW` and `O_NONBLOCK`, checked with
+  `S_ISREG` on the descriptor. A symlinked lock file, such as one moved onto tmpfs, is now
+  refused. (#228)
+- **The four scheduled CLIs now set their lock directory to `0o700` on every run.** `mkdir` does
+  not change an existing directory's mode, and only `run_backup` followed it with a `chmod`, so
+  `data/collect/` and `data/pipeline/` kept whatever mode they were created with. The four
+  copies of the lock code are now one module, `scripts/_locking.py`. (#225)
+- **`AUD-03` no longer tells its attester to sign on `scripts/report_sli.py`'s exit code.** The
+  report read exit 0 and `met=8` before and after a prune removed 24 of 24 events, and the hint
+  becomes the evidence `detail` verbatim. It now asks for `store-readable`'s row counts and says
+  not to attest while they are zero or below the last attestation until a retention pass and a
+  backup manifest account for the drop. The description states that nothing enforces this.
+  (#223)
+- **Retention no longer charges already-read events to a stalled cycle, and `--before` bounds an
+  `--apply` to its dry run.** The unprocessed figure was derived by subtraction and counted the
+  read part of the cursor's own commit; it is now counted through the keyset with
+  `EventStore.count_before(after=...)`. The threshold was re-derived from the clock, so a dry run
+  reported `events_matching` 7 and the apply removed 12. `--before <epoch>` caps the window at
+  `min(--before, now - --keep-days)`. (#222)
+- **The §7.1 secret gate can run, and CI now runs it.** `$(git ls-files)` word-split the 58
+  tracked paths with spaces and exited 2 having scanned nothing. The command is now
+  NUL-delimited and ends with `--`, since a tracked file whose name begins with a dash was read
+  as a flag and exited 0 unscanned. CI ran only gitleaks, which stayed green while this gate was
+  red on two findings unbaselined since #217; `.github/workflows/ci.yml` now runs both. (#221)
+- **A raised `--batch` or a retention pass no longer silently shrinks an incident.** Context
+  shared one row ceiling with the batch, so `--batch 10000` reported zero incidents where
+  `--batch 1000` found a score-52 one; half the ceiling is now reserved for context when
+  `--lookback` is non-zero. Retention could delete rows the lookback re-reads (score 52 fell to
+  30); `scripts/run_retention.py` now keeps `--lookback-margin` seconds behind the cursor,
+  defaulting to `pipeline.DEFAULT_LOOKBACK`. (#219)
+- **Concurrent writers and log rotation can no longer fork an audit chain.**
+  `AuditLogger.record` read the last entry and appended with no lock, so two writers produced
+  seqs `[0, 0]`, and `run_retention.py` and `run_backup.py` write `data/events/audit.log` under
+  different pass locks. `record` and `apply_retention` now hold a blocking `LOCK_EX` on a
+  `<chain>.lock` sidecar. The head signature is replaced atomically and `verify_report` takes a
+  shared lock, so an intact chain no longer reads broken mid-write. (#218)
+- **Indicators come only from what an event retains, so withheld prose no longer becomes
+  observables.** An unclaimed record's raw text was scanned while its un-modelled values were
+  withheld, storing fragments such as `Mr.Jones` and `44.Smith` as observables. The first fix
+  scanned one serialized string, so a long modelled field pushed a later URL past
+  `MAX_FIELD_LEN` (#215); the second scanned leaves `MAX_RAW_EXCERPT` had cut (#216). An
+  indicator only in an un-modelled field is no longer extracted. (#214, #215, #216)
+- **Scheduled CLIs refuse a relative or filesystem-root `--root`, and audit maintenance fails
+  closed.** An unset `$IANUA_ROOT` passed every check and built a shadow `data/` tree in the
+  working directory; `store.paths.validated_root` now requires an existing absolute directory
+  other than `/`. `scripts/audit_maintenance.py` exits 2 when `--log` holds no log, and no
+  longer renames a directory named by `--log`. Every chain reader resolves `verifier_from_env`,
+  so an Ed25519 head signature is checked rather than reported `unsigned`. (#213)
+- **The private security-advisory link in the issue chooser names the real repository.**
+  `.github/ISSUE_TEMPLATE/config.yml` shipped the `OWNER/REPO` placeholder, which 404s, and with
+  `blank_issues_enabled: false` it was the only route offered to a reporter. It now names
+  `IRsoctierDT/IANUA`. Issues are disabled, so the defect was latent.
+  `tests/unit/test_github_config_placeholders.py` sweeps `.github/` for placeholders and foreign
+  slugs. (#211)
+- **An unrecognized line of 2049-4096 characters no longer breaks every later cycle, the event
+  database is owner-only, and incident reports leave the git tree.** `message` was bounded at
+  `MAX_RAW_EXCERPT` but validated at `MAX_FIELD_LEN`, so every `query` after the write raised
+  `MalformedProjectionError`. `EventStore.open` narrows the database and its sidecars to 0o600
+  in a 0o700 directory, an existing store included. Reports default to `data/reports/`, and a
+  destination inside the repository but outside `data/` is refused. (#206)
+- **The collector no longer strands events behind the cursor, skips the rest of an over-long
+  line, or swallows auditd's nested fields.** One `ingested_at` per pass let a cycle save a
+  cursor inside the tie group, leaving 30 of 60 events permanently unread; each source is now
+  stamped before its own commit. An over-long line advanced past bytes it never emitted (4505 of
+  5410 bytes lost) and now advances by what it emitted. auditd's nested `msg=` payload pairs
+  are merged, first occurrence winning, and `?` and `(none)` join `NEVER_JOIN`. (#205)
+- **The detection cycle's lookback no longer hides incidents, and a failed report no longer
+  loses them.** A newest-first limit applied before filtering left a backlogged store with 200
+  events read and 0 correlated; the read is now bounded by `Query.ingested_before`. A wider
+  window could push a join key past `max_entity_fanout`, so incidents only the narrow window
+  finds are now kept. `scripts/run_pipeline.py` reports before saving the cursor, renames the
+  JSON key `cursor_advanced` to `cursor_advancing`, and gains `--include-seen`. (#203)
+- **Two false compliance attestations are withdrawn, and MAN-01 now claims only what `main`'s
+  rulesets enforce.** MAN-01 and MAN-02 read ATTESTED on claims the GitHub API disproved. Both
+  now read MANUAL, and trust-page coverage falls from 16/16 to 14/16 on all three frameworks.
+  MAN-01 no longer claims pull-request-only merges or review. (#195, #196, #197)
+- **`release.yml` can republish a tag cut before `scripts/release_notes.py` existed.**
+  `release-on-merge.yml` dispatches with `--ref main`, so main's recipe runs against the tag's
+  tree, and the notes step #193 added would have failed on the missing script for every tag that
+  predates it, v2.2.0 included. The step now warns and falls back to `--generate-notes` when the
+  script is absent. New releases still get the curated notes through `--notes-file`. (#194)
 
 ### Security
 - **Pillow 12.3.0 → 13.0.0, unblocked by Streamlit 1.66.0 → 1.66.1; certifi and virtualenv
@@ -612,6 +818,14 @@ All notable changes to this project. Versions correspond to git tags.
   the `security/sbom/README.md` procedure, still 227 components. `pip-audit` on the new lock:
   "No known vulnerabilities found". This supersedes #267, which bumped certifi and virtualenv
   but could not move Pillow.
+
+### Known issues
+- **`--help` raises `UnicodeEncodeError` on an ASCII-only stdout in fourteen CLIs under
+  `scripts/`.** A stdout that cannot encode a character in the help text is enough, such as
+  a forwarded locale the host never generated. Measured on `scripts/run_retention.py`:
+  `PYTHONIOENCODING=ascii` exits 1 with the traceback, and `PYTHONIOENCODING=utf-8` exits 0.
+  So a UTF-8 locale, or that variable, works around it. `scripts/report_sli.py` and
+  `scripts/run_backup.py` already escape what such a stdout cannot encode (#281).
 
 ## v2.2.0 — Release Automation & Control Integrity — 2026-10-13
 
