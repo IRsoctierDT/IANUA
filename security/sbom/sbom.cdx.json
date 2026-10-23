@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:b73099e8-2607-5e4d-ba31-a9c0e44f8738",
+  "serialNumber": "urn:uuid:ddfbeaa9-275b-5db3-ae9d-309ce6704e3a",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-23T21:34:22Z",
+    "timestamp": "2026-10-23T22:45:11Z",
     "tools": {
       "components": [
         {
@@ -196,11 +196,11 @@
       "purl": "pkg:pypi/distlib@0.4.3"
     },
     {
-      "bom-ref": "pkg:pypi/filelock@3.29.4",
+      "bom-ref": "pkg:pypi/filelock@4.2.4",
       "name": "filelock",
       "type": "library",
-      "version": "3.29.4",
-      "purl": "pkg:pypi/filelock@3.29.4"
+      "version": "4.2.4",
+      "purl": "pkg:pypi/filelock@4.2.4"
     },
     {
       "bom-ref": "pkg:pypi/fsspec@2026.6.0",
@@ -812,11 +812,11 @@
       "purl": "pkg:pypi/sentence-transformers@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/setuptools@83.0.0",
+      "bom-ref": "pkg:pypi/setuptools@84.2.1",
       "name": "setuptools",
       "type": "library",
-      "version": "83.0.0",
-      "purl": "pkg:pypi/setuptools@83.0.0"
+      "version": "84.2.1",
+      "purl": "pkg:pypi/setuptools@84.2.1"
     },
     {
       "bom-ref": "pkg:pypi/shellingham@1.5.4",
