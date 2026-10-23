@@ -204,6 +204,18 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **A forged `event_id` was echoed whole into the read path's hash-mismatch refusal, and from
+  there into `store-readable` and the operator's terminal.** `_rebuild` interpolated the stored
+  id as it was. Measured: a 50,008-character id made a 50,105-character refusal and a
+  50,152-character `store-readable` detail, a BLOB id was echoed as `str(bytes)` (50,108), and an
+  id holding `ESC[2J`, `ESC[H`, CR and LF reached `scripts/report_sli.py`'s stdout raw, clearing
+  the terminal above a forged `ok: all met` line. An id with the shape every write produces (64
+  lowercase hex digits) is still named as it is, which is the realistic tamper case: a projection
+  edited under its real id. Anything else is quoted through `repr` and cut at 64 characters (or
+  bytes), with the cut and the full length named: the rule #275 set for the schema version, now
+  one helper both use. After: 185 characters for the long id, 186 for the BLOB, and no `ESC` or
+  CR on the report's stdout. `store-readable` still reads breached, so the row is still caught.
+  Six plants, six red.
 - **`EventStore.attest` let a non-ASCII `event_id` escape as a bare `UnicodeEncodeError`, and
   `Query.limit` took a `bool`.** These are two of three residuals #270 found that #272 did not
   close, each measured on `6696c43`. The third, the schema-version echo, was closed by #275 (the

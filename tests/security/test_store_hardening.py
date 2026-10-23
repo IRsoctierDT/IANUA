@@ -1557,6 +1557,97 @@ def test_a_forged_row_cannot_write_its_content_into_the_refusal(tmp_path: Path, 
     assert f"({len(reader)} chars, cut)" in message, "a cut must say that it is one"
 
 
+def _plant_id(store: EventStore, identifier: str | bytes, projection: str) -> None:
+    """Insert ``projection`` under an ``event_id`` it does not hash to.
+
+    At the stamp the store's one appended row already holds, so the mark is not
+    below the rows and the hash check is the only thing that can refuse.
+    """
+    with store._conn:
+        store._conn.execute(
+            "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+            "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+            "VALUES (?, 1.0, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+            (identifier, projection),
+        )
+
+
+#: Event ids no write produces, each planted under a projection it does not hash to.
+_FORGED_IDS: dict[str, str | bytes] = {
+    # Measured before the bound: a 50,105-character refusal.
+    "long_text": "PLANTED-" + "q" * 50_000,
+    # TEXT affinity keeps a BLOB a BLOB, and it was echoed as str(bytes): 50,108.
+    "blob": b"PLANTED-" + b"q" * 50_000,
+    # Hex all the way, so only `fullmatch` keeps it from being named whole:
+    # `match` accepts any string that starts with 64 hex digits.
+    "long_hex": "f" * 50_000,
+    # Short enough never to be cut, so only repr keeps it off a terminal. C0, C1,
+    # a bidi override and a line separator, as the version test plants them.
+    "control_characters": "\x1b[2J\x1b[H\nok: all met\r\n\x9b2J\u202e\u2028",
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_FORGED_IDS), ids=lambda value: value)
+def test_a_forged_event_id_cannot_write_its_content_into_the_refusal(
+    tmp_path: Path, case: str
+) -> None:
+    """The hash-mismatch refusal quotes a forged id through ``repr``, bounded.
+
+    Measured before: that branch interpolated the stored id as it was, so a
+    forged one chose the text of the refusal, and ``sli.measure_store_readable``
+    carries it into the detail ``AUD-03`` tells an operator to record. The other
+    branches name the id only after it hashed, when it is a hex digest. Pinned
+    against literals rather than the module's constant, because an assertion
+    scaled from the constant under test cannot fail.
+    """
+    planted = _FORGED_IDS[case]
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1.0)
+        _plant_id(store, planted, canonical_json(normalize(_OTHER_RECORD).to_dict()))
+        stored = store._conn.execute(
+            "SELECT typeof(event_id) AS kind FROM events WHERE vendor = 'planted'"
+        ).fetchone()["kind"]
+        assert stored == ("blob" if isinstance(planted, bytes) else "text"), "this tests nothing"
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    message = str(raised.value)
+    assert "projection does not hash to its event_id" in message, message
+    assert message.isprintable(), repr(message)
+    assert len(message) < 500, f"{len(message)} chars of a forged id's refusal"
+    if case == "control_characters":
+        assert "cut)" not in message, "the plant was cut, so repr alone is not what is tested"
+        assert "\\x1b[2J" in message and "\\u202e" in message, message
+    else:
+        assert "qqqqqqqqqq" * 10 not in message and "f" * 100 not in message
+        unit = "bytes" if isinstance(planted, bytes) else "chars"
+        assert f"({len(planted)} {unit}, cut)" in message, "a cut must say that it is one"
+
+
+@pytest.mark.security
+def test_a_write_shaped_id_over_an_edited_projection_is_still_named_whole(
+    tmp_path: Path,
+) -> None:
+    """The control: the realistic tamper case keeps the id an operator searches for.
+
+    A projection edited under its real id is what an attacker who does not
+    recompute the hash leaves behind, and the id is how the row is found. So a
+    write-shaped id is named as it is, unquoted and uncut, as the other branches
+    print it. Without this, quoting every id would pass the test above.
+    """
+    real = event_id(canonical_json(normalize(_OTHER_RECORD).to_dict()))
+    edited = canonical_json({**normalize(_OTHER_RECORD).to_dict(), "message": "edited"})
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1.0)
+        _plant_id(store, real, edited)
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    assert str(raised.value) == (
+        f"event {real}: projection does not hash to its event_id; "
+        "the database was modified outside this platform"
+    )
+
+
 #: ``ingested_at`` values no write path stores, as SQLite keeps them in a REAL
 #: column, with the reader's exception for each. The column is outside the
 #: hash, so each needs nothing but write access to the file.

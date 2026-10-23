@@ -42,7 +42,7 @@ from pipeline import Cursor, cursor_path, save_cursor
 from sli import CHAIN_FILES, OBJECTIVES, Indicator, Status, measure
 from sli.indicators import READABILITY_SAMPLE
 from store import SIDECAR_SUFFIXES, EventStore, Query, StoreCorruptionError
-from store.schema import VERSION_KEY
+from store.schema import VERSION_KEY, canonical_json
 from tests.security.test_cli_startup_failclosed import RELATIVE_ROOTS
 
 _SLI_ROOT = Path(__file__).resolve().parents[2] / "sli"
@@ -968,6 +968,56 @@ def test_a_forged_schema_version_does_not_reach_the_report_whole(
         assert "SchemaVersionError: " in indicator.detail, indicator.detail
         assert len(indicator.detail) < 600, f"{objective}: {len(indicator.detail)} chars"
         assert indicator.detail.isprintable(), repr(indicator.detail)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(["--root", str(root), "--caller", "soc-test"])
+    assert code == 1, out.getvalue()
+    assert all(char.isprintable() or char == "\n" for char in out.getvalue()), repr(out.getvalue())
+    assert "\nok: all met" not in out.getvalue()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "planted",
+    [
+        pytest.param("PLANTED-" + "q" * 50_000, id="long"),
+        # Short enough not to be cut, so repr, not the cut, is what keeps CR off stdout.
+        pytest.param("\x1b[2J\x1b[H\nok: all met\r\n", id="control-characters"),
+    ],
+)
+def test_a_forged_event_id_does_not_reach_the_report_whole(tmp_path: Path, planted: str) -> None:
+    """``store-readable`` quotes the store's refusal, so the store's bound is what bounds it.
+
+    Measured before ``store`` bounded the id its hash-mismatch refusal names: a
+    50,008-character id made a 50,152-character ``store-readable`` detail, and
+    ``ESC[2J`` reached the text report's stdout raw, clearing the terminal above
+    a forged line. The row is still caught: the objective reads breached. It is
+    planted at the oldest stamp, so the mark stays above the rows and the hash
+    check is what refuses.
+    """
+    from scripts.report_sli import main
+
+    root = _stored(tmp_path)
+    projection = canonical_json(normalize(_RECORD % 99).to_dict())
+    conn = sqlite3.connect(root / _STORE)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, vendor, "
+                "parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+                "SELECT ?, MIN(ingested_at), NULL, 'unknown', 'planted', 'text', NULL, NULL, "
+                "NULL, NULL, ? FROM events",
+                (planted, projection),
+            )
+    finally:
+        conn.close()
+
+    readable = _store_objectives(root)["store-readable"]
+    assert readable.status is Status.BREACHED, readable.summary()
+    assert "projection does not hash to its event_id" in readable.detail, readable.detail
+    assert len(readable.detail) < 600, f"{len(readable.detail)} chars"
+    assert readable.detail.isprintable(), repr(readable.detail)
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
