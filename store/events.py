@@ -1776,6 +1776,53 @@ def _has_meta(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+#: An ``event_id`` as :func:`store.schema.event_id` writes it: a sha256
+#: ``hexdigest``, which is lowercase. ``[0-9a-f]`` and ``fullmatch`` for the
+#: reasons :data:`_VERSION_TEXT` gives: ``\d`` matches every Unicode digit, and
+#: ``$`` accepts a trailing newline.
+_EVENT_ID_TEXT = re.compile(r"[0-9a-f]{64}")
+
+
+def _id_mismatch_refusal(raw: object) -> str:
+    """The message for a row whose projection does not hash to its stored ``event_id``.
+
+    The id is named only when it has the shape every id this store writes
+    has. Then it is the key an operator finds the row by, and 64 hex
+    characters can carry nothing else. Anything else is described by type and
+    length and never echoed. That is the allow-list :func:`_version_refusal`
+    uses, for the same reason: a length bound alone would still copy what a
+    forged row chose. This is the one :func:`_rebuild` message whose id a
+    forged row writes, because the other three run after the hash matched,
+    when the id is :func:`event_id`'s own output.
+
+    Measured before this change: a forged ASCII id of 50,008 characters made
+    a 50,105-character refusal from :meth:`EventStore.query`, which
+    ``sli.measure_store_readable`` copies into its detail (50,152
+    characters). And a short value did harm without any length: an id of
+    ``"\\x1b[2J"`` put a raw ESC into that detail, which
+    ``scripts/report_sli.py`` wrote to the terminal.
+
+    ``event_id`` is ``TEXT ... NOT NULL``, and TEXT affinity converts a number
+    to text on the way in, so text and a BLOB are the only shapes SQLite can
+    return here.
+    """
+    if isinstance(raw, str) and _EVENT_ID_TEXT.fullmatch(raw):
+        return (
+            f"event {raw}: projection does not hash to its event_id; the database was "
+            "modified outside this platform"
+        )
+    if isinstance(raw, str):
+        shape = f"{len(raw)} character(s) of text that is not a lowercase sha256 hex digest"
+    elif isinstance(raw, bytes):
+        shape = f"a BLOB of {len(raw)} byte(s)"
+    else:  # pragma: no cover - TEXT affinity and NOT NULL leave only text and BLOB
+        shape = f"a value of type {type(raw).__name__}"
+    return (
+        f"a stored event_id is {shape}, which no build of this platform writes, and its "
+        "projection does not hash to it; the database was modified outside this platform"
+    )
+
+
 def _rebuild(row: sqlite3.Row) -> StoredEvent:
     """Rebuild one row, verifying it is what this store wrote.
 
@@ -1799,6 +1846,10 @@ def _rebuild(row: sqlite3.Row) -> StoredEvent:
     API. The reader's error is kept as ``__cause__``, and its sentence goes into
     the message, bounded by :func:`_rebuild_reason`.
 
+    A hash that does *not* match means the stored ``event_id`` is not this
+    store's output, so that refusal names it only through
+    :func:`_id_mismatch_refusal`'s allow-list.
+
     Only ``MalformedProjectionError`` is mapped, because it is the one refusal
     ``from_dict`` documents. Anything else it raises is a defect in the reader
     and surfaces as itself.
@@ -1808,12 +1859,13 @@ def _rebuild(row: sqlite3.Row) -> StoredEvent:
     :class:`StoreIntegrityError`, not a bare ``ValueError`` from ``float()``.
     """
     projection = str(row["projection"])
-    identifier = str(row["event_id"])
+    stored_id = row["event_id"]
+    identifier = str(stored_id)
     if event_id(projection) != identifier:
-        raise StoreIntegrityError(
-            f"event {identifier}: projection does not hash to its event_id; "
-            "the database was modified outside this platform"
-        )
+        # The id is whatever a row written outside the API holds, so it goes
+        # through the allow-list. Every message below names it as-is, because
+        # by then it equals `event_id(projection)`.
+        raise StoreIntegrityError(_id_mismatch_refusal(stored_id))
     try:
         payload = json.loads(projection)
     except (ValueError, RecursionError) as exc:

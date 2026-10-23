@@ -41,7 +41,7 @@ from ingest import normalize
 from pipeline import Cursor, cursor_path, save_cursor
 from sli import CHAIN_FILES, OBJECTIVES, Indicator, Status, measure
 from sli.indicators import READABILITY_SAMPLE
-from store import SIDECAR_SUFFIXES, EventStore, Query, StoreCorruptionError
+from store import SIDECAR_SUFFIXES, EventStore, Query, StoreCorruptionError, canonical_json
 from store.schema import VERSION_KEY
 from tests.security.test_cli_startup_failclosed import RELATIVE_ROOTS
 
@@ -1098,3 +1098,51 @@ def test_real_damage_still_reads_damaged_wherever_it_is_met(tmp_path: Path, stag
         code = main(["--root", str(root), "--caller", "soc-test"])
     assert code == 1, out.getvalue()
     assert "store-intact: breached" in out.getvalue(), out.getvalue()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "identifier",
+    ["PLANTED-" + "q" * 50_000, "\x1b[2J"],
+    ids=["unbounded_text", "terminal_escape"],
+)
+def test_a_forged_event_id_reaches_the_report_described(tmp_path: Path, identifier: str) -> None:
+    """The route a forged ``event_id`` took to the operator's terminal, end to end.
+
+    ``store-readable`` copies the store's refusal into its detail, and
+    ``report_sli.py`` prints details as they are. Measured before the store
+    stopped echoing the id: a 50,152-character detail, and a raw ESC on
+    stdout. Planted at the stored mark, so the mark checks cannot be what
+    refuses, and inside the readability sample, so the query reaches it. The
+    grade is pinned too, because describing the id must not soften it.
+    """
+    from scripts.report_sli import main
+
+    root = _stored(tmp_path)
+    with EventStore.open(root) as store:
+        mark = store.high_water_mark()
+        projection = canonical_json(normalize(_RECORD % 99).to_dict())
+        with store._conn:
+            store._conn.execute(
+                "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+                "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+                "VALUES (?, ?, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+                (identifier, mark, projection),
+            )
+
+    readable = _store_objectives(root)["store-readable"]
+    assert readable.status is Status.BREACHED, readable.summary()
+    assert readable.value == 0.0
+    assert readable.detail.startswith(
+        "the store cannot be read: StoreIntegrityError: a stored event_id is"
+    ), readable.detail[:200]
+    assert len(readable.detail) < 400, f"{len(readable.detail)} chars of detail"
+    assert readable.detail.isprintable(), "a control character reached the detail"
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(["--root", str(root), "--caller", "soc-test"])
+    assert code == 1, out.getvalue()[:2000]
+    assert "store-readable: breached" in out.getvalue()
+    assert "\x1b" not in out.getvalue(), "a raw ESC reached the operator's terminal"
+    assert identifier[:20] not in out.getvalue(), "the report echoed the stored id"
