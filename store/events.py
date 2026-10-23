@@ -701,6 +701,50 @@ def _stored_mark(value: object) -> float:
     return _finite(parsed, "high-water mark")
 
 
+#: A recorded schema version as :meth:`EventStore._apply_schema` writes it:
+#: ``str()`` of a small integer. ``[0-9]`` rather than ``\d``, which matches
+#: every Unicode digit, and nine of them because the version is at 1 and moves
+#: once per schema change, so a longer value is not one any build wrote.
+_VERSION_TEXT = re.compile(r"[0-9]{1,9}")
+
+
+def _version_refusal(raw: object) -> str:
+    """The :class:`SchemaVersionError` message for a version this build does not speak.
+
+    The recorded version is named only when it has the shape this platform
+    writes, because the operator needs it to choose a migration. Anything else
+    is described by type and length and never echoed: an allow-list, since a
+    length bound alone would still copy what a forged row chose. Measured
+    before this change, ``meta.schema_version`` set to ``"9" * 50000`` made
+    :meth:`EventStore.open` raise a 50,154-character message, which ``sli``
+    carries verbatim into the report detail ``AUD-03`` tells an operator to
+    record (50,236 characters for ``store-intact``). And a short value needed no
+    length to do harm: ``"2\\x1b[2J\\x1b[31mhealthy"`` put the raw escape
+    sequences into that detail, and ``scripts/report_sli.py`` wrote them to the
+    terminal, clearing the screen. The same removal of a stored-value echo that
+    #268, #269 and #272 made in their own messages.
+
+    TEXT affinity converts a number to text on the way in and the column is
+    ``NOT NULL``, so text and a BLOB are the only shapes SQLite can return here.
+    """
+    if isinstance(raw, str) and _VERSION_TEXT.fullmatch(raw):
+        return (
+            f"event store was written by schema version {raw}, this build speaks version "
+            f"{SCHEMA_VERSION}; migration is explicit (no implicit upgrade — see "
+            "store.errors.SchemaVersionError)"
+        )
+    if isinstance(raw, str):
+        shape = f"{len(raw)} character(s) of text that is not a version number"
+    elif isinstance(raw, bytes):
+        shape = f"a BLOB of {len(raw)} byte(s)"
+    else:  # pragma: no cover - TEXT affinity and NOT NULL leave only text and BLOB
+        shape = f"a value of type {type(raw).__name__}"
+    return (
+        f"event store's recorded schema version is {shape}, which no build of this "
+        f"platform writes; refusing to assume the existing rows match version {SCHEMA_VERSION}"
+    )
+
+
 class EventStore:
     """An open, append-only event database.
 
@@ -814,14 +858,8 @@ class EventStore:
                     "refusing to assume the existing rows match version "
                     f"{SCHEMA_VERSION}"
                 )
-            found = str(row["value"])
-            if found != str(SCHEMA_VERSION):
-                raise SchemaVersionError(
-                    f"event store was written by schema version {found}, this "
-                    f"build speaks version {SCHEMA_VERSION}; migration is "
-                    "explicit (no implicit upgrade — see "
-                    "store.errors.SchemaVersionError)"
-                )
+            if str(row["value"]) != str(SCHEMA_VERSION):
+                raise SchemaVersionError(_version_refusal(row["value"]))
             return
         # Fresh database: tables and version land in one transaction, so a
         # store can never exist with tables but no recorded version.
@@ -1357,7 +1395,9 @@ class EventStore:
 
         Raises:
             StoreCorruptionError: if the database file is damaged.
-            StoreIntegrityError: if the count and the id stream disagree.
+            StoreIntegrityError: if the count and the id stream disagree, or a
+                stored ``event_id`` is not ASCII. The message gives the id's
+                length and never the id.
         """
         with self._conn:
             self._conn.execute("BEGIN")
@@ -1379,7 +1419,23 @@ class EventStore:
         running.update(f"{DIGEST_PREFIX}{events}\n".encode())
         streamed = 0
         for row in self._conn.execute(ATTEST_IDS_SQL):
-            running.update(str(row["event_id"]).encode("ascii"))
+            identifier = str(row["event_id"])
+            try:
+                encoded = identifier.encode("ascii")
+            except UnicodeEncodeError:
+                # Measured: a valid-UTF-8, non-ASCII id written outside the API
+                # (`"é" * 64`) escaped as a bare UnicodeEncodeError, which no
+                # `except StoreError` catches. The backup CLI's handlers reached
+                # it only because that class subclasses ValueError, and printed
+                # the codec's sentence. Every id this store writes is a sha256
+                # hex digest. Suppressed rather than chained, because the
+                # error's `object` is the stored id, which a forged row chooses.
+                raise StoreIntegrityError(
+                    f"a stored event_id ({len(identifier)} characters) is not ASCII; every "
+                    "id this store writes is a sha256 hex digest, so the database was "
+                    "modified outside this platform"
+                ) from None
+            running.update(encoded)
             running.update(b"\n")
             streamed += 1
         if streamed != events:
@@ -1540,8 +1596,15 @@ class EventStore:
                 ``None`` failed on a comparison; and ``5.0`` worked by
                 accident. A float is refused whatever its value, since a count
                 typed ``int`` that took ``5.0`` and refused ``5.5`` would be a
-                rule about values posing as one about types.
+                rule about values posing as one about types. A ``bool`` is
+                refused too, although it has ``__index__``: ``True`` read one
+                row and ``False`` none.
         """
+        # `bool` first, because it has `__index__`: measured, `limit=True` read
+        # one row and `limit=False` none, so a flag passed in the wrong place
+        # read as a quiet period rather than as the caller's bug.
+        if isinstance(spec.limit, bool):
+            raise TypeError("limit must be an integer, not bool")
         # The index protocol, once, and the value it returned is the value used,
         # for the reason `_finite` converts once.
         try:

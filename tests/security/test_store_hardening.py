@@ -1054,6 +1054,63 @@ def test_a_schema_written_by_another_version_is_refused(tmp_path: Path) -> None:
         EventStore.open(tmp_path).close()
 
 
+#: Recorded versions no build writes, with the description the refusal gives
+#: instead of the value. Text goes in as a bound ``str``; the BLOB as ``bytes``,
+#: which TEXT affinity leaves a BLOB.
+_FORGED_VERSIONS: dict[str, tuple[str | bytes, str]] = {
+    # Measured before: a 50,154-character SchemaVersionError.
+    "unbounded_digits": ("9" * 50_000, "50000 character(s) of text"),
+    # Measured before: the raw escapes reached `report_sli.py`'s terminal.
+    "terminal_escape": ("2\x1b[2J\x1b[31mhealthy", "17 character(s) of text"),
+    "one_digit_past_the_bound": ("1" * 10, "10 character(s) of text"),
+    "trailing_newline": ("2\n", "2 character(s) of text"),
+    # ARABIC-INDIC DIGIT TWO: `str.isdigit()` and `\d` both accept it.
+    "non_ascii_digit": ("٢", "1 character(s) of text"),
+    "blob": (b"2", "a BLOB of 1 byte(s)"),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_FORGED_VERSIONS), ids=lambda value: value)
+def test_a_forged_schema_version_is_described_not_echoed(tmp_path: Path, case: str) -> None:
+    """A version only a forged row could hold is described, never copied.
+
+    ``sli`` carries this message into the report detail an operator records,
+    so a value the row chose is a value written into that report. Pinned on
+    literal lengths rather than a constant from the module, because an
+    assertion scaled from the bound under test cannot fail.
+    """
+    planted, description = _FORGED_VERSIONS[case]
+    with EventStore.open(tmp_path) as store, store._conn:
+        store._conn.execute("UPDATE meta SET value = ? WHERE key = ?", (planted, VERSION_KEY))
+    with pytest.raises(SchemaVersionError) as raised:
+        EventStore.open(tmp_path).close()
+    message = str(raised.value)
+    assert len(message) < 300, f"{len(message)} chars of a forged version's refusal"
+    assert description in message, "the refusal must say what it found, not only refuse"
+    assert "which no build of this platform writes" in message
+    assert message.isprintable(), "a control character reached the refusal"
+    # `str()` because that is what the old message interpolated: a BLOB read
+    # back as `b'2'`. The first 20 characters, so the long case is not vacuous.
+    assert str(planted)[:20] not in message, "the refusal echoed the stored version"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("version", ["0", "99", "123456789"])
+def test_a_version_this_platform_could_write_is_still_named(tmp_path: Path, version: str) -> None:
+    """The control: the allow-list keeps the value an operator migrates from.
+
+    Nine digits is the boundary, so ``123456789`` is named and the ten-digit
+    case above is described. Without this, refusing to name any version would
+    pass the test above.
+    """
+    with EventStore.open(tmp_path) as store, store._conn:
+        store._conn.execute("UPDATE meta SET value = ? WHERE key = ?", (version, VERSION_KEY))
+    with pytest.raises(SchemaVersionError) as raised:
+        EventStore.open(tmp_path).close()
+    assert f"written by schema version {version}, this build speaks version" in str(raised.value)
+
+
 # --------------------------------------------------------------------------
 # Containment
 # --------------------------------------------------------------------------
@@ -1554,8 +1611,8 @@ def test_a_query_limit_cannot_exceed_the_ceiling(tmp_path: Path) -> None:
 @pytest.mark.security
 @pytest.mark.parametrize(
     "limit",
-    [math.nan, 2.5, 5.0, math.inf, "5", b"5", None],
-    ids=["nan", "fraction", "integral_float", "inf", "text", "bytes", "none"],
+    [math.nan, 2.5, 5.0, math.inf, "5", b"5", None, True, False],
+    ids=["nan", "fraction", "integral_float", "inf", "text", "bytes", "none", "true", "false"],
 )
 def test_a_non_integer_query_limit_is_a_type_error(tmp_path: Path, limit: object) -> None:
     """A count that is not an integer is a caller's bad argument, said as one.
@@ -1565,11 +1622,18 @@ def test_a_non_integer_query_limit_is_a_type_error(tmp_path: Path, limit: object
     append-only trigger; ``inf`` was taken silently as the ceiling; text, bytes
     and ``None`` failed inside ``min()``; and ``5.0`` worked by accident. A
     float is refused whatever its value, so the rule is about the type.
+
+    ``bool`` has ``__index__``, so the index protocol alone took it: measured,
+    ``True`` read one row and ``False`` none, a flag in the wrong place reading
+    as a quiet period. Two rows are stored so that ``True`` reading one is a
+    visible difference from the default.
     """
     with EventStore.open(tmp_path) as store:
         store.append(normalize(_RECORD), ingested_at=1.0)
-        with pytest.raises(TypeError, match="limit must be an integer"):
+        store.append(normalize(_OTHER_RECORD), ingested_at=2.0)
+        with pytest.raises(TypeError, match="limit must be an integer, not ") as raised:
             store.query(Query(limit=limit))  # type: ignore[arg-type]
+    assert str(raised.value) == f"limit must be an integer, not {type(limit).__name__}"
 
 
 @pytest.mark.security
@@ -1678,6 +1742,59 @@ def test_non_ascii_utf8_text_still_round_trips(tmp_path: Path) -> None:
         store.append(event, ingested_at=1.0)
         (stored,) = store.query()
     assert stored.event.message == "café ✓ 日本"
+
+
+#: Valid UTF-8 and not ASCII, so the connection's decoder accepts it and the
+#: refusal has to come from the attestation. Not a hex digest, as no id this
+#: store writes can be.
+_NON_ASCII_ID = "é" * 64
+
+
+@pytest.mark.security
+def test_a_non_ascii_event_id_is_a_store_integrity_error_that_does_not_quote_it(
+    tmp_path: Path,
+) -> None:
+    """``attest`` refuses an id it cannot digest, as a store error and without the id.
+
+    Measured before: ``"é" * 64`` planted through ``INSERT`` made ``attest`` raise
+    a bare ``UnicodeEncodeError`` from ``str.encode("ascii")``, which no
+    first-party ``except StoreError`` catches. The backup CLI reached it only
+    because that class subclasses ``ValueError``, and its ``object`` is the
+    stored id. Planted at the mark's own stamp, so the only defect in the row is
+    its id and the mark-below-the-rows check cannot be what refuses.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1.0)
+        projection = canonical_json(normalize(_OTHER_RECORD).to_dict())
+        with store._conn:
+            store._conn.execute(
+                "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+                "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+                "VALUES (?, 1.0, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+                (_NON_ASCII_ID, projection),
+            )
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.attest()
+    assert not isinstance(raised.value, StoreCorruptionError), "a row, not a damaged file"
+    message = str(raised.value)
+    assert "is not ASCII" in message
+    assert "64 characters" in message
+    assert "é" not in message, "the refusal quoted the stored id"
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+
+
+@pytest.mark.security
+def test_non_ascii_text_outside_the_id_still_attests(tmp_path: Path) -> None:
+    """The control: the refusal is about the id, not about non-ASCII anywhere.
+
+    Without this, an ``attest`` that refused any store holding non-ASCII text
+    would pass the test above. The projection carries the same characters and
+    is digested only through its sha256 hex id.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(_hand_built(message="café " + "é" * 64), ingested_at=1.0)
+        attested = store.attest()
+    assert attested.events == 1
 
 
 # --------------------------------------------------------------------------

@@ -37,8 +37,8 @@ line once, between `ingest/` (normalize) and `correlation/` (resolve).
 | **Contained** | The database lives under gitignored `data/events/`. A filename with a separator, a traversal, or a leading dot is refused. |
 | **No hostile database file** | Before SQLite opens it, `events.sqlite3` itself must be absent (a fresh root, which then creates it) or a regular file with one link (`lstat`, never followed). Anything else raises `StoreFileError`. See [The database file itself](#the-database-file-itself). |
 | **No hostile sidecar** | Before SQLite opens the database, each `-journal`, `-wal` and `-shm` beside it must be absent or a regular file with one link (`lstat`, never followed). Anything else raises `StoreSidecarError`, a `StoreFileError` subclass. See [Sidecars](#sidecars). |
-| **Bounded** | Projections over 64 KiB are refused; every query is clamped to 10,000 rows, and a `limit` that is not an integer raises `TypeError`. |
-| **Versioned** | A database written by another schema version is refused, never implicitly migrated. |
+| **Bounded** | Projections over 64 KiB are refused; every query is clamped to 10,000 rows, and a `limit` that is not an integer raises `TypeError`, a `bool` included. |
+| **Versioned** | A database written by another schema version is refused, never implicitly migrated. The refusal names the recorded version only when it has the shape a build writes (one to nine ASCII digits), and otherwise gives its type and length, since `sli` copies the message into the report an operator records. |
 | **Damage is a `StoreError`** | SQLite's two corruption verdicts (`SQLITE_CORRUPT`, `SQLITE_NOTADB`) are mapped to `StoreCorruptionError` at every public method, so a damaged file cannot reach a caller as a raw driver exception. A lock (`SQLITE_BUSY`), a trigger refusal (`IntegrityError`) and a caller bug (`ProgrammingError`) keep their own meaning. |
 | **Verifiable cheaply** | `EventStore.verify_integrity()` runs `PRAGMA quick_check` (1.1-1.5 ms/MiB, measured). `attest()` and `scripts/run_retention.py` both gate on it, because a digest and a count that come from covering indexes describe the indexes and not the rows. |
 
@@ -192,6 +192,10 @@ attestation in every backup manifest and `--verify` re-checks it; the runbook is
 It is not a tamper control. Anyone who can rewrite rows can recompute a digest over them —
 `UPDATE` is trigger-refused and the audit chain is the tamper evidence. What this catches is
 *loss*.
+
+An `event_id` it cannot digest is still refused as a `StoreError`. Every id this store writes
+is a sha256 hex digest, so an id that is not ASCII was written outside the platform, and
+`attest()` raises `StoreIntegrityError` giving its length and never the id.
 
 ## What is not here
 
