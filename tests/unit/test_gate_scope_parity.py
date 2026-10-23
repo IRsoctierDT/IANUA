@@ -18,6 +18,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.security import _sql_provenance as sqlprov
 
@@ -215,6 +216,53 @@ def test_precommit_scopes_match() -> None:
     assert bandit_args is not None
     scope = {part.strip().strip('"') for part in bandit_args.group(1).split(",")}
     assert scope == BANDIT_SCOPE
+
+
+#: The pre-commit hooks that run a tool the dev extras pin, and how each must
+#: be invoked. As hosted hook repos they carried a second pin that drifted from
+#: uv.lock (read on 2026-10-23: ruff v0.6.9 against 0.17.1, mypy v1.11.2 against
+#: 2.4.0, bandit 1.7.10 against 1.9.4), and they ran in pre-commit's isolated
+#: environments, which never saw the project's dependencies
+#: (docs/PATH_RECONCILIATION_AUDIT.md G2). ``python -m`` binds each to the
+#: interpreter the drift-gate hooks use, not whatever is first on ``PATH``.
+#: Pairs, not a dict literal: detect-secrets' keyword rule reads
+#: ``"detect-secrets": "<string>"`` as a secret assignment (measured).
+_TOOLCHAIN_HOOKS: tuple[tuple[str, str], ...] = (
+    ("ruff", "python -m ruff check "),
+    ("ruff-format", "python -m ruff format "),
+    ("mypy", "python -m mypy"),
+    ("bandit", "python -m bandit"),
+    ("detect-secrets", "python -m detect_secrets.pre_commit_hook"),
+)
+
+
+@pytest.mark.unit
+def test_precommit_runs_the_locked_toolchain_not_a_second_pin() -> None:
+    """Every toolchain hook is a ``local`` ``system`` hook on the project interpreter.
+
+    A version-equality check would also close the drift, but it would leave a
+    second pin to bump on every lock change and keep the isolated environment.
+    So the shape is pinned, and there is nothing to keep in step.
+    """
+    entries = dict(_TOOLCHAIN_HOOKS)
+    config = yaml.safe_load((_REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    found = {
+        hook["id"]: (repo["repo"], hook)
+        for repo in config["repos"]
+        for hook in repo["hooks"]
+        if hook["id"] in entries
+    }
+    assert set(found) == set(entries), (
+        f"pre-commit no longer runs {sorted(set(entries) - set(found))}"
+    )
+    for hook_id, (repo, hook) in found.items():
+        assert repo == "local", f"the {hook_id} hook comes from {repo}, a second pin beside uv.lock"
+        assert hook.get("language") == "system", (
+            f"the {hook_id} hook runs in its own environment, not the project's"
+        )
+        assert str(hook.get("entry", "")).startswith(entries[hook_id]), (
+            f"the {hook_id} hook runs {hook.get('entry')!r}, not through the project interpreter"
+        )
 
 
 @pytest.mark.unit

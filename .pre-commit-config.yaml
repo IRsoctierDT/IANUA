@@ -1,7 +1,8 @@
 # .pre-commit-config.yaml — IANUA
 # Rename to ".pre-commit-config.yaml" at the repo root.
 # Fast local quality gates that mirror the CI pipeline (AGENTS.md §7-§8).
-# Setup:
+# Setup (keep that environment active when you commit: the ruff, mypy,
+# bandit and detect-secrets hooks run its tools):
 #   pip install -e ".[dev]"
 #   pre-commit install
 #   pre-commit install --hook-type pre-push
@@ -31,29 +32,55 @@ repos:
       - id: detect-private-key        # blocks committed private keys (AGENTS.md §5)
       - id: debug-statements
 
+  # --- The toolchain hooks run the dev environment's tools, not a second pin --
+  # ruff, mypy, bandit and detect-secrets run through the interpreter that
+  # `pip install -e ".[dev]"` set up, so they are the versions uv.lock pins
+  # and CI runs. As hosted hook repos they carried their own pins and ran in
+  # pre-commit's isolated environments, which never saw the project's
+  # dependencies. Read on 2026-10-23: ruff v0.6.9 against 0.17.1, mypy
+  # v1.11.2 against 2.4.0 and bandit 1.7.10 against 1.9.4
+  # (docs/PATH_RECONCILIATION_AUDIT.md G2). `python -m` resolves each one
+  # through the same interpreter as the drift gates below.
+  # tests/unit/test_gate_scope_parity.py refuses a hosted repo for any of them.
+
   # --- Lint + format (ruff) ----------------------------------------------
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+  - repo: local
     hooks:
       - id: ruff                      # lint; mirrors `ruff check .`
+        name: ruff check (locked toolchain)
+        entry: python -m ruff check --force-exclude
         args: ["--fix"]
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format               # mirrors `ruff format --check .`
+        name: ruff format (locked toolchain)
+        entry: python -m ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
   # --- Static type checking (mypy) ---------------------------------------
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.11.2
+  - repo: local
     hooks:
       - id: mypy
+        name: mypy (locked toolchain)
+        entry: python -m mypy
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
         files: ^(agents|attack|intel|ingest|store|correlation|pipeline|collect|scripts|tests|dashboard|mcp|rag|compliance|sli)/
-        additional_dependencies: []   # add typed stub packages here as deps grow
 
   # --- Security static analysis (bandit) ---------------------------------
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.10
+  - repo: local
     hooks:
       - id: bandit
+        name: bandit (locked toolchain)
+        entry: python -m bandit
         args: ["-c", "pyproject.toml", "-r", "agents", "attack", "intel", "ingest", "store", "correlation", "pipeline", "collect", "scripts", "mcp", "sli"]
-        additional_dependencies: ["bandit[toml]"]
+        language: system
+        types: [python]
+        pass_filenames: false       # the whole §7 scope, as CI scans it
 
   # --- Drift gates (stdlib-only, fast; mirror the read-only CI gates) -----
   - repo: local
@@ -107,11 +134,13 @@ repos:
         pass_filenames: false
 
   # --- Secret scanning (detect-secrets) ----------------------------------
-  - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.5.0
+  - repo: local
     hooks:
       - id: detect-secrets
+        name: detect-secrets (locked toolchain)
+        entry: python -m detect_secrets.pre_commit_hook   # the module behind `detect-secrets-hook`
         args: ["--baseline", ".secrets.baseline"]
+        language: system
         exclude: ^(\.secrets\.baseline|data/)
 
   # --- Tests on push (heavier; not on every commit) ----------------------

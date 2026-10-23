@@ -18,6 +18,16 @@ All notable changes to this project. Versions correspond to git tags.
   pins the measurement, so the four have to change together if `next_stamp` ever does.
   Backups already left out the cursor, and `docs/RESTORE.md` step 3 already deletes it, so
   behaviour is unchanged.
+- **The pre-commit hooks for ruff, mypy, bandit and detect-secrets now run the locked toolchain
+  rather than pins of their own.** As hosted hook repos, three of them had drifted from
+  `uv.lock`: ruff v0.6.9 against 0.17.1, mypy v1.11.2 against 2.4.0, and bandit 1.7.10 against
+  1.9.4. All four ran in pre-commit's isolated environments, which never saw the project's
+  dependencies. They are now `repo: local`, `language: system` hooks run as `python -m <tool>`
+  from the environment `pip install -e ".[dev]"` sets up, so a commit needs that environment
+  active. Every hook passed over the whole tree, and one planted violation per tool failed its
+  hook. `tests/unit/test_gate_scope_parity.py` pins the shape, so there is no second version to
+  keep in step. This closes `docs/PATH_RECONCILIATION_AUDIT.md` stage 1.2 (G2), differently from
+  the bump it prescribed.
 
 ### Security
 - **Releases are immutable from 2026-10-23, and `release.yml` no longer uploads to one that
