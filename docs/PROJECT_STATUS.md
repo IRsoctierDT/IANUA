@@ -115,6 +115,47 @@ Supporting agents:
   NIST CSF 2.0, CIS Controls v8.1, Security+ SY0-701)
 - Portfolio-grade case studies for every component (`docs/case-studies/`)
 
+### v1.9.0 — tamper-evident audit, sandboxed tools, verifiable RAG
+
+- Default-deny policy engine with a tamper-evident audit log, enforced at the MCP
+  tool surface
+- Rootless seccomp/AppArmor container sandbox for MCP tools, enforced by a
+  real-container CI job
+- Passage-level source citations, a persistent SQLite vector store, and PDF
+  export for incident reports
+- CycloneDX SBOM with Sigstore-signed SBOM and SLSA provenance attestations;
+  `uv.lock` as the dependency source of truth, behind a drift gate
+
+### v2.0.0 — the IANUA identity era
+
+- The platform is IANUA everywhere: repository, docs, Pages and dashboard, with
+  `scripts/rename_to_ianua.py --check` guarding against legacy identifiers
+- One-click GitHub Codespaces test environment (`.devcontainer/`)
+- Dashboard batch flow runs the correlated sequence pipeline
+
+### v2.1.0 — Detection Intelligence & XDR Foundation
+
+- Multi-source telemetry ingest (`ingest/`): ten log sources across five domains,
+  normalized into one event shape with OCSF classification
+- Detection-intelligence layer: a version-pinned, hash-verified local MITRE
+  ATT&CK corpus (`attack/`) and a reviewed mapping ruleset (`agents/mapping/`)
+- Apache-2.0 licensing
+
+### v2.2.0 — Release Automation & Control Integrity
+
+- Release automation: `scripts/prepare_release.py` and a human-approved,
+  CI-verified tag-and-publish flow (`docs/RELEASING.md`)
+- The attestation-expiry gate compares against the current date, with a
+  30-day warning window
+- Path and assertion reconciliation audit (`docs/PATH_RECONCILIATION_AUDIT.md`)
+
+### v2.3.0 — Production SOC Foundations
+
+- The seven SOC platform components listed under **SOC Platform** above: event
+  store, correlation, detection cycle, collection, retention, backup and
+  restore verification, and the platform's own SLIs
+- GitHub Releases publish the curated changelog section as their body
+
 ## Current Model Inventory
 
 - qwen3:4b
