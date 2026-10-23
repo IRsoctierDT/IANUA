@@ -21,7 +21,7 @@ checkable. `—` means not started. A stage is only `done` when every item under
 |---|---|---|---|
 | 0 | Maintainer-only: repo settings, externally visible deletes, secrets, account routines | **partial** | `.github/SECURITY.md` deleted (PR #190); repo settings still open |
 | 1.1 | Attestation-expiry gate compares against the current date | **done** | PR #190 |
-| 1.2 | Pre-commit hook versions reconciled with the project toolchain | — | |
+| 1.2 | Pre-commit hook versions reconciled with the project toolchain | **done** | 2026-10-23, not as the plan below prescribes. The ruff, mypy, bandit and detect-secrets hooks became `repo: local` hooks on the project interpreter instead of bumped pins. That also closes G2's isolated-environment half, which a bump would have kept, and a bandit drift (1.7.10 against 1.9.4) this audit did not list. Pinned by `test_precommit_runs_the_locked_toolchain_not_a_second_pin` |
 | 1.3 | §7 ↔ CI gate-list reconciliation + parity test covers the gate list | — | |
 | 1.4 | MAN-01's false attestation note | — | |
 | 1.5 | `ALLOWED_EGRESS_HOSTS` wired or marked documentation-only | — | |
