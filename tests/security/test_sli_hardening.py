@@ -875,7 +875,7 @@ _REFUSALS: dict[str, tuple[Callable[[Path, Path], None], str, str]] = {
     "schema-version": (
         _rewrite_meta("UPDATE meta SET value = ? WHERE key = ?", "999", VERSION_KEY),
         "SchemaVersionError",
-        "schema version 999",
+        "schema version '999'",
     ),
     "version-row-removed": (
         _rewrite_meta("DELETE FROM meta WHERE key = ?", VERSION_KEY),
@@ -936,6 +936,45 @@ def test_a_refused_open_is_unmeasured_on_both_store_objectives(
         code = main(["--root", str(root), "--caller", "soc-test"])
     assert code == 1, out.getvalue()
     assert "DEGRADED" in out.getvalue()
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "planted",
+    [
+        pytest.param("PLANTED-" + "q" * 50_000, id="long"),
+        # Short enough not to be cut, so repr, not the cut, is what keeps CR off stdout.
+        pytest.param("9\x1b[2J\x1b[H\nok: all met\r\n", id="control-characters"),
+    ],
+)
+def test_a_forged_schema_version_does_not_reach_the_report_whole(
+    tmp_path: Path, planted: str
+) -> None:
+    """``_open_store`` quotes the store's refusal, so the store's bound is what bounds the detail.
+
+    Measured before ``store`` bounded the version it quotes: a 50,000-character
+    version made a 50,236-character ``store-intact`` detail, the one ``AUD-03``
+    tells an operator to record, and ``ESC[2J`` reached the text report's stdout
+    raw, clearing the terminal above a forged line. ``report_sli.py`` prints
+    details as they are, so the store is the layer that has to escape them.
+    """
+    from scripts.report_sli import main
+
+    root = _stored(tmp_path)
+    _rewrite_meta("UPDATE meta SET value = ? WHERE key = ?", planted, VERSION_KEY)(root, tmp_path)
+
+    for objective, indicator in _store_objectives(root).items():
+        assert indicator.status is Status.UNKNOWN, indicator.summary()
+        assert "SchemaVersionError: " in indicator.detail, indicator.detail
+        assert len(indicator.detail) < 600, f"{objective}: {len(indicator.detail)} chars"
+        assert indicator.detail.isprintable(), repr(indicator.detail)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(["--root", str(root), "--caller", "soc-test"])
+    assert code == 1, out.getvalue()
+    assert all(char.isprintable() or char == "\n" for char in out.getvalue()), repr(out.getvalue())
+    assert "\nok: all met" not in out.getvalue()
 
 
 def _report_json(root: Path) -> tuple[int, dict[str, Any]]:
