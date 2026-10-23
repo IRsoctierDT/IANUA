@@ -33,6 +33,16 @@ All notable changes to this project. Versions correspond to git tags.
   tree, 41 s here; a gate that is not run is a claim).
 
 ### Changed
+- **`AGENTS.md` keeps concurrent sessions apart.** On 2026-10-23 several sessions worked
+  `store/events.py` at once, and two defects were each fixed twice in different designs
+  (#275 and #276, #277 and #278), with one fix of each pair thrown away. §2 gains a step 8
+  that every session runs, however it was started: list the open pull requests and running
+  sessions touching the files you plan to change, and stop and ask on any overlap. The two
+  append-only logs (`DESIGN.md` §11 and this file) are exempt. A new §6.4 sets one owner per
+  item (an agent that queues a task card does not then do that work itself), one open job
+  per file set, and a coordinator that, when one is used, is the only dispatcher. §8 forbids
+  building on a branch whose pull request is still open, since `main` squash-merges. These
+  rules are advisory and say so: GitHub has no cross-session lock.
 - **Backup manifest format is `ianua.backup.v2`, and the attestation commits to observable
   *contents*.** `EventStore.attest()` gains `observables_digest` — a sha256 over every sorted
   `(event_id, value)` row, each field length-prefixed — beside the unchanged event digest.
