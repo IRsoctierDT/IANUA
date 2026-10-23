@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import builtins
 import contextlib
+import errno
 import io
 import json
 import os
@@ -955,8 +956,10 @@ def test_a_forged_schema_version_does_not_reach_the_report_whole(
     Measured before ``store`` bounded the version it quotes: a 50,000-character
     version made a 50,236-character ``store-intact`` detail, the one ``AUD-03``
     tells an operator to record, and ``ESC[2J`` reached the text report's stdout
-    raw, clearing the terminal above a forged line. ``report_sli.py`` prints
-    details as they are, so the store is the layer that has to escape them.
+    raw, clearing the terminal above a forged line. The detail assertions pin
+    the store's layer. ``report_sli.py`` now escapes its text output too
+    (``scripts/_terminal.py``), so the stdout assertions hold through either
+    layer. ``test_a_detail_reaches_the_terminal_escaped`` pins the CLI's.
     """
     from scripts.report_sli import main
 
@@ -1148,9 +1151,10 @@ def test_real_damage_still_reads_damaged_wherever_it_is_met(tmp_path: Path, stag
 def test_a_forged_event_id_reaches_the_report_described(tmp_path: Path, identifier: str) -> None:
     """The route a forged ``event_id`` took to the operator's terminal, end to end.
 
-    ``store-readable`` copies the store's refusal into its detail, and
-    ``report_sli.py`` prints details as they are. Measured before the store
-    stopped echoing the id: a 50,152-character detail, and a raw ESC on
+    ``store-readable`` copies the store's refusal into its detail, which the
+    detail assertions pin. The stdout ones now hold through either layer, since
+    ``report_sli.py`` escapes its text output too (``scripts/_terminal.py``).
+    Measured before the store stopped echoing the id: a 50,152-character detail, and a raw ESC on
     stdout. Planted at the stored mark, so the mark checks cannot be what
     refuses, and inside the readability sample, so the query reaches it. The
     grade is pinned too, because describing the id must not soften it.
@@ -1185,3 +1189,169 @@ def test_a_forged_event_id_reaches_the_report_described(tmp_path: Path, identifi
     assert "store-readable: breached" in out.getvalue()
     assert "\x1b" not in out.getvalue(), "a raw ESC reached the operator's terminal"
     assert identifier[:20] not in out.getvalue(), "the report echoed the stored id"
+
+
+# ------------------------------------------- the text report's own escape layer
+
+
+def _plant_backup(root: Path, name: bytes) -> None:
+    """A backup directory named ``name`` holding an empty ``manifest.json``.
+
+    ``measure_backup_present`` names the newest entry in its detail and only
+    ``lstat``s the manifest, so an empty file is all it takes: whoever can
+    create a directory under ``data/backups`` chooses that text. Bytes, so the
+    name need not be UTF-8. A filesystem that refuses such a name (APFS
+    answers ``EILSEQ``) cannot hold one, so there is no route to test there.
+    """
+    backups = root / "data" / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    # `fsdecode` maps bytes that are not UTF-8 to surrogates, and `Path` encodes
+    # them back, so the directory created is named by exactly these bytes.
+    entry = backups / os.fsdecode(name)
+    try:
+        entry.mkdir()
+    except OSError as exc:
+        if exc.errno == errno.EILSEQ:
+            pytest.skip("this filesystem refuses the name, so the route does not exist here")
+        raise
+    (entry / "manifest.json").touch()
+
+
+#: Backup directory names that are not printable, with the escape each must
+#: reach the terminal as.
+_HOSTILE_NAMES: dict[str, tuple[bytes, str]] = {
+    # Measured before: cleared the terminal and wrote a forged "ok" line.
+    "terminal_escape": (
+        b"2026\x1b[2J\x1b[Hok: every objective met\r",
+        "2026\\x1b[2J\\x1b[Hok: every objective met\\r",
+    ),
+    # Measured before: the name displayed reversed.
+    "bidi_override": ("backup-\u202egnp.exe".encode(), "backup-\\u202egnp.exe"),
+    # A raw newline would start a line the report did not write.
+    "newline": (b"2026\nok: every objective met", "2026\\nok: every objective met"),
+    # Lone surrogates once decoded; measured before, a strict stdout raised on them.
+    "not_utf8": (b"backup-\xff\xfe", "backup-\\udcff\\udcfe"),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_HOSTILE_NAMES), ids=lambda value: value)
+def test_a_detail_reaches_the_terminal_escaped(tmp_path: Path, case: str) -> None:
+    """``report_sli.py`` escapes every line it prints, not only what the store bounds.
+
+    The store's own bounds (#275, #277) cover what the store quotes. A backup
+    directory's name never passes through the store, and before this layer it
+    reached stdout raw. Escaped, not dropped: the operator must see that
+    something was there. And one line per indicator, so nothing the name holds
+    can start a line of its own.
+    """
+    from scripts.report_sli import main
+
+    name, escaped = _HOSTILE_NAMES[case]
+    root = _root(tmp_path)
+    _plant_backup(root, name)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = main(["--root", str(root), "--caller", "soc-test"])
+    text = out.getvalue()
+    assert code == 1, text
+    assert text.endswith("\n")
+    # `split("\n")`, not `splitlines()`, which would also split on the CR under test.
+    lines = text[:-1].split("\n")
+    assert len(lines) == 1 + len(OBJECTIVES), f"a line the report did not write: {text!r}"
+    assert all(line.isprintable() for line in lines), repr(text)
+    (backup,) = (line for line in lines if line.startswith("  backup-present: "))
+    assert backup.startswith("  backup-present: met "), "the escape must not change the grade"
+    assert f"({escaped})" in backup, backup
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "name",
+    [b"backup-2026-10-23", "backup-r\u00e9sum\u00e9-\u6771\u4eac".encode()],
+    ids=["ascii", "non_ascii_printable"],
+)
+def test_a_printable_name_reaches_the_terminal_unchanged(tmp_path: Path, name: bytes) -> None:
+    """The control: only what is not printable is escaped.
+
+    Without this, a layer that escaped everything, or everything outside
+    ASCII, would pass the test above while mangling every legitimate name.
+    """
+    from scripts.report_sli import main
+
+    root = _root(tmp_path)
+    _plant_backup(root, name)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        main(["--root", str(root), "--caller", "soc-test"])
+    assert f"({name.decode()})" in out.getvalue(), out.getvalue()
+
+
+@pytest.mark.security
+def test_a_name_that_is_not_utf8_cannot_crash_a_strict_stdout(tmp_path: Path) -> None:
+    """The crash itself, on the stream configuration that has it.
+
+    In-process ``StringIO`` takes any ``str``, so only a real stream can show
+    this. Measured before: with ``errors="strict"`` on stdout, the default
+    under an ``en_US.UTF-8`` locale, the surrogates ``os.scandir`` decodes a
+    non-UTF-8 name into raised ``UnicodeEncodeError`` partway through the
+    report. ``PYTHONIOENCODING`` pins that configuration whatever this host's
+    locale is, and ``PYTHONUTF8=0`` keeps UTF-8 mode from relaxing it.
+    """
+    root = _root(tmp_path)
+    _plant_backup(root, b"backup-\xff\xfe")
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed interpreter, literal argv, test paths
+            [sys.executable, "scripts/report_sli.py", "--root", str(root), "--caller", "soc-test"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8:strict", "PYTHONUTF8": "0"},
+            timeout=_CLI_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("report_sli.py did not finish")
+    assert b"Traceback" not in result.stderr, result.stderr[-800:]
+    assert result.returncode == 1, result.stderr[-800:]
+    assert "(backup-\\udcff\\udcfe)" in result.stdout.decode("utf-8")
+
+
+@pytest.mark.security
+def test_an_error_line_reaches_the_terminal_escaped(tmp_path: Path) -> None:
+    """stderr is text output too: ``validated_root`` quotes ``--root`` as given.
+
+    An operator's own argument, so this is the lower-risk route, but a pasted
+    path can carry anything, and one rule for every line is the one that
+    stays applied.
+    """
+    from scripts.report_sli import main
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        code = main(["--root", str(tmp_path / "absent\x1b[2J\rforged"), "--caller", "soc-test"])
+    assert code == 2
+    message = err.getvalue()
+    assert message.endswith("\n") and message[:-1].isprintable(), repr(message)
+    assert "absent\\x1b[2J\\rforged" in message, message
+
+
+@pytest.mark.security
+def test_json_mode_keeps_the_exact_name(tmp_path: Path) -> None:
+    """The escape is at the print, not in the data, so ``--json`` keeps the exact value.
+
+    ``json.dumps`` escapes the control characters on the wire, and the parsed
+    detail is the name as stored. A layer moved into ``sli`` would make both
+    modes lossy.
+    """
+    from scripts.report_sli import main
+
+    name, _ = _HOSTILE_NAMES["terminal_escape"]
+    root = _root(tmp_path)
+    _plant_backup(root, name)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        main(["--root", str(root), "--caller", "soc-test", "--json"])
+    assert "\x1b" not in out.getvalue() and "\r" not in out.getvalue()
+    payload = json.loads(out.getvalue())
+    (detail,) = (item["detail"] for item in payload["indicators"] if item["id"] == "backup-present")
+    assert f"({name.decode()})" in detail, detail
