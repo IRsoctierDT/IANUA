@@ -417,8 +417,9 @@ systemctl --user start ianua-pipeline.timer ianua-collector.timer
 
 ### The ordering rule
 
-**Never let `offsets.json` be newer than the store.** Of the four skew directions, exactly
-one is unrecoverable, and it is this one:
+**Never let `offsets.json` be newer than the store.** Of the four skew directions, two are
+unrecoverable. This one is unrecoverable every time. A cursor ahead of the store (the last
+row) is unrecoverable after a backward clock step:
 
 | State | Outcome | Recoverable |
 |---|---|---|

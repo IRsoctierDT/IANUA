@@ -30,16 +30,21 @@ together with the row count, and the manifest carries that digest so a restore
 can be *verified* instead of merely performed.
 
 **Positions are deliberately not backed up.** ``data/collect/offsets.json``
-and ``data/pipeline/cursor.json`` are excluded by construction, because of an
-asymmetry that was measured in all four directions: a restored *cursor* is
-safe either way (behind it re-correlates, ahead of it merely idles, since
-``next_stamp`` reads the current clock), but **offsets newer than the store
-are unrecoverable**. With offsets restored and the store lost, the collector
-reports ``events_stored: 0, lines_read: 0, offsets_advancing: true`` and exits
-0 while every line still sits unread in the source — permanent, silent, total
-loss. Discarding both positions is a complete recovery: re-collection re-reads
-the sources and content addressing drops what is already stored, measured at
-600 of 600 events with zero duplication. A backup that cannot restore a
+and ``data/pipeline/cursor.json`` are excluded by construction, because two of
+the four skew directions are unrecoverable. A restored cursor *behind* the
+store only re-correlates. One *ahead* of it is safe only while the clock stays
+ahead of it too: ``next_stamp`` compares the clock against the store's
+high-water mark, never against the cursor, so after a backward clock step (a
+rebuilt host) new events are stamped under the cursor and the pipeline's
+strictly-after read never returns them. Measured: a store at mark T, a cursor
+at T+3600 and a clock at T+60 stamp the next event T+60, and it is never read.
+**Offsets newer than the store are unrecoverable every time.** With offsets
+restored and the store lost, the collector reports
+``events_stored: 0, lines_read: 0, offsets_advancing: true`` and exits 0 while
+every line still sits unread in the source — permanent, silent, total loss.
+Discarding both positions is a complete recovery: re-collection re-reads the
+sources and content addressing drops what is already stored, measured at 600
+of 600 events with zero duplication. A backup that cannot restore a
 position cannot restore a bad one.
 
 **Gated ``read_only``, and that is the honest class — with one measured

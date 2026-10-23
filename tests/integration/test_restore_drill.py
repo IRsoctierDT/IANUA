@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from ingest import normalize
+from pipeline import Cursor, run_cycle
 from scripts.run_backup import main as backup_main
 from scripts.run_collector import main as collect_main
 from store import EventStore
@@ -43,6 +45,10 @@ from tests._backup_cli import _preserve_source_chain
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LINES = 600
 _BACKUP_AT = 400
+_HAZARD_LINES = (
+    "Failed password for root from 10.0.0.5 port 22 ssh2",
+    "Failed password for admin from 10.0.0.9 port 22 ssh2",
+)
 
 
 def _source(path: Path, lines: int) -> None:
@@ -268,8 +274,10 @@ def test_a_backup_after_a_crashed_writer_checkpoints_the_source(tmp_path: Path) 
 def test_keeping_current_offsets_over_a_restored_store_loses_telemetry(tmp_path: Path) -> None:
     """Why the backup excludes positions, demonstrated rather than asserted.
 
-    This is the one unrecoverable skew of the four: offsets *newer* than the
-    store. The collector reports ``events_stored: 0, lines_read: 0`` and exits
+    This is the skew of the four that is unrecoverable every time: offsets
+    *newer* than the store. (The other unrecoverable one, a cursor ahead of the
+    store after a backward clock step, is the next test.) The collector reports
+    ``events_stored: 0, lines_read: 0`` and exits
     0 while every unread line still sits in the source, and offsets are never
     rewound — so the window is gone and every signal reads healthy. The test
     shows the loss, then shows that the documented procedure avoids it.
@@ -306,6 +314,39 @@ def test_keeping_current_offsets_over_a_restored_store_loses_telemetry(tmp_path:
     (root / "data" / "collect" / "offsets.json").unlink()
     assert _collect(root, source) == 0
     assert _count(root) == _LINES, "discarding the positions recovers the whole window"
+
+
+@pytest.mark.integration
+def test_a_cursor_ahead_of_the_store_never_reads_events_after_a_backward_clock_step(
+    tmp_path: Path,
+) -> None:
+    """The second unrecoverable skew, and why the backup leaves the cursor out too.
+
+    A restored cursor ahead of the store is idle only while the clock is ahead
+    of it as well. ``next_stamp`` compares the clock against the store's
+    high-water mark and never against the cursor, so once the clock has stepped
+    back below the cursor (a rebuilt host is the likely case), new events are
+    stamped under it and the cycle's strictly-after read never returns them.
+    ``scripts/run_backup.py``'s docstring once called this cursor safe "either
+    way"; this pins the measurement that replaced that claim. If ``next_stamp``
+    ever learns about the cursor, this goes red, and the docstring,
+    ``docs/RESTORE.md`` and the 2026-10-15 ``DESIGN.md`` row must change with it.
+    """
+    mark = 1_000_000.0
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_HAZARD_LINES[0]), ingested_at=mark)
+        # Saved by the lost store an hour after the backup was taken.
+        ahead = Cursor(ingested_at=mark + 3600.0, event_id="f" * 64)
+        stamp = store.next_stamp(mark + 60.0)  # the clock, after stepping back
+        assert mark < stamp < ahead.ingested_at
+        store.append(normalize(_HAZARD_LINES[1]), ingested_at=stamp)
+        assert store.count() == 2
+
+        assert run_cycle(store, cursor=ahead).events_read == 0, (
+            "an event stamped under an ahead cursor is behind the strictly-after read"
+        )
+        # The documented procedure (docs/RESTORE.md step 3): no cursor at all.
+        assert run_cycle(store, cursor=None).events_read == 2
 
 
 @pytest.mark.integration
