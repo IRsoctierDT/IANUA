@@ -204,6 +204,13 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **`scripts/ask_cyber_kb_ollama.py` and `ask_cyber_kb_chunked_ollama.py` assumed every retrieved
+  point carried a dict payload with string text.** `qdrant-client` types the payload as
+  `dict | None`, which `mypy` reported five times with the `dashboard` extra installed (CI installs
+  only `dev`, so it never saw them). At runtime a `None` or list payload raised `AttributeError`
+  before anything was generated, and a non-string `text` was formatted into the model's prompt as
+  its `repr`. Both scripts now follow the rule `search_cyber_kb.py` and `ask_cyber_kb.py` already
+  did: a payload that is not a dict, or text that is not a string, contributes an empty passage.
 - **Two writers could interleave the ordering check, a finite forged mark below the rows was
   obeyed, non-UTF-8 text escaped as a raw driver error quoting its bytes, and `Query.limit`
   was not validated.** These are the three residuals #269 recorded. The connection's default

@@ -48,10 +48,15 @@ results = client.query_points(
 context_blocks = []
 
 for point in results.points:
+    # Same rule as search_cyber_kb.py: a non-dict payload, or a ``text`` that is
+    # absent, null or not a str, contributes an empty passage instead of an
+    # AttributeError, or a repr formatted into the prompt.
+    payload = point.payload if isinstance(point.payload, dict) else {}
+    text = payload.get("text")
     context_blocks.append(
-        f"Source: {point.payload.get('source', 'unknown')}\n"
+        f"Source: {payload.get('source', 'unknown')}\n"
         f"Score: {point.score}\n"
-        f"Text:\n{point.payload.get('text', '')}"
+        f"Text:\n{text if isinstance(text, str) else ''}"
     )
 
 context = "\n\n---\n\n".join(context_blocks)
