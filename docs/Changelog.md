@@ -204,6 +204,19 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **A forged schema version was echoed whole into `SchemaVersionError`, and from there into
+  both store objectives and the operator's terminal.** `EventStore.open`'s version-mismatch
+  refusal interpolated the stored `meta` value as `str(value)`. Measured: a 50,000-character
+  version made a 50,154-character error, which `sli` carried into `store-intact` (50,236
+  characters) and `store-readable` (50,225), the detail `AUD-03` tells an operator to record. A
+  BLOB was echoed as `str(bytes)`. And a version holding `ESC[2J` reached
+  `scripts/report_sli.py`'s stdout raw, clearing the terminal above a forged "ok" line. The
+  version is now quoted through `repr` and cut at 32 stored characters (or bytes), with the
+  cut and the full length named, the shape `_rebuild_reason` already has. A real version from
+  another build is still named whole, now quoted: `version 2` reads `version '2'`. Which stores
+  open is unchanged. The bound left `run_backup.py`'s `_printable` on the pass's `error:` line
+  pinned by nothing (measured: green with it removed), so a stand-in test now pins that line.
+  Six plants, six red. Recorded, not fixed: `report_sli.py` escapes nothing in text mode.
 - **`scripts/ask_cyber_kb_ollama.py` and `ask_cyber_kb_chunked_ollama.py` assumed every retrieved
   point carried a dict payload with string text.** `qdrant-client` types the payload as
   `dict | None`, which `mypy` reported five times with the `dashboard` extra installed (CI installs

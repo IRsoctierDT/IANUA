@@ -61,7 +61,7 @@ from store import (
     canonical_json,
     event_id,
 )
-from store.schema import HIGH_WATER_KEY, VERSION_KEY
+from store.schema import HIGH_WATER_KEY, SCHEMA_VERSION, VERSION_KEY
 from tests.security import _sql_provenance as sqlprov
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1050,8 +1050,84 @@ def test_a_schema_written_by_another_version_is_refused(tmp_path: Path) -> None:
     """No implicit migration: old rows must not be read into a new shape."""
     with EventStore.open(tmp_path) as store, store._conn:
         store._conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
-    with pytest.raises(SchemaVersionError, match="version 99"):
+    with pytest.raises(SchemaVersionError, match="version '99'"):
         EventStore.open(tmp_path).close()
+
+
+#: Schema versions no build writes, planted with raw SQL as anything holding the
+#: file can. Every build writes ``str(SCHEMA_VERSION)``, a short integer.
+_FORGED_VERSIONS: dict[str, str | bytes] = {
+    # Measured before the bound: a 50,154-character SchemaVersionError.
+    "long_text": "PLANTED-" + "q" * 50_000,
+    # TEXT affinity keeps a BLOB a BLOB, and it was echoed as str(bytes).
+    "blob": b"PLANTED-" + b"q" * 50_000,
+    # Short enough never to be cut, so only repr keeps it off a terminal. C0, C1,
+    # a bidi override and a line separator, since an escaper that knows only C0
+    # passes on the first two.
+    "control_characters": "9\x1b[2J\x1b[H\nok: all met\r\n\x9b2J\u202e\u2028",
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_FORGED_VERSIONS), ids=lambda value: value)
+def test_a_forged_schema_version_cannot_write_its_content_into_the_refusal(
+    tmp_path: Path, case: str
+) -> None:
+    """The stored version is quoted, but through ``repr`` and bounded, because a row chooses it.
+
+    Measured before the bound: a 50,000-character version made a 50,154-character
+    ``SchemaVersionError``, which ``sli``'s ``_open_store`` carries into both store
+    objectives' details, the detail ``AUD-03`` tells an operator to record; and a
+    version holding ``ESC[2J`` reached ``scripts/report_sli.py``'s stdout raw.
+    Pinned against literals rather than the module's constant, because an
+    assertion scaled from the constant under test cannot fail.
+    """
+    planted = _FORGED_VERSIONS[case]
+    with EventStore.open(tmp_path) as store, store._conn:
+        store._conn.execute("UPDATE meta SET value = ? WHERE key = ?", (planted, VERSION_KEY))
+        stored = store._conn.execute(
+            "SELECT typeof(value) FROM meta WHERE key = ?", (VERSION_KEY,)
+        ).fetchone()[0]
+    assert stored == ("blob" if isinstance(planted, bytes) else "text"), "this tests nothing"
+    with pytest.raises(SchemaVersionError) as raised:
+        EventStore.open(tmp_path).close()
+    message = str(raised.value)
+    assert message.startswith("event store was written by schema version "), message
+    assert message.isprintable(), repr(message)
+    assert len(message) < 500, f"{len(message)} chars of a forged version's refusal"
+    if case == "control_characters":
+        assert "cut)" not in message, "the plant was cut, so repr alone is not what is tested"
+        assert "\\x1b[2J" in message and "\\u202e" in message, message
+    else:
+        assert "q" * 100 not in message
+        unit = "bytes" if isinstance(planted, bytes) else "chars"
+        assert f"({len(planted)} {unit}, cut)" in message, "a cut must say that it is one"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "version",
+    [
+        pytest.param(str(SCHEMA_VERSION + 1), id="next-build"),
+        # The largest integer SQLite holds, as TEXT affinity renders it.
+        pytest.param(str(2**63 - 1), id="largest-integer"),
+    ],
+)
+def test_a_real_version_from_another_build_is_still_named(tmp_path: Path, version: str) -> None:
+    """The control for the test above: the bound must not cost an operator the version.
+
+    A version written by another build is what tells an operator which build to
+    run against the store, so it is named whole. Pinned as the full clause, so
+    neither a cut nor naming only the value's type and length passes.
+    """
+    with EventStore.open(tmp_path) as store, store._conn:
+        store._conn.execute("UPDATE meta SET value = ? WHERE key = ?", (version, VERSION_KEY))
+    with pytest.raises(SchemaVersionError) as raised:
+        EventStore.open(tmp_path).close()
+    message = str(raised.value)
+    expected = f"written by schema version '{version}', this build speaks version {SCHEMA_VERSION};"
+    assert expected in message, message
+    assert "cut)" not in message, message
 
 
 # --------------------------------------------------------------------------
