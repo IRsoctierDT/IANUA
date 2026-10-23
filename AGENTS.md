@@ -58,6 +58,17 @@ state, in its working notes, that it has done so:
    pass or a feature work. If a control is genuinely wrong, fix it openly and flag it.
 7. **Confirm scope** — if the requested change is ambiguous, exceeds the stated task, or
    would touch a security boundary (§5), **stop and ask the human** before proceeding.
+8. **Check for concurrent work** — list the open pull requests that touch the files you
+   intend to change and, where your tools can see them, the running sessions on this
+   repository (each one's branch and task). If any covers the same files or the same
+   defect, **stop and ask the human which one proceeds**; never build a parallel fix. The
+   append-only logs (`DESIGN.md` §11 and `docs/Changelog.md`) do not count: nearly every
+   change adds to both, their conflicts are mechanical, and a rule that fired on every
+   pair of sessions would be switched off rather than obeyed. If you cannot check (no
+   GitHub access), say so in your working notes and ask. Measured on 2026-10-23: three
+   sessions opened within six minutes on `store/events.py`, and two defects were each
+   fixed twice (#275 against #276, #277 against #278), with one fix of each pair thrown
+   away after review. See §6.4.
 
 > **Fail-closed rule:** if any pre-flight step cannot be completed (missing `DESIGN.md`,
 > unreadable module, unclear ownership), **do not guess** — halt and report.
@@ -726,6 +737,27 @@ requires an approval gate; `DESIGN.md` is missing or contradicts the request; re
 checks reveal a defect you cannot safely fix within scope; or the request itself appears to
 ask for prohibited behavior.
 
+### 6.4 Concurrent Sessions
+
+Several sessions can work this repository at once, and nothing in Git or GitHub stops two of
+them editing the same file. These rules keep them apart, as far as advisory rules can:
+
+- **One item, one owner.** A defect, residual or task has exactly one session working it. An
+  agent that queues work for another session (a task card, a spawned session) does not then
+  do that work itself. If asked to, it first withdraws the queued item, or confirms it was
+  never started.
+- **Briefs name their files.** When work is split across sessions, each brief names the files
+  it may change, and no two open briefs share a file. A file set (`store/`, say) is a
+  *lane*: one open job per lane at a time. The append-only logs belong to no lane.
+- **A coordinator, when there is one, is the only dispatcher.** It starts each session with a
+  scoped brief and a lane tag, checks running sessions and open pull requests before every
+  dispatch, starts a lane's next job only after the previous pull request merges, and is the
+  only session that queues new work. Sessions started outside it are still bound by §2 step
+  8, which is the control that holds whoever started a session.
+- **None of this is a lock.** Every check is advisory, and a session that skips §2 step 8 can
+  still collide. When two finished fixes meet, the human picks. The agent's job is to
+  surface the overlap before the second fix is built, not to win it.
+
 ---
 
 ## 7. Required Checks (quality gates)
@@ -960,6 +992,10 @@ in the pipeline."
 - At least one human review on any change touching `agents/`, `mcp/`, `infra/`, or §5
   boundaries.
 - Signed commits where supported; linear history; no force-push to protected branches.
+- **No stacking.** Start every branch from current `main`, never from a branch whose pull
+  request is still open. `main` squash-merges, so a stacked branch conflicts the moment its
+  base lands (measured on #277 and #278). If new work depends on an open pull request, wait
+  for it to merge.
 - **Owner attribution (required):** every commit an agent makes is **authored as the
   owner** (`git config user.name/user.email` = `IDRozenblad <44316408+IRsoctierDT@users.noreply.github.com>`, GitHub's private noreply
   address, never a personal email), so the owner appears as the commit author on GitHub.
@@ -990,6 +1026,7 @@ requirements, and flag when professional legal/financial review is advisable.
 ## 10. Quick Reference Card
 
 ```
+BEFORE YOU START:  open PRs + running sessions on your files → any overlap: stop and ask
 BEFORE YOU EDIT:   inspect tree → read DESIGN.md → read AGENTS.md → read local context
 WHILE YOU EDIT:    least privilege · secure defaults · controls stay visible · types + docs
 NEVER:             hard-code secrets · weaken controls · attack 3rd parties · exfiltrate data
