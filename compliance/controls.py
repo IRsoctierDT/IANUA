@@ -408,8 +408,12 @@ def check_dashboard_upload_cap(root: Path) -> CheckResult:
 
 #: Addresses that keep the dashboard reachable only from the host it runs on.
 #: Deliberately a small allow-list rather than a "not 0.0.0.0" check: the
-#: interesting failure is a bind that is reachable, and enumerating the two
-#: loopback forms is the honest way to say "only this host".
+#: interesting failure is a bind that is reachable, and listing what counts as
+#: loopback is the honest way to say "only this host". Two entries are the IPv4
+#: and IPv6 loopback addresses. The third, ``localhost``, is a name rather than
+#: an address: it is loopback because the host's resolver maps it there, which
+#: this check cannot see, since it reads the config and never resolves. The
+#: committed config binds ``127.0.0.1``.
 _LOOPBACK_ADDRESSES = ("127.0.0.1", "::1", "localhost")
 
 
