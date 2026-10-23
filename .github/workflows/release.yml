@@ -15,6 +15,13 @@
 # assets; existing tags are resolved without moving them.
 # No push, schedule, or pull-request publication trigger is permitted.
 #
+# Release immutability is enabled on the repository (2026-10-23), so a
+# release published after that locks its tag and assets the moment it is
+# published. `gh release create` attaches every asset to a draft before it
+# publishes, so the dispatch path is unaffected. A release published from the
+# web page locks before this workflow can attach anything: that route now ends
+# in a failed job naming the missing assets, and is not a way to release.
+#
 # Fail-closed (HARDENING_ROADMAP §4 acceptance criteria): a build, signing,
 # or upload failure fails the job — no continue-on-error anywhere.
 
@@ -197,7 +204,26 @@ jobs:
         run: |
           if gh release view "$TAG" --json isDraft > /tmp/release-state.json; then
             jq -e '.isDraft == false' /tmp/release-state.json >/dev/null
-            gh release upload "$TAG" release-assets/* --clobber
+            # GitHub fixes a release's immutability when it is published, so a
+            # release from before the repository setting was enabled (v2.3.0
+            # and earlier) stays repairable and a later one refuses every
+            # upload. Read it per release, and refuse to guess when it cannot
+            # be read.
+            immutable="$(gh release view "$TAG" --json isImmutable --jq '.isImmutable')"
+            if [ "$immutable" = false ]; then
+              gh release upload "$TAG" release-assets/* --clobber
+            elif [ "$immutable" = true ]; then
+              # Nothing can be attached or replaced, and this run's set never
+              # matches the published one byte for byte (the attestation
+              # bundles are signed afresh on every run), so the published
+              # assets stand and are only checked for presence below. A
+              # missing one cannot be repaired: publish the next patch version
+              # through the release flow instead.
+              echo "::notice::$TAG is an immutable release; its published assets are kept as they are"
+            else
+              echo "::error::cannot tell whether $TAG is an immutable release; refusing to upload to it"
+              exit 1
+            fi
           else
             # GITHUB_TOKEN-created releases do not trigger another workflow;
             # all assets are already built, tested, and signed in this run.
@@ -214,5 +240,7 @@ jobs:
           fi
           gh release view "$TAG" --json assets --jq '.assets[].name' > /tmp/release-assets.txt
           for asset in release-assets/*; do
-            grep -Fx "$(basename "$asset")" /tmp/release-assets.txt >/dev/null
+            name="$(basename "$asset")"
+            grep -Fxq "$name" /tmp/release-assets.txt \
+              || { echo "::error::$TAG has no release asset named $name"; exit 1; }
           done

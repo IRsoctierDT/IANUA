@@ -41,6 +41,9 @@ def test_build_and_recovery_assets_precede_publication() -> None:
     assert 'gh release create "$TAG" release-assets/*' in script
     assert 'gh release upload "$TAG" release-assets/* --clobber' in script
     assert 'gh release view "$TAG" --json assets' in script
+    # Repair reads immutability per release; tests/security/test_release_immutability.py
+    # runs this script and is skipped where bash or jq is absent, so pin the read here too.
+    assert 'gh release view "$TAG" --json isImmutable' in script
 
 
 def test_existing_tags_are_immutable_and_must_belong_to_default_branch() -> None:

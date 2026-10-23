@@ -210,6 +210,18 @@ artifact before publication. It then creates a release **with assets**, or
 repairs a published release with idempotent uploads, and verifies asset names.
 An existing draft is refused rather than silently published.
 
+**Release immutability: enabled 2026-10-23.** The owner turned on GitHub's
+repository setting, so every release published from that date locks its tag and
+assets when it is published. What was a convention of this workflow ("tags are never
+moved") is now also refused by GitHub. The repair above therefore applies only to a
+release published before that date (v2.3.0 and earlier). For a later one,
+`release.yml` reads `isImmutable` and does not upload. It checks that every asset
+is attached, and if one is missing it fails and names it, because nothing can be
+attached afterwards. `tests/security/test_release_immutability.py` runs that step's
+script against a stand-in `gh`. A release published from the web page is now a dead
+end, not a way to release: it locks with no assets, and the remedy is the next patch
+version (`docs/RELEASING.md`).
+
 A release created with `GITHUB_TOKEN` does not trigger another release workflow;
 this path performs the build, signing and attachment in the same run. If upload
 fails, use the retained Actions artifact for diagnosis, fix access, and rerun
