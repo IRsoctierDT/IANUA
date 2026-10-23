@@ -204,6 +204,17 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **`EventStore.attest` let a non-ASCII `event_id` escape as a bare `UnicodeEncodeError`, and
+  `Query.limit` took a `bool`.** These are two of three residuals #270 found that #272 did not
+  close, each measured on `6696c43`. The third, the schema-version echo, was closed by #275 (the
+  entry below). A valid-UTF-8 id written outside the API (`"é" * 64`) passes the connection's
+  decoder and failed `attest`'s ASCII encode with an error no `except StoreError` catches. The
+  backup take, `--verify` and `--verify-restore` printed the codec's sentence at exit 1 only
+  because that class subclasses `ValueError`. It is now a `StoreIntegrityError` that gives the
+  id's length, with the codec error suppressed because its `object` is the id. `sli`'s
+  `store-intact` reads `1.0` for that row before and after, which is correct: it checks pages and
+  never calls `attest`. `Query(limit=True)` read one row and `limit=False` none, since `bool` has
+  `__index__`. Both are now `TypeError: limit must be an integer, not bool`.
 - **A forged schema version was echoed whole into `SchemaVersionError`, and from there into
   both store objectives and the operator's terminal.** `EventStore.open`'s version-mismatch
   refusal interpolated the stored `meta` value as `str(value)`. Measured: a 50,000-character

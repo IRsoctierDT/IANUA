@@ -1630,8 +1630,8 @@ def test_a_query_limit_cannot_exceed_the_ceiling(tmp_path: Path) -> None:
 @pytest.mark.security
 @pytest.mark.parametrize(
     "limit",
-    [math.nan, 2.5, 5.0, math.inf, "5", b"5", None],
-    ids=["nan", "fraction", "integral_float", "inf", "text", "bytes", "none"],
+    [math.nan, 2.5, 5.0, math.inf, "5", b"5", None, True, False],
+    ids=["nan", "fraction", "integral_float", "inf", "text", "bytes", "none", "true", "false"],
 )
 def test_a_non_integer_query_limit_is_a_type_error(tmp_path: Path, limit: object) -> None:
     """A count that is not an integer is a caller's bad argument, said as one.
@@ -1641,11 +1641,18 @@ def test_a_non_integer_query_limit_is_a_type_error(tmp_path: Path, limit: object
     append-only trigger; ``inf`` was taken silently as the ceiling; text, bytes
     and ``None`` failed inside ``min()``; and ``5.0`` worked by accident. A
     float is refused whatever its value, so the rule is about the type.
+
+    ``bool`` has ``__index__``, so the index protocol alone took it: measured,
+    ``True`` read one row and ``False`` none, a flag in the wrong place reading
+    as a quiet period. Two rows are stored so that ``True`` reading one is a
+    visible difference from the default.
     """
     with EventStore.open(tmp_path) as store:
         store.append(normalize(_RECORD), ingested_at=1.0)
-        with pytest.raises(TypeError, match="limit must be an integer"):
+        store.append(normalize(_OTHER_RECORD), ingested_at=2.0)
+        with pytest.raises(TypeError, match="limit must be an integer, not ") as raised:
             store.query(Query(limit=limit))  # type: ignore[arg-type]
+    assert str(raised.value) == f"limit must be an integer, not {type(limit).__name__}"
 
 
 @pytest.mark.security
@@ -1754,6 +1761,59 @@ def test_non_ascii_utf8_text_still_round_trips(tmp_path: Path) -> None:
         store.append(event, ingested_at=1.0)
         (stored,) = store.query()
     assert stored.event.message == "café ✓ 日本"
+
+
+#: Valid UTF-8 and not ASCII, so the connection's decoder accepts it and the
+#: refusal has to come from the attestation. Not a hex digest, as no id this
+#: store writes can be.
+_NON_ASCII_ID = "é" * 64
+
+
+@pytest.mark.security
+def test_a_non_ascii_event_id_is_a_store_integrity_error_that_does_not_quote_it(
+    tmp_path: Path,
+) -> None:
+    """``attest`` refuses an id it cannot digest, as a store error and without the id.
+
+    Measured before: ``"é" * 64`` planted through ``INSERT`` made ``attest`` raise
+    a bare ``UnicodeEncodeError`` from ``str.encode("ascii")``, which no
+    first-party ``except StoreError`` catches. The backup CLI reached it only
+    because that class subclasses ``ValueError``, and its ``object`` is the
+    stored id. Planted at the mark's own stamp, so the only defect in the row is
+    its id and the mark-below-the-rows check cannot be what refuses.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(normalize(_RECORD), ingested_at=1.0)
+        projection = canonical_json(normalize(_OTHER_RECORD).to_dict())
+        with store._conn:
+            store._conn.execute(
+                "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+                "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+                "VALUES (?, 1.0, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+                (_NON_ASCII_ID, projection),
+            )
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.attest()
+    assert not isinstance(raised.value, StoreCorruptionError), "a row, not a damaged file"
+    message = str(raised.value)
+    assert "is not ASCII" in message
+    assert "64 characters" in message
+    assert "é" not in message, "the refusal quoted the stored id"
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+
+
+@pytest.mark.security
+def test_non_ascii_text_outside_the_id_still_attests(tmp_path: Path) -> None:
+    """The control: the refusal is about the id, not about non-ASCII anywhere.
+
+    Without this, an ``attest`` that refused any store holding non-ASCII text
+    would pass the test above. The projection carries the same characters and
+    is digested only through its sha256 hex id.
+    """
+    with EventStore.open(tmp_path) as store:
+        store.append(_hand_built(message="café " + "é" * 64), ingested_at=1.0)
+        attested = store.attest()
+    assert attested.events == 1
 
 
 # --------------------------------------------------------------------------

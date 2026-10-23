@@ -1390,7 +1390,9 @@ class EventStore:
 
         Raises:
             StoreCorruptionError: if the database file is damaged.
-            StoreIntegrityError: if the count and the id stream disagree.
+            StoreIntegrityError: if the count and the id stream disagree, or a
+                stored ``event_id`` is not ASCII. The message gives the id's
+                length and never the id.
         """
         with self._conn:
             self._conn.execute("BEGIN")
@@ -1412,7 +1414,23 @@ class EventStore:
         running.update(f"{DIGEST_PREFIX}{events}\n".encode())
         streamed = 0
         for row in self._conn.execute(ATTEST_IDS_SQL):
-            running.update(str(row["event_id"]).encode("ascii"))
+            identifier = str(row["event_id"])
+            try:
+                encoded = identifier.encode("ascii")
+            except UnicodeEncodeError:
+                # Measured: a valid-UTF-8, non-ASCII id written outside the API
+                # (`"é" * 64`) escaped as a bare UnicodeEncodeError, which no
+                # `except StoreError` catches. The backup CLI's handlers reached
+                # it only because that class subclasses ValueError, and printed
+                # the codec's sentence. Every id this store writes is a sha256
+                # hex digest. Suppressed rather than chained, because the
+                # error's `object` is the stored id, which a forged row chooses.
+                raise StoreIntegrityError(
+                    f"a stored event_id ({len(identifier)} characters) is not ASCII; every "
+                    "id this store writes is a sha256 hex digest, so the database was "
+                    "modified outside this platform"
+                ) from None
+            running.update(encoded)
             running.update(b"\n")
             streamed += 1
         if streamed != events:
@@ -1573,8 +1591,15 @@ class EventStore:
                 ``None`` failed on a comparison; and ``5.0`` worked by
                 accident. A float is refused whatever its value, since a count
                 typed ``int`` that took ``5.0`` and refused ``5.5`` would be a
-                rule about values posing as one about types.
+                rule about values posing as one about types. A ``bool`` is
+                refused too, although it has ``__index__``: ``True`` read one
+                row and ``False`` none.
         """
+        # `bool` first, because it has `__index__`: measured, `limit=True` read
+        # one row and `limit=False` none, so a flag passed in the wrong place
+        # read as a quiet period rather than as the caller's bug.
+        if isinstance(spec.limit, bool):
+            raise TypeError("limit must be an integer, not bool")
         # The index protocol, once, and the value it returned is the value used,
         # for the reason `_finite` converts once.
         try:
