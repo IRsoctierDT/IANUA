@@ -22,7 +22,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from compliance.controls import ControlStatus, check_attack_corpus_integrity
+from compliance.controls import (
+    ControlStatus,
+    check_attack_corpus_integrity,
+    check_dashboard_binds_loopback,
+)
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -162,3 +166,26 @@ def test_the_corpus_check_still_loads_its_own_installation() -> None:
     """
     result = check_attack_corpus_integrity(_REPO)
     assert result.status is ControlStatus.PASS, result.detail
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("name", ["localhost", "LOCALHOST", "localhost.", "ip6-localhost"])
+def test_the_dashboard_bind_check_refuses_a_name_even_localhost(tmp_path: Path, name: str) -> None:
+    """CFG-02 passes IP literals only; a name is refused and says why.
+
+    A name binds whatever the host's resolver maps it to, and the check reads
+    the config without resolving anything, so it cannot vouch for a name. The
+    two need not even agree with the allow-list: on one container measured on
+    2026-10-23, ``localhost`` resolved to ``127.0.0.1`` alone, because its
+    hosts file had no ``::1`` line. ``localhost`` passed until that date and is
+    refused on the owner's decision, which is AGENTS.md §5's IP-literals-only
+    rule for declared egress hosts applied to the dashboard's bind. The other
+    spellings are refused too, and with the same message, so the refusal rests
+    on "not an address", not on one spelling.
+    """
+    config = tmp_path / ".streamlit" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(f'[server]\naddress = "{name}"\n', encoding="utf-8")
+    result = check_dashboard_binds_loopback(tmp_path)
+    assert result.status is ControlStatus.FAIL
+    assert f"binds {name!r}, a name rather than an address" in result.detail

@@ -21,6 +21,7 @@ Security considerations:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from collections.abc import Callable
@@ -409,12 +410,13 @@ def check_dashboard_upload_cap(root: Path) -> CheckResult:
 #: Addresses that keep the dashboard reachable only from the host it runs on.
 #: Deliberately a small allow-list rather than a "not 0.0.0.0" check: the
 #: interesting failure is a bind that is reachable, and listing what counts as
-#: loopback is the honest way to say "only this host". Two entries are the IPv4
-#: and IPv6 loopback addresses. The third, ``localhost``, is a name rather than
-#: an address: it is loopback because the host's resolver maps it there, which
-#: this check cannot see, since it reads the config and never resolves. The
-#: committed config binds ``127.0.0.1``.
-_LOOPBACK_ADDRESSES = ("127.0.0.1", "::1", "localhost")
+#: loopback is the honest way to say "only this host". IP literals only, which
+#: is the rule AGENTS.md §5 sets for declared egress hosts, for the same reason:
+#: a name such as ``localhost`` binds whatever the host's resolver maps it to,
+#: and this check cannot see that, since it reads the config and never
+#: resolves. ``localhost`` was accepted here until 2026-10-23 and is now
+#: refused, on the owner's decision. The committed config binds ``127.0.0.1``.
+_LOOPBACK_ADDRESSES = ("127.0.0.1", "::1")
 
 
 def check_dashboard_binds_loopback(root: Path) -> CheckResult:
@@ -427,7 +429,9 @@ def check_dashboard_binds_loopback(root: Path) -> CheckResult:
     installed Streamlit defaulted to — not a property this repository
     controlled, while `docs/PRODUCTION_SOC_PLAN.md` described it as an
     invariant. Fails closed: an unreadable or absent config is a FAIL, and so
-    is any address not on the loopback allow-list.
+    is any address not on the loopback allow-list. So is a name, ``localhost``
+    included, with its own message: what a name binds is decided by the host's
+    resolver, which this check does not consult.
     """
     config = _read_text(root, ".streamlit/config.toml")
     if config is None:
@@ -441,6 +445,15 @@ def check_dashboard_binds_loopback(root: Path) -> CheckResult:
         )
     address = match.group(1)
     if address not in _LOOPBACK_ADDRESSES:
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            return CheckResult(
+                ControlStatus.FAIL,
+                f"dashboard binds {address!r}, a name rather than an address; it "
+                "binds whatever the host resolves that name to, which this check "
+                "cannot see, so only 127.0.0.1 or ::1 pass",
+            )
         return CheckResult(
             ControlStatus.FAIL,
             f"dashboard binds {address!r}, which is not loopback; it authenticates "
