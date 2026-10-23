@@ -214,6 +214,18 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **`scripts/report_sli.py` crashed on any stdout whose encoding is ASCII, with no planted data,
+  and a healthy platform exited 1.** Every indicator line carries a `—`, so on an ASCII stdout (a
+  forwarded locale the host never generated is enough) the report printed its headline and then a
+  `UnicodeEncodeError` traceback. Measured on `52d3235`: on a healthy root that was `ok: all 8
+  objective(s) met`, then the traceback, at exit 1, the code for a breach. `--help` crashed too.
+  `report_sli.py` and `run_backup.py` now call one shared `scripts/_terminal.escape_unencodable`
+  first in `main`, which sets stdout and stderr to `backslashreplace`. The line reads `\u2014`,
+  nothing raises, and the exit code is the grade again. It is `run_backup.py`'s loop from #255,
+  moved rather than copied, and a test refuses another copy under `scripts/`. A UTF-8 stdout
+  writes the same bytes as before, and `--json` is unchanged. This closes the residual #280
+  recorded. Recorded, not fixed: `--help` on an ASCII stdout still crashes fourteen other CLIs
+  under `scripts/`.
 - **`scripts/report_sli.py` printed indicator details raw in text mode, and a backup directory's
   name was a live route to the operator's terminal.** `backup-present` names the newest
   directory under `data/backups` and never reads its manifest, so no store bound sees that

@@ -1355,3 +1355,162 @@ def test_json_mode_keeps_the_exact_name(tmp_path: Path) -> None:
     payload = json.loads(out.getvalue())
     (detail,) = (item["detail"] for item in payload["indicators"] if item["id"] == "backup-present")
     assert f"({name.decode()})" in detail, detail
+
+
+# ------------------------------------- a stdout that cannot encode the report
+
+#: The two ASCII stdouts this was measured on. ``strict`` is what
+#: ``PYTHONIOENCODING=ascii`` gives. ``surrogateescape`` is what CPython chose
+#: when ``LC_ALL`` named a locale the host never generated and it fell back to
+#: ASCII, the realistic route (an ssh session forwarding the client's locale).
+#: Both raise on ``—``: ``surrogateescape`` maps lone surrogates and nothing
+#: else. Pinned with ``PYTHONIOENCODING`` because a test cannot rely on which
+#: locales a host has installed.
+_ASCII_STREAMS = ("ascii:strict", "ascii:surrogateescape")
+
+#: A legitimate, printable backup name that ASCII cannot encode, and the escape
+#: it must reach an ASCII stdout as.
+_NON_ASCII_NAME = ("backup-r\u00e9sum\u00e9-\u6771\u4eac", "backup-r\\xe9sum\\xe9-\\u6771\\u4eac")
+
+
+def _healthy(tmp_path: Path) -> Path:
+    """A root collected into, cycled and backed up, on which every objective is met."""
+    from scripts.run_backup import main as backup_main
+
+    root = _collected(tmp_path)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        assert backup_main(["--root", str(root), "--caller", "soc-test"]) == 0
+    # The precondition: exit 0 on this root is what the crash cost.
+    report = measure(root, now=time.time())
+    assert report.healthy, report.headline()
+    return root
+
+
+def _report_through(stream: str, *argv: str) -> subprocess.CompletedProcess[bytes]:
+    """``report_sli.py`` in a child whose stdout is configured as ``stream``.
+
+    ``PYTHONIOENCODING`` sets the encoding and error handler whatever this
+    host's locale is, and ``PYTHONUTF8=0`` keeps UTF-8 mode from overriding it.
+    In-process ``StringIO`` takes any ``str``, so only a real stream shows this.
+    """
+    try:
+        return subprocess.run(  # noqa: S603 - fixed interpreter, literal argv, test paths
+            [sys.executable, "scripts/report_sli.py", *argv],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": stream, "PYTHONUTF8": "0"},
+            timeout=_CLI_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("report_sli.py did not finish")
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("stream", _ASCII_STREAMS)
+@pytest.mark.parametrize("state", ["empty", "healthy"])
+def test_an_ascii_stdout_does_not_crash_the_text_report(
+    tmp_path: Path, stream: str, state: str
+) -> None:
+    """Every indicator line carries ``—``, so this needed no planted data at all.
+
+    Measured before, on both streams: the headline printed, then a
+    ``UnicodeEncodeError`` traceback on the first indicator line. On a healthy
+    root that was ``ok: all 8 objective(s) met`` at exit 1, the code for a
+    breach, so a scheduler paged on a healthy platform and could not tell the
+    crash from a real breach. The escape is asserted, not only the absence of a
+    traceback: ``replace`` and ``ignore`` do not raise either, and they print
+    ``?`` or nothing where the operator should see that a character was there.
+    """
+    root = _healthy(tmp_path) if state == "healthy" else _root(tmp_path)
+    result = _report_through(stream, "--root", str(root), "--caller", "soc-test")
+    assert b"Traceback" not in result.stderr, result.stderr[-800:]
+    assert result.returncode == (0 if state == "healthy" else 1), result.stdout[-800:]
+    lines = result.stdout.decode("ascii").splitlines()
+    assert len(lines) == 1 + len(OBJECTIVES), lines
+    assert lines[0].startswith("ok: " if state == "healthy" else "DEGRADED: "), lines[0]
+    assert all(") \\u2014 " in line for line in lines[1:]), lines
+
+
+@pytest.mark.security
+def test_an_ascii_stdout_escapes_a_name_it_cannot_encode(tmp_path: Path) -> None:
+    """The case an ASCII-only ``Indicator.summary`` would not have covered.
+
+    A detail quotes text from outside the program, and a printable non-ASCII
+    name is legitimate: ``printable`` passes it through by design. Measured
+    with the dash replaced by ``-`` and nothing else, this name still raised.
+    """
+    name, escaped = _NON_ASCII_NAME
+    root = _root(tmp_path)
+    _plant_backup(root, name.encode())
+    result = _report_through("ascii:strict", "--root", str(root), "--caller", "soc-test")
+    assert b"Traceback" not in result.stderr, result.stderr[-800:]
+    assert result.returncode == 1, result.stdout[-800:]
+    assert f"({escaped})" in result.stdout.decode("ascii"), result.stdout[-800:]
+
+
+@pytest.mark.security
+def test_help_on_an_ascii_stdout_does_not_crash() -> None:
+    """``--help`` prints the module docstring, which is not ASCII.
+
+    Measured before: a traceback on the U+00B7 in the exit-code list, at exit 1.
+    This is what pins the handler being set before the arguments are parsed: a
+    helper applied at each ``print`` would not have reached argparse's output.
+    """
+    ascii_help = _report_through("ascii:strict", "--help")
+    utf8_help = _report_through("utf-8:strict", "--help")
+    assert b"Traceback" not in ascii_help.stderr, ascii_help.stderr[-800:]
+    assert ascii_help.returncode == utf8_help.returncode == 0
+    # The precondition, or this asserts nothing: the help really is not ASCII.
+    assert ascii_help.stdout != utf8_help.stdout
+    assert ascii_help.stdout == utf8_help.stdout.decode("utf-8").encode("ascii", "backslashreplace")
+
+
+@pytest.mark.security
+def test_a_utf8_stdout_is_unchanged_and_ascii_differs_only_by_the_escapes(tmp_path: Path) -> None:
+    """The control: the handler changes what cannot be encoded, and nothing else.
+
+    The UTF-8 run is compared with the report rendered in process from the same
+    root, so a layer that escaped everything outside ASCII, or touched the
+    encoding, fails here. The ASCII run must then be exactly that text with each
+    character ASCII cannot hold written as its escape.
+    """
+    from scripts._terminal import printable
+
+    name, _ = _NON_ASCII_NAME
+    root = _root(tmp_path)
+    _plant_backup(root, name.encode())
+    utf8 = _report_through("utf-8:strict", "--root", str(root), "--caller", "soc-test")
+    ascii_ = _report_through("ascii:strict", "--root", str(root), "--caller", "soc-test")
+    report = measure(root, now=time.time())
+    rendered = [printable(f"DEGRADED: {report.headline()}")]
+    rendered += [f"  {printable(indicator.summary())}" for indicator in report.indicators]
+    expected = "".join(f"{line}\n" for line in rendered)
+    assert "\u2014" in expected and name in expected, "the precondition: non-ASCII to encode"
+    assert utf8.returncode == ascii_.returncode == 1
+    assert utf8.stdout.decode("utf-8") == expected
+    assert ascii_.stdout == expected.encode("ascii", "backslashreplace")
+
+
+@pytest.mark.security
+def test_json_is_ascii_and_identical_on_either_stdout(tmp_path: Path) -> None:
+    """``--json`` is untouched: ``ensure_ascii`` already made it ASCII on every stream.
+
+    Compared parsed, without ``measured_at``, which is the one field two runs
+    cannot share. The name must still parse back exactly.
+    """
+    name, _ = _NON_ASCII_NAME
+    root = _root(tmp_path)
+    _plant_backup(root, name.encode())
+    payloads = []
+    for stream in ("ascii:strict", "utf-8:strict"):
+        result = _report_through(stream, "--root", str(root), "--caller", "soc-test", "--json")
+        assert result.returncode == 1, result.stderr[-800:]
+        payload = json.loads(result.stdout.decode("ascii"))
+        payload.pop("measured_at")
+        payloads.append(payload)
+    assert payloads[0] == payloads[1]
+    (detail,) = (
+        item["detail"] for item in payloads[0]["indicators"] if item["id"] == "backup-present"
+    )
+    assert f"({name})" in detail, detail
