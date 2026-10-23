@@ -204,6 +204,21 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **A forged `event_id` was echoed whole into the store's hash-mismatch refusal, and from there
+  into `store-readable` and the operator's terminal.** `_rebuild` named the stored id in the
+  `StoreIntegrityError` it raises when a projection does not hash to it. On that branch the id
+  is whatever a row written outside the API holds. Measured: a forged ASCII id of 50,008
+  characters made a 50,105-character `query()` refusal, which `sli.measure_store_readable`
+  copied into a 50,152-character detail. An id of `"\x1b[2J"` put a raw ESC into that detail,
+  and `scripts/report_sli.py` wrote it to the terminal. The id is now named only when it fully
+  matches `[0-9a-f]{64}`, the shape every write gives it, and is otherwise described by type and
+  length. That is an allow-list rather than #275's bounded `repr`, because no build writes any
+  other id, so there is nothing a quote could tell an operator. After: 218 characters, 265 in the detail, and no
+  control character in either or on stdout. A hex id is named exactly as before, and the three
+  refusals that run after the hash matched still name it. Recorded, not fixed: `attest` digests a
+  BLOB `event_id` as `str()` of its bytes, so a BLOB and its TEXT twin attest alike. This is left
+  to the owner, because the digest already collides on forged TEXT ids and refusing would stop a
+  backup take of a tampered store.
 - **`EventStore.attest` let a non-ASCII `event_id` escape as a bare `UnicodeEncodeError`, and
   `Query.limit` took a `bool`.** These are two of three residuals #270 found that #272 did not
   close, each measured on `6696c43`. The third, the schema-version echo, was closed by #275 (the

@@ -1557,6 +1557,107 @@ def test_a_forged_row_cannot_write_its_content_into_the_refusal(tmp_path: Path, 
     assert f"({len(reader)} chars, cut)" in message, "a cut must say that it is one"
 
 
+def _plant_id(store: EventStore, identifier: str | bytes) -> None:
+    """Write a sound projection under a chosen ``event_id`` that it does not hash to.
+
+    Beside one appended event and at its stamp, so the stored mark stays equal
+    to the rows and the only defect in the planted row is its id. The
+    append-only triggers refuse ``UPDATE``, not ``INSERT``.
+    """
+    store.append(normalize(_RECORD), ingested_at=1.0)
+    projection = canonical_json(normalize(_OTHER_RECORD).to_dict())
+    with store._conn:
+        store._conn.execute(
+            "INSERT INTO events (event_id, ingested_at, occurred_at, source_type, "
+            "vendor, parse_status, user_name, hostname, src_ip, dst_ip, projection) "
+            "VALUES (?, 1.0, NULL, 'unknown', 'planted', 'text', NULL, NULL, NULL, NULL, ?)",
+            (identifier, projection),
+        )
+
+
+#: Stored ids no build writes, with the description the hash-mismatch refusal
+#: gives instead of the id. Text goes in as a bound ``str``; the BLOB as
+#: ``bytes``, which TEXT affinity leaves a BLOB.
+_FORGED_IDS: dict[str, tuple[str | bytes, str]] = {
+    # Measured before: a 50,105-character refusal and a 50,152-character
+    # `store-readable` detail.
+    "unbounded_text": ("PLANTED-" + "q" * 50_000, "50008 character(s) of text"),
+    # Measured before: the raw ESC reached `report_sli.py`'s terminal. Short,
+    # so a length bound alone would have let it through.
+    "terminal_escape": ("\x1b[2J", "4 character(s) of text"),
+    # Short and printable, so neither a bound nor `repr` keeps it out: only the
+    # allow-list does.
+    "short_printable": ("PLANTED", "7 character(s) of text"),
+    # The written length in uppercase, which `hexdigest` never writes.
+    "uppercase_hex": ("A" * 64, "64 character(s) of text"),
+    # The written shape plus a newline: `match` with `$` accepts it.
+    "trailing_newline": ("0" * 64 + "\n", "65 character(s) of text"),
+    # ARABIC-INDIC DIGIT ZERO: `\d` accepts it.
+    "non_ascii_digit": ("\u0660" * 64, "64 character(s) of text"),
+    "blob": (b"PLANTED-BLOB", "a BLOB of 12 byte(s)"),
+}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("case", sorted(_FORGED_IDS), ids=lambda value: value)
+def test_a_forged_event_id_is_described_not_echoed(tmp_path: Path, case: str) -> None:
+    """The hash-mismatch refusal describes an id no build writes and never copies it.
+
+    The other ``_rebuild`` refusals run after the hash matched, so their id is
+    ``event_id``'s own output. This one runs when it did not, so its id is
+    whatever a row written outside the API holds, and
+    ``sli.measure_store_readable`` carries the message into the detail an
+    operator records. Pinned on literal lengths rather than a constant from
+    the module, because an assertion scaled from the rule under test cannot
+    fail.
+    """
+    planted, description = _FORGED_IDS[case]
+    with EventStore.open(tmp_path) as store:
+        _plant_id(store, planted)
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    assert not isinstance(raised.value, StoreCorruptionError), "a row, not a damaged file"
+    message = str(raised.value)
+    assert len(message) < 300, f"{len(message)} chars of a forged id's refusal"
+    assert description in message, "the refusal must say what it found, not only refuse"
+    assert "which no build of this platform writes" in message
+    assert "modified outside this platform" in message
+    assert message.isprintable(), "a control character reached the refusal"
+    text = planted if isinstance(planted, str) else planted.decode("ascii")
+    # The first 20 characters, so the long case is not vacuous, and `str()`
+    # of the stored value because that is what the old message interpolated.
+    assert text[:20] not in message, "the refusal echoed the stored id"
+    assert str(planted)[:20] not in message, "the refusal echoed the stored id"
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        # Every character the allow-list admits, so a narrower class fails here.
+        "0123456789abcdef" * 4,
+        # A real event's id on another event's projection. Not `_RECORD`'s,
+        # which `_plant_id` appends, so the primary key would refuse the plant.
+        event_id(canonical_json(normalize("sshd: session opened for user root").to_dict())),
+    ],
+    ids=["every_hex_character", "a_real_id_on_another_projection"],
+)
+def test_a_hex_event_id_that_does_not_match_is_still_named(tmp_path: Path, identifier: str) -> None:
+    """The control: the allow-list keeps the key an operator finds the row by.
+
+    Without this, a refusal that never named any id would pass the test above.
+    The message for an id of the written shape is the one it was before.
+    """
+    with EventStore.open(tmp_path) as store:
+        _plant_id(store, identifier)
+        with pytest.raises(StoreIntegrityError) as raised:
+            store.query()
+    assert str(raised.value) == (
+        f"event {identifier}: projection does not hash to its event_id; the database was "
+        "modified outside this platform"
+    )
+
+
 #: ``ingested_at`` values no write path stores, as SQLite keeps them in a REAL
 #: column, with the reader's exception for each. The column is outside the
 #: hash, so each needs nothing but write access to the file.
