@@ -73,8 +73,17 @@ prepare_release.py ──► PR "release: prepare IANUA vX.Y.Z" ──► review
      merge commit and dispatches **Release assets**, which rebuilds, re-runs the full test gate,
      signs, and creates the GitHub Release.
    - *Deploy GitHub Pages* (`github-pages` environment) publishes the updated site.
+
+   **Never publish a release from the web page.** Release immutability is enabled (see
+   one-time setup), so a release locks the moment it is published. A release published from the
+   web page locks before **Release assets** can attach anything. The workflow then fails and
+   names every asset that is missing, and nothing can be added afterwards. The way out is the
+   next patch version, released through steps 1–5.
 6. **Verify** the release page lists the wheel, sdist, `sbom.cdx.json`, the attestation bundles
-   and `SHA256SUMS`.
+   and `SHA256SUMS`. A release published since immutability was enabled should also carry the
+   **Immutable** label, and `gh release verify vX.Y.Z --repo IRsoctierDT/IANUA` checks the
+   attestation GitHub signs for an immutable release. No release has been checked that way yet,
+   because v2.3.0 was published before the setting.
 
 ### One-time setup
 
@@ -83,13 +92,27 @@ Go to **Settings → Environments → New environment**, name it `release`, and 
 required reviewer before it tags anything and refuses to run without one. GitHub would otherwise
 auto-create an unprotected environment.
 
+Then go to **Settings → General → Releases** and tick **Enable release immutability**. The owner
+enabled it on 2026-10-23. From then on a published release's tag cannot be moved or deleted, and
+its assets cannot be added, replaced or removed. Its title and notes can still be edited
+([GitHub Docs](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)).
+GitHub fixes this per release when the release is published, so v2.3.0 and every earlier release stay
+mutable. The flow above is unaffected: `gh release create` attaches every asset to a draft and
+publishes last (its own `--help` says so). `release.yml` reads each release's immutability before
+a repair. It re-uploads only to a mutable release, only checks that an immutable one has all its
+assets, and fails when it cannot tell which kind it has. Unticking the setting affects only
+releases published afterwards. A release published while it was on stays locked.
+
 ## Risks
 
 | Risk | Control |
 |---|---|
 | Version surfaces drift | One atomic script (partially generated output is rolled back too); `check_version_sync` in CI, in `detect`, and again in `release.yml` |
 | Tag on an unverified commit | Tag created only at the `head_sha` of a successful CI push run on `main` |
-| Tag moved or overwritten | Git refs API create-only; a re-run accepts an existing tag only if it names the same commit; `release.yml` never force-updates |
+| Tag moved or overwritten | Git refs API create-only; a re-run accepts an existing tag only if it names the same commit; `release.yml` never force-updates. Since 2026-10-23, release immutability also has GitHub refuse to move or delete the tag of a published release |
+| Published assets replaced after release | Release immutability (repository setting): a release's assets lock when it is published. `gh release create` attaches them all to a draft before publishing |
+| A release published from the web page | It locks with no assets. `release.yml` never uploads to an immutable release: it fails and names each missing asset (`tests/security/test_release_immutability.py`). The remedy is the next patch version, never a repair |
+| Repair of a release that predates immutability | `release.yml` reads `isImmutable` for each release. It re-uploads only on `false` and refuses to guess on anything else, including a `gh` too old to know the field |
 | Dispatch fails after tagging | `detect` re-offers a tagged version that has no GitHub Release, at the tagged commit, behind the same approval |
 | Unapproved publication | `release` environment with required reviewer, checked at runtime (fails closed) |
 | Malformed release title | Allowlisted characters; no Markdown control characters or parentheses |

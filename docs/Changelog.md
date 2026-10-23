@@ -4,6 +4,20 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Security
+- **Releases are immutable from 2026-10-23, and `release.yml` no longer uploads to one that
+  is.** The owner enabled GitHub's release immutability, so a release published from that date
+  locks its tag and assets when it is published. v2.3.0 and earlier stay mutable. The normal
+  flow is unaffected, because `gh release create` attaches every asset to a draft before it
+  publishes. The repair step used to run `gh release upload --clobber` against any published
+  release. It now reads `isImmutable` first: on `false` it repairs as before, on `true` it only
+  checks that every asset is attached and names any that is missing, and on anything else it
+  fails. A release published from the web page locks with no assets; the job now fails and
+  names each missing asset, and the remedy is the next patch version. `docs/RELEASING.md` now
+  says never to publish from the web page and documents `gh release verify`.
+  `tests/security/test_release_immutability.py` runs the step's own script against a stand-in
+  `gh`.
+
 ## v2.3.0 — Production SOC Foundations — 2026-10-23
 
 ### Added
