@@ -266,6 +266,31 @@ def test_precommit_runs_the_locked_toolchain_not_a_second_pin() -> None:
 
 
 @pytest.mark.unit
+def test_every_local_hook_given_filenames_ends_its_options() -> None:
+    """A local hook that receives filenames ends its ``args`` with ``--``.
+
+    pre-commit appends the staged filenames after ``args``, so without the
+    terminator a tracked file named like an option is read as one. Measured on
+    the detect-secrets hook, a file named ``--help`` turned the secret scan into
+    a pass at exit 0. ``tests/security/test_secret_gate.py`` proves that one
+    behaviourally. This pins the rule for every local hook, so the next one
+    added cannot leave it out. Hosted hooks (``pre-commit-hooks``) are not
+    covered here: their argument parsing could not be measured offline.
+    """
+    config = yaml.safe_load((_REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+    given_files = [
+        hook
+        for repo in config["repos"]
+        if repo["repo"] == "local"
+        for hook in repo["hooks"]
+        if hook.get("pass_filenames", True)
+    ]
+    assert given_files, "no local hook receives filenames, so this assertion would be vacuous"
+    unterminated = [hook["id"] for hook in given_files if (hook.get("args") or [None])[-1] != "--"]
+    assert not unterminated, f"these hooks take filenames without a trailing '--': {unterminated}"
+
+
+@pytest.mark.unit
 def test_agents_md_command_blocks_match() -> None:
     charter = (_REPO / "AGENTS.md").read_text(encoding="utf-8")
     mypy_match = re.search(r"^(mypy .+)$", charter, re.MULTILINE)

@@ -52,6 +52,16 @@ All notable changes to this project. Versions correspond to git tags.
   address". The committed config binds `127.0.0.1` and still passes. **Action for operators:**
   a deployment whose `.streamlit/config.toml` sets `address = "localhost"` now fails CFG-02,
   so set `127.0.0.1` or `::1`.
+- **A file named like an option no longer turns the pre-commit secret scan into a pass.**
+  pre-commit appends the staged filenames after a hook's `args`, and the detect-secrets hook's
+  `args` did not end with `--`. Measured in a throwaway repository: a file named `--help`
+  staged beside a private key made the hook print its usage, and pre-commit reported **Passed**
+  at exit 0. That is AGENTS.md §7.1's dash-led-filename hazard, on the pre-commit path rather
+  than the `xargs` one. The ruff, ruff-format, mypy and detect-secrets hooks now end their
+  `args` with `--`. Before the change ruff and mypy already failed, but with an argument error
+  and without checking the code. A new security test in `tests/security/test_secret_gate.py`
+  rebuilds pre-commit's own argv from the committed config and requires the key to be found.
+  A parity test requires the terminator on every local hook that receives filenames.
 
 ## v2.3.0 — Production SOC Foundations — 2026-10-23
 
