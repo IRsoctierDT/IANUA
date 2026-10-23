@@ -268,6 +268,38 @@ def _rebuild_reason(exc: MalformedProjectionError) -> str:
     return f"{text[:_REASON_CHARS]}... ({len(text)} chars, cut)"
 
 
+#: How many characters (or bytes) of a stored schema version a refusal quotes.
+#: See :func:`_quoted_version`.
+_VERSION_CHARS = 32
+
+
+def _quoted_version(value: object) -> str:
+    """The schema version ``meta`` holds, as a refusal quotes it: ``repr``, bounded.
+
+    Named because a real version from another build is what tells an operator
+    which build to run, and every build writes ``str(SCHEMA_VERSION)``, a short
+    integer that :data:`_VERSION_CHARS` never cuts. Bounded and ``repr``'d
+    because the row is ``meta``'s TEXT, which a forged row chooses, and
+    :func:`_rebuild_reason` records where an unbounded copy lands. Measured
+    before this bound: a 50,000-character version made a 50,154-character
+    :class:`SchemaVersionError`, ``sli``'s ``_open_store`` carried it into both
+    store objectives' details (50,236 characters for ``store-intact``), and a
+    version holding ``ESC[2J`` reached ``scripts/report_sli.py``'s stdout raw,
+    clearing the operator's terminal above a forged line. A BLOB arrives as
+    ``bytes``, since ``text_factory`` decodes TEXT only, and is quoted the same
+    way, so ``b'2'`` stays distinguishable from ``'2'``.
+
+    The value is cut *before* ``repr``, so the bound is on what the row
+    chooses rather than on what ``repr`` makes of it: at most ``_VERSION_CHARS``
+    stored characters, which ``repr`` renders in at most ten characters each
+    (``'\\U000e0001'``), all printable.
+    """
+    if isinstance(value, (str, bytes)) and len(value) > _VERSION_CHARS:
+        unit = "chars" if isinstance(value, str) else "bytes"
+        return f"{value[:_VERSION_CHARS]!r}... ({len(value)} {unit}, cut)"
+    return repr(value)
+
+
 @dataclass(frozen=True, slots=True)
 class Attestation:
     """What this store holds, in a form a later copy can be checked against.
@@ -814,10 +846,11 @@ class EventStore:
                     "refusing to assume the existing rows match version "
                     f"{SCHEMA_VERSION}"
                 )
-            found = str(row["value"])
-            if found != str(SCHEMA_VERSION):
+            found = row["value"]
+            if str(found) != str(SCHEMA_VERSION):
                 raise SchemaVersionError(
-                    f"event store was written by schema version {found}, this "
+                    "event store was written by schema version "
+                    f"{_quoted_version(found)}, this "
                     f"build speaks version {SCHEMA_VERSION}; migration is "
                     "explicit (no implicit upgrade — see "
                     "store.errors.SchemaVersionError)"

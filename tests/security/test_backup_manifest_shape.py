@@ -806,7 +806,12 @@ def test_a_pass_error_reaches_the_terminal_escaped(
 ) -> None:
     """Found by review: the pass's ``error:`` line was escaped in the code and pinned by
     nothing. A SchemaVersionError quotes the store's own ``meta`` value, which is the
-    backup's content."""
+    backup's content.
+
+    The store now quotes that value through ``repr`` itself, so this case reaches the
+    terminal escaped whether or not the ``error:`` line escapes it: measured, removing
+    ``_printable`` from that line left this green. It pins the route end to end, and
+    the stand-in below pins the line."""
     root, backup = _backup(tmp_path)
     db = backup / _STORE
     with contextlib.closing(sqlite3.connect(db)) as conn:
@@ -819,6 +824,31 @@ def test_a_pass_error_reaches_the_terminal_escaped(
     assert _verify(root, backup, "--verify") == 1
     err = capsys.readouterr().err
     assert "schema version" in err and "\\x1b[2J" in err, err
+    assert _all_printable(err), repr(err[-400:])
+
+
+@pytest.mark.security
+def test_the_pass_error_line_escapes_what_it_is_handed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stand-in, named as one: the pass raises a ``StoreError`` carrying raw control
+    characters, which no first-party store message now does, so the ``error:`` line's
+    own escaping is what this pins. Without it, the test above stays green and this
+    line is back to being escaped in the code and pinned by nothing."""
+    import scripts.run_backup as run_backup
+    from store import StoreError
+
+    root, backup = _backup(tmp_path)
+
+    def raw(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise StoreError("9" + _FORGED)
+
+    monkeypatch.setattr(run_backup, "_verify_backup", raw)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    err = capsys.readouterr().err
+    assert "error: 9\\x1b[2J" in err, err
     assert _all_printable(err), repr(err[-400:])
 
 
