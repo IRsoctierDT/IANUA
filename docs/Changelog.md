@@ -4,6 +4,21 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Fixed
+- **Four places still said a restored pipeline cursor ahead of the store is safe, and it is
+  not after a backward clock step.** `next_stamp` compares the clock against the store's
+  high-water mark and never against the cursor, so once the clock is below a restored cursor,
+  new events are stamped under it and the detection cycle never reads them. Measured: a store
+  at mark T, a cursor at T+3600 and a clock at T+60 stamp the next event T+60, and
+  `run_cycle` reads 0 of the 2 stored events, or both with no cursor. #210's review corrected
+  `docs/RESTORE.md`'s table but not `scripts/run_backup.py`'s docstring ("ahead of it merely
+  idles"), the sentence above the table ("exactly one is unrecoverable"), the 2026-10-15
+  `DESIGN.md` row, or `tests/integration/test_restore_drill.py`'s "the one unrecoverable skew"
+  docstring. All four now say two of the four directions are unrecoverable. A new drill test
+  pins the measurement, so the four have to change together if `next_stamp` ever does.
+  Backups already left out the cursor, and `docs/RESTORE.md` step 3 already deletes it, so
+  behaviour is unchanged.
+
 ### Security
 - **Releases are immutable from 2026-10-23, and `release.yml` no longer uploads to one that
   is.** The owner enabled GitHub's release immutability, so a release published from that date
