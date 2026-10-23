@@ -24,6 +24,14 @@ for, so a monitor that could not read a signal must not be silent:
 ``DESIGN.md`` §11 records three signals that read healthy while the subsystem
 behind them was not.
 
+**Text mode is escaped; ``--json`` is exact.** Every line this prints goes
+through ``scripts._terminal.printable``. An indicator's detail quotes text this
+program did not write, such as the newest backup directory's name, and before
+the escape a name holding ``ESC[2J`` cleared the terminal above a forged "ok"
+line. A non-printable character is shown as its escape (``\\x1b``), never
+dropped. ``--json`` is escaped by ``json.dumps`` and keeps the exact value, so
+read that when the exact text matters.
+
 **Why it appends no audit record.** Every other scheduled CLI records its run
 in a hash chain. This one deliberately does not. At the documented ``*/5``
 cadence it would write more chain entries than everything else in the
@@ -63,6 +71,7 @@ from agents.policies.bundle import (  # noqa: E402
     load_bundle,
 )
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
+from scripts._terminal import printable  # noqa: E402
 from sli import measure  # noqa: E402
 from store.paths import validated_root  # noqa: E402
 
@@ -112,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         principal = Principal("sli", args.caller)
         engine = load_bundle(args.policy)
     except (PrincipalError, PolicyBundleError, ValueError, OSError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        # The message quotes --root as given, unquoted (`validated_root`).
+        print(f"error: {printable(str(exc))}", file=sys.stderr)
         return 2
 
     try:
@@ -120,17 +130,20 @@ def main(argv: list[str] | None = None) -> int:
         # but not recorded.
         enforce(action_class=REPORT_CLASS, name=ACTION_NAME, engine=engine, actor=principal)
     except ToolBlockedError as exc:
-        print(f"refused: {exc}", file=sys.stderr)
+        print(f"refused: {printable(str(exc))}", file=sys.stderr)
         return 3
 
     report = measure(args.root, now=time.time())
 
     if args.json:
+        # Already escaped by `json.dumps`, and the exact value is what JSON is for.
         print(json.dumps(report.to_dict(), sort_keys=True))
     else:
-        print(f"{'ok' if report.healthy else 'DEGRADED'}: {report.headline()}")
+        # Every line through `printable`: a detail quotes text this program did
+        # not write, such as a backup directory's name. See `scripts/_terminal.py`.
+        print(printable(f"{'ok' if report.healthy else 'DEGRADED'}: {report.headline()}"))
         for indicator in report.indicators:
-            print(f"  {indicator.summary()}")
+            print(f"  {printable(indicator.summary())}")
 
     return 0 if report.healthy else 1
 

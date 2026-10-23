@@ -151,6 +151,7 @@ from scripts._locking import (  # noqa: E402
     prepare_lock,
     single_instance,
 )
+from scripts._terminal import printable as _printable  # noqa: E402
 from store import (  # noqa: E402
     DEFAULT_FILENAME,
     EVENTS_SUBDIR,
@@ -1520,18 +1521,13 @@ def _capped_tail(text: str, limit: int = 80) -> str:
     return text if len(text) <= limit else "..." + text[-limit:]
 
 
-def _printable(text: str) -> str:
-    """``text`` with every non-printable character escaped, for a terminal.
-
-    A report line can carry manifest content, and :func:`_capped` bounds its
-    length but not what it does. Measured, found by independent review: a
-    ``files[]`` path of ``"/\\x1b[2J\\x1b[Hrestore verified: OK\\r\\n"`` cleared
-    the operator's terminal and wrote a forged line, and a lone surrogate
-    crashed the text report with a traceback partway through. Escaping where a
-    line reaches the terminal covers every echo site at once; ``--json`` is
-    already escaped by ``json.dumps``.
-    """
-    return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
+# `_printable` (imported above from `scripts._terminal`): a report line can carry
+# manifest content, and `_capped` bounds its length but not what it does.
+# Measured, found by independent review: a `files[]` path of
+# "/\x1b[2J\x1b[Hrestore verified: OK\r\n" cleared the operator's terminal and
+# wrote a forged line, and a lone surrogate crashed the text report with a
+# traceback partway through. Escaping where a line reaches the terminal covers
+# every echo site at once; `--json` is already escaped by `json.dumps`.
 
 
 #: How each attestation field must be typed to be comparable. ``bool`` is an

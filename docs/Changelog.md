@@ -204,6 +204,21 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
+- **`scripts/report_sli.py` printed indicator details raw in text mode, and a backup directory's
+  name was a live route to the operator's terminal.** `backup-present` names the newest
+  directory under `data/backups` and never reads its manifest, so no store bound sees that
+  text. Measured on `d1f3369`: a name holding `ESC[2J ESC[H` and a CR cleared the terminal and
+  wrote a forged "ok" line above a report that exited 1. A RIGHT-TO-LEFT OVERRIDE displayed the
+  name reversed. A name that is not UTF-8 made the report die with a traceback partway through
+  on a stdout with strict errors, the `en_US.UTF-8` default. Every line `report_sli.py` prints,
+  stdout and stderr, now goes through `scripts/_terminal.printable`, which shows each
+  non-printable character as its escape (`\x1b`) rather than dropping it. That function is
+  `run_backup.py`'s `_printable`, moved rather than copied, and `run_backup.py` imports it under
+  its old name. A test refuses a second `isprintable` escaper under `scripts/`. `--json` is
+  unchanged: `json.dumps` already escapes, and it keeps the exact value. This closes the
+  "`report_sli.py` escapes nothing in text mode" residual #275 recorded. Recorded, not fixed:
+  on an ASCII stdout every text report crashes on the em dash `Indicator.summary` emits, with
+  no planted data.
 - **A forged `event_id` was echoed whole into the store's hash-mismatch refusal, and from there
   into `store-readable` and the operator's terminal.** `_rebuild` named the stored id in the
   `StoreIntegrityError` it raises when a projection does not hash to it. On that branch the id
