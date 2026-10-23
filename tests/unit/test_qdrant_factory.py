@@ -80,6 +80,7 @@ def test_factory_creates_the_anchored_store_and_refuses_before_creating(
 
     monkeypatch.setenv("QDRANT_PATH", "")
     client = make_client()
+    assert isinstance(client, _StubClient)
     assert client.kwargs == {"path": str(checkout / "data" / "qdrant")}
     assert (checkout / "data" / "qdrant").is_dir()
 
