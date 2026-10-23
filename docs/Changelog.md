@@ -204,23 +204,30 @@ All notable changes to this project. Versions correspond to git tags.
   record naming the wrong host documents approval for something nobody proposed.
 
 ### Fixed
-- **`EventStore.attest` let a non-ASCII `event_id` escape as a bare `UnicodeEncodeError`,
-  `Query.limit` took a `bool`, and `SchemaVersionError` copied the stored version whole.** These
-  are three residuals #270 found and #272 did not close, each measured on `6696c43`. A valid-UTF-8
-  id written outside the API (`"é" * 64`) passes the connection's decoder and failed `attest`'s
-  ASCII encode with an error no `except StoreError` catches. The backup take, `--verify` and
-  `--verify-restore` printed the codec's sentence at exit 1 only because that class subclasses
-  `ValueError`. It is now a `StoreIntegrityError` that gives the id's length, with the codec
-  error suppressed because its `object` is the id. `Query(limit=True)` read one row and
-  `limit=False` none, since `bool` has `__index__`. Both are now `TypeError: limit must be an
-  integer, not bool`. A `meta.schema_version` of `"9" * 50000` made `open` raise a
-  50,154-character message, which `sli` copied into both store objectives' detail. A short
-  value carrying escape sequences reached `scripts/report_sli.py`'s terminal raw and cleared
-  the screen, so the version is now named only when it is one to nine ASCII digits and is
-  otherwise described by type and length. `sli`'s `store-intact` reads `1.0` for the
-  non-ASCII-id row before and after, which is correct: it checks pages and never calls
-  `attest`. `test_a_pass_error_reaches_the_terminal_escaped` used the version echo to reach
-  `run_backup.py`'s escaped `error:` line, and now reaches it through a backup's own name.
+- **`EventStore.attest` let a non-ASCII `event_id` escape as a bare `UnicodeEncodeError`, and
+  `Query.limit` took a `bool`.** These are two of three residuals #270 found that #272 did not
+  close, each measured on `6696c43`. The third, the schema-version echo, was closed by #275 (the
+  entry below). A valid-UTF-8 id written outside the API (`"é" * 64`) passes the connection's
+  decoder and failed `attest`'s ASCII encode with an error no `except StoreError` catches. The
+  backup take, `--verify` and `--verify-restore` printed the codec's sentence at exit 1 only
+  because that class subclasses `ValueError`. It is now a `StoreIntegrityError` that gives the
+  id's length, with the codec error suppressed because its `object` is the id. `sli`'s
+  `store-intact` reads `1.0` for that row before and after, which is correct: it checks pages and
+  never calls `attest`. `Query(limit=True)` read one row and `limit=False` none, since `bool` has
+  `__index__`. Both are now `TypeError: limit must be an integer, not bool`.
+- **A forged schema version was echoed whole into `SchemaVersionError`, and from there into
+  both store objectives and the operator's terminal.** `EventStore.open`'s version-mismatch
+  refusal interpolated the stored `meta` value as `str(value)`. Measured: a 50,000-character
+  version made a 50,154-character error, which `sli` carried into `store-intact` (50,236
+  characters) and `store-readable` (50,225), the detail `AUD-03` tells an operator to record. A
+  BLOB was echoed as `str(bytes)`. And a version holding `ESC[2J` reached
+  `scripts/report_sli.py`'s stdout raw, clearing the terminal above a forged "ok" line. The
+  version is now quoted through `repr` and cut at 32 stored characters (or bytes), with the
+  cut and the full length named, the shape `_rebuild_reason` already has. A real version from
+  another build is still named whole, now quoted: `version 2` reads `version '2'`. Which stores
+  open is unchanged. The bound left `run_backup.py`'s `_printable` on the pass's `error:` line
+  pinned by nothing (measured: green with it removed), so a stand-in test now pins that line.
+  Six plants, six red. Recorded, not fixed: `report_sli.py` escapes nothing in text mode.
 - **`scripts/ask_cyber_kb_ollama.py` and `ask_cyber_kb_chunked_ollama.py` assumed every retrieved
   point carried a dict payload with string text.** `qdrant-client` types the payload as
   `dict | None`, which `mypy` reported five times with the `dashboard` extra installed (CI installs

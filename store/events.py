@@ -268,6 +268,38 @@ def _rebuild_reason(exc: MalformedProjectionError) -> str:
     return f"{text[:_REASON_CHARS]}... ({len(text)} chars, cut)"
 
 
+#: How many characters (or bytes) of a stored schema version a refusal quotes.
+#: See :func:`_quoted_version`.
+_VERSION_CHARS = 32
+
+
+def _quoted_version(value: object) -> str:
+    """The schema version ``meta`` holds, as a refusal quotes it: ``repr``, bounded.
+
+    Named because a real version from another build is what tells an operator
+    which build to run, and every build writes ``str(SCHEMA_VERSION)``, a short
+    integer that :data:`_VERSION_CHARS` never cuts. Bounded and ``repr``'d
+    because the row is ``meta``'s TEXT, which a forged row chooses, and
+    :func:`_rebuild_reason` records where an unbounded copy lands. Measured
+    before this bound: a 50,000-character version made a 50,154-character
+    :class:`SchemaVersionError`, ``sli``'s ``_open_store`` carried it into both
+    store objectives' details (50,236 characters for ``store-intact``), and a
+    version holding ``ESC[2J`` reached ``scripts/report_sli.py``'s stdout raw,
+    clearing the operator's terminal above a forged line. A BLOB arrives as
+    ``bytes``, since ``text_factory`` decodes TEXT only, and is quoted the same
+    way, so ``b'2'`` stays distinguishable from ``'2'``.
+
+    The value is cut *before* ``repr``, so the bound is on what the row
+    chooses rather than on what ``repr`` makes of it: at most ``_VERSION_CHARS``
+    stored characters, which ``repr`` renders in at most ten characters each
+    (``'\\U000e0001'``), all printable.
+    """
+    if isinstance(value, (str, bytes)) and len(value) > _VERSION_CHARS:
+        unit = "chars" if isinstance(value, str) else "bytes"
+        return f"{value[:_VERSION_CHARS]!r}... ({len(value)} {unit}, cut)"
+    return repr(value)
+
+
 @dataclass(frozen=True, slots=True)
 class Attestation:
     """What this store holds, in a form a later copy can be checked against.
@@ -701,50 +733,6 @@ def _stored_mark(value: object) -> float:
     return _finite(parsed, "high-water mark")
 
 
-#: A recorded schema version as :meth:`EventStore._apply_schema` writes it:
-#: ``str()`` of a small integer. ``[0-9]`` rather than ``\d``, which matches
-#: every Unicode digit, and nine of them because the version is at 1 and moves
-#: once per schema change, so a longer value is not one any build wrote.
-_VERSION_TEXT = re.compile(r"[0-9]{1,9}")
-
-
-def _version_refusal(raw: object) -> str:
-    """The :class:`SchemaVersionError` message for a version this build does not speak.
-
-    The recorded version is named only when it has the shape this platform
-    writes, because the operator needs it to choose a migration. Anything else
-    is described by type and length and never echoed: an allow-list, since a
-    length bound alone would still copy what a forged row chose. Measured
-    before this change, ``meta.schema_version`` set to ``"9" * 50000`` made
-    :meth:`EventStore.open` raise a 50,154-character message, which ``sli``
-    carries verbatim into the report detail ``AUD-03`` tells an operator to
-    record (50,236 characters for ``store-intact``). And a short value needed no
-    length to do harm: ``"2\\x1b[2J\\x1b[31mhealthy"`` put the raw escape
-    sequences into that detail, and ``scripts/report_sli.py`` wrote them to the
-    terminal, clearing the screen. The same removal of a stored-value echo that
-    #268, #269 and #272 made in their own messages.
-
-    TEXT affinity converts a number to text on the way in and the column is
-    ``NOT NULL``, so text and a BLOB are the only shapes SQLite can return here.
-    """
-    if isinstance(raw, str) and _VERSION_TEXT.fullmatch(raw):
-        return (
-            f"event store was written by schema version {raw}, this build speaks version "
-            f"{SCHEMA_VERSION}; migration is explicit (no implicit upgrade — see "
-            "store.errors.SchemaVersionError)"
-        )
-    if isinstance(raw, str):
-        shape = f"{len(raw)} character(s) of text that is not a version number"
-    elif isinstance(raw, bytes):
-        shape = f"a BLOB of {len(raw)} byte(s)"
-    else:  # pragma: no cover - TEXT affinity and NOT NULL leave only text and BLOB
-        shape = f"a value of type {type(raw).__name__}"
-    return (
-        f"event store's recorded schema version is {shape}, which no build of this "
-        f"platform writes; refusing to assume the existing rows match version {SCHEMA_VERSION}"
-    )
-
-
 class EventStore:
     """An open, append-only event database.
 
@@ -858,8 +846,15 @@ class EventStore:
                     "refusing to assume the existing rows match version "
                     f"{SCHEMA_VERSION}"
                 )
-            if str(row["value"]) != str(SCHEMA_VERSION):
-                raise SchemaVersionError(_version_refusal(row["value"]))
+            found = row["value"]
+            if str(found) != str(SCHEMA_VERSION):
+                raise SchemaVersionError(
+                    "event store was written by schema version "
+                    f"{_quoted_version(found)}, this "
+                    f"build speaks version {SCHEMA_VERSION}; migration is "
+                    "explicit (no implicit upgrade — see "
+                    "store.errors.SchemaVersionError)"
+                )
             return
         # Fresh database: tables and version land in one transaction, so a
         # store can never exist with tables but no recorded version.

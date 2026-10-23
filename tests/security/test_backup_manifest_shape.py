@@ -805,37 +805,13 @@ def test_a_pass_error_reaches_the_terminal_escaped(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Found by review: the pass's ``error:`` line was escaped in the code and pinned by
-    nothing.
+    nothing. A SchemaVersionError quotes the store's own ``meta`` value, which is the
+    backup's content.
 
-    The vehicle used to be a forged ``meta`` schema version, which the store's
-    ``SchemaVersionError`` quoted. The store now describes a version it could not have
-    written instead of echoing it, so that route carries nothing to escape (pinned by the
-    test below). The vehicle is now the backup's own name, which the manifest loader's
-    refusal interpolates raw. Measured with ``_printable`` removed from the pass's
-    handler alone: the raw escape sequences reach stderr, so this pins that line."""
-    root, backup = _backup(tmp_path)
-    forged = backup.with_name("b" + _FORGED)
-    shutil.copytree(backup, forged)
-    (forged / "manifest.json").unlink()
-    capsys.readouterr()
-
-    assert _verify(root, forged, "--verify") == 1
-    err = capsys.readouterr().err
-    assert "no manifest.json in" in err and "\\x1b[2J" in err, err
-    assert _all_printable(err), repr(err[-400:])
-
-
-@pytest.mark.security
-def test_a_forged_schema_version_reaches_the_pass_error_described(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The route the test above used to take, now closed at the store.
-
-    Measured before: the forged version reached this line, and was safe only
-    because ``_printable`` escaped it. A long one does not get this far, since it
-    grows the file and the size check refuses the copy before it is opened. The
-    store's refusal now names a length and nothing the row holds, so the escapes
-    do not reach the operator escaped or raw."""
+    The store now quotes that value through ``repr`` itself, so this case reaches the
+    terminal escaped whether or not the ``error:`` line escapes it: measured, removing
+    ``_printable`` from that line left this green. It pins the route end to end, and
+    the stand-in below pins the line."""
     root, backup = _backup(tmp_path)
     db = backup / _STORE
     with contextlib.closing(sqlite3.connect(db)) as conn:
@@ -847,9 +823,32 @@ def test_a_forged_schema_version_reaches_the_pass_error_described(
 
     assert _verify(root, backup, "--verify") == 1
     err = capsys.readouterr().err
-    assert "recorded schema version is" in err, err
-    assert f"{1 + len(_FORGED)} character(s) of text" in err, err
-    assert "x1b" not in err and "restore verified" not in err, err
+    assert "schema version" in err and "\\x1b[2J" in err, err
+    assert _all_printable(err), repr(err[-400:])
+
+
+@pytest.mark.security
+def test_the_pass_error_line_escapes_what_it_is_handed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stand-in, named as one: the pass raises a ``StoreError`` carrying raw control
+    characters, which no first-party store message now does, so the ``error:`` line's
+    own escaping is what this pins. Without it, the test above stays green and this
+    line is back to being escaped in the code and pinned by nothing."""
+    import scripts.run_backup as run_backup
+    from store import StoreError
+
+    root, backup = _backup(tmp_path)
+
+    def raw(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise StoreError("9" + _FORGED)
+
+    monkeypatch.setattr(run_backup, "_verify_backup", raw)
+    capsys.readouterr()
+
+    assert _verify(root, backup, "--verify") == 1
+    err = capsys.readouterr().err
+    assert "error: 9\\x1b[2J" in err, err
     assert _all_printable(err), repr(err[-400:])
 
 
