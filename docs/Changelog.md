@@ -4,6 +4,8 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+## v2.3.0 — Production SOC Foundations — 2026-10-23
+
 ### Added
 - **`store/` is a durable, append-only event store, stage 1 of the production-SOC program.** It
   uses stdlib `sqlite3` under gitignored `data/events/`, so `dependencies = []` stands. SQLite
@@ -31,8 +33,8 @@ All notable changes to this project. Versions correspond to git tags.
   and correlates them with a trailing `--lookback` (default 900 s) of already-read history, so
   an attack spread over several cycles within it is still assembled. The cursor advances only
   after the cycle and its audit record succeed, so a crash re-reads a window rather than
-  skipping it. Cycles are gated `read_only` by the policy bundle, hold an exclusive lock, record
-  a caller only from `--caller`, and exit `3` when blocked by policy. (#202)
+  skipping it. Cycles are gated `read_only` by the policy bundle, hold an exclusive lock, and
+  record a caller only from `--caller`. (#202)
 - **`scripts/run_collector.py` reads this node's own log files into the event store, stage 5 and
   the first `AGENTS.md` §5 boundary crossing.** Each `--source` is an absolute path the operator
   names: there is no glob or directory walk, and a symlinked log, a non-regular file or a path
@@ -62,7 +64,7 @@ All notable changes to this project. Versions correspond to git tags.
   separate `retain_events:apply-unprocessed` grant. A log line holding a 5000-digit integer
   stalled its collector source on every run; it is now stored as `unrecognized`. (#217)
 - **GitHub Releases now publish the curated changelog section as their body.** `release.yml`
-  used `--generate-notes`, which lists merged pull requests, so the `## vX.Y.Z` section of
+  used `--generate-notes`, which lists merged pull requests, so a release's own section of
   `docs/Changelog.md` was never published. The new `scripts/release_notes.py` composes the body
   from that section verbatim plus a compare link to the previous release, and a missing,
   duplicated or empty section fails the job rather than publishing blank notes.
