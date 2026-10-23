@@ -4,6 +4,19 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
+
+### Documentation
+- **`docs/PROJECT_STATUS.md`'s Completed Milestones now run through v2.3.0.** They had stopped
+  at v1.8.0, five releases back. Each new entry is drawn from that release's own section of
+  this changelog. (#289)
+- **Two `DESIGN.md` decision-log rows miscounted, and only one of them had the number wrong.**
+  The 2026-10-16 SQL-injection row said "eleven rejected routes" and then named twelve. The
+  test's `_REJECTED` table holds eleven, and `+=` lives in the separate multi-statement table,
+  so the list was wrong. The active/passive HA row said six security test files assert
+  `dependencies = []`. There are five, two of which also check the installed metadata, so the
+  number was wrong. Both are corrected in place with a note. (#288)
+
 ### Fixed
 - **Four places still said a restored pipeline cursor ahead of the store is safe, and it is
   not after a backward clock step.** `next_stamp` compares the clock against the store's
@@ -17,7 +30,7 @@ All notable changes to this project. Versions correspond to git tags.
   docstring. All four now say two of the four directions are unrecoverable. A new drill test
   pins the measurement, so the four have to change together if `next_stamp` ever does.
   Backups already left out the cursor, and `docs/RESTORE.md` step 3 already deletes it, so
-  behaviour is unchanged.
+  behaviour is unchanged. (#284)
 - **The pre-commit hooks for ruff, mypy, bandit and detect-secrets now run the locked toolchain
   rather than pins of their own.** As hosted hook repos, three of them had drifted from
   `uv.lock`: ruff v0.6.9 against 0.17.1, mypy v1.11.2 against 2.4.0, and bandit 1.7.10 against
@@ -27,7 +40,7 @@ All notable changes to this project. Versions correspond to git tags.
   active. Every hook passed over the whole tree, and one planted violation per tool failed its
   hook. `tests/unit/test_gate_scope_parity.py` pins the shape, so there is no second version to
   keep in step. This closes `docs/PATH_RECONCILIATION_AUDIT.md` stage 1.2 (G2), differently from
-  the bump it prescribed.
+  the bump it prescribed. (#285)
 
 ### Security
 - **Releases are immutable from 2026-10-23, and `release.yml` no longer uploads to one that
@@ -41,7 +54,7 @@ All notable changes to this project. Versions correspond to git tags.
   names each missing asset, and the remedy is the next patch version. `docs/RELEASING.md` now
   says never to publish from the web page and documents `gh release verify`.
   `tests/security/test_release_immutability.py` runs the step's own script against a stand-in
-  `gh`.
+  `gh`. (#283)
 - **CFG-02 now passes IP literals only: a dashboard bound to `localhost` fails it.** The
   control's allow-list was `("127.0.0.1", "::1", "localhost")`, and its comment called
   that "the two loopback forms". `localhost` is a name, so it binds whatever the host's
@@ -51,7 +64,7 @@ All notable changes to this project. Versions correspond to git tags.
   to the dashboard's bind. A name now fails with its own message, "a name rather than an
   address". The committed config binds `127.0.0.1` and still passes. **Action for operators:**
   a deployment whose `.streamlit/config.toml` sets `address = "localhost"` now fails CFG-02,
-  so set `127.0.0.1` or `::1`.
+  so set `127.0.0.1` or `::1`. (#286, #287)
 - **A file named like an option no longer turns the pre-commit secret scan into a pass.**
   pre-commit appends the staged filenames after a hook's `args`, and the detect-secrets hook's
   `args` did not end with `--`. Measured in a throwaway repository: a file named `--help`
@@ -61,7 +74,15 @@ All notable changes to this project. Versions correspond to git tags.
   `args` with `--`. Before the change ruff and mypy already failed, but with an argument error
   and without checking the code. A new security test in `tests/security/test_secret_gate.py`
   rebuilds pre-commit's own argv from the committed config and requires the key to be found.
-  A parity test requires the terminator on every local hook that receives filenames.
+  A parity test requires the terminator on every local hook that receives filenames. (#290)
+
+### Known issues
+- **`--help` still raises `UnicodeEncodeError` on an ASCII-only stdout in fourteen CLIs under
+  `scripts/`, as in v2.3.0.** Re-measured for this release with `PYTHONIOENCODING=ascii`:
+  fourteen exit 1 on a non-ASCII character in their help text (U+2014, or U+00A7 in
+  `secret_gate.py`). A UTF-8 locale or `PYTHONIOENCODING=utf-8` works around it (measured on
+  `scripts/run_retention.py`: exit 0). Two more CLIs fail `--help` for a different reason: an
+  optional dependency that is not installed (`weasyprint`, `qdrant_client`).
 
 ## v2.3.0 — Production SOC Foundations — 2026-10-23
 

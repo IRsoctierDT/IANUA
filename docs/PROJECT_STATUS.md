@@ -2,20 +2,15 @@
 
 ## Current Version
 
-v2.3.0 — **Production SOC Foundations** — the platform gains a memory and
-runs on a schedule: a durable, append-only event store (`store/`),
-cross-domain entity resolution and incident assembly (`correlation/`), an
-at-least-once detection cycle (`scripts/run_pipeline.py`), read-only
-collection of this node's own declared log files (`scripts/run_collector.py`),
-retention that deletes only under a committed grant
-(`scripts/run_retention.py`), verifiable backup with a restore promotion gate
-(`scripts/run_backup.py`), and fail-closed service-level indicators for the
-platform itself (`scripts/report_sli.py`). Around them sits a long hardening
-pass, much of it closing places where a planted value reached an error
-message, a report or a terminal unbounded or unescaped, and controls that
-read healthy while they were not in force. GitHub Releases now publish the
-curated changelog section. See [`docs/Changelog.md`](./Changelog.md) for the
-full history, including the one known issue this release ships with.
+v2.3.1 — **Immutable Releases & Gate Hardening** — a patch release on v2.3.0's SOC
+platform, whose components are listed under **SOC Platform** below. It is the first
+immutable release: GitHub locks a published release's tag and assets, and the release
+workflow never uploads to a locked release. It also tightens three gates. A file
+named like an option can no longer make the pre-commit secret scan pass. The
+pre-commit hooks run the locked toolchain rather than pins of their own. Compliance
+control CFG-02 accepts only IP literals, so a dashboard bound to `localhost` now
+fails it. See [`docs/Changelog.md`](./Changelog.md) for the full history, including
+the known issue carried over from v2.3.0.
 
 ## Operational Components
 
@@ -155,6 +150,14 @@ Supporting agents:
   store, correlation, detection cycle, collection, retention, backup and
   restore verification, and the platform's own SLIs
 - GitHub Releases publish the curated changelog section as their body
+
+### v2.3.1 — Immutable Releases & Gate Hardening
+
+- Releases are immutable: tags and assets lock when published, and `release.yml`
+  never uploads to a locked release
+- Pre-commit hooks run the locked toolchain, and a dash-named file can no longer
+  pass the secret scan
+- Compliance control CFG-02 accepts IP literals only
 
 ## Current Model Inventory
 
