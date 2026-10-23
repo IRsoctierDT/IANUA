@@ -42,6 +42,16 @@ All notable changes to this project. Versions correspond to git tags.
   says never to publish from the web page and documents `gh release verify`.
   `tests/security/test_release_immutability.py` runs the step's own script against a stand-in
   `gh`.
+- **CFG-02 now passes IP literals only: a dashboard bound to `localhost` fails it.** The
+  control's allow-list was `("127.0.0.1", "::1", "localhost")`, and its comment called
+  that "the two loopback forms". `localhost` is a name, so it binds whatever the host's
+  resolver maps it to. The check reads the config and never resolves, so it cannot vouch for
+  one. Measured on one container, `localhost` resolved to `127.0.0.1` alone. The owner chose
+  to refuse it, which applies AGENTS.md §5's IP-literals-only rule for declared egress hosts
+  to the dashboard's bind. A name now fails with its own message, "a name rather than an
+  address". The committed config binds `127.0.0.1` and still passes. **Action for operators:**
+  a deployment whose `.streamlit/config.toml` sets `address = "localhost"` now fails CFG-02,
+  so set `127.0.0.1` or `::1`.
 
 ## v2.3.0 — Production SOC Foundations — 2026-10-23
 

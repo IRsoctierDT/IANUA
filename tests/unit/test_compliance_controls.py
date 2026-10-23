@@ -151,7 +151,7 @@ def test_live_repository_passes_every_automated_control() -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("address", ["127.0.0.1", "::1", "localhost"])
+@pytest.mark.parametrize("address", ["127.0.0.1", "::1"])
 def test_dashboard_loopback_passes_on_loopback_addresses(tmp_path: Path, address: str) -> None:
     _write(tmp_path, ".streamlit/config.toml", f'[server]\naddress = "{address}"\n')
     assert check_dashboard_binds_loopback(tmp_path).status is ControlStatus.PASS
