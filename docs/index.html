@@ -627,6 +627,177 @@ footer {
   .footer-inner { flex-direction: column; gap: 24px; text-align: center; }
   .security-strip { flex-direction: column; gap: 16px; }
 }
+
+/* ── FIRST-VISIT WELCOME ──────────────────────────────────────────────────
+   A new visitor gets the card; a returning one gets the slim note. The
+   new-vs-returning check is a single key in the visitor's own browser (see
+   the script at the end of <body>) — there is no server, no cookie and no
+   request, so nothing about a visit leaves their device and there is
+   nothing to consent to. Hidden by default, so with JavaScript off the
+   page is exactly as it was. */
+
+.welcome-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5,7,10,.74);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.welcome-backdrop[hidden] { display: none; }
+
+.welcome-card {
+  width: 100%;
+  max-width: 520px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 28px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0,0,0,.55), 0 0 0 1px var(--blue-glow);
+}
+
+.welcome-eyebrow {
+  margin-bottom: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--blue-dim);
+}
+
+.welcome-card h2 {
+  margin-bottom: 10px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.welcome-intro {
+  font-size: 14.5px;
+  line-height: 1.62;
+  color: var(--text-1);
+}
+
+.welcome-links {
+  display: grid;
+  gap: 8px;
+  margin: 20px 0 18px;
+}
+
+.welcome-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 11px 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.welcome-link:hover { background: rgba(255,255,255,.055); border-color: var(--border-2); }
+
+.welcome-link-title { font-size: 13.5px; font-weight: 500; color: var(--text-0); }
+.welcome-link-desc  { font-size: 12.5px; color: var(--text-2); }
+
+.welcome-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.welcome-note {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.welcome-dismiss {
+  flex: none;
+  padding: 10px 18px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--bg);
+  background: var(--blue-dim);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.welcome-dismiss:hover { background: var(--blue); }
+
+/* Returning visitor: non-blocking, self-dismissing, never a modal. */
+.welcome-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 200;
+  max-width: calc(100vw - 40px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 13px;
+  font-size: 13px;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.45);
+}
+
+.welcome-toast[hidden] { display: none; }
+
+.welcome-toast-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-2);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.welcome-toast-close:hover { color: var(--text-0); background: rgba(255,255,255,.07); }
+
+/* Scoped to these components so the rest of the page keeps its own focus
+   treatment unchanged. */
+.welcome-card a:focus-visible,
+.welcome-dismiss:focus-visible,
+.welcome-toast-close:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .welcome-card, .welcome-toast { animation: welcome-rise .26s ease-out both; }
+  .welcome-link, .welcome-dismiss, .welcome-toast-close {
+    transition: background .15s ease, border-color .15s ease, color .15s ease;
+  }
+  @keyframes welcome-rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+}
+
+@media (max-width: 560px) {
+  .welcome-card { padding: 22px; }
+  .welcome-foot { flex-direction: column; align-items: stretch; gap: 14px; }
+  .welcome-dismiss { width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -969,6 +1140,249 @@ function buildAgentCard(a) {
 }
 
 document.getElementById('agents-grid').innerHTML = AGENTS.map(buildAgentCard).join('');
+</script>
+
+<!-- ── FIRST-VISIT WELCOME ──────────────────────────────────────────────
+     Both are hidden here and revealed by the script below, so a visitor
+     with JavaScript disabled sees the page unchanged rather than a banner
+     they cannot dismiss. -->
+<div class="welcome-backdrop" id="welcome" hidden>
+  <div class="welcome-card" role="dialog" aria-modal="true"
+       aria-labelledby="welcome-title" aria-describedby="welcome-intro">
+    <p class="welcome-eyebrow">First visit</p>
+    <h2 id="welcome-title">Welcome to IANUA</h2>
+    <p class="welcome-intro" id="welcome-intro">
+      A defensive-security and AI-operations platform — SOC automation, RAG
+      pipelines, MITRE ATT&amp;CK mapping and agentic workflows, built
+      secure-by-default and documented so the reasoning can be reviewed, not
+      just the result.
+    </p>
+    <div class="welcome-links">
+      <a class="welcome-link" href="#capabilities">
+        <span class="welcome-link-title">Capabilities</span>
+        <span class="welcome-link-desc">What the platform does today</span>
+      </a>
+      <a class="welcome-link" href="#quickstart">
+        <span class="welcome-link-title">Quickstart</span>
+        <span class="welcome-link-desc">Run the stack locally</span>
+      </a>
+      <a class="welcome-link" href="./status.html">
+        <span class="welcome-link-title">Live status</span>
+        <span class="welcome-link-desc">Build, quality gates and platform health</span>
+      </a>
+      <a class="welcome-link" href="https://github.com/IRsoctierDT/IANUA" target="_blank" rel="noopener">
+        <span class="welcome-link-title">Source on GitHub</span>
+        <span class="welcome-link-desc">Charter, design notes and full history</span>
+      </a>
+    </div>
+    <div class="welcome-foot">
+      <p class="welcome-note">
+        Shown once. The flag that remembers you stays in this browser:
+        no cookies, no analytics, no request.
+      </p>
+      <button class="welcome-dismiss" type="button" id="welcome-dismiss">Start reading</button>
+    </div>
+  </div>
+</div>
+
+<div class="welcome-toast" id="welcome-back" hidden>
+  <span id="welcome-back-text"></span>
+  <button class="welcome-toast-close" type="button" id="welcome-back-close"
+          aria-label="Dismiss">&times;</button>
+</div>
+
+<script>
+/* First-visit welcome: greet a new visitor once, a returning one quietly.
+ *
+ * WHERE THE "DATABASE OF VISITORS" LIVES. In each visitor's own browser,
+ * one key, and deliberately nowhere else. GitHub Pages serves static files
+ * and runs no code of ours, so there is no server side to hold a visitor
+ * table; and building one elsewhere would mean storing an identifier — an
+ * address or a cookie id — which is personal data, needs a privacy notice,
+ * and would put this site in the business of tracking people in order to
+ * say hello. Per-browser state costs nothing, collects nothing and cannot
+ * leak. The trade is honest and worth stating: it is per browser, not per
+ * person, so the same visitor on a phone and a laptop is greeted twice,
+ * and clearing site data greets them again.
+ *
+ * THE STORED RECORD IS UNTRUSTED INPUT. Every Pages site under one
+ * github.io account shares a single origin, so a sibling site could have
+ * written this key, and the visitor can edit it by hand in any case. It is
+ * parsed defensively and anything malformed is treated as "no record",
+ * which greets rather than throws. The only value that reaches the page is
+ * a visit count, clamped to an integer, and a date matched against a
+ * literal pattern — both written with textContent, never innerHTML.
+ */
+(function () {
+  'use strict';
+
+  var KEY = 'ianua.visitor.v1';
+  var MAX_VISITS = 9999;
+  var TOAST_MS = 7000;
+
+  /* Private windows, blocked site data and an exhausted quota all throw on
+   * write while reading fine, so the probe has to be a write. With neither
+   * store available the greeting degrades to once per page load, which is
+   * the documented fallback rather than a crash. */
+  function pickStore() {
+    var names = ['localStorage', 'sessionStorage'];
+    for (var i = 0; i < names.length; i++) {
+      try {
+        var store = window[names[i]];
+        var probe = KEY + '.probe';
+        store.setItem(probe, '1');
+        store.removeItem(probe);
+        return store;
+      } catch (err) {
+        /* unavailable — try the next one */
+      }
+    }
+    return null;
+  }
+
+  function readRecord(store) {
+    if (!store) { return null; }
+    var raw;
+    try {
+      raw = store.getItem(KEY);
+    } catch (err) {
+      return null;
+    }
+    if (typeof raw !== 'string') { return null; }
+
+    var parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { return null; }
+
+    var visits = Math.floor(Number(parsed.visits));
+    if (!isFinite(visits) || visits < 1) { return null; }
+
+    var first = typeof parsed.first === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.first)
+      ? parsed.first
+      : null;
+
+    return { visits: Math.min(visits, MAX_VISITS), first: first };
+  }
+
+  function writeRecord(store, record) {
+    if (!store) { return; }
+    try {
+      store.setItem(KEY, JSON.stringify(record));
+    } catch (err) {
+      /* A greeting is not worth failing a page load over. */
+    }
+  }
+
+  function today() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function openWelcome() {
+    var backdrop = document.getElementById('welcome');
+    var dismiss = document.getElementById('welcome-dismiss');
+    if (!backdrop || !dismiss) { return; }
+
+    var previous = document.activeElement;
+    var restoreOverflow = document.body.style.overflow;
+    var closed = false;
+
+    function close() {
+      if (closed) { return; }
+      closed = true;
+      backdrop.hidden = true;
+      document.body.style.overflow = restoreOverflow;
+      document.removeEventListener('keydown', onKeyDown, true);
+      if (previous && typeof previous.focus === 'function') { previous.focus(); }
+    }
+
+    /* Escape closes; Tab is cycled inside the card so keyboard focus cannot
+     * wander behind a modal dialog. */
+    function onKeyDown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== 'Tab') { return; }
+      var items = backdrop.querySelectorAll('a[href], button');
+      if (!items.length) { return; }
+      var firstItem = items[0];
+      var lastItem = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === firstItem) {
+        event.preventDefault();
+        lastItem.focus();
+      } else if (!event.shiftKey && document.activeElement === lastItem) {
+        event.preventDefault();
+        firstItem.focus();
+      }
+    }
+
+    backdrop.hidden = false;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKeyDown, true);
+    dismiss.addEventListener('click', close);
+
+    /* Clicking the backdrop itself closes; a click inside the card does not. */
+    backdrop.addEventListener('mousedown', function (event) {
+      if (event.target === backdrop) { close(); }
+    });
+
+    /* Following any link should leave the dialog behind, so an in-page jump
+     * lands on a section the visitor can actually see. */
+    var links = backdrop.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].addEventListener('click', close);
+    }
+
+    dismiss.focus();
+  }
+
+  function showWelcomeBack(visits, first) {
+    var toast = document.getElementById('welcome-back');
+    var label = document.getElementById('welcome-back-text');
+    var close = document.getElementById('welcome-back-close');
+    if (!toast || !label || !close) { return; }
+
+    var message = 'Welcome back — visit ' + visits;
+    if (first) { message += ', first here ' + first; }
+    label.textContent = message;
+    toast.hidden = false;
+
+    var timer = window.setTimeout(hide, TOAST_MS);
+    function hide() {
+      window.clearTimeout(timer);
+      toast.hidden = true;
+    }
+    close.addEventListener('click', hide);
+  }
+
+  function start() {
+    var store = pickStore();
+    var record = readRecord(store);
+
+    if (record === null) {
+      /* Written before the card is shown, so closing the tab immediately
+       * still counts as having been greeted. */
+      writeRecord(store, { first: today(), visits: 1 });
+      openWelcome();
+      return;
+    }
+
+    var visits = Math.min(record.visits + 1, MAX_VISITS);
+    writeRecord(store, { first: record.first || today(), visits: visits });
+    showWelcomeBack(visits, record.first);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
 </script>
 </body>
 </html>
