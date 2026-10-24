@@ -1,0 +1,105 @@
+# fuzz.yml — coverage-guided fuzzing of the parsers that read untrusted input.
+#
+# tests/fuzz/targets.py holds one bytes-in target per surface (normalize, the
+# key-value decoder, the egress address checks, the stored-projection reader),
+# each asserting what its module already documents. pytest replays their seeds
+# on every platform (tests/fuzz/test_fuzz_corpus.py); this is the half that
+# needs Atheris, and so Linux x86_64 on Python 3.12.
+#
+# One minute per target on a pull request or push that touches what the
+# targets import, ten minutes weekly and on a manual run. The path filters are
+# held to the targets' real import graph by test_fuzz_corpus.py, so a new
+# import cannot quietly stop a change to it from being fuzzed.
+#
+# Installs one thing: Atheris, hash-pinned from the committed lock. The targets
+# import only the standard library and this checkout (also held by
+# test_fuzz_corpus.py), so the project itself is not installed and nothing
+# else is fetched. No write permission, no secret, and no corpus cache: a
+# restored corpus is input some earlier run wrote, and the seeds rebuild the
+# starting point from the fixtures in seconds.
+#
+# A finding fails the job and uploads the input that caused it. Reproduce with
+#   python -m tests.fuzz <target> <downloaded crash file>
+name: Fuzz (Atheris)
+
+on:
+  # The two path lists are identical; test_fuzz_corpus.py checks both.
+  pull_request:
+    branches: [main]
+    paths:
+      - "agents/__init__.py"
+      - "agents/policies/**"
+      - "ingest/**"
+      - "store/**"
+      - "tests/__init__.py"
+      - "tests/fuzz/**"
+      - "tests/fixtures/ingest_fixtures.json"
+      - "security/sbom/requirements.lock"
+      - ".github/workflows/fuzz.yml"
+  push:
+    branches: [main]
+    paths:
+      - "agents/__init__.py"
+      - "agents/policies/**"
+      - "ingest/**"
+      - "store/**"
+      - "tests/__init__.py"
+      - "tests/fuzz/**"
+      - "tests/fixtures/ingest_fixtures.json"
+      - "security/sbom/requirements.lock"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "17 4 * * 4" # Thursdays 04:17 UTC (off the hour to avoid load spikes)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Exactly tests/fuzz/targets.py's TARGETS, sorted; a test holds the two equal.
+        target: [egress, keyvalue, normalize, projection]
+    env:
+      TARGET: ${{ matrix.target }}
+      FUZZ_SECONDS: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '600' || '60' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install Atheris, hash-pinned from the committed lock
+        # The lock entry is one requirement line plus its --hash continuation
+        # lines; copy that block alone and fail closed if it is not there.
+        run: |
+          awk '/^atheris==/ {found = 1} found {print} found && !/\\$/ {exit}' \
+            security/sbom/requirements.lock > "$RUNNER_TEMP/atheris.lock"
+          grep -q '^atheris==' "$RUNNER_TEMP/atheris.lock" \
+            || { echo "::error::atheris is not pinned in security/sbom/requirements.lock"; exit 1; }
+          pip install --require-hashes --no-deps -r "$RUNNER_TEMP/atheris.lock"
+      - name: Seed the corpus from the test fixtures
+        run: python -m tests.fuzz.seeds "$TARGET" "$RUNNER_TEMP/corpus"
+      - name: Fuzz
+        # -timeout turns an input that hangs a parser (a backtracking regex,
+        # say) into a finding; libFuzzer's default waits twenty minutes.
+        run: |
+          mkdir -p fuzz-artifacts
+          python -m tests.fuzz "$TARGET" \
+            -max_total_time="$FUZZ_SECONDS" -timeout=10 -max_len=65536 \
+            -print_final_stats=1 -artifact_prefix=fuzz-artifacts/ \
+            "$RUNNER_TEMP/corpus"
+      - name: Upload the input that failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

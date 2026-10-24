@@ -64,6 +64,9 @@ Critical findings (CVSS ≥ 9.0) will be prioritized for an expedited patch.
 - **Supply chain**: CycloneDX **SBOM** + exported hash-pinned locks derived from
   `uv.lock`, verified in-sync by read-only CI drift gates
 - **Secret scanning**: `gitleaks` on every PR; `detect-secrets` in pre-commit
+- **Fuzzing**: Atheris fuzzes the parsers that read untrusted input on pull
+  requests that touch them and weekly (`.github/workflows/fuzz.yml`); Hypothesis
+  property tests cover the tool input validators in the main test suite
 - **Supply-chain posture**: OpenSSF **Scorecard** weekly and on every push to
   `main`, reporting into Code scanning. Results are deliberately **not**
   published to the public OpenSSF API, so there is no Scorecard badge and no

@@ -5,7 +5,7 @@
 """Regenerate the derived pip lockfiles under ``security/sbom/`` from ``uv.lock``.
 
 ``uv.lock`` is the dependency source of truth; ``requirements.lock`` (the
-Linux/3.12 ``[dev,dashboard]`` closure) and ``requirements-dev.lock`` (the
+Linux/3.12 closure of every extra) and ``requirements-dev.lock`` (the
 ``[dev]`` export) are derived artifacts consumed by the SBOM/SCA gates. The
 previously documented manual procedure ran ``uv pip compile`` *unconstrained*,
 which resolves fresh from PyPI and can pick versions newer than ``uv.lock``'s

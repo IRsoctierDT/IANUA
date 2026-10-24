@@ -171,8 +171,26 @@ The fuzzer surfaced a real leak — `resolve_within` let a raw `ValueError` esca
 embedded NUL byte — now hardened to reject NUL bytes and oversized candidates as
 `ValidationError`. Hypothesis is pinned in the `dev` extra.
 
+**Coverage-guided fuzzing — added 2026-10-24.** Hypothesis draws inputs from strategies and
+does not learn from what they reach. The parsers that read untrusted bytes are now also
+fuzzed under **Atheris**, which keeps the inputs that reach new code.
+`tests/fuzz/targets.py` holds one target per surface: `ingest.normalize`,
+`ingest.keyvalue.decode`, the egress address and port checks, and
+`NormalizedEvent.from_dict`. Each asserts what its module already documents.
+`.github/workflows/fuzz.yml` runs each target for one minute on a pull request or push that
+touches what it imports, and for ten minutes weekly. `tests/fuzz/test_fuzz_corpus.py` replays
+every seed through the same targets in the ordinary suite, including on platforms Atheris
+does not support. The first run found that an unclaimed record's excerpt escapes non-ASCII
+characters (`json.dumps` defaults to `ensure_ascii=True`), so a non-ASCII indicator is not a
+substring of the excerpt it was extracted from. The target accepts the escaped form until
+that is fixed; the fix is its own change, because it alters `event_id` for every such record.
+Atheris is pinned in the `fuzz` extra, which installs only on Linux x86_64 with Python ≥ 3.12.
+
 **Remaining enhancements (optional).** Extend property coverage as new tool validators are
-added; seed strategies directly from each tool's declared argument schema.
+added; seed strategies directly from each tool's declared argument schema. Add each contract
+`tests/fuzz/targets.py` lists as not yet holding to its target, together with the fix that
+makes it hold. Keep a fuzz corpus between scheduled runs, so coverage accumulates instead of
+restarting from the seeds each week.
 
 ---
 

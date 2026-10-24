@@ -66,6 +66,15 @@ crypto = [
   "cryptography>=50.0.2",
 ]
 
+# Coverage-guided fuzzing (tests/fuzz/, .github/workflows/fuzz.yml). Atheris
+# ships Linux x86_64 wheels only, and 3.1.0 has neither a cp311 wheel nor an
+# sdist, so the marker keeps it off macOS and Python 3.11 instead of failing
+# their installs. It is not in `dev`: the wheel is ~37 MB of libFuzzer that no
+# other job needs.
+fuzz = [
+  "atheris>=3.1.0; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.12'",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
@@ -154,6 +163,7 @@ module = [
   "yaml",
   "reportlab",
   "reportlab.*",
+  "atheris",
 ]
 ignore_missing_imports = true
 
