@@ -104,8 +104,9 @@ def declare(raw: str | Path) -> Source:
 
     Raises:
         SourceError: if the path is relative, missing, not a regular file, a
-            symlink at its final component, or on the credential deny-list.
-            Refused rather than skipped — see :class:`SourceError`.
+            symlink at its final component, on the credential deny-list, or
+            cannot be examined at all. Refused rather than skipped — see
+            :class:`SourceError`.
     """
     path = Path(raw)
     if not path.is_absolute():
@@ -114,6 +115,36 @@ def declare(raw: str | Path) -> Source:
             "scheduler's working directory happens to be, which is not the one you "
             "tested in"
         )
+    try:
+        return _examine(path)
+    except OSError as exc:
+        # Through 3.13, `is_symlink()`, `exists()` and `is_file()` swallow
+        # ENOENT, ENOTDIR, EBADF and ELOOP and return False, but not
+        # ENAMETOOLONG or EACCES, which escaped as a bare `OSError` from the
+        # first probe. Measured on 3.11, 3.12 and 3.13: a 5000-byte path and a
+        # single 300-byte component each raised `[Errno 36] File name too
+        # long`, and a log under a directory the collector's user may not
+        # search raised `[Errno 13] Permission denied`. (On 3.14 those three
+        # are `os.path` predicates that swallow every `OSError`, so both cases
+        # are refused below as "does not exist": the right type, with a vaguer
+        # reason.) The CLI catches `OSError` too, so its exit code was right by
+        # accident; that is the gap `store.paths.validated_root` closed for
+        # `--root`. Only the reason is quoted, because the OSError's own text
+        # repeats the path, which for ENAMETOOLONG is the long part.
+        raise SourceError(
+            f"source {path} cannot be examined ({exc.strerror or type(exc).__name__}); "
+            "declared sources are refused rather than skipped, because a source this "
+            "collector cannot inspect is a blind spot nobody is told about"
+        ) from exc
+
+
+def _examine(path: Path) -> Source:
+    """The filesystem half of :func:`declare`, for a path already known absolute.
+
+    Every probe here can raise ``OSError``, and :func:`declare` refuses on it, so
+    a declared path leaves as a :class:`Source` or a :class:`SourceError` and as
+    nothing else.
+    """
     # Checked before resolve(), so the refusal names what the operator typed
     # rather than wherever it happens to point.
     if path.is_symlink():

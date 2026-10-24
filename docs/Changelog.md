@@ -55,8 +55,76 @@ All notable changes to this project. Versions correspond to git tags.
   committed fixtures are all ASCII, so no committed id or digest changes (0 of 15 on either
   path). An unclaimed record's projection stays under the store's 64 KiB ceiling: about
   50 KiB at most by its per-field bounds, and 46,668 bytes on a record built to fill them.
+### Fixed
+- **The MCP stdio transport answers a malformed line with a JSON-RPC error and keeps reading,
+  as its docstring said it did.** Measured on `2090519`, five lines ended `serve()`: a
+  `tools/call` whose `params` was `1` or `"x"` and a top-level `[]` raised `AttributeError`, an
+  id of 5,000 digits raised `ValueError` (the int-digit limit), and 100,000 open brackets raised
+  `RecursionError`. A message that is not an object is now `-32600`, a `params` that is not an
+  object is `-32602`, and a `ValueError` or `RecursionError` from `json.loads` is `-32700`, each
+  with `id: null` where no id can be read. Three more cases of the same defect go with them.
+  Under a strict stdin decoder (`PYTHONIOENCODING=utf-8:strict`, which is what an `en_US.UTF-8`
+  locale gives), one invalid byte raised `UnicodeDecodeError` out of the loop at exit 1, and the
+  valid request read before it in the same chunk was never answered. `main()` now reads bytes and
+  decodes each line with `surrogateescape`, so only that line is refused, as `-32700`. An id that
+  is not a string, number or null (`true`, `{}`, `1e400`) was echoed back, and `1e400` came back
+  as `Infinity`, which is not JSON. Such an id is now `-32600` with `id: null`. `NaN`, `Infinity`
+  and `-Infinity`, which `json.loads` accepts and JSON does not, are now `-32700`. A `params` of
+  `null` or `[]` was already `-32602` and keeps that code, with the message `'params' must be an
+  object`. `tests/security/test_mcp_transport_hardening.py` covers the five measured lines, a
+  valid request after each, the entrypoint under strict decoding, and a Hypothesis property over
+  generated messages. `tests/fuzz/targets.py` gains a `transport` target: one line through
+  `serve()`, nothing may raise, a request is answered exactly once with one strict-JSON line, and
+  the id is the request's own or null. `fuzz.yml` runs it, and its path filters now cover `mcp/`
+  and `agents/tools/`. Measured with the workflow's own command, 60 seconds: 311,202 inputs and
+  no finding. Its seeds carry the crash shapes, so reverting the `params` check fails the replay
+  at once, while 60 seconds of mutation from the well-formed seeds alone did not find it again.
+  Recorded, not fixed: a line is read whole, whatever its length. A
+  notification to `initialize`, `tools/list` or `tools/call` is still answered, though JSON-RPC
+  says a notification gets no reply, and a `tools/call` sent as one still runs the tool. A tool
+  whose output `json.dumps` cannot encode would still end the loop; the default registry's one
+  tool cannot return such output.
+- **Three loaders now raise only the error type their docstrings promise, so a caller that
+  handles that type refuses cleanly instead of crashing.** Measured on 3.11, 3.12 and 3.13
+  before the fix. `EgressAllowlist.load` let four inputs past `EgressAllowlistError`: invalid
+  UTF-8 (`UnicodeDecodeError`), 100,000 nested brackets (`RecursionError`), a 5000-digit
+  integer (a bare `ValueError`), and a path with an embedded NUL (`ValueError` from `open()`).
+  `collect.declare` let a path the filesystem would not examine past `SourceError`. That was
+  ENAMETOOLONG for a 5000-byte path or a 300-byte component, and EACCES for a log under a
+  directory the collector's user may not search. `collect.load_offsets` let a depth-bombed
+  offsets file past `OffsetError` as `RecursionError`, which neither caller catches, so
+  `scripts/run_collector.py` and the SLO monitor's `collection-pending` measurement both died
+  with a traceback. All three already failed closed, so nothing was bypassed. Each refusal
+  names the file and quotes none of its content; for invalid UTF-8 that means the reason and
+  byte offset, not the decoder's text, which quotes the byte. The collector's exit codes are
+  unchanged: 2 for an undeclarable source, 1 for unusable offsets.
+  `tests/security/test_loader_error_contracts.py` pins each input, every filesystem probe in
+  `declare`, both callers, a sweep across the parser's depth limit, and a Hypothesis property
+  over arbitrary bytes. Another fuzz target, `allowlist`, loads each input as a whole allow-list
+  file and fails on anything but `EgressAllowlistError`, with the three escaping shapes among its
+  seeds, so `tests/fuzz/targets.py` no longer lists that contract as one it cannot assert. It is a
+  target of its own because the file round trip took the egress target from 24.6k inputs a second
+  to 3.0k (measured), which would have cost the address checks most of their fuzzing budget.
+  **Residual:** on 3.14, pathlib's predicates swallow every `OSError`, so there an unsearchable
+  source is refused as "does not exist" rather than "cannot be examined". It is still a
+  `SourceError`.
 
 ### Security
+- **Every `pip install` in CI is hash-pinned (OpenSSF Scorecard Pinned-Dependencies).** Eight
+  installs in `ci.yml`, `release.yml` and `runner-canary.yml` fetched packages by name and took
+  whatever PyPI served at that moment: `-e ".[dev]"` in five jobs, `build` in two, and
+  `"pyyaml>=6.0"` in one. Each now installs from `requirements-dev.lock` under
+  `--require-hashes`, followed by `pip install --no-deps -e .` where a job needs the project. The
+  Navigator drift gate copies only PyYAML's block out of that lock. `build` joins `[dev]` (1.6.1,
+  with `pyproject-hooks` 1.3.3), so that it has a pin. It stays out of Dependabot's auto-merge
+  group, because it produces the artifacts CI attests and the release publishes. As a side
+  effect, CI now tests the exact versions `uv.lock` records, rather than the newest each floor
+  allows. **The release job validates a tag with that tag's own lock**, and builds with a builder
+  installed in its own venv from the workflow's commit. Tags cut before this change (v2.3.1 and
+  earlier) have no pin for `build`, and a dispatch for an existing tag runs against one. Measured
+  on v2.3.0: its own lock installs on Python 3.11; ruff, the format check, mypy and pytest pass;
+  and the builder produces its wheel and sdist. The `[build-system]` backend is still unpinned:
+  an editable install or `python -m build` fetches it into an isolated environment.
 - **`filelock` 4.2.4 and `setuptools` 84.2.1 close two advisories that turned `main` red.**
   CVE-2026-112940 (`filelock` 3.29.4, fixed in 4.2.1) and GHSA-xmj3-9gf7-h52w (`setuptools`
   83.0.0, fixed in 84.1.0) were published on 2026-10-23, after #292's checks passed and before
@@ -91,6 +159,14 @@ All notable changes to this project. Versions correspond to git tags.
   needs its own fix. Keeping non-ASCII as written above moves a claimed record up to about
   12 KiB closer to that ceiling: measured with three-byte characters, the excerpt's share of
   the projection grew from 4,734 to 11,073 bytes.
+- **An unclaimed record's `raw_excerpt` escapes non-ASCII characters.** It is serialized with
+  `json.dumps`, whose default is `ensure_ascii=True` (`ingest/normalize.py`), so an indicator
+  such as `https://café.example/x` is extracted as written but retained as
+  `https://café.example/x`. It is then not a substring of the excerpt it came from. The
+  fuzz harness found this on its first run, and its normalize target accepts the escaped form
+  until the fix lands. The fix is a change of its own, because it alters `event_id` for every
+  such record. `tests/fuzz/targets.py` lists one further documented contract that does not
+  hold today and is not asserted yet; it needs its own fix too.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 

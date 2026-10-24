@@ -13,7 +13,7 @@
 
 This directory holds a [CycloneDX](https://cyclonedx.org/) SBOM covering the
 repository's **two package ecosystems** — Python and npm. The merged document
-(`sbom.cdx.json`) inventories **228 components** (136 Python + 92 npm) and, at
+(`sbom.cdx.json`) inventories **230 components** (138 Python + 92 npm) and, at
 generation time, **0 known vulnerabilities** per the public PyPI/OSV advisory
 databases.
 
@@ -41,12 +41,12 @@ and byte-for-byte reproducible for a fixed timestamp. All 92 npm components are
 
 | File | Format | Scope | Source |
 |---|---|---|---|
-| `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (141 pkgs) | `uv lock` from `pyproject.toml` |
-| `requirements.lock` | pip requirements (hashed) | 136 Linux/3.12 deps (every extra: `[dev,dashboard,fuzz]`, incl. CUDA) | `scripts/refresh_locks.py` (constrained `uv pip compile`) |
-| `requirements-dev.lock` | pip requirements (hashed) | 58 SHA-256 hash-pinned `[dev]` tools | `scripts/refresh_locks.py` (`uv export --extra dev`) |
-| `python.cdx.json` | CycloneDX 1.4 | 136 Python components | `pip-audit --disable-pip -r requirements.lock` |
+| `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (143 pkgs) | `uv lock` from `pyproject.toml` |
+| `requirements.lock` | pip requirements (hashed) | 138 Linux/3.12 deps (every extra: `[dev,dashboard,fuzz]`, incl. CUDA) | `scripts/refresh_locks.py` (constrained `uv pip compile`) |
+| `requirements-dev.lock` | pip requirements (hashed) | 60 SHA-256 hash-pinned `[dev]` tools | `scripts/refresh_locks.py` (`uv export --extra dev`) |
+| `python.cdx.json` | CycloneDX 1.4 | 138 Python components | `pip-audit --disable-pip -r requirements.lock` |
 | `npm.cdx.json` | CycloneDX 1.5 | 92 npm components | `package-lock.json` (offline) |
-| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 228 components | both, via `generate_sbom.py` |
+| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 230 components | both, via `generate_sbom.py` |
 
 **`uv.lock` (repo root) is the dependency source of truth.** It is the universal,
 hashed resolution of `pyproject.toml`; CI fails closed via `uv lock --check` if
@@ -54,9 +54,14 @@ hashed resolution of `pyproject.toml`; CI fails closed via `uv lock --check` if
 from it; `requirements.lock` remains a platform-resolved snapshot for the SBOM/SCA
 (see [Future Enhancements](#future-enhancements) for migrating it to a uv export).
 
-The CI **Security job** installs its own tools from `requirements-dev.lock` under
+Every CI job that installs Python tooling installs it from these locks under
 `pip install --require-hashes`, so the toolchain that runs with repository access
-is tamper-evident, not just version-pinned.
+is tamper-evident, not just version-pinned: the whole of `requirements-dev.lock`
+where a job needs the dev tools, and a single block copied out of a lock where it
+needs one package (PyYAML for the Navigator drift gate, Atheris for the fuzz job).
+The project itself is installed with `--no-deps`; its runtime dependency list is
+empty. What stays unpinned is the `[build-system]` backend that an editable install
+or `python -m build` fetches into its own isolated environment.
 
 `sbom.cdx.json` is the canonical artifact. **Every** component carries a
 [purl](https://github.com/package-url/purl-spec) — `generate_sbom.py` backfills

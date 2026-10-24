@@ -18,14 +18,27 @@ the security model (allow-list + self-validating tools) is unchanged.
 
 Security (AGENTS.md §3, §5): unknown methods/tools fail closed with a JSON-RPC
 error; malformed input never crashes the loop or escapes the registry root.
+Every line is untrusted (DESIGN.md §5 boundary 2), so its shape is checked
+before anything reads it, and a malformed line gets one error response:
+
+    * not UTF-8, not JSON (``NaN`` and ``Infinity`` included), or past a
+      decoder limit (nesting depth, integer length)    -> PARSE_ERROR
+    * not an object, or an ``id`` that is not a string,
+      number or null                                   -> INVALID_REQUEST
+    * a ``tools/call`` whose ``params`` is not an object -> INVALID_PARAMS
+
+The first two carry ``id: null``, because no id can be read from them. Batches
+are not supported, so a top-level array is an invalid request like any other
+non-object.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import math
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, NoReturn, TextIO
 
 from agents.tools.validation import ValidationError
 from mcp.server import ToolRegistry, build_default_registry
@@ -49,9 +62,37 @@ def _error(req_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
-def handle_request(registry: ToolRegistry, request: dict[str, Any]) -> dict[str, Any] | None:
-    """Process a single JSON-RPC request object; return a response (or None for notifications)."""
+def _is_valid_id(value: object) -> bool:
+    """Whether ``value`` is a JSON-RPC 2.0 id (a string, a number or null).
+
+    Only a valid id is ever echoed. ``bool`` is refused explicitly because it
+    subclasses ``int``. A float must be finite: ``1e400`` decodes to ``inf``,
+    and echoing it would write ``Infinity``, which is not JSON.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return value is None or isinstance(value, (str, int))
+
+
+def _reject_constant(token: str) -> NoReturn:
+    """Refuse ``NaN``, ``Infinity`` and ``-Infinity``: ``json.loads`` accepts them, JSON does not."""
+    raise ValueError(f"not a JSON value: {token}")
+
+
+def handle_request(registry: ToolRegistry, request: object) -> dict[str, Any] | None:
+    """Process one decoded JSON-RPC message; return a response (or None for notifications).
+
+    ``request`` is whatever the line decoded to, so its shape is checked rather
+    than assumed: a non-object, or an ``id`` that is not a string, number or
+    null, is ``INVALID_REQUEST`` with ``id: null``.
+    """
+    if not isinstance(request, dict):
+        return _error(None, INVALID_REQUEST, "invalid JSON-RPC request")
     req_id = request.get("id")
+    if not _is_valid_id(req_id):
+        return _error(None, INVALID_REQUEST, "invalid JSON-RPC request")
     method = request.get("method")
 
     if request.get("jsonrpc") != "2.0" or not isinstance(method, str):
@@ -78,7 +119,9 @@ def handle_request(registry: ToolRegistry, request: dict[str, Any]) -> dict[str,
         return _result(req_id, {"tools": tools})
 
     if method == "tools/call":
-        params = request.get("params") or {}
+        params = request.get("params", {})
+        if not isinstance(params, dict):
+            return _error(req_id, INVALID_PARAMS, "'params' must be an object")
         name = params.get("name")
         arguments = params.get("arguments", {})
         if not isinstance(name, str):
@@ -100,14 +143,28 @@ def handle_request(registry: ToolRegistry, request: dict[str, Any]) -> dict[str,
 
 
 def serve(registry: ToolRegistry, lines: Iterator[str], out: TextIO) -> None:
-    """Run the read-eval-respond loop over an iterator of input lines."""
+    """Run the read-eval-respond loop over an iterator of input lines.
+
+    No input line ends the loop: each non-blank one gets the response
+    ``handle_request`` returns, or none when that is ``None`` (a notification).
+    ``lines`` must not raise either, so give a byte stream to ``utf8_lines``
+    rather than iterating a strict text stream. Two failures are not caught: a
+    failed write, since once the host stops reading there is nobody left to
+    answer, and tool output ``json.dumps`` cannot encode, which the default
+    registry's one tool never returns.
+    """
     for raw in lines:
         raw = raw.strip()
         if not raw:
             continue
         try:
-            request = json.loads(raw)
-        except json.JSONDecodeError:
+            # A lone surrogate is an input byte that was not UTF-8 (see utf8_lines).
+            raw.encode("utf-8")
+            request = json.loads(raw, parse_constant=_reject_constant)
+        except (ValueError, RecursionError):
+            # ValueError covers JSONDecodeError, UnicodeEncodeError and the
+            # int-digit limit; RecursionError is nesting deeper than the
+            # decoder's stack. None of them leaves an id to echo.
             out.write(json.dumps(_error(None, PARSE_ERROR, "parse error")) + "\n")
             out.flush()
             continue
@@ -117,6 +174,20 @@ def serve(registry: ToolRegistry, lines: Iterator[str], out: TextIO) -> None:
             out.flush()
 
 
+def utf8_lines(stream: Iterable[bytes]) -> Iterator[str]:
+    """Decode each line of a byte stream for ``serve``, never raising on a bad byte.
+
+    ``surrogateescape`` carries an invalid byte through as a lone surrogate, and
+    ``serve`` answers that one line PARSE_ERROR. Iterating ``sys.stdin`` instead
+    decodes whole reads with the locale's error handler, which is ``strict``
+    under an ordinary UTF-8 locale such as macOS's: one invalid byte raised
+    ``UnicodeDecodeError`` out of the loop, and the valid lines read with it
+    were never answered.
+    """
+    for line in stream:
+        yield line.decode("utf-8", "surrogateescape")
+
+
 def main() -> None:  # pragma: no cover - process entrypoint
     """Stdio entrypoint. Root defaults to ./data; override with MCP_ROOT."""
     import os
@@ -124,7 +195,7 @@ def main() -> None:  # pragma: no cover - process entrypoint
 
     root = Path(os.environ.get("MCP_ROOT", "./data"))
     registry = build_default_registry(root)
-    serve(registry, iter(sys.stdin), sys.stdout)
+    serve(registry, utf8_lines(sys.stdin.buffer), sys.stdout)
 
 
 if __name__ == "__main__":  # pragma: no cover

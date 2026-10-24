@@ -23,8 +23,9 @@ import json
 import subprocess
 import sys
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import pytest
 import yaml
@@ -140,6 +141,20 @@ def test_the_egress_target_refuses_an_accepted_link_local_address(
 
 
 @pytest.mark.security
+def test_the_allowlist_target_refuses_a_loader_that_escapes_its_error_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A bare ValueError, because EgressAllowlistError subclasses it: a target
+    # that caught the base class would swallow exactly the int-digit escape.
+    def escapes(_path: object) -> None:
+        raise ValueError("planted")
+
+    monkeypatch.setattr(targets.EgressAllowlist, "load", escapes)
+    with pytest.raises(ValueError, match="planted"):
+        targets.one_input_allowlist(seeds("allowlist")[0])
+
+
+@pytest.mark.security
 def test_the_projection_target_refuses_an_unbounded_rebuild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -147,6 +162,28 @@ def test_the_projection_target_refuses_an_unbounded_rebuild(
     monkeypatch.setattr(NormalizedEvent, "from_dict", classmethod(lambda _cls, _payload: oversized))
     with pytest.raises(AssertionError, match="message is"):
         targets.one_input_projection(seeds("projection")[0])
+
+
+@pytest.mark.security
+def test_the_transport_target_refuses_an_unanswered_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(targets, "serve", lambda _registry, _lines, _out: None)
+    with pytest.raises(AssertionError, match="answered 0 times"):
+        targets.one_input_transport(seeds("transport")[0])
+
+
+@pytest.mark.security
+def test_the_transport_target_refuses_an_id_the_request_did_not_carry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def invent_an_id(_registry: object, lines: Iterator[str], out: TextIO) -> None:
+        for _line in lines:
+            out.write('{"jsonrpc": "2.0", "id": 7, "result": {}}\n')
+
+    monkeypatch.setattr(targets, "serve", invent_an_id)
+    with pytest.raises(AssertionError, match="did not carry"):
+        targets.one_input_transport(b"[]")
 
 
 # --- the parts that silently disable fuzzing --------------------------------

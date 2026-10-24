@@ -175,8 +175,9 @@ embedded NUL byte — now hardened to reject NUL bytes and oversized candidates 
 does not learn from what they reach. The parsers that read untrusted bytes are now also
 fuzzed under **Atheris**, which keeps the inputs that reach new code.
 `tests/fuzz/targets.py` holds one target per surface: `ingest.normalize`,
-`ingest.keyvalue.decode`, the egress address and port checks, and
-`NormalizedEvent.from_dict`. Each asserts what its module already documents.
+`ingest.keyvalue.decode`, the egress address and port checks, `EgressAllowlist.load`,
+`NormalizedEvent.from_dict`, and the MCP stdio transport's `serve`. Each asserts what its
+module already documents.
 `.github/workflows/fuzz.yml` runs each target for one minute on a pull request or push that
 touches what it imports, and for ten minutes weekly. `tests/fuzz/test_fuzz_corpus.py` replays
 every seed through the same targets in the ordinary suite, including on platforms Atheris
