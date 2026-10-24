@@ -57,6 +57,30 @@ All notable changes to this project. Versions correspond to git tags.
   says a notification gets no reply, and a `tools/call` sent as one still runs the tool. A tool
   whose output `json.dumps` cannot encode would still end the loop; the default registry's one
   tool cannot return such output.
+- **Three loaders now raise only the error type their docstrings promise, so a caller that
+  handles that type refuses cleanly instead of crashing.** Measured on 3.11, 3.12 and 3.13
+  before the fix. `EgressAllowlist.load` let four inputs past `EgressAllowlistError`: invalid
+  UTF-8 (`UnicodeDecodeError`), 100,000 nested brackets (`RecursionError`), a 5000-digit
+  integer (a bare `ValueError`), and a path with an embedded NUL (`ValueError` from `open()`).
+  `collect.declare` let a path the filesystem would not examine past `SourceError`. That was
+  ENAMETOOLONG for a 5000-byte path or a 300-byte component, and EACCES for a log under a
+  directory the collector's user may not search. `collect.load_offsets` let a depth-bombed
+  offsets file past `OffsetError` as `RecursionError`, which neither caller catches, so
+  `scripts/run_collector.py` and the SLO monitor's `collection-pending` measurement both died
+  with a traceback. All three already failed closed, so nothing was bypassed. Each refusal
+  names the file and quotes none of its content; for invalid UTF-8 that means the reason and
+  byte offset, not the decoder's text, which quotes the byte. The collector's exit codes are
+  unchanged: 2 for an undeclarable source, 1 for unusable offsets.
+  `tests/security/test_loader_error_contracts.py` pins each input, every filesystem probe in
+  `declare`, both callers, a sweep across the parser's depth limit, and a Hypothesis property
+  over arbitrary bytes. Another fuzz target, `allowlist`, loads each input as a whole allow-list
+  file and fails on anything but `EgressAllowlistError`, with the three escaping shapes among its
+  seeds, so `tests/fuzz/targets.py` no longer lists that contract as one it cannot assert. It is a
+  target of its own because the file round trip took the egress target from 24.6k inputs a second
+  to 3.0k (measured), which would have cost the address checks most of their fuzzing budget.
+  **Residual:** on 3.14, pathlib's predicates swallow every `OSError`, so there an unsearchable
+  source is refused as "does not exist" rather than "cannot be examined". It is still a
+  `SourceError`.
 
 ### Security
 - **Every `pip install` in CI is hash-pinned (OpenSSF Scorecard Pinned-Dependencies).** Eight
@@ -92,8 +116,8 @@ All notable changes to this project. Versions correspond to git tags.
   `https://café.example/x`. It is then not a substring of the excerpt it came from. The
   fuzz harness found this on its first run, and its normalize target accepts the escaped form
   until the fix lands. The fix is a change of its own, because it alters `event_id` for every
-  such record. `tests/fuzz/targets.py` lists two further documented contracts that do not
-  hold today and are not asserted yet; each needs its own fix too.
+  such record. `tests/fuzz/targets.py` lists one further documented contract that does not
+  hold today and is not asserted yet; it needs its own fix too.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 

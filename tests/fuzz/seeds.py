@@ -72,6 +72,19 @@ _TRANSPORT_LINES = (
     b"   ",
 )
 
+#: Whole allow-list files: the shipped default, one declared loopback host, and
+#: the three shapes that escaped ``EgressAllowlist.load`` as a foreign exception
+#: before the loader caught them. The depth bomb is past ``json``'s limit on
+#: 3.11 to 3.14 and under the workflow's ``-max_len``.
+_ALLOWLISTS = (
+    b'{"version": 1, "hosts": []}',
+    b'{"version": 1, "hosts": [{"address": "127.0.0.1", "port": 8443,'
+    b' "authorization": "fuzz seed: loopback"}]}',
+    b'{"hosts": ["\xff"]}',
+    b"[" * 50_000,
+    b'{"version": ' + b"9" * 5000 + b"}",
+)
+
 
 def _records() -> list[dict[str, Any]]:
     fixtures = json.loads(_FIXTURES.read_text(encoding="utf-8"))
@@ -85,6 +98,8 @@ def seeds(target: str) -> list[bytes]:
         return records + [line.encode() for line in _TEXT_LINES]
     if target == "keyvalue":
         return [line.encode() for line in _TEXT_LINES]
+    if target == "allowlist":
+        return list(_ALLOWLISTS)
     if target == "egress":
         return [port.to_bytes(2, "big") + text.encode() for text, port in _EGRESS_CANDIDATES]
     if target == "projection":

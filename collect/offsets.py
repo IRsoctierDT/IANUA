@@ -110,6 +110,12 @@ def load(path: Path) -> dict[str, Position]:
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
+    except RecursionError as exc:  # depth bomb — not a ValueError subclass
+        # Measured: "[" * 100000 escaped as RecursionError, past both callers'
+        # handlers (the collector's and the SLI monitor's), as a traceback.
+        raise OffsetError(
+            f"{path}: offsets are unreadable (nesting depth exceeds parser limits)"
+        ) from exc
     except (OSError, ValueError) as exc:
         raise OffsetError(f"{path}: offsets are unreadable ({exc})") from exc
     if not isinstance(payload, dict):
