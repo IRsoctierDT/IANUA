@@ -422,6 +422,102 @@ licensed here authenticates every request before it does anything.
   `socket` — `dependencies = []` stands, and **five** security test files assert it — `test_collect_hardening.py`, `test_correlation_hardening.py`, `test_ingest_hardening.py`, `test_pipeline_hardening.py`, `test_store_hardening.py`, each asserting `config["project"]["dependencies"] == []`. An earlier version of this bullet said six; the number is named here so it is checkable rather than asserted. A consensus
   system would have been the one candidate needing a package, and it is not what was
   approved.
+- **Bounded at the connection, because the mandated primitives default to a listener one
+  connection can stall.** The audit bound above is on *floods*, which is the path that
+  carries a key. This is the opposite attack: it needs no key, no valid MAC and no nonce,
+  because the connection never reaches verification — so it writes **no audit entry at
+  all** and is invisible to precisely the logging that bullet added to make probing
+  detectable. It is the fourth the bullet above told the next reviewer to expect, and it
+  is that pattern one step out: not a direction confused, but a **bound placed where the
+  key is**. Three times the draft protected the authenticated direction; here it bounded
+  the authenticated path and left the unauthenticated one open.
+
+  Measured on CPython 3.13.17 and identically on 3.11.17 and 3.12.3 — so unlike the
+  `is_unspecified` drift above, this one needs no per-patch re-measurement:
+  `issubclass(http.server.HTTPServer, socketserver.ThreadingMixIn)` is **False**, so the
+  server handles one request at a time; `BaseHTTPRequestHandler.timeout` is **None**, so
+  `handle_one_request` blocks in `rfile.readline()` with no read deadline; and
+  `socketserver.TCPServer.request_queue_size` is **5**, inherited rather than chosen.
+  Every default this bullet pins was read on all three — those three, `protocol_version`
+  and the two `http.client` size limits below — as was the denial that follows. What is
+  3.13.17 only is stated rather than smoothed over: the latency and thread figures, the
+  status codes the size thresholds return, and the slow drip. Each follows from those same
+  uniform defaults, so the risk in not re-running them is low; it is not zero, and the next
+  reviewer should know which is which.
+
+  **One connection, not six, and the backlog does not enter into it.** Measured on all
+  three interpreters: a single socket that connects and sends nothing denied a legitimate
+  `GET /health` outright, and service returned the instant that socket closed — so an
+  attacker picks the duration and leaves nothing behind. The backlog only decides when
+  *connecting* starts to fail: attempting twelve, seven connected and five were refused.
+  The first harness written to time this deadlocked in `shutdown()`, which is the defect
+  demonstrating itself — the flag `shutdown()` sets is read between requests, and on a
+  stalled serial server there is no between.
+
+  **Neither half of the fix is sufficient alone, which is why both are required.** A
+  finite handler `timeout` on the serial server removed the denial and left a queue:
+  measured at `timeout = 1.0`, six held connections delayed a legitimate request 5.71 s
+  and twelve delayed it 6.59 s, bounded by `timeout × (request_queue_size + 1)` — which
+  is why the queue size is a **chosen** number and not an inherited one.
+  `ThreadingHTTPServer` alone removed the delay (0.0 s at sixty held connections) and
+  replaced it with a leak, since `ThreadingMixIn` spawns one thread per connection with
+  no ceiling: measured at exactly one parked thread per silent connection — 50, 200 and
+  500 connections parked 50, 200 and 500 threads and added 1,280, 3,836 and 7,928 KiB of
+  RSS, reaped only when the client closes. So the listener is `ThreadingHTTPServer`
+  **with a declared worker cap that refuses over the cap**, an explicit
+  `request_queue_size`, and an explicit finite handler `timeout`. Threading without a cap
+  is the same amplifier the audit bound exists to close, one layer down.
+
+  **`protocol_version` stays `HTTP/1.0`, which is a bound and not a formatting default.**
+  Measured as the `BaseHTTPRequestHandler` default on all three interpreters. It closes
+  the connection after each response, so a worker is held for one request; `HTTP/1.1`
+  makes connections persistent and returns indefinite occupancy to a caller who has
+  already been answered. Raising it is a boundary decision, not a protocol upgrade.
+
+  **And an explicit request-size bound, because the stdlib's is four orders of magnitude
+  too large.** Measured: 99 header lines pass and the 100th answers `431 Too many
+  headers` (the blank terminator counts toward `_MAXHEADERS`); a request line of 65,536
+  bytes passes and 65,537 answers `414 URI Too Long`; one header line over `_MAXLINE`
+  answers `431 Line too long`. The ceiling before dispatch is therefore
+  65,536 + 99 × 65,536 = **6,553,600 bytes**, and one client measured 7,201,104 bytes
+  written before its 431 came back. A health request is a nonce, a digest and a MAC — a
+  few hundred bytes — so the listener declares its own ceiling in the low kilobytes and
+  refuses past it, rather than inheriting 6.25 MiB of unauthenticated read per
+  connection.
+
+  **The residual the bound does not remove, stated rather than implied.** `timeout` is a
+  **per-read** deadline and not a request deadline, so a slow drip resets it: measured,
+  23 one-byte writes at 0.8 s intervals against `timeout = 1.0` held a worker **18.4 s**
+  and were answered `200 OK`. A worker cap turns that from unbounded occupancy into a
+  bounded number of held workers; it does not stop the hold, and only an absolute
+  deadline across reads would. Whichever the implementation PR ships, it owes the
+  measured figure for it, exactly as the audit bound above owes its own.
+  `tests/security/test_ha_listener_bounds.py` pins the defaults, shows the default form
+  denied and the bounded form served against the identical probe, and guards the shipped
+  packages against a bare `HTTPServer`, an inherited queue size and a `None` timeout —
+  each rule driven against planted hostile source, because a guard over zero listener
+  files is otherwise vacuous. The worker cap is deliberately **not** claimed there: it is
+  a runtime quantity an AST walk cannot read.
+
+  **And the guard reads base *order*, because a threading mixin that comes second does
+  nothing.** Review of the first version of this test found four bypasses, all one root
+  cause — it matched *names* and read *a* binding rather than the effective one — and all
+  four are measured as having been accepted by it. `class L(HTTPServer, ThreadingMixIn)`
+  linearizes to `L, HTTPServer, TCPServer, BaseServer, ThreadingMixIn`, so
+  `process_request` resolves to **`BaseServer`** and the listener is serial while an
+  unordered membership test sees a mixin and passes it: measured on that base order with
+  `timeout = 1.0` and a 16-deep queue, one silent connection delayed a legitimate request
+  0.80 s, eight delayed it 7.81 s and seventeen delayed it **16.82 s**, against 0.00 s
+  with the mixin first. So the consequence of this one is a delay that grows one timeout
+  per held connection rather than the outright denial the no-timeout default gives — which
+  is still a bad answer from a channel whose question is "is the peer alive?" before an
+  operator promotes. The other three: an aliased import
+  (`from http.server import HTTPServer as Server`) hid a whole serial listener, which is
+  this bullet's own string defect one level down; a class attribute rebound later in the
+  body (`timeout: float = 5.0` then `timeout = None`) read as bounded, so every binding
+  on every path must now be sound rather than the first; and a module constant **shadowed
+  by a parameter** resolved to the module's value, because `ast.arg` is not a `Name`
+  store, so any binding of a name anywhere now disqualifies it.
 
 **What this still does not license**, stated because an amendment is read by whoever wants
 the next thing: shipping the store over this channel (an operator's existing transport moves

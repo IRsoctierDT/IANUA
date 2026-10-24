@@ -83,6 +83,51 @@ All notable changes to this project. Versions correspond to git tags.
   `SourceError`.
 
 ### Security
+- **The stage 7 peer-health listener gains connection-level bounds, before any listener code
+  exists (`AGENTS.md` §5, `DESIGN.md` §5 boundary 15 and §11).** The amendment's audit-write
+  bound covers request *floods*, which is the path that carries a key. The opposite attack
+  needs no key, no valid MAC and no nonce — the connection never reaches verification, so it
+  writes no audit entry and is invisible to exactly the logging that bound added to make
+  probing detectable. It is the fourth defect the amendment told the next reviewer to expect,
+  and it is that pattern one step out: a bound placed where the key is. Measured on CPython
+  3.13.17 and identically on 3.11.17 and 3.12.3, so no per-patch re-measurement is owed:
+  `HTTPServer` is not threading, `BaseHTTPRequestHandler.timeout` is `None` and
+  `TCPServer.request_queue_size` is `5`. **One socket that connects and sends nothing denied a
+  legitimate `GET /health`** on all three — one, not the six the backlog suggests, which only
+  decides when connecting starts to fail. Service returned the instant the socket closed. Each
+  half of the fix fails differently alone: a finite `timeout` on the serial server left a
+  queue (six held connections delayed a request 5.71 s, twelve delayed it 6.59 s, bounded by
+  `timeout × (request_queue_size + 1)`), and `ThreadingHTTPServer` alone leaked one thread per
+  connection with no ceiling (50, 200 and 500 connections parked 50, 200 and 500 threads and
+  1,280, 3,836 and 7,928 KiB of RSS). So: threading with a declared worker cap that refuses
+  over the cap, an explicit `request_queue_size`, an explicit finite handler `timeout`,
+  `protocol_version` held at `HTTP/1.0`, and a declared request-size ceiling — the stdlib's own
+  is 65,536 + 99 × 65,536 = 6,553,600 bytes of unauthenticated read per connection, against a
+  health request of a few hundred bytes. The residual is named: `timeout` is a per-read
+  deadline, so 23 one-byte writes at 0.8 s intervals against `timeout = 1.0` held a worker
+  18.4 s and were answered `200 OK`; a cap bounds how many workers are held, not the hold.
+  `tests/security/test_ha_listener_bounds.py` pins the defaults, shows the default form denied
+  and the bounded form served against the identical probe, and guards the fourteen shipped
+  packages against a bare `HTTPServer`, an inherited queue size and a `None` timeout — each
+  rule driven against planted hostile source, since a guard over zero listener files is
+  vacuous. The worker cap is deliberately not claimed there: no AST walk can read a runtime
+  quantity. Review then found four bypasses in that guard, all one root cause — it matched
+  names and read *a* binding rather than the effective one — and all four are measured as
+  having been accepted by it: `class L(HTTPServer, ThreadingMixIn)` resolves
+  `process_request` to `BaseServer`, so the listener is serial while an unordered
+  membership test passes it (0.80 s, 7.81 s and 16.82 s of delay at one, eight and
+  seventeen held connections, against 0.00 s with the mixin first); an aliased import hid a
+  whole serial listener; a class attribute rebound later in the body read as bounded; and a
+  module constant shadowed by a parameter resolved to the module's value, since `ast.arg`
+  is not a `Name` store. The guard now reads base order, resolves import aliases, requires
+  every binding on every path to be sound, and treats any binding of a name anywhere as
+  disqualifying it as a constant.
+- **`DESIGN.md`'s 2026-10-16 listener row said six security test files assert
+  `dependencies = []`; there are five.** `test_collect_hardening`,
+  `test_correlation_hardening`, `test_ingest_hardening`, `test_pipeline_hardening` and
+  `test_store_hardening`, two of which also check the installed metadata — which is what the
+  sixth was. The active/passive row of the same date and `AGENTS.md` §5 had both already been
+  corrected; this row was the straggler.
 - **Every `pip install` in CI is hash-pinned (OpenSSF Scorecard Pinned-Dependencies).** Eight
   installs in `ci.yml`, `release.yml` and `runner-canary.yml` fetched packages by name and took
   whatever PyPI served at that moment: `-e ".[dev]"` in five jobs, `build` in two, and
