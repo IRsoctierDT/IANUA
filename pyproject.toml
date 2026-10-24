@@ -50,6 +50,9 @@ dev = [
   "pyyaml>=6.0",
   "reportlab>=5.0.1",
   "cryptography>=50.0.2",
+  # The package builder for ci.yml's build job and release.yml. Declared here
+  # so it installs hash-pinned from requirements-dev.lock instead of by name.
+  "build>=1.6.1",
 ]
 
 dashboard = [

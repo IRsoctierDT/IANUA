@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:b987b093-6588-55c7-b57b-0976871be1c7",
+  "serialNumber": "urn:uuid:b698bb38-d1b6-5936-b3e8-f26303ad3a74",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-24T04:36:52Z",
+    "timestamp": "2026-10-24T05:04:53Z",
     "tools": {
       "components": [
         {
@@ -96,6 +96,13 @@
       "type": "library",
       "version": "5.0",
       "purl": "pkg:pypi/boolean-py@5.0"
+    },
+    {
+      "bom-ref": "pkg:pypi/build@1.6.1",
+      "name": "build",
+      "type": "library",
+      "version": "1.6.1",
+      "purl": "pkg:pypi/build@1.6.1"
     },
     {
       "bom-ref": "pkg:pypi/cachecontrol@0.14.4",
@@ -691,6 +698,13 @@
       "type": "library",
       "version": "3.3.2",
       "purl": "pkg:pypi/pyparsing@3.3.2"
+    },
+    {
+      "bom-ref": "pkg:pypi/pyproject-hooks@1.3.3",
+      "name": "pyproject-hooks",
+      "type": "library",
+      "version": "1.3.3",
+      "purl": "pkg:pypi/pyproject-hooks@1.3.3"
     },
     {
       "bom-ref": "pkg:pypi/pytest-cov@7.1.0",

@@ -94,8 +94,14 @@ jobs:
           jq -e '.bomFormat == "CycloneDX" and (.serialNumber | length > 0)' \
             security/sbom/sbom.cdx.json >/dev/null \
             || { echo "::error::security/sbom/sbom.cdx.json missing or malformed"; exit 1; }
-      - name: Install development and build tooling
-        run: pip install build -e ".[dev]"
+      - name: Install the tag's dev toolchain, hash-pinned
+        # The tag's own lock, so validation runs the tools the tag was tested
+        # with, each file checked against its SHA-256. Every tag that passes
+        # the version-chain check above (v2.1.0 and later) has one. The
+        # editable install takes no dependencies; the project declares none.
+        run: |
+          pip install --require-hashes -r security/sbom/requirements-dev.lock
+          pip install --no-deps -e .
       - name: Validate release source
         # The type-check scope is DERIVED from the checked-out tree rather than
         # hard-coded. This job runs against a detached tag, and a tag predating
@@ -121,8 +127,17 @@ jobs:
           echo "mypy scope:$scope"
           mypy --python-executable "$(command -v python)" $scope
           pytest
+      - name: Install the package builder, hash-pinned, in its own environment
+        # From this workflow's own commit, not the checked-out tag. Tags cut
+        # before `build` joined [dev] (v2.3.1 and earlier) have no pin for it,
+        # and a dispatch for an existing tag runs against one. A separate venv
+        # leaves the tag's toolchain above exactly as it was.
+        run: |
+          git show "$GITHUB_SHA:security/sbom/requirements-dev.lock" > "$RUNNER_TEMP/builder.lock"
+          python -m venv "$RUNNER_TEMP/builder"
+          "$RUNNER_TEMP/builder/bin/pip" install --require-hashes -r "$RUNNER_TEMP/builder.lock"
       - name: Build distributions from the tagged commit
-        run: python -m build
+        run: '"$RUNNER_TEMP/builder/bin/python" -m build'
       - name: Attest SBOM for the release artifacts (Sigstore)
         # Same skip guard as ci.yml: the Attestations API rejects user-owned
         # private repos. Skip (not continue-on-error) so real signing errors
