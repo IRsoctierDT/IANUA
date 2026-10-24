@@ -28,6 +28,30 @@ All notable changes to this project. Versions correspond to git tags.
   and the SBOM are regenerated: 136 Python components, and `pip-audit` reports none vulnerable.
   Dependabot groups it with the dev toolchain.
 
+### Fixed
+- **The MCP stdio transport answers a malformed line with a JSON-RPC error and keeps reading,
+  as its docstring said it did.** Measured on `2090519`, five lines ended `serve()`: a
+  `tools/call` whose `params` was `1` or `"x"` and a top-level `[]` raised `AttributeError`, an
+  id of 5,000 digits raised `ValueError` (the int-digit limit), and 100,000 open brackets raised
+  `RecursionError`. A message that is not an object is now `-32600`, a `params` that is not an
+  object is `-32602`, and a `ValueError` or `RecursionError` from `json.loads` is `-32700`, each
+  with `id: null` where no id can be read. Three more cases of the same defect go with them.
+  Under a strict stdin decoder (`PYTHONIOENCODING=utf-8:strict`, which is what an `en_US.UTF-8`
+  locale gives), one invalid byte raised `UnicodeDecodeError` out of the loop at exit 1, and the
+  valid request read before it in the same chunk was never answered. `main()` now reads bytes and
+  decodes each line with `surrogateescape`, so only that line is refused, as `-32700`. An id that
+  is not a string, number or null (`true`, `{}`, `1e400`) was echoed back, and `1e400` came back
+  as `Infinity`, which is not JSON. Such an id is now `-32600` with `id: null`. `NaN`, `Infinity`
+  and `-Infinity`, which `json.loads` accepts and JSON does not, are now `-32700`. A `params` of
+  `null` or `[]` was already `-32602` and keeps that code, with the message `'params' must be an
+  object`. `tests/security/test_mcp_transport_hardening.py` covers the five measured lines, a
+  valid request after each, the entrypoint under strict decoding, and a Hypothesis property over
+  generated messages. Recorded, not fixed: a line is read whole, whatever its length. A
+  notification to `initialize`, `tools/list` or `tools/call` is still answered, though JSON-RPC
+  says a notification gets no reply, and a `tools/call` sent as one still runs the tool. A tool
+  whose output `json.dumps` cannot encode would still end the loop; the default registry's one
+  tool cannot return such output.
+
 ### Security
 - **`filelock` 4.2.4 and `setuptools` 84.2.1 close two advisories that turned `main` red.**
   CVE-2026-112940 (`filelock` 3.29.4, fixed in 4.2.1) and GHSA-xmj3-9gf7-h52w (`setuptools`
