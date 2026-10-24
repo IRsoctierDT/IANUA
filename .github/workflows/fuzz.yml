@@ -1,10 +1,11 @@
 # fuzz.yml — coverage-guided fuzzing of the parsers that read untrusted input.
 #
 # tests/fuzz/targets.py holds one bytes-in target per surface (normalize, the
-# key-value decoder, the egress address checks, the stored-projection reader),
-# each asserting what its module already documents. pytest replays their seeds
-# on every platform (tests/fuzz/test_fuzz_corpus.py); this is the half that
-# needs Atheris, and so Linux x86_64 on Python 3.12.
+# key-value decoder, the egress address checks, the egress allow-list loader,
+# the stored-projection reader), each asserting what its module already
+# documents. pytest replays their seeds on every platform
+# (tests/fuzz/test_fuzz_corpus.py); this is the half that needs Atheris, and so
+# Linux x86_64 on Python 3.12.
 #
 # One minute per target on a pull request or push that touches what the
 # targets import, ten minutes weekly and on a manual run. The path filters are
@@ -64,7 +65,7 @@ jobs:
       fail-fast: false
       matrix:
         # Exactly tests/fuzz/targets.py's TARGETS, sorted; a test holds the two equal.
-        target: [egress, keyvalue, normalize, projection]
+        target: [allowlist, egress, keyvalue, normalize, projection]
     env:
       TARGET: ${{ matrix.target }}
       FUZZ_SECONDS: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '600' || '60' }}

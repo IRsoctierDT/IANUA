@@ -333,18 +333,42 @@ class EgressAllowlist:
         file, an unknown schema version, or any invalid entry. One bad entry rejects
         the whole file: skipping it would narrow permissions silently, which is safe
         but leaves an operator believing they declared something they did not.
+
+        "Malformed" is wider than ``JSONDecodeError``. Bytes that are not UTF-8, JSON
+        nested past the parser's limits, and an integer longer than
+        ``sys.get_int_max_str_digits()`` each escaped as ``UnicodeDecodeError``,
+        ``RecursionError`` and a bare ``ValueError`` (measured), so a caller handling
+        this type got a traceback instead.
         """
         allowlist_path = Path(path)
         try:
             raw = allowlist_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except UnicodeDecodeError as exc:
+            # A ValueError, not an OSError, so it used to escape the clause below as
+            # a bare traceback (measured: b'{"hosts": ["\xff"]}'). Its own text
+            # quotes the offending byte; this names where it is and not what it is,
+            # so the refusal carries none of the file's content.
+            raise EgressAllowlistError(
+                f"egress allow-list is not valid UTF-8: {allowlist_path} "
+                f"({exc.reason} at byte {exc.start})"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            # ValueError: open() refuses a path with an embedded NUL that way.
             raise EgressAllowlistError(
                 f"egress allow-list not readable: {allowlist_path} ({exc}) — refusing "
                 "rather than treating it as empty, so a broken file is visible"
             ) from exc
         try:
             data: Any = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
-        except json.JSONDecodeError as exc:
+        except EgressAllowlistError:
+            # The duplicate-key hook's own refusal. EgressAllowlistError is a
+            # ValueError, so without this clause the one below would re-wrap it.
+            raise
+        except RecursionError as exc:  # depth bomb — not a ValueError subclass
+            raise EgressAllowlistError(
+                f"egress allow-list nesting depth exceeds parser limits: {allowlist_path}"
+            ) from exc
+        except ValueError as exc:  # JSONDecodeError, and the int-digit limit
             raise EgressAllowlistError(
                 f"egress allow-list is not valid JSON: {allowlist_path} ({exc})"
             ) from exc

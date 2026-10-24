@@ -26,10 +26,12 @@ class SourceError(CollectError):
 
     Raised before the file is opened: a relative path (whose meaning depends
     on a scheduler's working directory), a path that is not a regular file, a
-    symlink at the final component, or a path matching the credential
-    deny-list. Refused rather than skipped, because an operator who declared a
-    source is entitled to know it is not being collected — a source silently
-    dropped is a blind spot nobody is told about.
+    symlink at the final component, a path matching the credential
+    deny-list, or a path the filesystem will not even examine (too long, or
+    behind a directory this process may not search). Refused rather than
+    skipped, because an operator who declared a source is entitled to know it
+    is not being collected — a source silently dropped is a blind spot nobody
+    is told about.
     """
 
 

@@ -112,6 +112,20 @@ def test_the_egress_target_refuses_an_accepted_link_local_address(
 
 
 @pytest.mark.security
+def test_the_allowlist_target_refuses_a_loader_that_escapes_its_error_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A bare ValueError, because EgressAllowlistError subclasses it: a target
+    # that caught the base class would swallow exactly the int-digit escape.
+    def escapes(_path: object) -> None:
+        raise ValueError("planted")
+
+    monkeypatch.setattr(targets.EgressAllowlist, "load", escapes)
+    with pytest.raises(ValueError, match="planted"):
+        targets.one_input_allowlist(seeds("allowlist")[0])
+
+
+@pytest.mark.security
 def test_the_projection_target_refuses_an_unbounded_rebuild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
