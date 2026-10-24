@@ -409,6 +409,8 @@ python -m scripts.run_backup --root /srv/ianua --verify-restore /path/to/backup 
 #     must print "restore verified: …" and exit 0; a skip exits 4 and verified nothing.
 
 # 5. Re-collect. Every source is re-read; content addressing stores only what is new.
+#    A line an earlier build stored can be stored again: see "Re-reading what an
+#    earlier build stored" below.
 python -m scripts.run_collector --root /srv/ianua --source /var/log/auth.log --json
 
 # 6. Restart the scheduler.
@@ -424,13 +426,30 @@ row) is unrecoverable after a backward clock step:
 | State | Outcome | Recoverable |
 |---|---|---|
 | Offsets **newer** than the store | Collector reports `events_stored: 0, lines_read: 0, offsets_advancing: true`, exits 0, while every unread line still sits in the source. Offsets are never rewound. | **No** |
-| Store newer than the offsets | Lines are re-read; content addressing drops the duplicates. | Yes |
+| Store newer than the offsets | Lines are re-read; content addressing drops each one this build already stored. For lines an earlier build stored, see below. | Yes |
 | Cursor behind the store | The window is re-correlated. At-least-once by design. | Yes |
 | Cursor ahead of the store | Usually idles until new events arrive — **but not safely.** `next_stamp` compares the clock against the *store's* high-water mark, not against the cursor, so if the clock has stepped backward to below the cursor, re-collected events are stamped under it and the pipeline's strictly-after keyset never reads them. Measured: a store restored at mark T, a cursor at T+3600, a clock at T+60 → stamp T+60, permanently behind. | **No, after a backward clock step** |
 
 Deleting both positions is therefore **a complete recovery, not a compromise** — measured
 at 600 of 600 events with zero duplication. Step 3 exists so that a half-finished restore
 cannot leave a stale store under current offsets.
+
+### Re-reading what an earlier build stored
+
+Content addressing drops a re-read line only when the build re-reading it gives it the same
+`event_id` the stored copy has. From 2026-10-24 an event's excerpt keeps non-ASCII text as
+written (`DESIGN.md` §11), so a line whose modelled fields hold non-ASCII text gets a
+different id from this build than from an earlier one, and re-collecting it after restoring
+an earlier build's store stores a second copy beside the restored row. Measured across the
+two builds on one log: two lines re-read, the ASCII line deduplicated, the other stored again
+(`events_stored: 1`, count 2 to 3). A second re-collection by this build stored nothing.
+
+Step 4b is unaffected, because it runs before step 5. The `ADDED` a later
+`--verify-restore` would report is the outcome step 5 already makes expected, and
+`correlation/` sees such an event twice. ASCII-only lines still deduplicate, and a line
+that has rotated out of its source cannot be re-read at all, so this ends once no source
+holds a line from before the upgrade. For a backup taken before the upgrade, restoring and
+re-collecting with the build that took it, and upgrading afterwards, avoids it.
 
 Deleting the cursor in step 3 has a second consequence, and it is a safe one:
 `scripts/run_retention.py` clamps its threshold to the cursor, and treats an absent cursor
