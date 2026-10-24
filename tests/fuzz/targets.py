@@ -12,10 +12,8 @@ under ``-O`` cannot turn a target into one that accepts everything.
 Each target asserts what its module already promises, not a new rule. One
 contract that does **not** hold today is deliberately absent, because a target
 that fails on every run teaches nobody anything: the event store's 64 KiB
-projection ceiling (``normalize`` can build an event the store refuses), the
-MCP transport's "malformed input never crashes the loop", and the documented
-error type of ``EgressAllowlist.load``. Each needs its own fix, and its full
-check joins this file with that fix.
+projection ceiling (``normalize`` can build an event the store refuses). It
+needs its own fix, and its full check joins this file with that fix.
 """
 
 from __future__ import annotations
@@ -52,10 +50,9 @@ from ingest.schema import (
     MAX_RAW_EXCERPT,
     NormalizedEvent,
 )
-from store.schema import canonical_json, event_id
 from mcp.server import build_default_registry
 from mcp.transport import PARSE_ERROR, serve, utf8_lines
-from store.schema import canonical_json
+from store.schema import canonical_json, event_id
 
 #: The key grammar ``ingest.keyvalue`` documents, restated here rather than
 #: imported, so a change to the module's pattern is checked against the

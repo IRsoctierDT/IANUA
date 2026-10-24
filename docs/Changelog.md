@@ -55,6 +55,7 @@ All notable changes to this project. Versions correspond to git tags.
   committed fixtures are all ASCII, so no committed id or digest changes (0 of 15 on either
   path). An unclaimed record's projection stays under the store's 64 KiB ceiling: about
   50 KiB at most by its per-field bounds, and 46,668 bytes on a record built to fill them.
+
 ### Fixed
 - **The MCP stdio transport answers a malformed line with a JSON-RPC error and keeps reading,
   as its docstring said it did.** Measured on `2090519`, five lines ended `serve()`: a
@@ -152,21 +153,12 @@ All notable changes to this project. Versions correspond to git tags.
   before, because `canonical_json` alone never encodes.
 
 ### Known issues
-- **`tests/fuzz/targets.py` does not yet assert three documented contracts, because none of
-  them holds today:** the event store's 64 KiB projection ceiling (`normalize` can build an
-  event the store refuses, which stalls that source), the MCP transport's "malformed input
-  never crashes the loop", and the documented error type of `EgressAllowlist.load`. Each
-  needs its own fix. Keeping non-ASCII as written above moves a claimed record up to about
-  12 KiB closer to that ceiling: measured with three-byte characters, the excerpt's share of
-  the projection grew from 4,734 to 11,073 bytes.
-- **An unclaimed record's `raw_excerpt` escapes non-ASCII characters.** It is serialized with
-  `json.dumps`, whose default is `ensure_ascii=True` (`ingest/normalize.py`), so an indicator
-  such as `https://café.example/x` is extracted as written but retained as
-  `https://café.example/x`. It is then not a substring of the excerpt it came from. The
-  fuzz harness found this on its first run, and its normalize target accepts the escaped form
-  until the fix lands. The fix is a change of its own, because it alters `event_id` for every
-  such record. `tests/fuzz/targets.py` lists one further documented contract that does not
-  hold today and is not asserted yet; it needs its own fix too.
+- **`tests/fuzz/targets.py` does not yet assert one documented contract, because it does
+  not hold today:** the event store's 64 KiB projection ceiling (`normalize` can build an
+  event the store refuses, which stalls that source). It needs its own fix. Keeping non-ASCII
+  as written above moves a claimed record up to about 12 KiB closer to that ceiling: measured
+  with three-byte characters, the excerpt's share of the projection grew from 4,734 to 11,073
+  bytes.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 
