@@ -58,7 +58,7 @@ dev = [
 dashboard = [
   "streamlit>=1.66.1",
   "qdrant-client>=1.19.1",
-  "sentence-transformers>=6.1.0",
+  "sentence-transformers>=6.2.0",
 ]
 
 pdf = [
