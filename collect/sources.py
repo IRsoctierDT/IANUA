@@ -165,7 +165,28 @@ def _examine(path: Path) -> Source:
             f"source {path} is not a regular file; directories, devices and FIFOs are "
             "not logs this collector knows how to position itself in"
         )
-    resolved = path.resolve()
+    try:
+        resolved = path.resolve()
+    except (RecursionError, NotImplementedError):
+        # Both subclass RuntimeError, and neither means "symlink loop": one is
+        # this process out of stack, the other a platform that cannot resolve.
+        # Re-raised so the clause below stays about the loop and nothing else,
+        # which is the objection that left this unwrapped in #300.
+        raise
+    except RuntimeError as exc:
+        # `resolve()` reports a symlink loop this way, with no errno, so the
+        # `except OSError` in `declare` does not see it. Measured: RuntimeError
+        # on CPython 3.11.15 and 3.12.13; on 3.13.17 a non-strict resolve
+        # tolerates a loop and returns the path unchanged, so this clause is
+        # inert there. Reachable only by a race — an ancestor has to become a
+        # loop after `is_file()` above has already succeeded — but the race is
+        # the reason it is wrapped: `declare` promises a `Source` or a
+        # `SourceError`, and a RuntimeError is neither.
+        raise SourceError(
+            f"source {path} cannot be resolved ({exc}); declared sources are refused "
+            "rather than skipped, because a source this collector cannot inspect is a "
+            "blind spot nobody is told about"
+        ) from exc
     # BOTH spellings are checked. The positional rules (``/.ssh/``,
     # ``/.gnupg/``) describe where a secret lives, and an ordinary symlinked
     # ancestor — ``/home/ivan`` pointing at ``/mnt/users/ivan`` — resolves them

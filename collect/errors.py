@@ -43,6 +43,12 @@ class OffsetError(CollectError):
     two plausible recoveries are both wrong: starting from zero re-ingests
     every line in every source, and starting from the end silently skips
     everything written since the last run.
+
+    "No offsets yet" means ENOENT and only ENOENT. A path that cannot be read
+    for any other reason — its parent is a regular file, it is a symlink loop,
+    it holds an embedded NUL, this process may not read it — is a broken path
+    rather than a new one, and is refused here. :func:`collect.offsets.load`
+    records what that rule replaced and what it costs.
     """
 
 
