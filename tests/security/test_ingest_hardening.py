@@ -1197,13 +1197,15 @@ def test_that_sweep_actually_walks_the_cut_through_the_indicator(payload: str) -
     no-severed-prefix assertion trivially — the level-above failure that let
     round five through twice.
     """
-    # Compared against the payload as the excerpt actually stores it, not as
-    # it was written. `_serialize` renders with `ensure_ascii=True`, so the
-    # non-ASCII payload is `...caf\u00e9` in `raw_excerpt` and a literal
-    # membership test finds it at zero offsets. This guard caught exactly that
-    # when the payload was added — which is what it is for, so the comparison
-    # is corrected rather than the payload dropped.
-    stored = json.dumps(payload)[1:-1]
+    # Compared against the payload as the excerpt actually stores it. That
+    # used to differ from the payload as written: `_serialize` rendered with
+    # `ensure_ascii=True`, so the non-ASCII payload was `...caf\u00e9` in
+    # `raw_excerpt`, and a literal membership test found it at zero offsets.
+    # This guard caught that when the payload was added, and caught it again
+    # when the excerpt began keeping non-ASCII as written (0 complete offsets
+    # against the escaped form). Both times the comparison was corrected and
+    # the payload kept, which is what the guard is for.
+    stored = json.dumps(payload, ensure_ascii=False)[1:-1]
     complete = severed = 0
     for offset in _CUT_SWEEP:
         excerpt = normalize(_cut_at(offset, payload)).raw_excerpt

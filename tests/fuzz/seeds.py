@@ -33,6 +33,15 @@ _TEXT_LINES = (
     "[1, 2, 3]",
 )
 
+#: Text the normalize target must keep exact and storable: an indicator
+#: written outside ASCII, which the excerpt used to escape, and a lone
+#: surrogate, which used to stall the store. ``json.dumps`` escapes both, so
+#: each seed is ASCII, as the measured log line was.
+_UNICODE_LINES = (
+    json.dumps({"msg": "go https://caf\u00e9.example/x"}),
+    json.dumps({"msg": "x " + chr(0xD800) + " y"}),
+)
+
 _EGRESS_CANDIDATES = (
     ("127.0.0.1", 8443),
     ("::1", 8443),
@@ -51,15 +60,21 @@ _EGRESS_CANDIDATES = (
 
 
 def _records() -> list[dict[str, Any]]:
+    return [record for _, record in sorted(_records_by_name().items())]
+
+
+def _records_by_name() -> dict[str, dict[str, Any]]:
     fixtures = json.loads(_FIXTURES.read_text(encoding="utf-8"))
-    return [fixtures[name]["record"] for name in sorted(fixtures)]
+    return {name: fixtures[name]["record"] for name in fixtures}
 
 
 def seeds(target: str) -> list[bytes]:
     """Return the seed inputs for ``target``; raise ``KeyError`` for an unknown one."""
     if target == "normalize":
         records = [json.dumps(record, sort_keys=True).encode() for record in _records()]
-        return records + [line.encode() for line in _TEXT_LINES]
+        planted = {**_records_by_name()["defender_email_phish"], "Subject": "x " + chr(0xD800)}
+        unicode_lines = [*_UNICODE_LINES, json.dumps(planted, sort_keys=True)]
+        return records + [line.encode() for line in (*_TEXT_LINES, *unicode_lines)]
     if target == "keyvalue":
         return [line.encode() for line in _TEXT_LINES]
     if target == "egress":

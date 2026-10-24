@@ -28,6 +28,34 @@ All notable changes to this project. Versions correspond to git tags.
   and the SBOM are regenerated: 136 Python components, and `pip-audit` reports none vulnerable.
   Dependabot groups it with the dev toolchain.
 
+### Changed
+- **An event's excerpt keeps non-ASCII text as written, so every indicator it yields is a
+  substring of it. This changes `event_id` for any record with non-ASCII text in a modelled
+  field.** `ingest/normalize.py` rendered `raw_excerpt` with `json.dumps`, whose default is
+  `ensure_ascii=True`. An unclaimed record's indicator `https://café.example/x` was
+  extracted as written and retained as `https://caf\u00e9.example/x`, so it was not in the
+  evidence it came from. Each escaped character also spent six of the excerpt's 4,096
+  characters, or twelve outside the BMP. Measured: a modelled field of 2,048 `é` kept 681
+  of them and now keeps all 2,048. The excerpt and the leaf fragments it is searched for share
+  one encoder, because with only the excerpt changed the search stopped at the first
+  non-ASCII value and extracted no indicator in it or after it (measured). The store's
+  `canonical_json` already kept Unicode as written, so the stored projection no longer holds
+  the excerpt's escape escaped a second time. Format characters such as U+202E are written
+  as themselves, as they already were in the typed fields, and are escaped where they are
+  printed (`scripts/_terminal.printable`). The fuzz target's escaped-form allowance is gone.
+  `tests/security/test_ingest_unicode.py` pins the rendering, the budget and the encoder
+  pairing. **Action for operators:** the owner accepted the one-time id change instead of a
+  `SCHEMA_VERSION` bump, which would make every existing store and backup refuse to open.
+  Rows stored before this release stay readable and still verify. A restore
+  (`docs/RESTORE.md` step 5) or a re-collection (`docs/RETENTION.md`) that re-reads a log
+  line an earlier build stored stores it again if a modelled field holds non-ASCII text.
+  Measured across the two builds: two lines re-read, the ASCII one deduplicated, the other
+  stored a second time. ASCII-only events still deduplicate, a second re-read by this build
+  stores nothing, and a line that has rotated out of its source cannot be re-read. The
+  committed fixtures are all ASCII, so no committed id or digest changes (0 of 15 on either
+  path). An unclaimed record's projection stays under the store's 64 KiB ceiling: about
+  50 KiB at most by its per-field bounds, and 46,668 bytes on a record built to fill them.
+
 ### Security
 - **`filelock` 4.2.4 and `setuptools` 84.2.1 close two advisories that turned `main` red.**
   CVE-2026-112940 (`filelock` 3.29.4, fixed in 4.2.1) and GHSA-xmj3-9gf7-h52w (`setuptools`
@@ -39,16 +67,30 @@ All notable changes to this project. Versions correspond to git tags.
   nothing else. Both cross a major version, and no dependent caps either. The derived locks and
   the SBOM are regenerated. The build-system floor rises from `setuptools>=84.0.0` to
   `>=84.1.0`, because the old floor still admitted the vulnerable 84.0.0.
+- **A log line carrying a JSON-escaped lone surrogate no longer stalls its collector source.**
+  `json.loads` turns an escape such as `\ud800` into a lone surrogate, and `ingest`'s `text()`
+  kept it. The store encodes each projection as UTF-8 before writing it, which refused it with a
+  bare `UnicodeEncodeError`, and `scripts/run_collector.py` holds a source's offsets until its
+  batch is durable. Measured on `2090519` under CPython 3.12.13 and 3.13.17: a three-line,
+  all-ASCII log whose middle line carried a Defender `Subject` of `x \ud800 y` stored 0 of 3
+  events on every pass, `offsets held`, exit 1, so no later line of that source was ever stored.
+  An unclaimed record whose key name held the escape was refused the same way, because the
+  withheld-field note names the key. `text()` now replaces every surrogate with U+FFFD, as the
+  bytes path's `errors="replace"` already did, so the event is stored with the replacement
+  visible and the source advances. Every typed field, key name, excerpt value and carried text
+  passes through `text()`: a security test plants a surrogate at every string site of every
+  committed fixture, on both paths and through both entry types, and none reaches the
+  projection. The fuzz target now hashes the projection as the store does. It could not see this
+  before, because `canonical_json` alone never encodes.
 
 ### Known issues
-- **An unclaimed record's `raw_excerpt` escapes non-ASCII characters.** It is serialized with
-  `json.dumps`, whose default is `ensure_ascii=True` (`ingest/normalize.py`), so an indicator
-  such as `https://café.example/x` is extracted as written but retained as
-  `https://café.example/x`. It is then not a substring of the excerpt it came from. The
-  fuzz harness found this on its first run, and its normalize target accepts the escaped form
-  until the fix lands. The fix is a change of its own, because it alters `event_id` for every
-  such record. `tests/fuzz/targets.py` lists three further documented contracts that do not
-  hold today and are not asserted yet; each needs its own fix too.
+- **`tests/fuzz/targets.py` does not yet assert three documented contracts, because none of
+  them holds today:** the event store's 64 KiB projection ceiling (`normalize` can build an
+  event the store refuses, which stalls that source), the MCP transport's "malformed input
+  never crashes the loop", and the documented error type of `EgressAllowlist.load`. Each
+  needs its own fix. Keeping non-ASCII as written above moves a claimed record up to about
+  12 KiB closer to that ceiling: measured with three-byte characters, the excerpt's share of
+  the projection grew from 4,734 to 11,073 bytes.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 

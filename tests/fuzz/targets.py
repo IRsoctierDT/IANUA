@@ -14,9 +14,8 @@ contracts that do **not** hold today are deliberately absent, because a target
 that fails on every run teaches nobody anything: the event store's 64 KiB
 projection ceiling (``normalize`` can build an event the store refuses), the
 MCP transport's "malformed input never crashes the loop", and the documented
-error type of ``EgressAllowlist.load``. A fourth is asserted in a weaker form,
-said where it is: an unclaimed record's excerpt escapes non-ASCII. Each needs
-its own fix, and its full check joins this file with that fix.
+error type of ``EgressAllowlist.load``. Each needs its own fix, and its full
+check joins this file with that fix.
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ from ingest.schema import (
     MAX_RAW_EXCERPT,
     NormalizedEvent,
 )
-from store.schema import canonical_json
+from store.schema import canonical_json, event_id
 
 #: The key grammar ``ingest.keyvalue`` documents, restated here rather than
 #: imported, so a change to the module's pattern is checked against the
@@ -88,27 +87,30 @@ def one_input_normalize(data: bytes) -> None:
     """``ingest.normalize`` on the bytes path ``collect/`` feeds it.
 
     Nothing may raise for bytes: malformed content degrades instead of being
-    lost. The result is bounded, deterministic, and survives the exact
-    read-back the store performs before it writes. An unclaimed record keeps
-    every observable inside its retained excerpt, because there the excerpt is
-    the evidence.
+    lost. The result is bounded, deterministic, hashes as the store hashes it,
+    and survives the exact read-back the store performs before it writes. An
+    unclaimed record keeps every observable inside its retained excerpt,
+    because there the excerpt is the evidence.
     """
     event = normalize(data)
     _check_bounded(event)
     _check(normalize(data) == event, "the same bytes normalized to two different events")
-    back = NormalizedEvent.from_dict(json.loads(canonical_json(event.to_dict())))
+    projection = canonical_json(event.to_dict())
+    try:
+        # The store encodes the projection as UTF-8 to size it and to hash it,
+        # and that encode is what refused a lone surrogate: a JSON escape such as \ud800 decoded
+        # into one, the collector held the source's offsets, and the source
+        # stalled. canonical_json never encodes, so without this the harness
+        # could not see it.
+        event_id(projection)
+    except UnicodeEncodeError as exc:
+        raise AssertionError("the store cannot hash this event's projection") from exc
+    back = NormalizedEvent.from_dict(json.loads(projection))
     _check(back == event, "the event does not survive the store's read-back")
     if event.vendor == "unrecognized":
         for observable in event.observables:
-            # Also compared in its JSON-escaped form. The unclaimed excerpt is
-            # serialized with json.dumps' default ensure_ascii=True, so a
-            # non-ASCII indicator is retained as \uXXXX; this harness found that
-            # on its first run. The fix is a change of its own because it alters
-            # event_id for every such record. The escaped form still
-            # fails for an indicator scanned from outside the retained evidence.
-            escaped = json.dumps(observable)[1:-1]
             _check(
-                observable in event.raw_excerpt or escaped in event.raw_excerpt,
+                observable in event.raw_excerpt,
                 f"observable {observable!r} is not inside the retained excerpt",
             )
 

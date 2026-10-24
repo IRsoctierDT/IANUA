@@ -345,7 +345,7 @@ def _normalization_raised(record: Any, exc: BaseException) -> NormalizedEvent:
             carried = record[:MAX_RAW_EXCERPT]
         elif isinstance(record, Mapping):
             named = [text(key) for key in list(record)[:MAX_PROJECTED_ITEMS]]
-            carried = json.dumps(sorted(key for key in named if key is not None))
+            carried = _render(sorted(key for key in named if key is not None))
         else:
             carried = type(record).__name__
     except Exception:
@@ -699,7 +699,9 @@ def _retained_values(projected: Mapping[str, Any], rendered: str) -> tuple[Any, 
     offset = 0
     for value in _leaf_values(projected):
         try:
-            fragment = json.dumps(value, default=str)
+            # Through the excerpt's own encoder, or the two disagree on every
+            # non-ASCII leaf and the walk stops at the first one: see _render.
+            fragment = _render(value, default=str)
         except (TypeError, ValueError, RecursionError):  # pragma: no cover - defensive
             break
         found = rendered.find(fragment, offset)
@@ -763,7 +765,7 @@ def _serialize(value: Mapping[str, Any]) -> str:
     cannot raise.
     """
     try:
-        return json.dumps(value, sort_keys=True, default=str)[:MAX_RAW_EXCERPT]
+        return _render(value, sort_keys=True, default=str)[:MAX_RAW_EXCERPT]
     except (TypeError, ValueError, RecursionError):
         pass
     try:
@@ -771,7 +773,52 @@ def _serialize(value: Mapping[str, Any]) -> str:
     except (TypeError, ValueError, RecursionError):
         pass
     named = [text(key) for key in list(value)[:MAX_PROJECTED_ITEMS]]
-    return json.dumps(sorted(key for key in named if key is not None))[:MAX_RAW_EXCERPT]
+    return _render(sorted(key for key in named if key is not None))[:MAX_RAW_EXCERPT]
+
+
+def _render(value: Any, **options: Any) -> str:
+    """JSON text for evidence, with non-ASCII written as itself, never as ``\\uXXXX``.
+
+    The one encoder for every excerpt and for the leaf fragments
+    :func:`_retained_values` searches it for. Those two must agree byte for
+    byte, because a leaf is kept only when its fragment is found in the
+    excerpt. Measured with ``_serialize`` changed alone, the walk stopped at
+    the first non-ASCII leaf, whose escaped fragment is not in an excerpt
+    written as itself: an indicator before that leaf was extracted, and none
+    in it or after it.
+
+    **Why not the default ``ensure_ascii=True``.** Escaping did two things
+    wrong:
+
+    * An indicator is extracted *as written*, so it was not in the excerpt it
+      came from. Measured on ``2090519``: ``https://café.example/x`` was the
+      observable and ``{"msg": "go https://caf\\u00e9.example/x"}`` the excerpt.
+      So on the unclaimed path, where the excerpt *is* the evidence, an
+      analyst searching the evidence for the indicator did not find it.
+    * Each escaped character spent six characters of :data:`MAX_RAW_EXCERPT`,
+      or twelve outside the BMP (a surrogate pair). Measured: a modelled field
+      of 2048 ``é`` kept 681 of them, and now keeps all 2048.
+
+    It also matches ``store.schema.canonical_json``, which has kept Unicode as
+    written since the store shipped, because escaping it "would make the
+    stored evidence harder to read for no gain".
+
+    **What is still escaped, and what cannot arrive.** The encoder still
+    escapes ``"``, ``\\`` and the C0 controls. :func:`~ingest._coerce.text`
+    has already removed C0, DEL and C1 and replaced every surrogate with
+    U+FFFD, so the text is always encodable as UTF-8. Format characters such
+    as U+202E and U+200B are written as themselves, as they already are in the
+    typed fields. That was the owner's decision: stored evidence stays exact,
+    and escaping happens where it is printed (``scripts/_terminal.printable``).
+
+    **The cost, accepted by the owner.** ``event_id`` hashes the projection,
+    and ``raw_excerpt`` is part of it. So every record with non-ASCII in a
+    modelled field gets a different id than the same record had before this
+    rendering, and re-reading a log line first stored by an earlier build
+    stores it again. See ``DESIGN.md`` §11 (2026-10-24), ``docs/RESTORE.md``
+    and ``docs/RETENTION.md``.
+    """
+    return json.dumps(value, ensure_ascii=False, **options)
 
 
 def _unmodelled(payload: Mapping[str, Any], *, notes: tuple[str, ...]) -> NormalizedEvent:
