@@ -62,7 +62,8 @@ Critical findings (CVSS ≥ 9.0) will be prioritized for an expedited patch.
 - **SCA**: `pip-audit` scans the pinned dependency closure on every CI run;
   Dependabot proposes updates (security updates are never grouped)
 - **Supply chain**: CycloneDX **SBOM** + exported hash-pinned locks derived from
-  `uv.lock`, verified in-sync by read-only CI drift gates
+  `uv.lock`, verified in-sync by read-only CI drift gates; every `pip install` in
+  CI installs from those locks under `--require-hashes`
 - **Secret scanning**: `gitleaks` on every PR; `detect-secrets` in pre-commit
 - **Fuzzing**: Atheris fuzzes the parsers that read untrusted input on pull
   requests that touch them and weekly (`.github/workflows/fuzz.yml`); Hypothesis
