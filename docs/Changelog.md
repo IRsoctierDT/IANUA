@@ -111,7 +111,17 @@ All notable changes to this project. Versions correspond to git tags.
   packages against a bare `HTTPServer`, an inherited queue size and a `None` timeout — each
   rule driven against planted hostile source, since a guard over zero listener files is
   vacuous. The worker cap is deliberately not claimed there: no AST walk can read a runtime
-  quantity.
+  quantity. Review then found four bypasses in that guard, all one root cause — it matched
+  names and read *a* binding rather than the effective one — and all four are measured as
+  having been accepted by it: `class L(HTTPServer, ThreadingMixIn)` resolves
+  `process_request` to `BaseServer`, so the listener is serial while an unordered
+  membership test passes it (0.80 s, 7.81 s and 16.82 s of delay at one, eight and
+  seventeen held connections, against 0.00 s with the mixin first); an aliased import hid a
+  whole serial listener; a class attribute rebound later in the body read as bounded; and a
+  module constant shadowed by a parameter resolved to the module's value, since `ast.arg`
+  is not a `Name` store. The guard now reads base order, resolves import aliases, requires
+  every binding on every path to be sound, and treats any binding of a name anywhere as
+  disqualifying it as a constant.
 - **`DESIGN.md`'s 2026-10-16 listener row said six security test files assert
   `dependencies = []`; there are five.** `test_collect_hardening`,
   `test_correlation_hardening`, `test_ingest_hardening`, `test_pipeline_hardening` and

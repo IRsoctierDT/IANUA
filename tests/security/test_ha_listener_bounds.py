@@ -110,31 +110,93 @@ def _stdlib_limit(name: str) -> int:
     return value
 
 
-def _base_names(node: ast.ClassDef) -> set[str]:
-    """Last name component of every base, so ``http.server.X`` reads as ``X``."""
-    names: set[str] = set()
+def _import_aliases(tree: ast.Module) -> dict[str, str]:
+    """Map each locally bound name to the stdlib name it actually refers to.
+
+    Without this the guard compares the *local spelling* against stdlib class
+    names, so ``from http.server import HTTPServer as Server`` hides an entire
+    serial listener — the exact defect class this repository keeps finding in
+    its own controls, as AGENTS.md §5 puts it: a rule written as a string that
+    the thing it means to stop can simply spell differently. Found by review
+    (Codex P2 on #306), and it is the same root cause as the base-order and
+    effective-binding defects below: matching names rather than resolving them.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # ``import http.server as hs`` binds ``hs``; attribute access
+                # (``hs.HTTPServer``) is matched on the attribute name, so only
+                # the tail matters here.
+                aliases[alias.asname or alias.name.split(".")[0]] = alias.name
+    return aliases
+
+
+def _base_names(node: ast.ClassDef, aliases: dict[str, str]) -> list[str]:
+    """Resolved base names **in declaration order**, which is what MRO reads.
+
+    Order is load bearing, not cosmetic. ``class L(HTTPServer, ThreadingMixIn)``
+    linearizes to ``L, HTTPServer, TCPServer, BaseServer, ThreadingMixIn``, so
+    ``process_request`` resolves to ``BaseServer`` and the listener is **serial**
+    while an unordered membership test sees a threading mixin and passes it.
+    Measured on that base order with ``timeout = 1.0`` and a 16-deep queue: one
+    silent connection delayed a legitimate request 0.80 s, eight delayed it
+    7.81 s and seventeen delayed it 16.82 s, against 0.00 s with the mixin
+    first. Found by review (Codex P2 on #306).
+    """
+    names: list[str] = []
     for base in node.bases:
         if isinstance(base, ast.Name):
-            names.add(base.id)
+            names.append(aliases.get(base.id, base.id))
         elif isinstance(base, ast.Attribute):
-            names.add(base.attr)
+            names.append(base.attr)
     return names
 
 
-def _class_level_assignment(node: ast.ClassDef, name: str) -> ast.expr | None:
-    """Return the value assigned to ``name`` in the class body, if any."""
-    for stmt in node.body:
+def _is_serial_server(bases: list[str]) -> bool:
+    """True when a serial server is reached before any threading mixin.
+
+    This is the MRO question asked over the base list: the first base that
+    defines ``process_request`` wins, so a threading mixin only frees the accept
+    loop when it precedes the serial server it is mixed into.
+    """
+    for name in bases:
+        if name in _THREADING_BASES:
+            return False
+        if name in _SERIAL_SERVERS:
+            return True
+    return False
+
+
+def _class_level_bindings(node: ast.ClassDef, name: str) -> list[ast.expr | None]:
+    """Every value bound to ``name`` in the class body, at any nesting depth.
+
+    All of them, not the first: a handler declaring ``timeout: float = 5.0``
+    and then ``timeout = None`` has an effective timeout of ``None``, and
+    returning the first binding reported it bounded. Walking nested bodies
+    catches the conditional form, where no single binding is "the" effective
+    one — so the caller requires *every* binding to be sound rather than
+    guessing which one wins. Found by review (Codex P2 on #306).
+    """
+    values: list[ast.expr | None] = []
+    for stmt in ast.walk(node):
         targets: list[ast.expr] = []
+        value: ast.expr | None = None
         if isinstance(stmt, ast.Assign):
-            targets = list(stmt.targets)
+            targets, value = list(stmt.targets), stmt.value
         elif isinstance(stmt, ast.AnnAssign):
-            targets = [stmt.target]
+            targets, value = [stmt.target], stmt.value
+        elif isinstance(stmt, ast.AugAssign):
+            targets, value = [stmt.target], None
         else:
             continue
         for target in targets:
             if isinstance(target, ast.Name) and target.id == name:
-                return stmt.value
-    return None
+                values.append(value)
+    return values
 
 
 def _module_constants(tree: ast.Module) -> dict[str, float]:
@@ -146,17 +208,40 @@ def _module_constants(tree: ast.Module) -> dict[str, float]:
     more than once is dropped, since the value at class-definition time is then
     not a single literal.
     """
-    # Every name stored anywhere in the module, at any depth. Counting stores
-    # over the whole tree rather than over ``tree.body`` is deliberate: a first
-    # version counted module-level numeric assignments only, so ``DEADLINE =
-    # 5.0`` followed by ``DEADLINE = None`` kept the 5.0 — the second binding
-    # was skipped for not being numeric — and the guard passed a listener whose
-    # timeout was ``None``. A ``global`` rebinding inside a function is the same
-    # hole one scope down. Found by this file's own bypass case, not by review.
+    # Every name bound anywhere in the module, at any depth and by any
+    # construct. Counting over the whole tree rather than over ``tree.body`` is
+    # deliberate: a first version counted module-level numeric assignments
+    # only, so ``DEADLINE = 5.0`` followed by ``DEADLINE = None`` kept the 5.0 —
+    # the second binding was skipped for not being numeric — and the guard
+    # passed a listener whose timeout was ``None``. A ``global`` rebinding
+    # inside a function is the same hole one scope down. Found by this file's
+    # own bypass case.
+    #
+    # ``ast.arg`` and the def/import forms are counted for the same reason, and
+    # that half was found by review (Codex P2 on #306): a parameter is **not**
+    # an ``ast.Name`` store, so a factory ``def make(DEADLINE=None)`` whose
+    # nested handler writes ``timeout = DEADLINE`` shadowed a module constant
+    # of that name and resolved to the numeric one. Any binding of a name other
+    # than its single module-level assignment disqualifies it — fail closed,
+    # rather than model Python's scoping rules in a test.
     stores: dict[str, int] = {}
+
+    def bind(name: str) -> None:
+        stores[name] = stores.get(name, 0) + 1
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            stores[node.id] = stores.get(node.id, 0) + 1
+            bind(node.id)
+        elif isinstance(node, ast.arg):
+            bind(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bind(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bind(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.Global):
+            for name in node.names:
+                bind(name)
 
     literals: dict[str, float] = {}
     for stmt in tree.body:
@@ -202,19 +287,34 @@ def listener_violations(source: str, filename: str = "<planted>") -> list[str]:
     """
     tree = ast.parse(source, filename=filename)
     constants = _module_constants(tree)
+    aliases = _import_aliases(tree)
     found: list[str] = []
+
+    def bound(node: ast.ClassDef, attr: str) -> bool:
+        """Is ``attr`` bound to a positive number on *every* path through the body?
+
+        Every binding rather than the first or the last: with a conditional
+        assignment there is no single effective one, so an unsound binding
+        anywhere fails the class. An attribute never bound at all fails too,
+        since the stdlib default is what this guard exists to reject.
+        """
+        bindings = _class_level_bindings(node, attr)
+        if not bindings:
+            return False
+        return all(_is_positive_number(value, constants) for value in bindings)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
-            called = (
+            local = (
                 func.id
                 if isinstance(func, ast.Name)
                 else func.attr
                 if isinstance(func, ast.Attribute)
                 else None
             )
-            if called in {"HTTPServer", "TCPServer"}:
+            called = aliases.get(local, local) if local is not None else None
+            if called in _SERIAL_SERVERS:
                 found.append(
                     f"{filename}: instantiates {called} directly, which handles one "
                     "request at a time; one silent connection stalls it"
@@ -223,30 +323,27 @@ def listener_violations(source: str, filename: str = "<planted>") -> list[str]:
 
         if not isinstance(node, ast.ClassDef):
             continue
-        bases = _base_names(node)
+        bases = _base_names(node, aliases)
 
-        if bases & _SERIAL_SERVERS and not bases & _THREADING_BASES:
+        if _is_serial_server(bases):
             found.append(
-                f"{filename}:{node.name}: subclasses a serial server "
-                f"({sorted(bases & _SERIAL_SERVERS)}) without a threading mixin"
+                f"{filename}:{node.name}: reaches a serial server before any threading "
+                f"mixin (bases {bases}), so process_request resolves to BaseServer"
             )
 
-        if bases & (_SERIAL_SERVERS | _THREADING_BASES):
-            queue = _class_level_assignment(node, "request_queue_size")
-            if not _is_positive_number(queue, constants):
-                found.append(
-                    f"{filename}:{node.name}: does not set request_queue_size to a "
-                    "positive literal; TCPServer's inherited default is 5"
-                )
+        server_bases = set(bases) & (_SERIAL_SERVERS | _THREADING_BASES)
+        if server_bases and not bound(node, "request_queue_size"):
+            found.append(
+                f"{filename}:{node.name}: does not set request_queue_size to a "
+                "positive literal on every path; TCPServer's inherited default is 5"
+            )
 
-        if bases & _HANDLER_BASES:
-            timeout = _class_level_assignment(node, "timeout")
-            if not _is_positive_number(timeout, constants):
-                found.append(
-                    f"{filename}:{node.name}: does not set timeout to a positive "
-                    "literal; BaseHTTPRequestHandler's default is None, so a stalled "
-                    "read is parked rather than closed"
-                )
+        if set(bases) & _HANDLER_BASES and not bound(node, "timeout"):
+            found.append(
+                f"{filename}:{node.name}: does not set timeout to a positive "
+                "literal on every path; BaseHTTPRequestHandler's default is None, "
+                "so a stalled read is parked rather than closed"
+            )
 
     return found
 
@@ -385,6 +482,30 @@ def test_one_silent_connection_denies_service_on_the_stdlib_default() -> None:
 
 
 @pytest.mark.security
+def test_mixin_order_decides_whether_the_server_is_actually_concurrent() -> None:
+    """``class L(HTTPServer, ThreadingMixIn)`` is serial, and the MRO says why.
+
+    The guard above reads base *order* because of this: with the mixin second,
+    ``process_request`` resolves to ``BaseServer`` and the accept loop blocks,
+    so an unordered membership test would pass a serial listener. Pinned
+    structurally rather than by timing — the latency figures are in
+    ``_base_names``' docstring — because a wall-clock assertion on a shared
+    runner is a flake waiting to happen, and the MRO is the actual mechanism.
+    """
+    correct = type("Correct", (socketserver.ThreadingMixIn, http.server.HTTPServer), {})
+    reversed_ = type("Reversed", (http.server.HTTPServer, socketserver.ThreadingMixIn), {})
+
+    def dispatcher(cls: type) -> str:
+        return next(c.__name__ for c in cls.__mro__ if "process_request" in vars(c))
+
+    assert dispatcher(correct) == "ThreadingMixIn"
+    assert dispatcher(reversed_) == "BaseServer", (
+        "reversed bases no longer resolve to the serial dispatcher; the guard's "
+        "base-order rule and AGENTS.md §5 both reason from this"
+    )
+
+
+@pytest.mark.security
 def test_threading_plus_a_finite_handler_timeout_survives_the_same_probe() -> None:
     """The bound, measured against the identical probe that denies the default."""
     assert _BoundedHandler.timeout is not None
@@ -423,7 +544,7 @@ def test_no_shipped_module_builds_an_unbounded_http_listener() -> None:
             "from http.server import HTTPServer\n"
             "class Listener(HTTPServer):\n"
             "    request_queue_size = 16\n",
-            "without a threading mixin",
+            "reaches a serial server before any threading mixin",
             id="serial-subclass",
         ),
         pytest.param(
@@ -447,6 +568,33 @@ def test_no_shipped_module_builds_an_unbounded_http_listener() -> None:
             "    timeout = 0\n",
             "does not set timeout",
             id="zero-timeout-is-not-a-deadline",
+        ),
+        pytest.param(
+            "from socketserver import ThreadingMixIn\n"
+            "from http.server import HTTPServer\n"
+            "class Listener(HTTPServer, ThreadingMixIn):\n"
+            "    request_queue_size = 16\n",
+            "reaches a serial server before any threading mixin",
+            id="reversed-base-order-is-still-serial",
+        ),
+        pytest.param(
+            "from http.server import HTTPServer as Server\nsrv = Server(('127.0.0.1', 9), None)\n",
+            "instantiates HTTPServer directly",
+            id="aliased-server-import",
+        ),
+        pytest.param(
+            "from http.server import BaseHTTPRequestHandler as Base\n"
+            "class Handler(Base):\n"
+            "    pass\n",
+            "does not set timeout",
+            id="aliased-handler-import",
+        ),
+        pytest.param(
+            "import http.server as hs\n"
+            "class Listener(hs.HTTPServer):\n"
+            "    request_queue_size = 16\n",
+            "reaches a serial server before any threading mixin",
+            id="module-aliased-server-base",
         ),
     ],
 )
@@ -528,6 +676,35 @@ def test_the_guard_resolves_a_named_constant_rather_than_demanding_a_literal() -
             "    timeout = DEADLINE\n",
             "a global rebinding inside a function is the same hole one scope down",
             id="constant-rebound-via-global",
+        ),
+        pytest.param(
+            "from http.server import BaseHTTPRequestHandler\n"
+            "DEADLINE = 5.0\n"
+            "def make(DEADLINE: float | None = None) -> type:\n"
+            "    class Handler(BaseHTTPRequestHandler):\n"
+            "        timeout = DEADLINE\n"
+            "    return Handler\n",
+            "a parameter shadows the module constant, and ast.arg is not a Name store",
+            id="constant-shadowed-by-a-parameter",
+        ),
+        pytest.param(
+            "from http.server import BaseHTTPRequestHandler\n"
+            "class Handler(BaseHTTPRequestHandler):\n"
+            "    timeout: float | None = 5.0\n"
+            "    timeout = None\n",
+            "the effective class attribute is the later binding, not the first",
+            id="class-attribute-rebound-to-none",
+        ),
+        pytest.param(
+            "import os\n"
+            "from http.server import BaseHTTPRequestHandler\n"
+            "class Handler(BaseHTTPRequestHandler):\n"
+            "    if os.environ.get('FAST'):\n"
+            "        timeout = 5.0\n"
+            "    else:\n"
+            "        timeout = None\n",
+            "a conditional binding has no single effective value, so it fails closed",
+            id="class-attribute-bound-conditionally",
         ),
     ],
 )

@@ -499,6 +499,26 @@ licensed here authenticates every request before it does anything.
   files is otherwise vacuous. The worker cap is deliberately **not** claimed there: it is
   a runtime quantity an AST walk cannot read.
 
+  **And the guard reads base *order*, because a threading mixin that comes second does
+  nothing.** Review of the first version of this test found four bypasses, all one root
+  cause — it matched *names* and read *a* binding rather than the effective one — and all
+  four are measured as having been accepted by it. `class L(HTTPServer, ThreadingMixIn)`
+  linearizes to `L, HTTPServer, TCPServer, BaseServer, ThreadingMixIn`, so
+  `process_request` resolves to **`BaseServer`** and the listener is serial while an
+  unordered membership test sees a mixin and passes it: measured on that base order with
+  `timeout = 1.0` and a 16-deep queue, one silent connection delayed a legitimate request
+  0.80 s, eight delayed it 7.81 s and seventeen delayed it **16.82 s**, against 0.00 s
+  with the mixin first. So the consequence of this one is a delay that grows one timeout
+  per held connection rather than the outright denial the no-timeout default gives — which
+  is still a bad answer from a channel whose question is "is the peer alive?" before an
+  operator promotes. The other three: an aliased import
+  (`from http.server import HTTPServer as Server`) hid a whole serial listener, which is
+  this bullet's own string defect one level down; a class attribute rebound later in the
+  body (`timeout: float = 5.0` then `timeout = None`) read as bounded, so every binding
+  on every path must now be sound rather than the first; and a module constant **shadowed
+  by a parameter** resolved to the module's value, because `ast.arg` is not a `Name`
+  store, so any binding of a name anywhere now disqualifies it.
+
 **What this still does not license**, stated because an amendment is read by whoever wants
 the next thing: shipping the store over this channel (an operator's existing transport moves
 the file, which `DESIGN.md`'s active/passive row already decided); any egress to a host not
