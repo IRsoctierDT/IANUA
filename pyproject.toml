@@ -41,7 +41,7 @@ dev = [
   "mypy>=2.4.0",
   "pytest>=8.0",
   "pytest-cov>=5.0",
-  "hypothesis>=6.170.0",
+  "hypothesis>=6.170.5",
   "bandit>=1.7",
   "pip-audit>=2.7",
   "detect-secrets>=1.5",
@@ -50,6 +50,9 @@ dev = [
   "pyyaml>=6.0",
   "reportlab>=5.0.1",
   "cryptography>=50.0.2",
+  # The package builder for ci.yml's build job and release.yml. Declared here
+  # so it installs hash-pinned from requirements-dev.lock instead of by name.
+  "build>=1.6.1",
 ]
 
 dashboard = [

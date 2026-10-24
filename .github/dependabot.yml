@@ -40,6 +40,8 @@ updates:
       # nobody. Libraries that shipped code imports (pyyaml, reportlab,
       # cryptography, packaging) live in the same `dev` extra but are NOT
       # listed: they change runtime behaviour, so they stay human-reviewed.
+      # Neither is `build`: it produces the wheel and sdist that ci.yml
+      # attests and release.yml publishes, so its bumps are read too.
       # Keep this list in step with pyproject.toml's [dev] and [fuzz] extras,
       # and keep the group NAME `dev-toolchain` — dependabot-automerge.yml
       # matches on it.

@@ -81,6 +81,8 @@ def seeds(target: str) -> list[bytes]:
         return [port.to_bytes(2, "big") + text.encode() for text, port in _EGRESS_CANDIDATES]
     if target == "projection":
         return [canonical_json(normalize(record).to_dict()).encode() for record in _records()]
+    if target == "transport":
+        return list(_TRANSPORT_LINES)
     raise KeyError(target)
 
 

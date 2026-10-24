@@ -30,7 +30,9 @@ on:
     paths:
       - "agents/__init__.py"
       - "agents/policies/**"
+      - "agents/tools/**"
       - "ingest/**"
+      - "mcp/**"
       - "store/**"
       - "tests/__init__.py"
       - "tests/fuzz/**"
@@ -42,7 +44,9 @@ on:
     paths:
       - "agents/__init__.py"
       - "agents/policies/**"
+      - "agents/tools/**"
       - "ingest/**"
+      - "mcp/**"
       - "store/**"
       - "tests/__init__.py"
       - "tests/fuzz/**"

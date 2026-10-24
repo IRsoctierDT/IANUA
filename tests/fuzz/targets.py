@@ -13,10 +13,9 @@ Each target asserts what its module already promises, not a new rule. Two
 contracts that do **not** hold today are deliberately absent, because a target
 that fails on every run teaches nobody anything: the event store's 64 KiB
 projection ceiling (``normalize`` can build an event the store refuses) and the
-MCP transport's "malformed input never crashes the loop". A third is asserted
-in a weaker form, said where it is: an unclaimed record's excerpt escapes
-non-ASCII. Each needs its own fix, and its full check joins this file with that
-fix.
+documented error type of ``EgressAllowlist.load``. A third is asserted in a
+weaker form, said where it is: an unclaimed record's excerpt escapes non-ASCII.
+Each needs its own fix, and its full check joins this file with that fix.
 """
 
 from __future__ import annotations
@@ -24,14 +23,15 @@ from __future__ import annotations
 import atexit
 import contextlib
 import functools
+import io
 import ipaddress
 import json
 import math
 import re
-import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 from agents.policies.egress import (
     EgressAllowlist,
@@ -51,6 +51,8 @@ from ingest.schema import (
     MAX_RAW_EXCERPT,
     NormalizedEvent,
 )
+from mcp.server import build_default_registry
+from mcp.transport import PARSE_ERROR, serve, utf8_lines
 from store.schema import canonical_json
 
 #: The key grammar ``ingest.keyvalue`` documents, restated here rather than
@@ -71,6 +73,13 @@ _ALLOWLIST = EgressAllowlist(
         ("2001:db8::10", 443),
     )
 )
+
+#: The transport target's server: the default registry, over a root that holds
+#: one file so a generated ``tools/call`` can reach a successful read. The
+#: directory is removed when the interpreter exits.
+_MCP_ROOT = tempfile.TemporaryDirectory(prefix="fuzz-mcp-root-")
+(Path(_MCP_ROOT.name) / "note.txt").write_text("hello", encoding="utf-8")
+_REGISTRY = build_default_registry(Path(_MCP_ROOT.name))
 
 
 def _check(condition: bool, message: str) -> None:
@@ -251,6 +260,75 @@ def one_input_projection(data: bytes) -> None:
     _check(NormalizedEvent.from_dict(event.to_dict()) == event, "the event does not round-trip")
 
 
+def _refuse_constant(token: str) -> NoReturn:
+    raise AssertionError(f"the transport wrote {token}, which is not JSON")
+
+
+def one_input_transport(data: bytes) -> None:
+    """``mcp.transport.serve`` on one line: answered, never crashed.
+
+    Nothing may raise, whatever the bytes. A blank line gets no answer, an
+    object with no ``id`` (a notification) at most one, and anything else
+    exactly one. Each answer is one ASCII line of strict JSON: a JSON-RPC 2.0
+    response with exactly one of ``result`` and ``error``, whose id is the
+    request's own or null, never an id the request did not carry, and always
+    null on a parse error.
+    """
+    out = io.StringIO()
+    serve(_REGISTRY, utf8_lines([data]), out)
+    written = out.getvalue()
+    _check(written.isascii(), "the transport wrote a non-ASCII character")
+    *answers, tail = written.split("\n")
+    _check(tail == "", "the transport's last answer is not newline-terminated")
+
+    # The same decoding serve() applies, without its refusals: a line it cannot
+    # parse still needs its one answer, and only an object can be a notification.
+    text = data.decode("utf-8", "surrogateescape").strip()
+    if not text:
+        _check(not answers, f"a blank line was answered {len(answers)} times")
+        return
+    try:
+        request = json.loads(text)
+    except (ValueError, RecursionError):
+        request = None
+    if isinstance(request, dict) and "id" not in request:
+        _check(len(answers) <= 1, f"a notification was answered {len(answers)} times")
+    else:
+        _check(len(answers) == 1, f"a request was answered {len(answers)} times")
+
+    for line in answers:
+        try:
+            response = json.loads(line, parse_constant=_refuse_constant)
+        except ValueError as exc:
+            raise AssertionError(f"the transport wrote a line that is not JSON: {line!r}") from exc
+        _check(isinstance(response, dict), f"the transport wrote {line!r}, not an object")
+        _check(response.get("jsonrpc") == "2.0", f"{line!r} is not a JSON-RPC 2.0 response")
+        _check("id" in response, f"{line!r} carries no id")
+        _check(("result" in response) != ("error" in response), f"{line!r} is not one outcome")
+        code = None
+        if "error" in response:
+            error = response["error"]
+            _check(
+                isinstance(error, dict)
+                and type(error.get("code")) is int
+                and isinstance(error.get("message"), str),
+                f"{line!r} is not a JSON-RPC error object",
+            )
+            code = error["code"]
+        echoed = response["id"]
+        if echoed is None:
+            continue
+        _check(code != PARSE_ERROR, f"a parse error was answered with id {echoed!r}")
+        _check(
+            type(echoed) in (str, int, float),
+            f"answered with id {echoed!r}, which is not a string or a number",
+        )
+        _check(
+            isinstance(request, dict) and echoed == request.get("id"),
+            f"answered with id {echoed!r}, which the request did not carry",
+        )
+
+
 #: Every target, by the name the runner, the replay test and the CI matrix use.
 TARGETS: dict[str, Callable[[bytes], None]] = {
     "allowlist": one_input_allowlist,
@@ -258,4 +336,5 @@ TARGETS: dict[str, Callable[[bytes], None]] = {
     "keyvalue": one_input_keyvalue,
     "normalize": one_input_normalize,
     "projection": one_input_projection,
+    "transport": one_input_transport,
 }

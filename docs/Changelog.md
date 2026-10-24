@@ -55,6 +55,21 @@ All notable changes to this project. Versions correspond to git tags.
   `SourceError`.
 
 ### Security
+- **Every `pip install` in CI is hash-pinned (OpenSSF Scorecard Pinned-Dependencies).** Eight
+  installs in `ci.yml`, `release.yml` and `runner-canary.yml` fetched packages by name and took
+  whatever PyPI served at that moment: `-e ".[dev]"` in five jobs, `build` in two, and
+  `"pyyaml>=6.0"` in one. Each now installs from `requirements-dev.lock` under
+  `--require-hashes`, followed by `pip install --no-deps -e .` where a job needs the project. The
+  Navigator drift gate copies only PyYAML's block out of that lock. `build` joins `[dev]` (1.6.1,
+  with `pyproject-hooks` 1.3.3), so that it has a pin. It stays out of Dependabot's auto-merge
+  group, because it produces the artifacts CI attests and the release publishes. As a side
+  effect, CI now tests the exact versions `uv.lock` records, rather than the newest each floor
+  allows. **The release job validates a tag with that tag's own lock**, and builds with a builder
+  installed in its own venv from the workflow's commit. Tags cut before this change (v2.3.1 and
+  earlier) have no pin for `build`, and a dispatch for an existing tag runs against one. Measured
+  on v2.3.0: its own lock installs on Python 3.11; ruff, the format check, mypy and pytest pass;
+  and the builder produces its wheel and sdist. The `[build-system]` backend is still unpinned:
+  an editable install or `python -m build` fetches it into an isolated environment.
 - **`filelock` 4.2.4 and `setuptools` 84.2.1 close two advisories that turned `main` red.**
   CVE-2026-112940 (`filelock` 3.29.4, fixed in 4.2.1) and GHSA-xmj3-9gf7-h52w (`setuptools`
   83.0.0, fixed in 84.1.0) were published on 2026-10-23, after #292's checks passed and before
