@@ -11,10 +11,24 @@ remembers you stays in this browser: no cookies, no analytics, no request."*
 That sentence is a promise made on screen, so it is pinned here rather than
 left to review. The whole mechanism is one key in the visitor's own browser —
 GitHub Pages serves static files and runs none of our code, so there is no
-server side that could hold a visitor table, and standing one up elsewhere
-would mean storing an identifier (an address, a cookie id) that is personal
-data under GDPR/CCPA and would need a notice and a lawful basis. Per-browser
-state collects nothing and cannot leak.
+server side that could hold a visitor table; and building one elsewhere would
+mean storing an identifier (an address, a cookie id) that is personal data
+under GDPR/CCPA and would need a notice and a lawful basis. Per-browser state
+collects nothing and cannot leak.
+
+**The page is parsed, not pattern-matched.** An earlier version of this file
+found the script with ``re.findall(r"<script>(.*?)</script>")`` and asserted
+``"<script src=" not in page``, which CodeQL flagged (``py/bad-tag-filter``,
+high) on PR #304. It was right, and the weakness was worse in the gate than
+in the extractor: measured, ``<SCRIPT SRC=…>``, a ``src`` on a continuation
+line, and the entirely ordinary ``<script defer src=…>`` all bypassed the
+third-party-script gate — three of four spellings — while the extractor's
+misses merely failed the assertion loudly. A gate that reads green over a
+loaded CDN script is worse than no gate, so both now go through
+:class:`html.parser.HTMLParser`, which lowercases tag and attribute names and
+does not care about whitespace or attribute order.
+:func:`test_the_third_party_script_gate_reads_tags_not_text` pins that with
+the spellings that used to get through.
 
 What these assertions cover, and what they do not: they read the committed
 page, so they catch a greeting that grows an analytics beacon, a cookie, or a
@@ -27,6 +41,7 @@ driving the real page in Chromium.
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -49,15 +64,69 @@ _PHONES_HOME = (
     "import(",
 )
 
+_Attrs = dict[str, str | None]
+
+
+class _Elements(HTMLParser):
+    """Every start tag with its attributes, and every script's text.
+
+    ``HTMLParser`` lowercases tag and attribute names and handles attribute
+    order, whitespace and quoting itself, which is the whole reason for
+    preferring it to a pattern here. It also switches to CDATA mode inside
+    ``<script>``, so the element's text arrives verbatim.
+    """
+
+    def __init__(self) -> None:
+        # Script text has to be the bytes the browser would run, so entity
+        # references are left exactly as written.
+        super().__init__(convert_charrefs=False)
+        self.elements: list[tuple[str, _Attrs]] = []
+        self.scripts: list[tuple[_Attrs, str]] = []
+        self._open_script: _Attrs | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        mapping = dict(attrs)
+        self.elements.append((tag, mapping))
+        if tag == "script":
+            self._open_script = mapping
+            self._text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._open_script is not None:
+            self.scripts.append((self._open_script, "".join(self._text)))
+            self._open_script = None
+
+    def handle_data(self, data: str) -> None:
+        if self._open_script is not None:
+            self._text.append(data)
+
+
+def _parse(markup: str) -> _Elements:
+    parser = _Elements()
+    parser.feed(markup)
+    parser.close()
+    return parser
+
 
 def _page() -> str:
     return _PAGE.read_text(encoding="utf-8")
 
 
+def _parsed() -> _Elements:
+    return _parse(_page())
+
+
+def _element(element_id: str) -> _Attrs:
+    """One element's attributes, found by ``id``."""
+    found = [attrs for _tag, attrs in _parsed().elements if attrs.get("id") == element_id]
+    assert len(found) == 1, f"expected exactly one element with id={element_id!r}, got {len(found)}"
+    return found[0]
+
+
 def _welcome_script() -> str:
     """The one inline script that implements the greeting, comments and all."""
-    blocks: list[str] = re.findall(r"<script>(.*?)</script>", _page(), re.DOTALL)
-    matching = [block for block in blocks if "ianua.visitor" in block]
+    matching = [text for _attrs, text in _parsed().scripts if "ianua.visitor" in text]
     assert len(matching) == 1, f"expected exactly one welcome script, found {len(matching)}"
     return matching[0]
 
@@ -82,28 +151,21 @@ def _welcome_code() -> str:
 def test_both_greetings_ship_hidden_so_javascript_off_changes_nothing() -> None:
     """A visitor without JavaScript must see the page as it was, not a banner
     they have no way to dismiss."""
-    page = _page()
-    for element in (
-        '<div class="welcome-backdrop" id="welcome"',
-        '<div class="welcome-toast" id="welcome-back"',
-    ):
-        start = page.find(element)
-        assert start != -1, f"{element!r} is missing from the page"
-        opening_tag = page[start : page.index(">", start)]
-        assert " hidden" in opening_tag, f"{element!r} does not ship hidden: {opening_tag!r}"
+    for element_id in ("welcome", "welcome-back"):
+        assert "hidden" in _element(element_id), f"#{element_id} does not ship hidden"
 
 
 @pytest.mark.unit
 def test_the_dialog_is_announced_as_a_dialog() -> None:
     """Focus is moved into the card and trapped there, so a screen reader has
     to be told what it has been moved into."""
-    page = _page()
-    start = page.find('<div class="welcome-card"')
-    assert start != -1, "the welcome card is missing"
-    card = page[start : page.index(">", start)]
-    for attribute in ('role="dialog"', 'aria-modal="true"', 'aria-labelledby="welcome-title"'):
-        assert attribute in card, f"the welcome card is missing {attribute}"
-    assert 'id="welcome-title"' in page, "aria-labelledby points at no element"
+    cards = [attrs for _tag, attrs in _parsed().elements if attrs.get("class") == "welcome-card"]
+    assert len(cards) == 1, f"expected exactly one welcome card, found {len(cards)}"
+    card = cards[0]
+    assert card.get("role") == "dialog", "the welcome card is not a dialog"
+    assert card.get("aria-modal") == "true", "the welcome card is not modal"
+    assert card.get("aria-labelledby") == "welcome-title", "the welcome card is unlabelled"
+    assert _element("welcome-title"), "aria-labelledby points at no element"
 
 
 @pytest.mark.unit
@@ -122,8 +184,7 @@ def test_the_card_still_makes_the_promise_the_test_above_enforces() -> None:
     """If the claim is ever dropped from the card, the gate above should be
     reconsidered deliberately rather than left enforcing a sentence nobody
     shows any more."""
-    page = _page()
-    assert "no cookies, no analytics, no request" in page, (
+    assert "no cookies, no analytics, no request" in _page(), (
         "the welcome card no longer states where the visitor flag lives; decide whether "
         "test_the_greeting_makes_no_request_and_sets_no_cookie still describes the feature"
     )
@@ -171,6 +232,33 @@ def test_the_storage_key_is_versioned() -> None:
 def test_the_greeting_adds_no_third_party_script() -> None:
     """The feature is deliberately dependency-free; a greeting is not worth a
     supply-chain edge."""
-    assert "<script src=" not in _page(), (
-        "docs/index.html now loads an external script; the welcome needs none"
+    loaded = [attrs["src"] for attrs, _text in _parsed().scripts if "src" in attrs]
+    assert not loaded, (
+        f"docs/index.html now loads external scripts; the welcome needs none: {loaded}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "markup",
+    [
+        '<script src="https://cdn.invalid/x.js"></script>',
+        '<SCRIPT SRC="https://cdn.invalid/x.js"></SCRIPT>',
+        '<script\n  src="https://cdn.invalid/x.js"></script>',
+        '<script defer src="https://cdn.invalid/x.js"></script>',
+        "<script src='https://cdn.invalid/x.js'></script>",
+    ],
+)
+def test_the_third_party_script_gate_reads_tags_not_text(markup: str) -> None:
+    """The regression behind CodeQL's ``py/bad-tag-filter`` on PR #304.
+
+    Measured against the gate as it was written then (``"<script src=" not in
+    page``): only the first spelling was caught. The other four — uppercase,
+    a continuation line, an attribute before ``src``, single quotes — each
+    bypassed a gate whose whole purpose is to keep an external script out,
+    and each reported green.
+    """
+    scripts = _parse(markup).scripts
+    assert [attrs for attrs, _text in scripts if "src" in attrs], (
+        f"the third-party-script gate does not see {markup!r}"
     )
