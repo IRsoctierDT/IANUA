@@ -5,6 +5,62 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
+  third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
+  PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather
+  than nothing: `uv.lock` is a first-class format for it, alongside poetry/pdm/Pipfile/requirements
+  (`src/cli/detect.js`, with its own `tests/deps-python.test.js` suite). The vendor's Marketplace
+  snippet was not pasted as given — it offered the floating tag `@v1.9.0`, and it is not even valid
+  YAML, since `name: Penthera: Cyber Security Agent` carries an unquoted `": "` in a plain scalar
+  (measured: `yaml.safe_load` raises `ScannerError: mapping values are not allowed here`). Pasting
+  it is the shape of #232 exactly. The pin is the commit that tag names,
+  `3707f0f71571488268f9f1995389c134f2025cc4`, resolved with `git ls-remote --tags`; both it and
+  `actions/setup-node@v7.1.0` are lightweight tags, so the SHA beside the tag *is* the commit and
+  there is no `^{}` row to mistake for it. `action.yml` at that commit is byte-identical to the
+  `main` copy that was reviewed (`git diff v1.9.0 HEAD -- action.yml`), so the review applies to
+  the ref that actually runs, and `penthera-version: "1.9.0"` makes the action fail closed if the
+  ref is ever re-pointed at another version. Node is pinned via `setup-node` rather than inherited
+  from the runner image, because the action refuses to run below Node 22. Report-only
+  (`fail-on: none`) and deliberately **not** one of §8's required checks, so a false positive in
+  the tool's first weeks here cannot wedge the pipeline; `fail-on: high` is the documented
+  escalation.
+- **Why a third-party action was acceptable here at all.** Read at the pinned SHA, not assumed: it
+  is a composite action with no Docker image, no JavaScript entrypoint and no `pre:`/`post:` hook;
+  inputs reach the shell only through `env:`, never `${{ }}` interpolation; `base-ref` is validated
+  against a character allow-list refusing a leading `-` and `..`, with `--end-of-options` on every
+  git call; Penthera always runs from the action's own checkout and never installs itself from npm;
+  its nested `github/codeql-action/upload-sarif` is itself SHA-pinned; and
+  `scripts/action/comment.mjs` drives `gh api` against `repos/$GITHUB_REPOSITORY/issues/...` and no
+  external endpoint. 55 stars and 717 commits at review time — a small project, so the SHA pin, the
+  version assertion, the two write permissions and the security tests are what make it acceptable,
+  not its popularity.
+- **`mode: scan` is structurally excluded, and `mode: agents` is gated pending a §5.1 decision.**
+  The action's third mode takes a `url` and sends requests to it; §5 forbids accessing third-party
+  systems without documented authorization and IANUA declares no such target, so no job sets it and
+  a security test refuses both the mode and a stray `url` input. `mode: agents` would audit exactly
+  the surface §5 cares about most here (`CLAUDE.md`, `AGENTS.md`, `mcp/`, `agents/`), but `yaml` is
+  the action's one runtime dependency and upstream does not vendor `node_modules`, so the step runs
+  `npm ci --omit=dev --ignore-scripts --no-audit --no-fund` against **https://registry.npmjs.org**.
+  That is a §5.1 external-network action requiring human approval with the URL shown in full, so
+  the job is written, reviewed and pinned but runs only on an explicit manual dispatch. The fetch
+  is bounded and integrity-checked (the action's committed `package-lock.json`, 145 integrity
+  hashes over 146 packages, install scripts disabled) and comparable in kind to the hash-pinned
+  PyPI installs CI already performs — but it is a second package registry on CI's egress surface,
+  and that is the owner's call, not a default.
+- **`tests/security/test_penthera_boundary.py` pins the boundary, not the prose.** Seven assertions:
+  no `scan` mode and no `url` input; the agent-config audit unreachable without a manual dispatch;
+  every action pinned to a full 40-character SHA; the pin's `# v…` comment and `penthera-version`
+  in step; a read-only default permission block with no job write beyond `pull-requests` and
+  `security-events` and no `id-token`; no checkout persisting credentials; and `fail-on` explicitly
+  `none`. Placed under `tests/security/` deliberately, per the correction review already made on
+  `test_scorecard_boundary.py` — §6 scopes the independent Security pass there, so boundary
+  assertions living only under `tests/unit/` are invisible to the one pass meant to read them.
+  Each assertion was proven to discriminate by planting the violation it forbids: `mode: scan`
+  plus a `url`, a floating tag, an ungated npm egress, `contents: write`, `id-token: write`, a
+  dropped `persist-credentials`, and a version/pin drift each turn the suite red, and the workflow
+  is byte-identical to its backup afterward. One of those plants initially "passed" because the
+  `sed` that was meant to inject it used the wrong indentation and never landed — recorded because
+  a planted violation that does not land looks exactly like a check that works.
 - **Coverage-guided fuzzing with Atheris (`tests/fuzz/`, `.github/workflows/fuzz.yml`).** There
   are four targets, one for each surface that parses untrusted bytes: `ingest.normalize` on the
   bytes `collect/` feeds it, `ingest.keyvalue.decode`, the egress address and port checks, and

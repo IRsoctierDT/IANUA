@@ -1,0 +1,204 @@
+# penthera.yml — IANUA
+# Place at:  .github/workflows/penthera.yml
+#
+# Offline security review on pull requests: Penthera's dependency capability
+# diff (`deps`) and its AI-agent configuration audit (`agents`), reported into
+# the Code scanning dashboard as SARIF.
+#
+# ---------------------------------------------------------------------------
+# Why this is a workflow, and why the vendor snippet was not pasted as given
+# ---------------------------------------------------------------------------
+# It arrived as the Marketplace install snippet — a bare `- name:`/`uses:`
+# pair with no job, no trigger and no permissions block. That is the shape of
+# #232 exactly: Actions syntax appended to `.pre-commit-config.yaml`, which
+# made that file unparseable and silently skipped ruff, ruff-format, mypy,
+# bandit, detect-secrets and every drift gate for every developer, behind a
+# green pipeline.
+#
+# This time the snippet could not have worked anywhere, pasted or not:
+# `name: Penthera: Cyber Security Agent` carries an unquoted ": " inside a
+# plain scalar, so YAML refuses the document. Measured with `yaml.safe_load`
+# rather than assumed — `ScannerError: mapping values are not allowed here`.
+# Every title below is quoted. `ci.yml`'s `pre-commit validate-config` step
+# and `tests/unit/test_scorecard_workflow.py` are the two gates that catch the
+# #232 shape; this header is the third, which is the reader.
+#
+# ---------------------------------------------------------------------------
+# The pin (AGENTS.md §8: full commit SHA, never a floating tag)
+# ---------------------------------------------------------------------------
+# The snippet said `@v1.9.0`. A tag is mutable and whoever holds the upstream
+# repository can re-point it, so the ref below is the commit that tag names,
+# resolved with `git ls-remote --tags` rather than from memory:
+#
+#     v1.9.0 -> 3707f0f71571488268f9f1995389c134f2025cc4
+#
+# One trap if anyone re-resolves it by hand: an annotated tag returns two rows
+# and only the `^{}` row is the commit. These tags are lightweight — a single
+# row each, measured for both `danoszz/penthera@v1.9.0` and
+# `actions/setup-node@v7.1.0` — so the SHA printed beside the tag *is* the
+# commit. `git rev-parse v1.9.0` after a fetch agrees.
+#
+# `action.yml` at that commit is byte-identical to the copy at `main` that was
+# reviewed (`git diff v1.9.0 HEAD -- action.yml`), so the review below applies
+# to the ref that actually runs — not to whatever `main` held on the day.
+# `penthera-version: "1.9.0"` is a second layer on the same claim: the action
+# reads its own bundled `package.json` and fails the job when the pinned ref
+# carries a different version, so a re-pointed ref becomes a failed run rather
+# than a silent swap. Dependabot's `actions-all` group keeps the pin current.
+#
+# ---------------------------------------------------------------------------
+# What the third-party action does, read at the pinned SHA
+# ---------------------------------------------------------------------------
+# A composite action: no Docker image, no JavaScript entrypoint, and no `pre:`
+# or `post:` hook that would run outside the steps below. It is written
+# defensively, which is the reason it is here at all rather than refused:
+#
+#   * Inputs reach the shell through `env:` only, never `${{ }}` interpolation,
+#     so a branch name cannot become shell. Its own comment says so and the
+#     steps match.
+#   * `base-ref` is validated against a character allow-list that refuses a
+#     leading "-" and "..", and every git call passes `--end-of-options`.
+#   * Penthera always runs from the action's own checkout; it never installs
+#     itself from npm.
+#   * Its nested `github/codeql-action/upload-sarif` is itself SHA-pinned.
+#   * `scripts/action/comment.mjs` drives `gh api` against
+#     `repos/$GITHUB_REPOSITORY/issues/...` and nothing else, so the token
+#     reaches this repository's own PR thread and no external endpoint.
+#
+# MIT licensed; 55 stars and 717 commits at the time of review. That is a
+# small project, and popularity is not what makes it acceptable here — the SHA
+# pin, the version assertion, the least-privilege permissions below and
+# `tests/security/test_penthera_boundary.py` are.
+#
+# ---------------------------------------------------------------------------
+# `mode: scan` is never configured here (AGENTS.md §5)
+# ---------------------------------------------------------------------------
+# The action's third mode takes a `url` and sends requests to it. §5 prohibits
+# code that "scans, attacks, exploits, brute-forces, or accesses third-party
+# systems without explicit, documented authorization", and the action's own
+# input description agrees: "Scan only systems you are authorized to test."
+# IANUA declares no such target, so no job below sets `mode: scan` or passes a
+# `url`, and a security test asserts that neither ever appears in this file.
+# Wiring it would be a §5.1 boundary-crossing gate, not a config change.
+#
+# ---------------------------------------------------------------------------
+# `deps` runs; `agents` is written but OFF, pending a §5.1 egress decision
+# ---------------------------------------------------------------------------
+# `deps` is fully offline with respect to third parties. It reads `uv.lock` —
+# a first-class format for it, alongside poetry/pdm/Pipfile/requirements, per
+# `src/cli/detect.js` and its own `tests/deps-python.test.js` — fetches from no
+# package registry, and makes network calls only to GitHub: the single-commit
+# `git fetch` of the pull request base, the PR comment, and the SARIF upload.
+#
+# `agents` audits the surface §5 cares about most in this repository —
+# `CLAUDE.md`, `AGENTS.md`, `mcp/`, `agents/` — but it parses YAML frontmatter,
+# and `yaml` is the action's one runtime dependency and is NOT vendored
+# (`node_modules` is not committed upstream). So that mode runs
+# `npm ci --omit=dev --ignore-scripts --no-audit --no-fund`, which fetches from:
+#
+#     https://registry.npmjs.org
+#
+# The URL is written out in full because §5.1 classes this as an
+# external-network action requiring human approval. It is a bounded,
+# integrity-checked fetch — `npm ci` against the action's committed
+# `package-lock.json`, 145 integrity hashes across 146 packages, install
+# scripts disabled — and comparable in kind to the hash-pinned PyPI installs
+# CI already performs. It is still a second package registry on CI's egress
+# surface, and that is the owner's decision rather than this file's. So the job
+# is written, reviewed and pinned, and runs only on a manual dispatch that
+# explicitly asks for it. Enabling it for pull requests is a one-line,
+# reviewable edit to its `if:` condition.
+#
+# ---------------------------------------------------------------------------
+# `fail-on: none` — report-only, deliberately
+# ---------------------------------------------------------------------------
+# Findings land in Code scanning and in the PR comment; they do not fail the
+# job. This workflow is also deliberately NOT one of the required checks in
+# AGENTS.md §8 (those are `ci.yml` stages 2-4), so a false positive from a tool
+# on its first day on this repository cannot wedge the pipeline. The
+# escalation path is `fail-on: high` once a few weeks of runs show what it
+# actually reports here. `none` is written literally so the choice is visible
+# in a diff, the way `publish_results: false` is in `scorecard.yml`.
+
+name: Penthera
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      agents-audit:
+        description: >-
+          Also run the agent-config audit (mode: agents). This fetches `yaml`
+          from https://registry.npmjs.org — see the §5.1 note in this file.
+        type: boolean
+        default: false
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: penthera-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege by default (AGENTS.md §3). Jobs opt into more only if needed.
+permissions:
+  contents: read
+
+jobs:
+  deps:
+    name: "Penthera: dependency capability diff (offline)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # one PR comment, created once then updated in place
+      security-events: write # SARIF upload to Code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # The action refuses to run below Node 22 and tells you to add this step.
+      # Pinned rather than inherited from the runner image, so a base-image
+      # bump cannot quietly change which Node the scan ran on.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: "Penthera: dependency capability diff"
+        uses: danoszz/penthera@3707f0f71571488268f9f1995389c134f2025cc4 # v1.9.0
+        with:
+          mode: deps
+          penthera-version: "1.9.0"
+          fail-on: none
+          sarif: "true"
+          # A fork pull request gets a read-only token, so the comment API call
+          # would fail the step. The action writes to $GITHUB_STEP_SUMMARY
+          # instead whenever this is not "true" — which is also the right
+          # behaviour on a push to main, where there is no PR to comment on.
+          comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+
+  agents:
+    name: "Penthera: agent-config audit (manual; reaches registry.npmjs.org)"
+    # OFF for pull requests and pushes by design — see the §5.1 egress note in
+    # this file's header. Only an explicit manual dispatch asking for it runs.
+    if: github.event_name == 'workflow_dispatch' && inputs.agents-audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # SARIF upload to Code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: "Penthera: agent-config audit"
+        uses: danoszz/penthera@3707f0f71571488268f9f1995389c134f2025cc4 # v1.9.0
+        with:
+          mode: agents
+          penthera-version: "1.9.0"
+          fail-on: none
+          sarif: "true"
+          # No PR to comment on from a manual dispatch; findings go to the
+          # step summary and Code scanning.
+          comment: "false"
