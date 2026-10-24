@@ -46,7 +46,13 @@ All notable changes to this project. Versions correspond to git tags.
   `null` or `[]` was already `-32602` and keeps that code, with the message `'params' must be an
   object`. `tests/security/test_mcp_transport_hardening.py` covers the five measured lines, a
   valid request after each, the entrypoint under strict decoding, and a Hypothesis property over
-  generated messages. Recorded, not fixed: a line is read whole, whatever its length. A
+  generated messages. `tests/fuzz/targets.py` gains a `transport` target: one line through
+  `serve()`, nothing may raise, a request is answered exactly once with one strict-JSON line, and
+  the id is the request's own or null. `fuzz.yml` runs it, and its path filters now cover `mcp/`
+  and `agents/tools/`. Measured with the workflow's own command, 60 seconds: 311,202 inputs and
+  no finding. Its seeds carry the crash shapes, so reverting the `params` check fails the replay
+  at once, while 60 seconds of mutation from the well-formed seeds alone did not find it again.
+  Recorded, not fixed: a line is read whole, whatever its length. A
   notification to `initialize`, `tools/list` or `tools/call` is still answered, though JSON-RPC
   says a notification gets no reply, and a `tools/call` sent as one still runs the tool. A tool
   whose output `json.dumps` cannot encode would still end the loop; the default registry's one
@@ -71,7 +77,7 @@ All notable changes to this project. Versions correspond to git tags.
   `https://café.example/x`. It is then not a substring of the excerpt it came from. The
   fuzz harness found this on its first run, and its normalize target accepts the escaped form
   until the fix lands. The fix is a change of its own, because it alters `event_id` for every
-  such record. `tests/fuzz/targets.py` lists three further documented contracts that do not
+  such record. `tests/fuzz/targets.py` lists two further documented contracts that do not
   hold today and are not asserted yet; each needs its own fix too.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23

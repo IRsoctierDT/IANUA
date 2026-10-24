@@ -49,6 +49,29 @@ _EGRESS_CANDIDATES = (
     ("127.0.0.1", 0),
 )
 
+_TRANSPORT_LINES = (
+    b'{"jsonrpc":"2.0","id":1,"method":"initialize"}',
+    b'{"jsonrpc":"2.0","id":"a","method":"tools/list"}',
+    b'{"jsonrpc":"2.0","id":2,"method":"tools/call",'
+    b'"params":{"name":"read_text_file","arguments":{"path":"note.txt"}}}',
+    b'{"jsonrpc":"2.0","id":3,"method":"tools/call",'
+    b'"params":{"name":"read_text_file","arguments":{"path":"../note.txt"}}}',
+    b'{"jsonrpc":"2.0","method":"notifications/initialized"}',
+    b'{"jsonrpc":"2.0","id":4,"method":"nope"}',
+    # The lines that crashed serve() before it checked shapes, and neighbours.
+    # The brackets stop at 60,000, under the fuzz job's -max_len, and are still
+    # past the decoder's depth on every supported interpreter.
+    b'{"jsonrpc":"2.0","id":5,"method":"tools/call","params":1}',
+    b'{"jsonrpc":"2.0","id":6,"method":"tools/call","params":"x"}',
+    b"[]",
+    b'{"jsonrpc":"2.0","id":' + b"9" * 5000 + b',"method":"initialize"}',
+    b"[" * 60_000,
+    b'{"jsonrpc":"2.0","id":NaN,"method":"initialize"}',
+    b'{"jsonrpc":"2.0","id":{},"method":"initialize"}',
+    b'{"jsonrpc":"2.0","id":7,"method":"x\xff"}',
+    b"   ",
+)
+
 
 def _records() -> list[dict[str, Any]]:
     fixtures = json.loads(_FIXTURES.read_text(encoding="utf-8"))
@@ -66,6 +89,8 @@ def seeds(target: str) -> list[bytes]:
         return [port.to_bytes(2, "big") + text.encode() for text, port in _EGRESS_CANDIDATES]
     if target == "projection":
         return [canonical_json(normalize(record).to_dict()).encode() for record in _records()]
+    if target == "transport":
+        return list(_TRANSPORT_LINES)
     raise KeyError(target)
 
 
