@@ -29,6 +29,34 @@ All notable changes to this project. Versions correspond to git tags.
   Dependabot groups it with the dev toolchain.
 
 ### Fixed
+- **The MCP stdio transport answers a malformed line with a JSON-RPC error and keeps reading,
+  as its docstring said it did.** Measured on `2090519`, five lines ended `serve()`: a
+  `tools/call` whose `params` was `1` or `"x"` and a top-level `[]` raised `AttributeError`, an
+  id of 5,000 digits raised `ValueError` (the int-digit limit), and 100,000 open brackets raised
+  `RecursionError`. A message that is not an object is now `-32600`, a `params` that is not an
+  object is `-32602`, and a `ValueError` or `RecursionError` from `json.loads` is `-32700`, each
+  with `id: null` where no id can be read. Three more cases of the same defect go with them.
+  Under a strict stdin decoder (`PYTHONIOENCODING=utf-8:strict`, which is what an `en_US.UTF-8`
+  locale gives), one invalid byte raised `UnicodeDecodeError` out of the loop at exit 1, and the
+  valid request read before it in the same chunk was never answered. `main()` now reads bytes and
+  decodes each line with `surrogateescape`, so only that line is refused, as `-32700`. An id that
+  is not a string, number or null (`true`, `{}`, `1e400`) was echoed back, and `1e400` came back
+  as `Infinity`, which is not JSON. Such an id is now `-32600` with `id: null`. `NaN`, `Infinity`
+  and `-Infinity`, which `json.loads` accepts and JSON does not, are now `-32700`. A `params` of
+  `null` or `[]` was already `-32602` and keeps that code, with the message `'params' must be an
+  object`. `tests/security/test_mcp_transport_hardening.py` covers the five measured lines, a
+  valid request after each, the entrypoint under strict decoding, and a Hypothesis property over
+  generated messages. `tests/fuzz/targets.py` gains a `transport` target: one line through
+  `serve()`, nothing may raise, a request is answered exactly once with one strict-JSON line, and
+  the id is the request's own or null. `fuzz.yml` runs it, and its path filters now cover `mcp/`
+  and `agents/tools/`. Measured with the workflow's own command, 60 seconds: 311,202 inputs and
+  no finding. Its seeds carry the crash shapes, so reverting the `params` check fails the replay
+  at once, while 60 seconds of mutation from the well-formed seeds alone did not find it again.
+  Recorded, not fixed: a line is read whole, whatever its length. A
+  notification to `initialize`, `tools/list` or `tools/call` is still answered, though JSON-RPC
+  says a notification gets no reply, and a `tools/call` sent as one still runs the tool. A tool
+  whose output `json.dumps` cannot encode would still end the loop; the default registry's one
+  tool cannot return such output.
 - **Three loaders now raise only the error type their docstrings promise, so a caller that
   handles that type refuses cleanly instead of crashing.** Measured on 3.11, 3.12 and 3.13
   before the fix. `EgressAllowlist.load` let four inputs past `EgressAllowlistError`: invalid
@@ -45,7 +73,7 @@ All notable changes to this project. Versions correspond to git tags.
   unchanged: 2 for an undeclarable source, 1 for unusable offsets.
   `tests/security/test_loader_error_contracts.py` pins each input, every filesystem probe in
   `declare`, both callers, a sweep across the parser's depth limit, and a Hypothesis property
-  over arbitrary bytes. A fifth fuzz target, `allowlist`, loads each input as a whole allow-list
+  over arbitrary bytes. Another fuzz target, `allowlist`, loads each input as a whole allow-list
   file and fails on anything but `EgressAllowlistError`, with the three escaping shapes among its
   seeds, so `tests/fuzz/targets.py` no longer lists that contract as one it cannot assert. It is a
   target of its own because the file round trip took the egress target from 24.6k inputs a second
@@ -88,8 +116,8 @@ All notable changes to this project. Versions correspond to git tags.
   `https://café.example/x`. It is then not a substring of the excerpt it came from. The
   fuzz harness found this on its first run, and its normalize target accepts the escaped form
   until the fix lands. The fix is a change of its own, because it alters `event_id` for every
-  such record. `tests/fuzz/targets.py` lists two further documented contracts that do not
-  hold today and are not asserted yet; each needs its own fix too.
+  such record. `tests/fuzz/targets.py` lists one further documented contract that does not
+  hold today and is not asserted yet; it needs its own fix too.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 

@@ -2,8 +2,8 @@
 #
 # tests/fuzz/targets.py holds one bytes-in target per surface (normalize, the
 # key-value decoder, the egress address checks, the egress allow-list loader,
-# the stored-projection reader), each asserting what its module already
-# documents. pytest replays their seeds on every platform
+# the stored-projection reader, the MCP stdio transport), each asserting what
+# its module already documents. pytest replays their seeds on every platform
 # (tests/fuzz/test_fuzz_corpus.py); this is the half that needs Atheris, and so
 # Linux x86_64 on Python 3.12.
 #
@@ -69,7 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         # Exactly tests/fuzz/targets.py's TARGETS, sorted; a test holds the two equal.
-        target: [allowlist, egress, keyvalue, normalize, projection]
+        target: [allowlist, egress, keyvalue, normalize, projection, transport]
     env:
       TARGET: ${{ matrix.target }}
       FUZZ_SECONDS: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '600' || '60' }}

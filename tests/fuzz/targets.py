@@ -9,13 +9,13 @@ platform, including the ones Atheris ships no wheel for. A broken invariant
 raises :class:`AssertionError` explicitly, never through ``assert``, so running
 under ``-O`` cannot turn a target into one that accepts everything.
 
-Each target asserts what its module already promises, not a new rule. Two
-contracts that do **not** hold today are deliberately absent, because a target
+Each target asserts what its module already promises, not a new rule. One
+contract that does **not** hold today is deliberately absent, because a target
 that fails on every run teaches nobody anything: the event store's 64 KiB
-projection ceiling (``normalize`` can build an event the store refuses) and the
-documented error type of ``EgressAllowlist.load``. A third is asserted in a
-weaker form, said where it is: an unclaimed record's excerpt escapes non-ASCII.
-Each needs its own fix, and its full check joins this file with that fix.
+projection ceiling (``normalize`` can build an event the store refuses). A
+second is asserted in a weaker form, said where it is: an unclaimed record's
+excerpt escapes non-ASCII. Each needs its own fix, and its full check joins this
+file with that fix.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import ipaddress
 import json
 import math
 import re
+import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
