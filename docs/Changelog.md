@@ -4,6 +4,30 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **Coverage-guided fuzzing with Atheris (`tests/fuzz/`, `.github/workflows/fuzz.yml`).** There
+  are four targets, one for each surface that parses untrusted bytes: `ingest.normalize` on the
+  bytes `collect/` feeds it, `ingest.keyvalue.decode`, the egress address and port checks, and
+  `NormalizedEvent.from_dict`, the only reader of a stored projection. Each asserts what its
+  module already documents, such as bounded output, determinism, the store's read-back round
+  trip and the egress refusals. Each fails through an explicit `AssertionError`, so `-O` cannot
+  disable it. CI fuzzes each target for one minute on a pull request or push that touches what it
+  imports, and for ten minutes weekly. The job installs Atheris alone, hash-pinned from
+  `requirements.lock`, and holds no write permission or secret.
+  `tests/fuzz/test_fuzz_corpus.py` replays every seed through the same targets on every platform.
+  It plants one violation per target to show the checks can fail, and pins four things: the
+  runner's instrumentation, the CI matrix, the path filters against the targets' real import
+  graph, and the platform marker. Measured with the workflow's own scripts over 60 seconds per
+  target: 1.8M, 1.2M, 135k and 7.2M inputs, and no finding. A planted check fell inside the
+  minute, exited 77, and left a reproducer that the documented command replays. OpenSSF
+  Scorecard's Fuzzing check detects Python fuzzing by `import atheris`, which the runner has.
+- **Atheris 3.1.0 is a new dependency, in a `[fuzz]` extra.** It is Apache-2.0 and maintained
+  by Google. It ships manylinux x86_64 wheels for CPython 3.12 to 3.14 only and no sdist, so the
+  extra carries a marker that keeps it off macOS, Windows and Python 3.11, where installing it
+  would fail. It is not in `[dev]`, because the wheel is about 37 MB. `uv.lock`, the derived locks
+  and the SBOM are regenerated: 136 Python components, and `pip-audit` reports none vulnerable.
+  Dependabot groups it with the dev toolchain.
+
 ### Security
 - **`filelock` 4.2.4 and `setuptools` 84.2.1 close two advisories that turned `main` red.**
   CVE-2026-112940 (`filelock` 3.29.4, fixed in 4.2.1) and GHSA-xmj3-9gf7-h52w (`setuptools`
@@ -15,6 +39,16 @@ All notable changes to this project. Versions correspond to git tags.
   nothing else. Both cross a major version, and no dependent caps either. The derived locks and
   the SBOM are regenerated. The build-system floor rises from `setuptools>=84.0.0` to
   `>=84.1.0`, because the old floor still admitted the vulnerable 84.0.0.
+
+### Known issues
+- **An unclaimed record's `raw_excerpt` escapes non-ASCII characters.** It is serialized with
+  `json.dumps`, whose default is `ensure_ascii=True` (`ingest/normalize.py`), so an indicator
+  such as `https://café.example/x` is extracted as written but retained as
+  `https://café.example/x`. It is then not a substring of the excerpt it came from. The
+  fuzz harness found this on its first run, and its normalize target accepts the escaped form
+  until the fix lands. The fix is a change of its own, because it alters `event_id` for every
+  such record. `tests/fuzz/targets.py` lists three further documented contracts that do not
+  hold today and are not asserted yet; each needs its own fix too.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 

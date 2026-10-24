@@ -13,7 +13,7 @@
 
 This directory holds a [CycloneDX](https://cyclonedx.org/) SBOM covering the
 repository's **two package ecosystems** — Python and npm. The merged document
-(`sbom.cdx.json`) inventories **227 components** (135 Python + 92 npm) and, at
+(`sbom.cdx.json`) inventories **228 components** (136 Python + 92 npm) and, at
 generation time, **0 known vulnerabilities** per the public PyPI/OSV advisory
 databases.
 
@@ -41,12 +41,12 @@ and byte-for-byte reproducible for a fixed timestamp. All 92 npm components are
 
 | File | Format | Scope | Source |
 |---|---|---|---|
-| `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (139 pkgs) | `uv lock` from `pyproject.toml` |
-| `requirements.lock` | pip requirements (hashed) | 135 Linux/3.12 deps (full `[dev,dashboard]`, incl. CUDA) | `scripts/refresh_locks.py` (constrained `uv pip compile`) |
+| `../../uv.lock` | uv lock (TOML) | **source of truth** — universal, hashed, all extras (141 pkgs) | `uv lock` from `pyproject.toml` |
+| `requirements.lock` | pip requirements (hashed) | 136 Linux/3.12 deps (every extra: `[dev,dashboard,fuzz]`, incl. CUDA) | `scripts/refresh_locks.py` (constrained `uv pip compile`) |
 | `requirements-dev.lock` | pip requirements (hashed) | 58 SHA-256 hash-pinned `[dev]` tools | `scripts/refresh_locks.py` (`uv export --extra dev`) |
-| `python.cdx.json` | CycloneDX 1.4 | 135 Python components | `pip-audit --disable-pip -r requirements.lock` |
+| `python.cdx.json` | CycloneDX 1.4 | 136 Python components | `pip-audit --disable-pip -r requirements.lock` |
 | `npm.cdx.json` | CycloneDX 1.5 | 92 npm components | `package-lock.json` (offline) |
-| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 227 components | both, via `generate_sbom.py` |
+| `sbom.cdx.json` | CycloneDX 1.5 | **Merged** 228 components | both, via `generate_sbom.py` |
 
 **`uv.lock` (repo root) is the dependency source of truth.** It is the universal,
 hashed resolution of `pyproject.toml`; CI fails closed via `uv lock --check` if

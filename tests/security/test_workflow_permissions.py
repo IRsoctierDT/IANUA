@@ -27,7 +27,7 @@ AGENTS.md §3 or §8 claim:
 * **Every ``uses:`` is pinned to a full commit SHA with a version comment, and
   every checkout leaves the token off disk.** ``tests/security/
   test_scorecard_boundary.py`` asserts both for ``scorecard.yml``; this extends
-  them to the other nine files. A tag is mutable, a commit is not, and a
+  them to the other ten files. A tag is mutable, a commit is not, and a
   persisted credential is reachable by every later step in the job. The
   ``uses:`` values are taken from the *parsed* jobs and steps, not from a line
   regex alone: review measured that ``- {uses: actions/checkout@main, ...}``

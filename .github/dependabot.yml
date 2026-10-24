@@ -40,8 +40,9 @@ updates:
       # nobody. Libraries that shipped code imports (pyyaml, reportlab,
       # cryptography, packaging) live in the same `dev` extra but are NOT
       # listed: they change runtime behaviour, so they stay human-reviewed.
-      # Keep this list in step with pyproject.toml's [dev] extra, and keep the
-      # group NAME `dev-toolchain` — dependabot-automerge.yml matches on it.
+      # Keep this list in step with pyproject.toml's [dev] and [fuzz] extras,
+      # and keep the group NAME `dev-toolchain` — dependabot-automerge.yml
+      # matches on it.
       dev-toolchain:
         patterns:
           - "ruff"
@@ -53,6 +54,7 @@ updates:
           - "pip-audit"
           - "detect-secrets"
           - "pre-commit"
+          - "atheris"
       # Everything else, including the dashboard extra and the imported
       # libraries above. exclude-patterns repeats the list rather than relying
       # on group order: GitHub documents that order matters, but making the two
@@ -71,6 +73,7 @@ updates:
           - "pip-audit"
           - "detect-secrets"
           - "pre-commit"
+          - "atheris"
 
   # --- JavaScript: package-lock.json (dashboard/build tooling) ---------------
   - package-ecosystem: "npm"

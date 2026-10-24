@@ -151,6 +151,7 @@ ianua/
 ├── tests/                     # pytest suite (unit, integration, security)
 │   ├── unit/
 │   ├── integration/
+│   ├── fuzz/                  # Atheris targets for untrusted-input parsers; seeds replayed by pytest
 │   └── security/              # Authz, input-validation, injection, secret-leak tests
 └── data/                      # Local/lab data ONLY — gitignored; never client data
 ```

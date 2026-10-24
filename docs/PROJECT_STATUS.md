@@ -170,7 +170,8 @@ See [`docs/HARDENING_ROADMAP.md`](./HARDENING_ROADMAP.md).
 - ✅ Policy-as-code allow/deny layer
 - ✅ Tamper-evident audit logging (hash-chained; rotation + retention with a
   checkpoint that keeps pruned history detectable)
-- ✅ Property-based fuzzing of tool input validators
+- ✅ Property-based fuzzing of tool input validators, plus coverage-guided fuzzing
+  (Atheris) of the parsers that read untrusted input
 - ✅ Signed SBOM + SLSA build-provenance attestation in CI
 - ✅ Rootless seccomp/AppArmor sandbox for MCP tool execution (report-mode
   default; enforce mode on Linux hosts with a rootless runtime, fail-closed)
