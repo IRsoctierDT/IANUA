@@ -48,7 +48,7 @@ dev = [
   "pre-commit>=4.7.0",
   "packaging>=26.3",
   "pyyaml>=6.0",
-  "reportlab>=5.0.1",
+  "reportlab>=5.1.0",
   "cryptography>=50.0.2",
   # The package builder for ci.yml's build job and release.yml. Declared here
   # so it installs hash-pinned from requirements-dev.lock instead of by name.
@@ -57,12 +57,12 @@ dev = [
 
 dashboard = [
   "streamlit>=1.66.1",
-  "qdrant-client>=1.19.1",
-  "sentence-transformers>=6.1.0",
+  "qdrant-client>=1.20.0",
+  "sentence-transformers>=6.2.0",
 ]
 
 pdf = [
-  "reportlab>=5.0.1",
+  "reportlab>=5.1.0",
 ]
 
 crypto = [
