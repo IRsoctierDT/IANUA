@@ -49,11 +49,14 @@ from ingest.schema import (
     MAX_NESTING_DEPTH,
     MAX_NOTES,
     MAX_PROJECTED_ITEMS,
+    MAX_PROJECTION_BYTES,
     MAX_RAW_BYTES,
     MAX_RAW_EXCERPT,
     NormalizedEvent,
     ParseStatus,
     SourceType,
+    fit_projection,
+    projection_size,
 )
 
 #: Every signature the platform can recognize, grouped by domain. Order is
@@ -149,7 +152,27 @@ def normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
     :class:`~ingest.errors.UnsupportedInputError` only for a type that cannot
     be telemetry at all — malformed *content* degrades instead, because
     losing an event is the failure this layer exists to prevent.
+
+    **Every event returned here fits the store's projection ceiling**, on
+    every path, because the fit is applied once at this exit rather than in
+    each branch below (:func:`_fit`). Before, a record whose fields were each
+    within bounds could add up past the ceiling, and the store refused it.
+    The collector stores a source's lines in one transaction and advances
+    the source's offset only when they are stored, so one such line in a log
+    held that source's offset for good. Measured through
+    ``scripts/run_collector.py`` on ``2c92e3f``: a 61,670-byte Defender line
+    with thirty 2,000-character URLs sat under ``collect/``'s 64 KiB line cap
+    and projected to 66,729 bytes. Three passes over a three-line log each
+    stored 0 of 3 events at exit 1 with the offsets held, and a fourth line
+    appended later was never stored either. Anyone who can get one such
+    record logged, a phishing mail with many long URLs among them, could do
+    that to a source.
     """
+    return _fit(_normalize(raw))
+
+
+def _normalize(raw: str | bytes | Mapping[str, Any]) -> NormalizedEvent:
+    """:func:`normalize`, before the projection ceiling is applied."""
     if isinstance(raw, bytes):
         # The ceiling is applied to the bytes, *before* decoding. A decode is
         # linear in exactly the input the ceiling exists to bound, and the
@@ -311,8 +334,10 @@ def normalize_many(records: Iterable[str | bytes | Mapping[str, Any]]) -> list[N
             # ``UnsupportedInputError`` instead of refusing.
             raise
         except Exception as exc:
-            # The outer layer. Deliberately unnamed: see the docstring.
-            out.append(_normalization_raised(record, exc))
+            # The outer layer. Deliberately unnamed: see the docstring. Fitted
+            # like every other event this module returns, so a record that
+            # raised still yields one the store accepts.
+            out.append(_fit(_normalization_raised(record, exc)))
     return out
 
 
@@ -455,15 +480,18 @@ def _finalize(event: NormalizedEvent) -> NormalizedEvent:
     bound and a new parser inherits it — the same argument that puts excerpt
     assembly in this module rather than in ten parsers.
 
-    The bound itself lives in ``NormalizedEvent.bounded()``, beside the
-    validation it mirrors. What belongs *here* is the honesty: a truncated
+    The bound itself lives in ``NormalizedEvent.clipped()``, beside the
+    validation it mirrors. It is the per-field half of ``bounded()``, used
+    alone because the other half, the projection ceiling, is applied later to
+    every event by :func:`_fit`, which says what *it* cut in a note of its
+    own. What belongs *here* is the honesty: a truncated
     summary is a degraded parse, so it is noted and ``parse_status`` is
     demoted. ``message`` is assembled from several separately bounded fields
     and some of the values in it (a CloudTrail ``mfaAuthenticated``, a
     Defender ``ThreatTypes``) live nowhere else on the event, so silently
     cutting it would lose their only copy without saying so.
     """
-    bounded = event.bounded()
+    bounded = event.clipped()
     if bounded == event:
         return event
     # The note about truncation outranks a 64th parser note, so it is kept
@@ -473,6 +501,84 @@ def _finalize(event: NormalizedEvent) -> NormalizedEvent:
         "partial" if bounded.parse_status == "structured" else bounded.parse_status
     )
     return replace(bounded, parse_status=status, notes=notes)
+
+
+#: Room :func:`_fit` keeps under the ceiling for the note it adds, so the note
+#: can never be what pushes a fitted event back over. The note is ASCII and cut
+#: at ``MAX_FIELD_LEN``, and in the canonical JSON it costs its own length plus
+#: two quotes and a comma. Displacing a 64th note and demoting ``parse_status``
+#: can only shrink the projection.
+_FIT_NOTE_RESERVE = MAX_FIELD_LEN + 3
+
+
+def _fit(event: NormalizedEvent) -> NormalizedEvent:
+    """Fit ``event`` under the store's projection ceiling, and say so when it bit.
+
+    Applied to every event this module returns. An event already within the
+    ceiling is returned as it is, so this changes no ``event_id`` the store
+    could already hold. Over the ceiling, ``ingest.schema.fit_projection``
+    cuts every value past one cap, and this module does what it does for the
+    per-field bounds in :func:`_finalize`: it notes the cut and demotes
+    ``structured`` to ``partial``, because a reader must be able to tell a
+    complete event from a cut one. The cut is deterministic, so the same
+    bytes still give the same event and the same ``event_id``.
+
+    Must be total, because rule 2 says nothing a record contains may raise
+    out of :func:`normalize`. Every value reaching here is a ``str``, a
+    ``float`` or ``None``, and ``projection_size`` counts a lone surrogate
+    rather than refusing it.
+    """
+    fitted, cap = fit_projection(event, reserve=_FIT_NOTE_RESERVE)
+    if cap is None:
+        return event
+    # The note about the cut outranks a 64th parser note, as in `_finalize`.
+    notes = (*fitted.notes[: MAX_NOTES - 1], _fit_note(event, fitted, cap))
+    status: ParseStatus = "partial" if fitted.parse_status == "structured" else fitted.parse_status
+    return replace(fitted, parse_status=status, notes=notes)
+
+
+def _fit_note(before: NormalizedEvent, after: NormalizedEvent, cap: int) -> str:
+    """Name what :func:`_fit` cut: the cap, every field it shortened, and the drops.
+
+    Built from a comparison of the two projections rather than from a list of
+    field names, so a field added to the schema is named without an edit here.
+    A list is named with how many of its entries were shortened, since all of
+    them are kept. Observables are counted separately, because they are
+    dropped rather than shortened (see ``fit_projection``).
+    """
+    cut: list[str] = []
+    for (path, old), (_, new) in zip(
+        _leaves(before.to_dict()), _leaves(after.to_dict()), strict=True
+    ):
+        if path == "observables" or old == new:
+            continue
+        if isinstance(old, list):
+            shortened = sum(1 for kept, was in zip(new, old, strict=True) if kept != was)
+            cut.append(f"{path}: {shortened} of {len(old)} entries")
+        else:
+            cut.append(path)
+    dropped = len(before.observables) - len(after.observables)
+    note = (
+        f"projection of {projection_size(before)} bytes exceeded the store's "
+        f"{MAX_PROJECTION_BYTES}-byte ceiling; every value longer than {cap} "
+        f"characters was cut to {cap}"
+        + (f" ({', '.join(cut)})" if cut else "")
+        + (f", and {dropped} observable(s) longer than that were dropped whole" if dropped else "")
+    )
+    return note[:MAX_FIELD_LEN]
+
+
+def _leaves(payload: Mapping[str, Any], prefix: str = "") -> Iterator[tuple[str, Any]]:
+    """Every non-mapping value in a projection, with its dotted path, in order.
+
+    ``to_dict`` builds every projection in one fixed key order, so two of them
+    walk in step, which is what lets :func:`_fit_note` zip them.
+    """
+    for key, value in payload.items():
+        if isinstance(value, Mapping):
+            yield from _leaves(value, f"{prefix}{key}.")
+        else:
+            yield f"{prefix}{key}", value
 
 
 @dataclass(frozen=True, slots=True)

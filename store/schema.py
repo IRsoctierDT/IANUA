@@ -34,8 +34,15 @@ Design notes (DESIGN.md §3, §5):
 from __future__ import annotations
 
 import hashlib
-import json
-from typing import Any
+
+# Both defined in ``ingest.schema`` and re-exported here, so the bytes this
+# store hashes and the ceiling it refuses past are the very ones ``ingest``
+# fits every event under. They were two copies until a projection built
+# entirely from bounded fields measured 66,729 bytes against this 65,536-byte
+# ceiling and stalled a collector source; ``store`` imports ``ingest`` and
+# never the reverse, so the single definition lives on that side.
+from ingest.schema import MAX_PROJECTION_BYTES as MAX_PROJECTION_BYTES
+from ingest.schema import canonical_json as canonical_json
 
 #: Bumped whenever the tables, the indexes, or the projection contract change.
 #: :class:`store.errors.SchemaVersionError` is raised on any mismatch — there
@@ -55,11 +62,11 @@ VERSION_KEY = "schema_version"
 #: ``SchemaVersionError`` is never provoked.
 HIGH_WATER_KEY = "ingested_high_water"
 
-#: Ceiling on one serialized projection. ``ingest/`` already bounds every
-#: field, so a projection past this is not oversized telemetry — it is a
-#: caller that built a ``NormalizedEvent`` by hand without the bounds. Refused
-#: rather than stored, so one pathological row cannot dominate the database.
-MAX_PROJECTION_BYTES = 64 * 1024
+#: ``MAX_PROJECTION_BYTES``, imported above, is the ceiling on one serialized
+#: projection. ``ingest.normalize`` and ``NormalizedEvent.bounded`` fit every
+#: event under it, so a projection past it was built by hand without them.
+#: Refused rather than stored, so one pathological row cannot dominate the
+#: database.
 
 #: Hard ceiling on rows returned by one query, applied even when a caller asks
 #: for more. An unbounded read of a security-event store is how a dashboard
@@ -74,18 +81,6 @@ DIGEST_PREFIX = "ianua.store.attest.v1:"
 #: own: the event digest's definition is unchanged and every manifest written
 #: against it stays comparable on that field.
 OBSERVABLES_DIGEST_PREFIX = "ianua.store.observables.v1:"
-
-
-def canonical_json(payload: dict[str, Any]) -> str:
-    """Serialize a projection deterministically.
-
-    Sorted keys and no insignificant whitespace, so the same event always
-    produces the same bytes and therefore the same :func:`event_id`. Unicode
-    is preserved rather than escaped: telemetry carries non-ASCII hostnames
-    and usernames, and escaping them would make the stored evidence harder to
-    read for no gain.
-    """
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def event_id(projection: str) -> str:

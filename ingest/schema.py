@@ -32,7 +32,8 @@ Design (DESIGN.md §5, new boundary 9):
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypeVar, cast, get_args
 
@@ -83,6 +84,14 @@ MAX_NESTING_DEPTH = 32
 #: still visible to an analyst without a multi-megabyte payload traversing
 #: the pipeline.
 MAX_RAW_BYTES = 256 * 1024
+#: Ceiling on one event's canonical projection (:func:`canonical_json`), in
+#: UTF-8 bytes. The store refuses a projection past it, and it is defined here
+#: rather than there because this package is the one that has to *apply* it:
+#: every bound above is per field, and a sum of bounded fields has no ceiling
+#: of its own. ``store.schema`` re-exports this constant, so the number the
+#: store refuses past and the number :func:`fit_projection` fits under are one
+#: definition and cannot drift. See :meth:`NormalizedEvent.bounded`.
+MAX_PROJECTION_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,7 +299,35 @@ class NormalizedEvent:
         )
 
     def bounded(self) -> NormalizedEvent:
-        """Return this event with every read-time bound applied on write.
+        """Return this event as the store will accept it: every bound, per field and in total.
+
+        :meth:`clipped` applies each field's own bound, and that used to be the
+        whole of this method. It was not enough to keep the promise made below,
+        that a direct caller can make any event storable. ``from_dict`` bounds
+        fields one at a time, while the store also refuses a projection past
+        :data:`MAX_PROJECTION_BYTES`, and a sum of individually bounded fields
+        has no ceiling of its own: thirty scalars at ``MAX_FIELD_LEN`` and four
+        lists of sixty-four entries allow a projection of 2,351,090 bytes in
+        four-byte characters, about thirty-six times the ceiling.
+        Measured through ``ingest.normalize`` on ``2c92e3f``: a Defender record
+        with thirty 2,000-character URLs, as one 61,670-byte line (under
+        ``collect/``'s 64 KiB line cap), projected to 66,729 bytes. A Sysmon
+        record with **no list entries at all**, its modelled fields 2,048 CJK
+        characters each, projected to 79,278. That one is a 104,875-byte line,
+        so ``collect/`` would cut it before parsing, but ``normalize`` is not
+        only reached through ``collect/``, and it shows that bounding the lists
+        harder could not have been enough on its own.
+
+        So this also fits the total, through :func:`fit_projection`. An event
+        already within the ceiling comes back from that step unchanged. Like
+        :meth:`clipped`, this is silent; ``ingest.normalize`` calls the two
+        steps separately, so that it can note which one bit and demote
+        ``parse_status``.
+        """
+        return fit_projection(self.clipped())[0]
+
+    def clipped(self) -> NormalizedEvent:
+        """Return this event with every per-field read-time bound applied on write.
 
         The write-side twin of the validation in :meth:`from_dict`, kept
         beside it for the reason ``from_dict`` itself exists: a bound
@@ -325,7 +362,7 @@ class NormalizedEvent:
         ``None``, through the reader itself (:func:`_storable_epoch`). No parser
         produces one, so on ``ingest.normalize``'s path this never changes an
         event. It exists so a direct caller can make any event storable, which
-        is what this method is for.
+        is what :meth:`bounded`, built on this, is for.
         """
         return replace(
             self,
@@ -339,17 +376,7 @@ class NormalizedEvent:
             src_endpoint=_clip_group(self.src_endpoint, _ENDPOINT_KEYS),
             dst_endpoint=_clip_group(self.dst_endpoint, _ENDPOINT_KEYS),
             cloud=_clip_group(self.cloud, _CLOUD_KEYS),
-            # ``email`` is spelled out because it is the one group with
-            # collection fields as well as scalars — the same reason
-            # ``_email_from`` reads it by hand rather than through ``_group``.
-            email=EmailContext(
-                sender=_clip(self.email.sender),
-                subject=_clip(self.email.subject),
-                message_id=_clip(self.email.message_id),
-                delivery_action=_clip(self.email.delivery_action),
-                recipients=_clip_each(self.email.recipients, MAX_OBSERVABLES),
-                urls=_clip_each(self.email.urls, MAX_OBSERVABLES),
-            ),
+            email=_clip_email(self.email, MAX_FIELD_LEN),
             observables=_clip_each(self.observables, MAX_OBSERVABLES),
             raw_excerpt=self.raw_excerpt[:MAX_RAW_EXCERPT],
             notes=_clip_each(self.notes, MAX_NOTES),
@@ -605,16 +632,33 @@ def _clip(value: str | None, limit: int = MAX_FIELD_LEN) -> str | None:
     return value if value is None else value[:limit]
 
 
-def _clip_each(values: tuple[str, ...], count: int) -> tuple[str, ...]:
+def _clip_each(values: tuple[str, ...], count: int, limit: int = MAX_FIELD_LEN) -> tuple[str, ...]:
     """Bound a tuple's length and each of its entries."""
-    return tuple(value[:MAX_FIELD_LEN] for value in values[:count])
+    return tuple(value[:limit] for value in values[:count])
 
 
-def _clip_group(group: _GroupT, declared: tuple[str, ...]) -> _GroupT:
+def _clip_group(group: _GroupT, declared: tuple[str, ...], limit: int = MAX_FIELD_LEN) -> _GroupT:
     """Bound every declared scalar on one nested group, by the same key list
     ``from_dict`` validates it with — so the two cannot name different fields.
     """
-    return replace(group, **{name: _clip(getattr(group, name)) for name in declared})
+    return replace(group, **{name: _clip(getattr(group, name), limit) for name in declared})
+
+
+def _clip_email(email: EmailContext, limit: int) -> EmailContext:
+    """Bound ``email``, the one group with collection fields as well as scalars.
+
+    Spelled out for the reason ``_email_from`` reads it by hand rather than
+    through ``_group``. The entry count stays at its own bound whatever
+    ``limit`` is: :func:`_capped` shortens entries and never drops one.
+    """
+    return EmailContext(
+        sender=_clip(email.sender, limit),
+        subject=_clip(email.subject, limit),
+        message_id=_clip(email.message_id, limit),
+        delivery_action=_clip(email.delivery_action, limit),
+        recipients=_clip_each(email.recipients, MAX_OBSERVABLES, limit),
+        urls=_clip_each(email.urls, MAX_OBSERVABLES, limit),
+    )
 
 
 def _group(
@@ -638,4 +682,159 @@ def _email_from(payload: Mapping[str, Any]) -> EmailContext:
         **{name: _optional_text(raw, name, "email") for name in _EMAIL_SCALAR_KEYS},
         recipients=_str_tuple(raw, "recipients", "email", MAX_OBSERVABLES),
         urls=_str_tuple(raw, "urls", "email", MAX_OBSERVABLES),
+    )
+
+
+# --------------------------------------------------------------------------
+# The total bound: one projection, one ceiling.
+#
+# Every bound above is per field. The store also refuses a whole projection
+# past MAX_PROJECTION_BYTES, and a sum of bounded fields has no ceiling of its
+# own, so an event every field of which passed its own check could still be
+# refused. The collector stores a source's lines in one transaction and moves
+# its offset only once they are stored, so one such record stopped that source
+# for good: every later line was never stored. See ``NormalizedEvent.bounded``
+# for what was measured.
+# --------------------------------------------------------------------------
+
+#: Fields the cap never shortens. ``source_type`` and ``parse_status`` are
+#: checked against closed sets on read and ``timestamp`` is a number, so none
+#: of them can be shortened into something still valid. ``vendor`` is a
+#: constant of the parser that read the record, and every other field is read
+#: in its light. Together they are a few dozen bytes on every ``normalize``
+#: path, so leaving them whole costs the fit nothing.
+_UNCUT = frozenset({"source_type", "vendor", "parse_status", "timestamp"})
+
+
+def canonical_json(payload: dict[str, Any]) -> str:
+    """Serialize a projection deterministically.
+
+    Sorted keys and no insignificant whitespace, so the same event always
+    produces the same bytes and therefore the same ``event_id``. Unicode is
+    preserved rather than escaped: telemetry carries non-ASCII hostnames and
+    usernames, and escaping them would make the stored evidence harder to read
+    for no gain.
+
+    **Defined here, and re-exported by** ``store.schema``. The store hashes
+    these bytes and refuses them past :data:`MAX_PROJECTION_BYTES`, and this
+    package fits every event under that ceiling, so both sides must measure the
+    same bytes. ``store`` imports ``ingest`` and never the reverse, so the one
+    definition has to live on this side. ``from_dict`` is shared the same way,
+    for the reason it gives: two definitions of one shape drift apart.
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def projection_size(event: NormalizedEvent) -> int:
+    """UTF-8 bytes of ``event``'s canonical projection, the size the store refuses past.
+
+    Total, where the store's own ``encode`` is strict. An unpaired surrogate,
+    which strict UTF-8 refuses, is counted through ``surrogatepass`` as three
+    bytes, the size of the U+FFFD that conventionally replaces one. On every
+    projection the store can encode the two counts are equal. A projection it
+    cannot encode is refused there, for that reason and not for its size.
+    Raising here would raise out of ``ingest.normalize``, whose second rule is
+    that nothing a record contains may.
+    """
+    return len(canonical_json(event.to_dict()).encode("utf-8", "surrogatepass"))
+
+
+def fit_projection(
+    event: NormalizedEvent, *, reserve: int = 0
+) -> tuple[NormalizedEvent, int | None]:
+    """Fit ``event`` under :data:`MAX_PROJECTION_BYTES` with one cap on every value.
+
+    Returns ``(event, None)``, the same object, when the projection is already
+    within the ceiling. So no event the store could already hold is given a
+    new ``event_id`` by this function. Otherwise it returns the event cut, and
+    the cap ``L`` it was cut at. ``L`` is the largest number for which cutting
+    every string longer than ``L`` characters down to ``L`` leaves the
+    projection within ``MAX_PROJECTION_BYTES - reserve`` bytes. ``reserve`` is
+    room the caller keeps for what it adds afterwards. ``ingest.normalize``
+    keeps it for the note saying that this happened.
+
+    **One cap, not an order of fields.** The owner chose this over cutting the
+    excerpt, then list entries from the end, then the summary, then the rest.
+    A value no longer than ``L`` is never touched, so a short indicator (an
+    address, a hash, a port, a host name) survives any amount of padding in
+    the fields around it. Every entry of every list is kept, shortened rather
+    than dropped. Cutting in a fixed order would have let an attacker drop a
+    phishing record's one malicious URL by padding the URLs before it and
+    putting it last.
+
+    **Observables are dropped whole, never shortened.** A prefix of an
+    indicator can be an indicator nobody saw: a cut sha256 is a well-formed
+    sha1 and a cut domain is another domain. Observables land in the store's
+    indexed, append-only ``observables`` table, where a false join key is
+    worse than a missing one (``ingest._coerce._scan_source`` records five
+    rounds of learning that). So an observable longer than ``L`` is removed,
+    and the others are kept exactly. URL observables are at most 264
+    characters, so a cap that low is reached only by padding nearly every
+    field to its limit.
+
+    **Not shortened:** the fields in :data:`_UNCUT`. ``L`` is found by
+    bisection over the exact measure (:func:`projection_size`), which never
+    grows as ``L`` falls, so the result is deterministic. ``L = 0`` is the
+    floor, where only those fields and the projection's own keys remain:
+    1,211 bytes measured with a one-character ``vendor``, and still under
+    10 KiB with a ``vendor`` at its own 2,048-character bound in four-byte
+    characters.
+    A caller passing a ``reserve`` so large that even the floor is over gets
+    the floor back, over the ceiling, and the store refuses it.
+    """
+    if projection_size(event) <= MAX_PROJECTION_BYTES:
+        return event, None
+    budget = MAX_PROJECTION_BYTES - reserve
+    low, high = 0, max(_cuttable_lengths(event.to_dict()), default=0)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if projection_size(_capped(event, middle)) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return _capped(event, low), low
+
+
+def _cuttable_lengths(value: Any, *, top: bool = True) -> Iterator[int]:
+    """The length of every string :func:`_capped` may shorten, by reflection.
+
+    Walks the projection rather than naming fields, so a field added to
+    :meth:`NormalizedEvent.to_dict` is counted without anyone editing this.
+    """
+    if isinstance(value, str):
+        yield len(value)
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            if not (top and key in _UNCUT):
+                yield from _cuttable_lengths(child, top=False)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _cuttable_lengths(child, top=False)
+
+
+def _capped(event: NormalizedEvent, cap: int) -> NormalizedEvent:
+    """``event`` with every string past ``cap`` cut to it, and longer observables dropped.
+
+    Everything but :data:`_UNCUT`. ``None`` stays ``None``, because
+    :func:`_clip` keeps absence distinct from emptiness. A present value
+    becomes empty only at ``cap == 0``, a floor nothing gets near. Measured:
+    the worst case, every field at its bound in four-byte characters and every
+    list full (2,351,090 bytes), fits at a cap of 73 through
+    :meth:`NormalizedEvent.bounded` and of 71 with the room
+    ``ingest.normalize`` keeps for its note, in about 12 ms.
+    """
+    return replace(
+        event,
+        vendor_event_id=_clip(event.vendor_event_id, cap),
+        message=event.message[:cap],
+        activity=_clip(event.activity, cap),
+        actor=_clip_group(event.actor, _ACTOR_KEYS, cap),
+        device=_clip_group(event.device, _DEVICE_KEYS, cap),
+        src_endpoint=_clip_group(event.src_endpoint, _ENDPOINT_KEYS, cap),
+        dst_endpoint=_clip_group(event.dst_endpoint, _ENDPOINT_KEYS, cap),
+        cloud=_clip_group(event.cloud, _CLOUD_KEYS, cap),
+        email=_clip_email(event.email, cap),
+        observables=tuple(value for value in event.observables if len(value) <= cap),
+        raw_excerpt=event.raw_excerpt[:cap],
+        notes=tuple(note[:cap] for note in event.notes),
     )

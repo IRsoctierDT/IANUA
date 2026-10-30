@@ -10,12 +10,12 @@ raises :class:`AssertionError` explicitly, never through ``assert``, so running
 under ``-O`` cannot turn a target into one that accepts everything.
 
 Each target asserts what its module already promises, not a new rule. One
-contract that does **not** hold today is deliberately absent, because a target
-that fails on every run teaches nobody anything: the event store's 64 KiB
-projection ceiling (``normalize`` can build an event the store refuses). A
-second is asserted in a weaker form, said where it is: an unclaimed record's
-excerpt escapes non-ASCII. Each needs its own fix, and its full check joins this
-file with that fix.
+contract is asserted in a weaker form, said where it is: an unclaimed record's
+excerpt escapes non-ASCII. It needs its own fix, and its full check joins this
+file with that fix. A contract that did not hold is left out until its fix
+lands, because a target that fails on every run teaches nobody anything. The
+event store's 64 KiB projection ceiling was one, and ``one_input_normalize``
+now asserts it: ``normalize`` fits every event under it.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ from ingest.schema import (
 )
 from mcp.server import build_default_registry
 from mcp.transport import PARSE_ERROR, serve, utf8_lines
-from store.schema import canonical_json
+from store.schema import MAX_PROJECTION_BYTES, canonical_json
 
 #: The key grammar ``ingest.keyvalue`` documents, restated here rather than
 #: imported, so a change to the module's pattern is checked against the
@@ -104,15 +104,25 @@ def one_input_normalize(data: bytes) -> None:
     """``ingest.normalize`` on the bytes path ``collect/`` feeds it.
 
     Nothing may raise for bytes: malformed content degrades instead of being
-    lost. The result is bounded, deterministic, and survives the exact
-    read-back the store performs before it writes. An unclaimed record keeps
-    every observable inside its retained excerpt, because there the excerpt is
-    the evidence.
+    lost. The result is bounded, deterministic, fits the store's projection
+    ceiling, and survives the exact read-back the store performs before it
+    writes. An unclaimed record keeps every observable inside its retained
+    excerpt, because there the excerpt is the evidence.
     """
     event = normalize(data)
     _check_bounded(event)
     _check(normalize(data) == event, "the same bytes normalized to two different events")
-    back = NormalizedEvent.from_dict(json.loads(canonical_json(event.to_dict())))
+    projection = canonical_json(event.to_dict())
+    # Measured as the store measures it. `surrogatepass` keeps this a check on
+    # size alone: whether the store can encode the projection at all is a
+    # separate contract, and a lone surrogate is counted as the three bytes its
+    # replacement takes.
+    size = len(projection.encode("utf-8", "surrogatepass"))
+    _check(
+        size <= MAX_PROJECTION_BYTES,
+        f"projection is {size} bytes, over the store's {MAX_PROJECTION_BYTES}-byte ceiling",
+    )
+    back = NormalizedEvent.from_dict(json.loads(projection))
     _check(back == event, "the event does not survive the store's read-back")
     if event.vendor == "unrecognized":
         for observable in event.observables:

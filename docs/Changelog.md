@@ -83,6 +83,40 @@ All notable changes to this project. Versions correspond to git tags.
   `SourceError`.
 
 ### Security
+- **One ingested record can no longer stop a collector source.** The store refuses a
+  projection past 64 KiB, `append_many` refuses the whole batch over one such event, and the
+  collector advances a source only once its batch is stored. `ingest` bounded each field but not
+  their sum, so one record could hold a source's offset for good, and no later line of that log
+  was ever stored. Anyone who could get one such record logged, a phishing mail with many long
+  URLs for example, could blind that source. Measured on `2c92e3f`: a 61,670-byte Defender line
+  with thirty 2,000-character URLs, under `collect/`'s 64 KiB line cap, projected to 66,729
+  bytes, and three passes over a three-line log each stored 0 of 3 at exit 1. A 65,168-byte line
+  with 32 long recipients did the same. The owner chose two layers:
+  - **`ingest` fits every event under the ceiling** (`ingest.schema.fit_projection`, applied by
+    `normalize` on every path and by `NormalizedEvent.bounded()`). It finds the largest cap `L`
+    for which cutting every string longer than `L` characters to `L` fits. Short values such as
+    addresses, hashes and host names are never touched, every list entry is kept (shortened), and
+    observables longer than `L` are dropped whole, because a cut indicator is a false join key.
+    Padding the other URLs therefore cannot push a malicious one out. A note names the cap and
+    every field cut, and `parse_status` drops to `partial`. An event already within the ceiling
+    is returned unchanged, so no stored `event_id` changes. Measured: the 30-URL line fits at
+    `L` = 1996 with all 30 URLs kept, and the worst case, every field at its bound in four-byte
+    characters (2.35 MB), at 73 in about 12 ms. `MAX_PROJECTION_BYTES` and `canonical_json` now
+    have one definition, in `ingest/schema.py`, and `store.schema` re-exports both.
+  - **The collector stores a placeholder for an event the store still refuses**, through a new
+    opt-in `stand_in` on `EventStore.append_many`, so a refusal nobody has listed yet cannot stall
+    a source either. The placeholder carries `source_type`, a known `vendor`, the refusal's
+    exception type and a sha256 of the refused projection, and nothing the record supplied. It is
+    counted as `events_refused` in the JSON report and in the audit record, and warned about on
+    stderr. The pass exits 0, as it does for a truncated line. The record stays in the source log.
+    Until #301 merges, a lone-surrogate record is stored as a placeholder instead of stalling its
+    source; #301 fixes the cause.
+
+  `tests/security/test_projection_ceiling.py` covers the measured lines end to end through the
+  collector, a property over every parser family and one over arbitrary events, the
+  unchanged-event guarantee, the evasion case and the placeholder. Four planted regressions each
+  turn targeted tests red. `tests/fuzz/targets.py` asserts the ceiling in
+  `one_input_normalize`.
 - **Every `pip install` in CI is hash-pinned (OpenSSF Scorecard Pinned-Dependencies).** Eight
   installs in `ci.yml`, `release.yml` and `runner-canary.yml` fetched packages by name and took
   whatever PyPI served at that moment: `-e ".[dev]"` in five jobs, `build` in two, and
@@ -116,8 +150,8 @@ All notable changes to this project. Versions correspond to git tags.
   `https://café.example/x`. It is then not a substring of the excerpt it came from. The
   fuzz harness found this on its first run, and its normalize target accepts the escaped form
   until the fix lands. The fix is a change of its own, because it alters `event_id` for every
-  such record. `tests/fuzz/targets.py` lists one further documented contract that does not
-  hold today and is not asserted yet; it needs its own fix too.
+  such record. The one further contract `tests/fuzz/targets.py` used to leave out, the event
+  store's projection ceiling, is now fixed and asserted (see Security).
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 
