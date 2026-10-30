@@ -31,6 +31,19 @@ region nothing will ever re-read, and a report written after the position moves
 can be lost while the region stays consumed. At-least-once costs a duplicate
 read, which the content-addressed store turns into a no-op.
 
+**One record cannot hold a source's offset.** That ordering has a failure mode
+of its own: ``append_many`` refuses a whole batch over one event it will not
+store, so one such record in a log held that source's offset on every pass,
+and no later line of that log was ever stored. Measured on ``2c92e3f``: a
+61,670-byte Defender line with thirty long URLs gave three passes at exit 1,
+0 of 3 events stored each time, and a line appended afterwards was never
+stored either. Two layers now stand in the way. ``ingest`` fits every event
+under the store's projection ceiling, and an event the store still refuses,
+for a reason nobody has listed yet, is stored as a content-free placeholder
+(:func:`placeholder_for`) so the source advances. The placeholders are counted
+in the report as ``events_refused``, named in the audit record, and warned
+about on stderr. The record itself stays in the source log, untouched.
+
 **Ingestion order is kept monotone, per commit.** Each source's batch is
 stamped by ``EventStore.next_stamp(time.time())`` immediately before *its own*
 ``append_many``, which is one transaction. The store refuses a write behind its
@@ -81,7 +94,10 @@ Schedule examples::
 Exit codes:
 
 * ``0`` — a pass ran (including the common nothing-new case), or was skipped
-  because another pass held the lock. The output distinguishes them.
+  because another pass held the lock. The output distinguishes them. A pass
+  that stored placeholders for refused events also exits ``0``, because its
+  offsets advanced honestly, as one that truncated a line does; the report's
+  ``events_refused`` and a stderr warning say so.
 * ``1`` — a source could not be read, the store refused the write, the audit
   write failed, or offsets could not be persisted. Nothing was consumed; the
   next invocation re-reads.
@@ -101,6 +117,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import sqlite3
 import sys
@@ -141,7 +158,8 @@ from collect import (  # noqa: E402
     read_new,
     save_offsets,
 )
-from ingest import normalize_many  # noqa: E402
+from ingest import SIGNATURES, NormalizedEvent, normalize_many  # noqa: E402
+from ingest.schema import SOURCE_TYPE_VALUES, canonical_json  # noqa: E402
 from scripts._exit_codes import EXIT_RETRYABLE, is_retryable_contention  # noqa: E402
 from scripts._locking import LockUnavailableError, prepare_lock, single_instance  # noqa: E402
 from store import EventStore, StoreError  # noqa: E402
@@ -160,6 +178,79 @@ LOCK_FILE = "collect.lock"
 #: Its own class, not ``read_only``. See the module docstring.
 ACTION_CLASS: ActionClass = "collection"
 ACTION_NAME = "collect_logs"
+
+#: Vendors a placeholder may name: the parsers' own constants, and the label
+#: ``ingest`` gives what no parser claimed. Anything else becomes
+#: ``unrecognized``, so a placeholder carries nothing a record could choose.
+_PLACEHOLDER_VENDORS = frozenset({signature.vendor for signature in SIGNATURES} | {"unrecognized"})
+
+
+def placeholder_for(event: NormalizedEvent, refusal: Exception) -> NormalizedEvent:
+    """The event stored in place of one the store refused, so its source can advance.
+
+    The collector advances a source's offset only once that source's batch is
+    stored, and ``append_many`` refuses a whole batch over one event. One
+    refused event therefore held its source's offset on every pass, and no
+    later line of that log was ever stored. That was measured with an
+    oversized projection, which ``ingest`` now prevents. This is the layer
+    for the next refusal nobody has listed. The owner chose a placeholder over
+    skipping the record, because a skipped record leaves no trace.
+
+    **No content from the record.** It keeps ``source_type`` and ``vendor``,
+    which describe which parser read the record (an unknown vendor becomes
+    ``unrecognized``); the refusal's exception *type*, never its message,
+    which can quote the record; and a sha256 over the refused event's
+    canonical projection. That digest is what the store would have used as
+    the event's ``event_id``, the same kind of value every stored row already
+    carries. It keeps two refused records from collapsing into one row, and
+    it lets a re-read of the same window store nothing new. ``timestamp`` is
+    left out with everything else the record supplied. The record is still in
+    the source log, which this collector never writes.
+
+    Must be total: a raise here would refuse the batch it exists to save. The
+    digest is the one step that could fail, on an event that cannot be
+    serialized at all, and then it is named unavailable instead.
+    """
+    try:
+        projection = canonical_json(event.to_dict()).encode("utf-8", "surrogatepass")
+        fingerprint = f"sha256:{hashlib.sha256(projection).hexdigest()}"
+    except Exception:
+        # Deliberately wide; see the docstring. This function must not raise.
+        fingerprint = "unavailable, the refused event could not be serialized"
+    kind = type(refusal).__name__
+    # `isinstance` first: a hand-built event can hold an unhashable value here,
+    # and `in` on a frozenset would raise on it.
+    known_type = isinstance(event.source_type, str) and event.source_type in SOURCE_TYPE_VALUES
+    known_vendor = isinstance(event.vendor, str) and event.vendor in _PLACEHOLDER_VENDORS
+    return NormalizedEvent(
+        source_type=event.source_type if known_type else "unknown",
+        vendor=event.vendor if known_vendor else "unrecognized",
+        vendor_event_id=None,
+        timestamp=None,
+        message=(
+            f"placeholder: the event store refused this record's event ({kind}) and "
+            "this was stored in its place so the source's offset could advance; the "
+            "record itself is still in the source log"
+        ),
+        activity=None,
+        parse_status="partial",
+        notes=(f"refused by the event store: {kind}", f"refused event: {fingerprint}"),
+    )
+
+
+class _Placeholders:
+    """The ``stand_in`` one source's ``append_many`` gets, counting what it replaced.
+
+    One per call, and read only after that call returns. If the transaction
+    fails, nothing was stored and these counts are discarded with it.
+    """
+
+    def __init__(self) -> None:
+        self.refusals: list[str] = []
+
+    def __call__(self, event: NormalizedEvent, refusal: Exception) -> NormalizedEvent:
+        self.refusals.append(type(refusal).__name__)
+        return placeholder_for(event, refusal)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -223,7 +314,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _report(
-    results: dict[str, TailResult], *, stored: int, elapsed: float, advancing: bool
+    results: dict[str, TailResult],
+    *,
+    stored: int,
+    elapsed: float,
+    advancing: bool,
+    refused: dict[str, list[str]],
 ) -> dict[str, object]:
     """The pass's outcome as JSON-serializable data, for a machine reader."""
     return {
@@ -234,19 +330,26 @@ def _report(
                 "reset": result.reset,
                 "truncated": result.truncated,
                 "capped": result.capped,
+                "refused": len(refused.get(key, ())),
                 "offset": None if result.position is None else result.position.offset,
             }
             for key, result in sorted(results.items())
         ],
         "lines_read": sum(result.count for result in results.values()),
         "events_stored": stored,
+        "events_refused": sum(len(kinds) for kinds in refused.values()),
         "offsets_advancing": advancing,
         "elapsed_seconds": round(elapsed, 3),
     }
 
 
 def _print_text(
-    results: dict[str, TailResult], *, stored: int, elapsed: float, advancing: bool
+    results: dict[str, TailResult],
+    *,
+    stored: int,
+    elapsed: float,
+    advancing: bool,
+    refused: dict[str, list[str]],
 ) -> None:
     """Human-readable summary, one line per source.
 
@@ -270,6 +373,8 @@ def _print_text(
             notes.append(f"{result.truncated} line(s) truncated")
         if result.capped:
             notes.append("more waiting (capped)")
+        if refused.get(key):
+            notes.append(f"{len(refused[key])} refused by the store, stored as placeholders")
         suffix = f"  [{', '.join(notes)}]" if notes else ""
         print(f"  {result.count:>6} lines  {key}{suffix}")
 
@@ -366,6 +471,9 @@ def _run(
 
     results: dict[str, TailResult] = {}
     advanced: dict[str, Position] = {}
+    #: Per source, the refusal type of each event stored as a placeholder.
+    #: Filled only once that source's transaction has committed.
+    refused: dict[str, list[str]] = {}
     stored = 0
     failure: str | None = None
     #: ``True`` only while *every* per-source failure so far has been retryable
@@ -410,10 +518,19 @@ def _run(
                         # Per commit, each stamp is strictly after the mark the
                         # previous commit set, so no two commits share a stamp and
                         # a cursor can only ever land *between* tie groups.
+                        #
+                        # ``stand_in``: an event the store refuses is stored as a
+                        # placeholder instead of refusing the batch, which held
+                        # this source's offset on every pass (see
+                        # ``placeholder_for``).
+                        placeholders = _Placeholders()
                         stored += store.append_many(
                             tuple(normalize_many(result.lines)),
                             ingested_at=store.next_stamp(time.time()),
+                            stand_in=placeholders,
                         )
+                        if placeholders.refusals:
+                            refused[source.key] = placeholders.refusals
                     # Recorded only once this source's events are durable.
                     if result.position is not None:
                         advanced[source.key] = result.position
@@ -436,6 +553,7 @@ def _run(
     elapsed = time.monotonic() - started_at
     advancing = bool(advanced) and not args.dry_run
     total = sum(result.count for result in results.values())
+    placeheld = sum(len(kinds) for kinds in refused.values())
 
     # Audit, then report, then advance — the ordering learned in stage 4. The
     # record states what this pass DECIDED, in the future tense where the
@@ -452,6 +570,11 @@ def _run(
                 f"source(s), stored {stored} event(s), offsets "
                 + ("advancing" if advancing else "held")
                 + (" (dry run)" if args.dry_run else "")
+                + (
+                    f"; {placeheld} event(s) refused by the store were stored as placeholders"
+                    if placeheld
+                    else ""
+                )
                 + (f"; FAILED {failure[:120]}" if failure else "")
             ),
         )
@@ -462,15 +585,35 @@ def _run(
     # Report before advancing: the lines are consumed once the offsets move, so
     # a failed write here must leave them where they were.
     try:
+        # On stderr in both output modes, beside the errors, because a
+        # placeholder is a record whose content this pass could not store. The
+        # pass still exits 0 when nothing else failed: the source advanced
+        # honestly, with a row standing in for the record, as it does for a
+        # truncated line.
+        for key, kinds in sorted(refused.items()):
+            print(
+                f"warning: {key}: the event store refused {len(kinds)} event(s) "
+                f"({', '.join(sorted(set(kinds)))}); a placeholder was stored for each "
+                "so this source could advance",
+                file=sys.stderr,
+            )
         if args.json:
             print(
                 json.dumps(
-                    _report(results, stored=stored, elapsed=elapsed, advancing=advancing),
+                    _report(
+                        results,
+                        stored=stored,
+                        elapsed=elapsed,
+                        advancing=advancing,
+                        refused=refused,
+                    ),
                     sort_keys=True,
                 )
             )
         else:
-            _print_text(results, stored=stored, elapsed=elapsed, advancing=advancing)
+            _print_text(
+                results, stored=stored, elapsed=elapsed, advancing=advancing, refused=refused
+            )
     except OSError as exc:
         print(f"error: pass ran but its report could not be written: {exc}", file=sys.stderr)
         return 1
