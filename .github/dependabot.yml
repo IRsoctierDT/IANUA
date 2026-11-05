@@ -8,7 +8,9 @@
 # they surface and merge on their own. Runtime (production) bumps always get a
 # human review. Low-risk groups — dev-toolchain and actions-all — auto-merge on
 # patch/minor once every required check is green (see
-# .github/workflows/dependabot-automerge.yml); majors still wait for a human.
+# .github/workflows/dependabot-automerge.yml); majors still wait for a human: the
+# actions-all group excludes them (`update-types`), so a major never rides in
+# with an auto-mergeable patch.
 # proceed
 version: 2
 
@@ -103,3 +105,15 @@ updates:
     groups:
       actions-all:
         patterns: ["*"]
+        # Majors are deliberately OUT of the group, so each arrives as its own
+        # pull request. Measured on #314: a group PR carried
+        # `astral-sh/setup-uv` 10.3.2 -> 10.3.3 (patch) together with
+        # `danoszz/penthera` 1.9.0 -> 2.2.0 (major), and `fetch-metadata`
+        # reported the group's `update-type` as `semver-major` -- correctly, so
+        # the auto-merge step skipped. The gate held, but the routine patch was
+        # then stuck behind a third-party major that needs a §5 boundary review,
+        # in one PR that cannot be split without taking it away from Dependabot.
+        # With majors excluded, the patch auto-merges and the major stands alone
+        # where a human can read it, which is what this file's header already
+        # promised ("majors still wait for a human").
+        update-types: ["minor", "patch"]
