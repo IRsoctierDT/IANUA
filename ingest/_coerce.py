@@ -7,8 +7,8 @@ Everything a parser reads is attacker-influenceable: a hostname is whatever
 the endpoint reported, a command line is whatever the adversary typed, a mail
 subject is whatever the sender chose. These helpers are the single place that
 assumption is enforced, so a parser author cannot forget it — a parser calls
-``text()`` and gets back something bounded, control-character free, and
-safe to render, or ``None``.
+``text()`` and gets back something bounded, control-character free,
+encodable as UTF-8, and safe to render, or ``None``.
 
 Nothing here touches the filesystem, the network, or the clock. Timestamps
 are parsed from the event's own value and never substituted with "now".
@@ -33,6 +33,16 @@ from ingest.schema import (
 #: output, truncate C-string consumers, and smuggle content past a reviewer.
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _WHITESPACE_RUN = re.compile(r"[\t\n\r]+")
+#: A surrogate code point: half of a UTF-16 pair, which is not a character
+#: and which UTF-8 cannot encode. ``json.loads`` produces one from an escape
+#: like ``"\ud800"`` that has no partner. That is the only route in from
+#: bytes, which is what ``collect/`` hands over: the bytes path decodes with
+#: ``errors="replace"``, so a surrogate's own bytes arrive as U+FFFD already.
+#: A caller passing ``str`` or a mapping can hand one over directly. Replaced
+#: the same way here rather than dropped, so an operator still sees that
+#: something stood there. A raw string, so the pattern's own source holds no
+#: surrogate: ``re`` reads the escapes itself.
+_SURROGATES = re.compile(r"[\ud800-\udfff]")
 #: A bare epoch value, possibly already stringified by an upstream shipper.
 _NUMERIC = re.compile(r"\d{1,14}(?:\.\d{1,9})?")
 
@@ -91,7 +101,19 @@ def text(value: Any, *, limit: int = MAX_FIELD_LEN) -> str | None:
             # the collector reads read-only.
             return None
     elif isinstance(value, str):
-        raw = value
+        # A surrogate here reached the store and stalled the source, because
+        # ``canonical_json`` keeps non-ASCII as written and the store then
+        # encodes the projection as UTF-8 to check its size (``store/events.py``,
+        # before ``event_id`` hashes it), which refuses one. Measured on
+        # ``2090519`` through ``scripts/run_collector.py``: a three-line,
+        # all-ASCII log whose middle line carried a Defender ``Subject`` of
+        # ``"x \ud800 y"`` (the six-character JSON escape) stored **0 of 3**
+        # events on every pass, ``offsets held``, exit 1, because the collector
+        # advances a source only once its batch is durable. Every later line of
+        # that log was never stored. Replacing it here covers every typed field,
+        # key name, excerpt value and carried text at once, since all of them
+        # come through this function.
+        raw = _SURROGATES.sub("\ufffd", value)
     else:
         return None
     cleaned = _CONTROL_CHARS.sub("", _WHITESPACE_RUN.sub(" ", raw)).strip()

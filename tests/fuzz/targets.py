@@ -10,12 +10,11 @@ raises :class:`AssertionError` explicitly, never through ``assert``, so running
 under ``-O`` cannot turn a target into one that accepts everything.
 
 Each target asserts what its module already promises, not a new rule. One
-contract is asserted in a weaker form, said where it is: an unclaimed record's
-excerpt escapes non-ASCII. It needs its own fix, and its full check joins this
-file with that fix. A contract that did not hold is left out until its fix
-lands, because a target that fails on every run teaches nobody anything. The
-event store's 64 KiB projection ceiling was one, and ``one_input_normalize``
-now asserts it: ``normalize`` fits every event under it.
+contract that does **not** hold is left out until its fix lands, because a
+target that fails on every run teaches nobody anything. The event store's
+64 KiB projection ceiling was the last such contract, and
+``one_input_normalize`` now asserts it: ``normalize`` fits every event under
+the ceiling, and the store can hash what it produces.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ from ingest.schema import (
 )
 from mcp.server import build_default_registry
 from mcp.transport import PARSE_ERROR, serve, utf8_lines
-from store.schema import MAX_PROJECTION_BYTES, canonical_json
+from store.schema import MAX_PROJECTION_BYTES, canonical_json, event_id
 
 #: The key grammar ``ingest.keyvalue`` documents, restated here rather than
 #: imported, so a change to the module's pattern is checked against the
@@ -105,36 +104,39 @@ def one_input_normalize(data: bytes) -> None:
 
     Nothing may raise for bytes: malformed content degrades instead of being
     lost. The result is bounded, deterministic, fits the store's projection
-    ceiling, and survives the exact read-back the store performs before it
-    writes. An unclaimed record keeps every observable inside its retained
-    excerpt, because there the excerpt is the evidence.
+    ceiling, hashes as the store hashes it, and survives the exact read-back
+    the store performs before it writes. An unclaimed record keeps every
+    observable inside its retained excerpt, because there the excerpt is the
+    evidence.
     """
     event = normalize(data)
     _check_bounded(event)
     _check(normalize(data) == event, "the same bytes normalized to two different events")
     projection = canonical_json(event.to_dict())
     # Measured as the store measures it. `surrogatepass` keeps this a check on
-    # size alone: whether the store can encode the projection at all is a
-    # separate contract, and a lone surrogate is counted as the three bytes its
-    # replacement takes.
+    # size alone: whether the store can encode the projection at all is the
+    # separate contract asserted just below, and a lone surrogate is counted as
+    # the three bytes its replacement takes.
     size = len(projection.encode("utf-8", "surrogatepass"))
     _check(
         size <= MAX_PROJECTION_BYTES,
         f"projection is {size} bytes, over the store's {MAX_PROJECTION_BYTES}-byte ceiling",
     )
+    try:
+        # The store encodes the projection as UTF-8 to size it and to hash it,
+        # and that encode is what refused a lone surrogate: a JSON escape such as \ud800 decoded
+        # into one, the collector held the source's offsets, and the source
+        # stalled. canonical_json never encodes, so without this the harness
+        # could not see it.
+        event_id(projection)
+    except UnicodeEncodeError as exc:
+        raise AssertionError("the store cannot hash this event's projection") from exc
     back = NormalizedEvent.from_dict(json.loads(projection))
     _check(back == event, "the event does not survive the store's read-back")
     if event.vendor == "unrecognized":
         for observable in event.observables:
-            # Also compared in its JSON-escaped form. The unclaimed excerpt is
-            # serialized with json.dumps' default ensure_ascii=True, so a
-            # non-ASCII indicator is retained as \uXXXX; this harness found that
-            # on its first run. The fix is a change of its own because it alters
-            # event_id for every such record. The escaped form still
-            # fails for an indicator scanned from outside the retained evidence.
-            escaped = json.dumps(observable)[1:-1]
             _check(
-                observable in event.raw_excerpt or escaped in event.raw_excerpt,
+                observable in event.raw_excerpt,
                 f"observable {observable!r} is not inside the retained excerpt",
             )
 

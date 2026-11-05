@@ -99,6 +99,13 @@ WRITE_GRANTS: dict[tuple[str, str], dict[str, str]] = {
     ("scorecard.yml", "analysis"): {
         "security-events": "upload the Scorecard SARIF to Code scanning",
     },
+    ("penthera.yml", "deps"): {
+        "pull-requests": "one PR comment with the capability diff, updated in place",
+        "security-events": "upload the Penthera SARIF to Code scanning",
+    },
+    ("penthera.yml", "agents"): {
+        "security-events": "upload the Penthera SARIF to Code scanning",
+    },
 }
 
 

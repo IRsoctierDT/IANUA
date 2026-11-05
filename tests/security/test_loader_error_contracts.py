@@ -43,8 +43,9 @@ import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from agents.policies.egress import EgressAllowlist, EgressAllowlistError
+from agents.policies.egress import MAX_ALLOWLIST_BYTES, EgressAllowlist, EgressAllowlistError
 from collect import OffsetError, SourceError, declare, load_offsets, offsets_path
+from collect.offsets import MAX_OFFSETS_BYTES
 from sli.indicators import measure_collection_pending
 
 #: 100,000 nested brackets: past json's recursion limit on every interpreter.
@@ -260,6 +261,240 @@ def test_a_depth_bombed_offsets_file_is_an_offset_error(tmp_path: Path) -> None:
     assert str(path) in message
     assert isinstance(caught.value.__cause__, RecursionError)
     assert _quotes_none_of(message, _DEPTH_BOMB)
+
+
+def _broken_offsets_paths(tmp_path: Path) -> dict[str, Path]:
+    """Offsets paths that are broken rather than new, one per errno regime.
+
+    Each used to read as ``{}`` — "never collected" — because ``load`` asked
+    ``path.exists()`` first and ``exists()`` answers False for any error it
+    meets, not only for ENOENT. Measured on CPython 3.13.17 before the fix.
+    """
+    blocker = tmp_path / "parent-is-a-file"
+    blocker.write_text("not a directory\n", encoding="utf-8")
+    loop, other = tmp_path / "loop.json", tmp_path / "loop2.json"
+    loop.symlink_to(other)
+    other.symlink_to(loop)
+    return {
+        "enotdir": blocker / "offsets.json",
+        "eloop": loop,
+        "embedded-nul": Path(f"{tmp_path}/off\x00sets.json"),
+    }
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("regime", ["enotdir", "eloop", "embedded-nul"])
+def test_a_broken_offsets_path_is_refused_not_read_as_never_collected(
+    tmp_path: Path, regime: str
+) -> None:
+    """The residual #300 recorded, and it was never 3.14-only.
+
+    ``exists()`` answers False for ENOTDIR, ELOOP and an embedded NUL on every
+    supported interpreter, so all three returned ``{}`` and the collector
+    restarted every source from byte zero without saying so — which is what
+    this module's own absent-vs-corrupt rule forbids. Only ENOENT is absent.
+    """
+    path = _broken_offsets_paths(tmp_path)[regime]
+    with pytest.raises(OffsetError) as caught:
+        load_offsets(path)
+    assert "cannot be read" in str(caught.value), str(caught.value)
+    assert caught.value.__cause__ is not None, "the original error is not chained"
+
+
+@pytest.mark.security
+def test_a_genuinely_absent_offsets_file_still_reads_as_never_collected(
+    tmp_path: Path,
+) -> None:
+    """The control for the test above: ENOENT must stay ``{}``, not become a refusal.
+
+    Both spellings of a first run: the file missing from an existing directory,
+    and the whole ``data/collect`` tree not made yet, which is what the very
+    first pass on a fresh root actually sees.
+    """
+    made = tmp_path / "made"
+    path = offsets_path(made)
+    path.parent.mkdir(mode=0o700, parents=True)
+    assert load_offsets(path) == {}, "a missing file in an existing directory"
+    assert load_offsets(offsets_path(tmp_path / "fresh")) == {}, "a missing tree"
+
+
+@pytest.mark.security
+def test_an_unreadable_offsets_file_is_refused_rather_than_read_as_absent(
+    tmp_path: Path,
+) -> None:
+    """EACCES is the case 3.14 adds, and the one an operator hits for real.
+
+    Through 3.13 ``exists()`` propagates it, so the old code raised a bare
+    ``PermissionError``; on 3.14 pathlib's predicates swallow every ``OSError``
+    and it would have read as ``{}``. Reading first makes both a refusal.
+    """
+    if not _dac_enforced(tmp_path):
+        pytest.skip("this process bypasses DAC checks, so the result would be vacuous")
+    path = offsets_path(tmp_path)
+    path.parent.mkdir(mode=0o700, parents=True)
+    path.write_text('{"version": 2, "sources": {}}', encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        with pytest.raises(OffsetError, match="cannot be read") as caught:
+            load_offsets(path)
+        assert isinstance(caught.value.__cause__, PermissionError)
+    finally:
+        path.chmod(0o600)
+
+
+@pytest.mark.security
+def test_an_invalid_utf8_offsets_file_names_the_reason_and_not_the_byte(
+    tmp_path: Path,
+) -> None:
+    """``UnicodeDecodeError``'s own text quotes the offending byte; this does not.
+
+    The refusal already had the right *type* — ``UnicodeDecodeError`` is a
+    ``ValueError``, which the old clause caught — but it interpolated the
+    decoder's message, so one byte of the file reached the error. Same
+    treatment ``EgressAllowlist.load`` gives invalid UTF-8: the reason and the
+    offset, never the value.
+    """
+    body = b'{"version": 2, "sources": {"\xff": {}}}'
+    path = offsets_path(tmp_path)
+    path.parent.mkdir(mode=0o700, parents=True)
+    path.write_bytes(body)
+    with pytest.raises(OffsetError, match="not valid UTF-8") as caught:
+        load_offsets(path)
+    message = str(caught.value)
+    assert "invalid start byte" in message, message
+    assert str(path) in message
+    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
+    assert _quotes_none_of(message, body), f"the refusal quotes the file: {message!r}"
+
+
+# --------------------------------------------------------------------------
+# Neither loader reads an unbounded file
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.security
+def test_an_oversized_offsets_file_is_refused_rather_than_read_into_memory(
+    tmp_path: Path,
+) -> None:
+    """An unbounded read is a ``MemoryError``, which is neither documented outcome.
+
+    The real ceiling, not a patched one: the size check runs before any parse,
+    so the body does not have to be valid JSON. The refusal states the ceiling
+    and no measurement of the file, so it quotes nothing about its content.
+    """
+    path = offsets_path(tmp_path)
+    path.parent.mkdir(mode=0o700, parents=True)
+    path.write_bytes(b"a" * (MAX_OFFSETS_BYTES + 1))
+    with pytest.raises(OffsetError, match="larger than") as caught:
+        load_offsets(path)
+    assert str(MAX_OFFSETS_BYTES) in str(caught.value)
+    assert str(path) in str(caught.value)
+
+
+@pytest.mark.security
+def test_an_offsets_file_exactly_at_the_ceiling_still_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound is inclusive: a file *at* the ceiling is fine, one byte past is not.
+
+    The ceiling is patched down to the document's own length so the boundary is
+    exercised exactly, rather than by writing four mebibytes of valid JSON.
+    """
+    body = '{"version": 2, "sources": {}}'
+    path = offsets_path(tmp_path)
+    path.parent.mkdir(mode=0o700, parents=True)
+    path.write_text(body, encoding="utf-8")
+    monkeypatch.setattr("collect.offsets.MAX_OFFSETS_BYTES", len(body))
+    assert load_offsets(path) == {}, "a file exactly at the ceiling must load"
+    monkeypatch.setattr("collect.offsets.MAX_OFFSETS_BYTES", len(body) - 1)
+    with pytest.raises(OffsetError, match="larger than"):
+        load_offsets(path)
+
+
+@pytest.mark.security
+def test_an_oversized_allowlist_is_refused_rather_than_read_into_memory(
+    tmp_path: Path,
+) -> None:
+    """Same hole, same fix, in the sibling loader."""
+    path = tmp_path / "egress.json"
+    path.write_bytes(b"a" * (MAX_ALLOWLIST_BYTES + 1))
+    with pytest.raises(EgressAllowlistError, match="larger than") as caught:
+        EgressAllowlist.load(path)
+    assert str(MAX_ALLOWLIST_BYTES) in str(caught.value)
+
+
+@pytest.mark.security
+def test_an_allowlist_exactly_at_the_ceiling_still_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inclusive boundary again, and the shipped default is far below it."""
+    body = '{"version": 1, "hosts": []}'
+    path = tmp_path / "egress.json"
+    path.write_text(body, encoding="utf-8")
+    monkeypatch.setattr("agents.policies.egress.MAX_ALLOWLIST_BYTES", len(body))
+    assert EgressAllowlist.load(path).hosts == ()
+    monkeypatch.setattr("agents.policies.egress.MAX_ALLOWLIST_BYTES", len(body) - 1)
+    with pytest.raises(EgressAllowlistError, match="larger than"):
+        EgressAllowlist.load(path)
+
+
+# --------------------------------------------------------------------------
+# declare() promises a Source or a SourceError, even when resolve() raises
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.security
+def test_a_symlink_loop_at_resolve_is_a_source_error(tmp_path: Path) -> None:
+    """``resolve()`` reports a symlink loop as ``RuntimeError``, with no errno.
+
+    So ``declare``'s ``except OSError`` never saw it. Measured: ``RuntimeError``
+    on CPython 3.11.15 and 3.12.13; on 3.13.17 a non-strict resolve tolerates a
+    loop and returns the path, so the real loop is unreachable there and the
+    clause is driven by a mock on every interpreter instead. Reachable in
+    production only by a race — an ancestor becoming a loop after ``is_file()``
+    has succeeded — which is exactly why the contract has to hold.
+    """
+    declared = tmp_path / "app.log"
+    declared.write_text("x\n", encoding="utf-8")
+    real = Path.resolve
+
+    def loops(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == declared:
+            raise RuntimeError(f"Symlink loop from {self!r}")
+        return real(self, *args, **kwargs)
+
+    with (
+        mock.patch.object(Path, "resolve", loops),
+        pytest.raises(SourceError, match="cannot be resolved") as caught,
+    ):
+        declare(declared)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(declared) in str(caught.value)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("escaping", [RecursionError, NotImplementedError])
+def test_resolve_does_not_swallow_the_other_runtime_errors(
+    tmp_path: Path, escaping: type[BaseException]
+) -> None:
+    """The reason #300 left this unwrapped, answered rather than ignored.
+
+    Both subclass ``RuntimeError``, and neither means "symlink loop": one is
+    this process out of stack, the other a platform that cannot resolve. A bare
+    ``except RuntimeError`` would have turned both into a ``SourceError`` that
+    blames the operator's path. They must still propagate.
+    """
+    declared = tmp_path / "app.log"
+    declared.write_text("x\n", encoding="utf-8")
+    real = Path.resolve
+
+    def raises(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == declared:
+            raise escaping("planted")
+        return real(self, *args, **kwargs)
+
+    with mock.patch.object(Path, "resolve", raises), pytest.raises(escaping, match="planted"):
+        declare(declared)
 
 
 # --------------------------------------------------------------------------
