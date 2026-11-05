@@ -17,17 +17,30 @@ said so with a message that named neither the version nor the field.
 
 A producer adds a dimension in order to *tag findings with it*, so accepting the
 extra ``dimension_grades`` key alone left D-2 standing: ``_finding`` validated
-each finding against the closed display set and rejected the report. A finding in
-an unknown dimension is therefore retained under :data:`UNKNOWN_DIMENSION`.
+each finding against the closed display set and rejected the report.
 
-**The other closed enums still refuse, deliberately.** A finding ``severity``, an
-``overall_grade``, a ``servers[].grade`` and a ``servers[].state`` outside their
-sets reject the report (measured). Unlike a dimension — a grouping label nothing
-here renders — each of those carries risk *ordering*, and an unknown value given a
-sentinel is one an operator could mis-triage: a severity above ``critical`` shown
-as unknown reads as less urgent, not more. Refusing is the fail-closed answer
-there, and widening any of them is a decision for the owner rather than a
-consequence of this one.
+**Every closed set is now widened**, on the owner's decision: a finding's
+``dimension`` and ``severity``, ``overall_grade``, the ``dimension_grades``
+values, ``servers[].grade`` and ``servers[].state`` each carry an unrecognised
+value as :data:`UNKNOWN_VALUE` and name their field path in
+``ScanReport.unrecognized_fields``. A **malformed** value — non-string, empty,
+oversized — is still fatal in every one of them: the vocabulary widened, the
+accepted shape did not.
+
+**Two rationales from earlier revisions were wrong and are corrected here**, since
+a stale docstring is what the next reader trusts first. They justified keeping the
+four closed by saying a dimension is "a grouping label nothing here renders" —
+:func:`finding_rows` puts it in a ``Dimension`` cell, so an unknown dimension is
+exactly as visible as an unknown severity — and by saying an unknown severity
+"reads as less urgent than ``critical``", when this consumer has **no severity
+ordering at all**: the filter is ``sorted(severity_counts)`` and the count table
+is insertion-ordered, so a sentinel displaces nothing.
+
+What is true is narrower. An unrecognised value is one the operator cannot rank,
+and for ``severity`` the *filter* is how such a finding goes missing, because
+selecting ``critical`` and ``high`` does not select the sentinel. That is why the
+view warns on ``unrecognized_fields``, and warns a second time when ``severity``
+is among them.
 """
 
 from __future__ import annotations

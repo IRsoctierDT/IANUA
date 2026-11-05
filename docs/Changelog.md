@@ -44,7 +44,9 @@ All notable changes to this project. Versions correspond to git tags.
   A malformed dimension (non-string, empty, oversized) is still fatal. **The same trap
   exists in four more enums and is deliberately left closed:** measured, an unknown finding
   `severity`, `overall_grade`, `servers[].grade` or `servers[].state` each reject the whole
-  report. A dimension is a grouping label this consumer does not render; those four are read
+  report. (That bullet's stated reason was wrong twice over, corrected in the entry below and
+  in the module docstring: a dimension **is** rendered — `finding_rows` puts it in a
+  `Dimension` cell — and this consumer has no severity ordering at all.) Those four are read
   as risk *ordering*, and an unknown severity shown under a sentinel reads as **less** urgent
   than `critical`, not more — so a sentinel there could cause a mis-triage a refusal cannot.
   Widening them changes how risk is presented and is the owner's decision; until it is taken,
