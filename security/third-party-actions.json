@@ -90,7 +90,7 @@
       "status": "reviewed",
       "reviewed_version": "10.3.3",
       "reviewed_sha": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
-      "reviewed_in": "#324",
+      "reviewed_in": "#324, corrected and completed in #325",
       "reason": "Installs uv for the lock-sync gate. Predates this file; pinned and in use since before the record existed.",
       "execution": {
         "using": "node24",
@@ -104,21 +104,23 @@
       "properties_verified": [
         "runs.using is node24 with main: dist/setup/index.cjs -- no Docker image, so the 40-hex pin fixes the code that runs",
         "a post: hook EXISTS -- dist/save-cache/index.cjs with post-if: success() -- which runs after the job with the same token. There is no pre: hook",
-        "27 inputs are declared and OUR STEP PASSES NONE, so every default applies; the top-level keys are name, description, author, inputs, outputs, runs, branding, with no nested action",
-        "download-from-astral-mirror defaults to \"true\", so by default the uv binary is fetched from Astral's own mirror rather than from GitHub releases",
-        "checksum is an optional input and we pass none, so this repository pins no checksum for the binary that then resolves and installs its whole dependency tree",
-        "github-token defaults to ${{ github.token }}; manifest-file, which would point version lookups at a custom URL, is unset, so the bundled manifest is used"
+        "27 inputs are declared; the top-level keys are name, description, author, inputs, outputs, runs, branding, with no nested action",
+        "checksum validation order, read in src/download/checksum/checksum.ts: a user-supplied checksum wins, then the action's BUNDLED table, then the manifest's -- and with none of the three it returns WITHOUT VALIDATING",
+        "the bundled table (src/download/checksum/known-checksums.json) holds 5630 entries topping out at uv 0.13.6, so a `latest` resolution lands PAST it on every new uv release",
+        "the hash covers the downloaded ARCHIVE, not the extracted binary: in src/download/download-version.ts, validateChecksum receives downloadPath and runs before tc.extractTar",
+        "the artifact and the manifest are both served by releases.astral.sh (measured in CI's own log), so a manifest checksum is not independent of the artifact it describes"
       ],
       "not_reviewed": [
         "dist/setup/index.cjs and dist/save-cache/index.cjs -- both bundles unread. In particular what the post: hook does with the token, and what it writes into the cache",
-        "whether the downloaded uv binary is checksum-verified internally by default. The action offers a `checksum` input, we pass none, and the bundle that would do any default verification is unread -- so this record claims no verification, in either direction"
+        "that the TypeScript sources read above are what the shipped dist/ bundles actually do; the review is of src/, and the bundle is the artifact that runs"
       ],
       "bounded_by": [
         "runs in the static-analysis job, which declares no job-level permissions and so inherits the workflow's top-level contents: read -- no write anywhere",
         "SHA-pinned with a version comment, asserted by tests/security/test_workflow_permissions.py",
-        "the only thing run with the installed uv is `uv lock --check`; scripts/check_locks.py independently verifies the exported pip locks against uv.lock, so a tampered resolver would have to satisfy that gate too"
+        "uv is pinned to an exact version (0.13.7) with a checksum sourced from github.com while the artifact is served by releases.astral.sh, so CI verifies across origins on every run; tests/security/test_uv_toolchain_pin.py fails if either input is dropped or malformed",
+        "the only thing run with the installed uv is `uv lock --check`; scripts/check_locks.py independently verifies the exported pip locks against uv.lock"
       ],
-      "notes": "Reviewed at the pinned SHA on 2026-11-05 -- the pin #317 landed. The finding worth an owner decision is the unpinned download: we pass no `checksum`, and the mirror is the default source. Setting `checksum` would close it, at the cost of an input to update on every version bump. Also carried forward from the execution block: the post: hook runs after the job with the same token and nobody has read it -- the penthera record verifies the ABSENCE of such a hook, so the property matters here."
+      "notes": "Reviewed at the pinned SHA on 2026-11-05 (#324), and CORRECTED in #325. #324 recorded that it 'claims no verification, in either direction' because the bundle was unread -- honest then, and answered by measurement since: the action DOES validate by default, but only from its bundled table or the manifest, and the bundled table stops at uv 0.13.6 while `latest` resolved 0.13.7. So the real gap was never 'no verification'; it was that an unpinned version systematically lands on the path where the expected hash is served by the same host as the artifact -- or, with no manifest hash, on the path that validates nothing. Both halves are closed by pinning the version AND supplying our own checksum from a different origin; neither input works without the other. The post: hook remains unread, which the penthera record verifies the absence of."
     },
     {
       "action": "gitleaks/gitleaks-action",

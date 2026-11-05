@@ -207,6 +207,35 @@ All notable changes to this project. Versions correspond to git tags.
   **Promoting the last unreviewed entry made the `accepted_unreviewed` rules vacuous on the
   shipped record**, so that rule is now a callable function driven against planted records —
   a conditional guard with nothing to iterate is proven by absence, which is not proof.
+- **`uv` is pinned to an exact version with a checksum sourced from a different origin than
+  the download, closing the third #324 finding — which was right about the observation and
+  wrong about the conclusion.** #324 recorded that `setup-uv` is passed no inputs and so pins
+  no `checksum`, leaving whether anything verified the download unread. Measured since: the
+  action **does** validate by default, in a priority order read from
+  `src/download/checksum/checksum.ts` — a user checksum, then its own bundled table, then the
+  manifest's — and with none of the three it *"returns without validating"*. The bundled table
+  (`known-checksums.json`) holds **5630** entries topping out at uv **0.13.6**, while CI's own
+  log showed `"Could not determine uv version … Falling back to latest"` and installed
+  **0.13.7**. So the gap was never "no verification": **`latest` plus a bundle that necessarily
+  lags new uv releases lands outside the bundled set on every release**, leaving an expected
+  hash served by `releases.astral.sh` — the same host that served the artifact
+  (`"Downloading uv from https://releases.astral.sh/…/0.13.7/…"`) — or, with no manifest hash,
+  nothing. Both halves are closed together, and neither input works alone: `version: "0.13.7"`
+  fixes what a hash can describe, and `checksum:` carries the sha256 published by **github.com**
+  for `uv-x86_64-unknown-linux-gnu.tar.gz`, so CI verifies an Astral-served artifact against a
+  GitHub-published hash **on every run** — stronger than a one-off manual comparison, and the
+  same cross-origin shape as the scorecard image-digest check. The hash covers the *archive*,
+  measured in `src/download/download-version.ts` where `validateChecksum` receives
+  `downloadPath` before `tc.extractTar`. `tests/security/test_uv_toolchain_pin.py` fails if
+  either input is dropped, if the version stops being exact, or if the checksum is not
+  lowercase 64-hex — eleven plants, each caught. **One control was deliberately widened:**
+  `ALLOWED_FOREIGN_OWNERS` in `tests/unit/test_github_config_placeholders.py` went from empty
+  to `{"astral-sh"}`, because the checksum's provenance URL *is* the audit trail and deleting
+  it to satisfy that gate would remove the only thing making the pin checkable; measured, the
+  gate still reddens on a wrong slug for this repository. **Residuals:** Dependabot bumps an
+  action's ref and never its input values, so this pin is maintained by hand and will go stale
+  silently; one checksum is correct only because the job is single-platform (`ubuntu-latest`,
+  no matrix); and the review is of `src/`, while the artifact that runs is the `dist/` bundle.
 - **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
   third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
   PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather

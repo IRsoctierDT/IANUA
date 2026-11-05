@@ -862,11 +862,25 @@ is minified vendor output. Three findings came out of those reviews and are reco
 than fixed, because each is an owner decision and not a defect: `gitleaks-action` is
 **proprietary** (a Gitleaks LLC EULA, where `gitleaks` the scanner is MIT) and needs a
 licence key for an *organization* account, so moving this repository under one breaks the
-required secret-scanning check until a key is obtained; `setup-uv` is passed **no inputs at
-all**, so it fetches `uv` from Astral's mirror by default with no `checksum` pinned by us,
-and that binary then resolves the dependency tree; and `scorecard-action`'s container
+required secret-scanning check until a key is obtained; and `scorecard-action`'s container
 receives a token carrying the `security-events: write` that exists for a *separate* upload
 step, because a workflow token is job-scoped.
+
+**The third finding is closed, and the way it was wrong is worth more than the fix.** #324
+recorded that `setup-uv` was passed no inputs and so pinned no `checksum`, and left whether
+anything verified the download as unread. Measured since: the action **does** validate by
+default — but only against its own bundled table or the manifest's hash
+(`src/download/checksum/checksum.ts`), and with neither it "returns without validating".
+The bundled table holds 5630 entries topping out at uv **0.13.6**, while an unpinned
+`version` resolved **0.13.7**. So the gap was never "no verification": it was that
+**`latest` plus a bundle that necessarily lags new uv releases lands outside the bundled set
+every time**, leaving an expected hash served by `releases.astral.sh` — the same host that
+serves the artifact — or nothing at all. Both halves are closed by pinning an exact version
+**and** supplying our own checksum from `github.com`, so CI compares across origins on every
+run; neither input is sufficient alone, since a hash cannot describe a floating version.
+`tests/security/test_uv_toolchain_pin.py` fails if either is dropped. The lesson for the next
+reviewer is that "we pass no checksum" was a true observation attached to a wrong conclusion,
+and only reading the vendor's validation *order* distinguished the two.
 
 **One consequence for whoever edits the gate.** Promoting the last unreviewed entry made
 the `accepted_unreviewed` rules vacuous on the shipped record — a conditional guard with
