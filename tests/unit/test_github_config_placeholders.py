@@ -56,10 +56,27 @@ _REPO = Path(__file__).resolve().parents[2]
 CANONICAL_REPO = "IRsoctierDT/IANUA"
 
 #: Owners whose repositories may be linked from ``.github/`` besides this one.
-#: Empty today, and kept as an explicit list so that adding an upstream link
-#: (an action's issue tracker, say) is a deliberate edit with a reviewer rather
-#: than a reason to delete the assertion below.
-ALLOWED_FOREIGN_OWNERS: frozenset[str] = frozenset()
+#: Kept as an explicit list so that adding an upstream link (an action's issue
+#: tracker, say) is a deliberate edit with a reviewer rather than a reason to
+#: delete the assertion below.
+#:
+#: **This widens a control, so the reason is recorded rather than assumed.** The
+#: list was empty until 2026-11-05; ``astral-sh`` is its first entry, added
+#: because ``ci.yml``'s ``setup-uv`` step cites
+#: ``github.com/astral-sh/uv/releases/download/<ver>/...`` as the **provenance of
+#: the committed uv checksum**. That URL is the control, not decoration: the
+#: artifact is served by ``releases.astral.sh`` and the expected hash comes from
+#: ``github.com``, and a reviewer checking the pin has to be able to see which
+#: origin it came from. Removing the link to satisfy this gate would delete the
+#: one piece of information that makes the checksum auditable.
+#:
+#: What this does **not** widen: the gate still catches a wrong slug for *this*
+#: repository, which is what it exists for. ``astral-sh/uv`` cannot be a
+#: mis-spelling or a stale rename of ``IRsoctierDT/IANUA``, and ``astral-sh`` is
+#: already a declared vendor in ``security/third-party-actions.json``. An owner
+#: added here should meet both tests: unambiguously upstream, and already a
+#: reviewed dependency.
+ALLOWED_FOREIGN_OWNERS: frozenset[str] = frozenset({"astral-sh"})
 
 #: Template tokens that are syntactically valid and therefore survive review.
 #: Each maps to the message shown when it is found, because "placeholder found"

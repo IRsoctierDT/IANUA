@@ -42,6 +42,59 @@ jobs:
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # BOTH inputs are load-bearing and neither works without the other.
+          #
+          # Measured on this job's own log before this change: "Could not
+          # determine uv version from uv.toml or pyproject.toml. Falling back
+          # to latest." So CI installed whatever uv was newest at that moment
+          # (0.13.7 on 2026-11-05) — a gate's toolchain changing with no commit,
+          # which `uv lock --check` below depends on.
+          #
+          # And the checksum gap that unpinned version created is structural,
+          # not bad luck. The action validates a download against, in priority
+          # order, a user checksum, its own BUNDLED table, then the manifest's
+          # (src/download/checksum/checksum.ts) — and with none of the three it
+          # "returns without validating". Measured at this pinned SHA,
+          # src/download/checksum/known-checksums.json holds 5630 entries
+          # topping out at uv 0.13.6, so the 0.13.7 CI resolved was one release
+          # PAST the bundled set. `latest` plus a bundle that necessarily lags
+          # new uv releases lands outside it every time. What remained was the
+          # manifest checksum — served by releases.astral.sh, which is also the
+          # host that serves the artifact (measured: "Downloading uv from
+          # https://releases.astral.sh/github/uv/releases/download/0.13.7/...").
+          # Verification against a hash from the same origin as the artifact is
+          # not independent verification.
+          #
+          # So the version is fixed and the expected hash is OURS, taken from a
+          # DIFFERENT origin than the download:
+          # https://github.com/astral-sh/uv/releases/download/0.13.7/uv-x86_64-unknown-linux-gnu.tar.gz.sha256
+          # CI then verifies an artifact served by releases.astral.sh against a
+          # hash published by github.com, on every run. That cross-origin
+          # asymmetry is the control; it is the same shape as the scorecard
+          # image-digest check, and it is stronger than a one-off manual
+          # comparison because it runs every time.
+          #
+          # The hash covers the ARCHIVE, not the extracted binary — measured in
+          # src/download/download-version.ts, where validateChecksum receives
+          # downloadPath and runs BEFORE tc.extractTar.
+          #
+          # Single-platform by design: this job is ubuntu-latest with no matrix,
+          # so one checksum is correct. Adding a matrix would need one per
+          # platform and this input could not stay a scalar.
+          #
+          # Considered and rejected: pinning 0.13.6 instead, which IS in the
+          # bundled table and would give two independent checks. It couples this
+          # repository's uv version to setup-uv's release cadence, which is a
+          # worse long-term position than one independent hash we control.
+          #
+          # ON UPGRADE both values move together, from that same github.com URL.
+          # Dependabot bumps the action's ref, never its input values, so this
+          # pin is maintained by hand — the trade for a fixed, verified
+          # toolchain. tests/security/test_uv_toolchain_pin.py fails if either
+          # input is dropped or stops being an exact version / 64-hex digest.
+          version: "0.13.7"
+          checksum: "c5221ff41b7892bfc223543883600125f6a47fe845093e0f5bdff4f359196d83"
       - name: Verify uv.lock is in sync with pyproject.toml
         # uv.lock is the dependency source of truth; fail closed if pyproject
         # changed without re-locking (and the exported pip locks would drift).
