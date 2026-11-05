@@ -5,6 +5,24 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **A first-visit welcome on the Pages site (`docs/index.html`).** A visitor arriving for the
+  first time gets a card naming what IANUA is and four ways in (capabilities, quickstart, live
+  status, source); a returning one gets a slim, self-dismissing note instead. New-versus-returning
+  is decided by one versioned `localStorage` key in the visitor's own browser, which is the whole
+  of the "visitor database": Pages is static hosting, so there is no server side to hold one, and
+  storing an identifier anywhere else would be personal data needing a notice and a lawful basis.
+  The card says so on screen — no cookies, no analytics, no request — and
+  `tests/unit/test_welcome_banner.py` enforces that sentence, failing on a planted `fetch(`
+  (measured). Both elements ship `hidden`, so with JavaScript off the page is unchanged. The
+  dialog is a real one: `role="dialog"`, `aria-modal`, labelled, focus moved in and trapped,
+  Escape and backdrop close, focus restored, `prefers-reduced-motion` respected. The stored record
+  is untrusted input — every Pages site under one github.io account shares an origin — so it is
+  parsed defensively, the count is clamped to an integer, the date is matched against a literal
+  pattern, and both render through `textContent`. Blocked site data and an exhausted quota throw
+  on write rather than returning null, so the storage probe is a write and falls back
+  `localStorage` → `sessionStorage` → greet once per page load. No dependency, no external script.
+  Measured by driving the real page in Chromium: 20 checks covering first visit, return visit, a
+  second visitor, a malformed record, a hostile stored value, and storage blocked outright.
 - **Coverage-guided fuzzing with Atheris (`tests/fuzz/`, `.github/workflows/fuzz.yml`).** There
   are four targets, one for each surface that parses untrusted bytes: `ingest.normalize` on the
   bytes `collect/` feeds it, `ingest.keyvalue.decode`, the egress address and port checks, and
