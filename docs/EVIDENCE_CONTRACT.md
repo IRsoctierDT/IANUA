@@ -412,6 +412,12 @@ either spelling at parse time, normalize to bare hex, and compare against the ch
 `record_hash` with its prefix stripped. The manifest spelling stays bare hex per §5.3. A
 vector pinning both spellings MUST land with the fix.
 
+**Status: a fix is proposed at `IRsoctierDT/IANUA-Broker#165`** (not yet merged), taking that
+shape — one normalizer used by the manifest side and the chain side alike, accepting bare hex
+or an exact `sha256:` prefix and nothing else. It also records why the defect survived: the
+repository's own fixtures put bare hex into `record_hash`, a shape the ATB never emits, so
+both sides agreed in the test and disagreed in production. Until it merges, D-1 is open.
+
 ### D-2 — a `mcpscan` minor release breaks IANUA's importer (P2)
 
 Measured in §6.2. A new `dimension_grades` key or any `schema_version` outside `{1.0, 1.1}`
