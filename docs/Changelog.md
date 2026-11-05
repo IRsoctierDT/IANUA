@@ -32,6 +32,21 @@ All notable changes to this project. Versions correspond to git tags.
   proposed, §13 is a ratification checklist, and §12.4 refuses in terms any reading of the
   contract as authorization for a network transport — every surface is a local file, and egress
   or a listener remains an `AGENTS.md` §5.1 boundary gate.
+  **Automated review found three defects in the first revision and all three were confirmed**,
+  which is the argument for writing the contract before building to it. Two were the same
+  mistake the charter's own stage-7 amendment records — an absolute stated more broadly than
+  the thing it protects. §7.3 promised a v2 file would stay parseable by a v1 reader, which
+  contradicts §11's unknown-major rule, and because the shipped reader validates no
+  `schema_version` and ignores unknown keys, a `2.0` manifest carrying a forged or absent
+  `auth` tag would have been graded sound on its legacy enum fields; resolved fail-closed,
+  with reader validation now a ratification **precondition** rather than a follow-up. §12.5
+  forbade dereferencing any path in a file, which forbids the one `evidence.chain_path` read
+  the tip binding depends on and that the shipped engine already performs — an implementation
+  obeying it would have had to skip the chain check and leave the enums self-attested;
+  narrowed to display-only labels plus a single licensed, bounded, symlink-refusing read, in
+  the shape `collect/` already uses. The third was eight drifted cross-references in a
+  document whose whole value is being precisely referenceable; every reference is now checked
+  to resolve against a real heading.
 - **A CI gate holds the append-only logs to growth against the merge base
   (`scripts/check_append_only_logs.py`).** `DESIGN.md` §11 and `docs/Changelog.md` are the
   logs `AGENTS.md` §2 step 8 exempts from the concurrent-session overlap rule, because

@@ -8,7 +8,7 @@
 > | | |
 > |---|---|
 > | **Document** | Cross-Repository Evidence Contract |
-> | **Status** | **Draft — not ratified.** No clause binds any repository until §14 is complete and the owner signs off. |
+> | **Status** | **Draft — not ratified.** No clause binds any repository until §13 is complete and the owner signs off. |
 > | **Version** | `evidence-contract/0.1-draft` |
 > | **Owner** | Repository maintainer (human) |
 > | **Parties** | `IRsoctierDT/IANUA` · `IRsoctierDT/IANUA-Broker` (`mcpscan`) · `IRsoctierDT/agent-trust-broker` (ATB) |
@@ -27,7 +27,7 @@ deployment grade `HIGH` on a `mcpscan` governance finding, and one of which make
 
 The exchange is **files only**. No clause here licenses a socket, a listener, or egress to
 any host. That is deliberate and it is a security boundary, not an implementation
-convenience: see §13.4.
+convenience: see §12.4.
 
 Three surfaces carry evidence. Their shipped status is uneven, and stating that plainly is
 the point of the table:
@@ -53,7 +53,7 @@ writer, and the reader cannot be satisfied (§11, D-1). Surface 3 is computed on
 
 **Non-Goals**
 
-- **Not a transport.** No HTTP, no socket, no egress. §13.4.
+- **Not a transport.** No HTTP, no socket, no egress. §12.4.
 - **Not a runtime coupling.** ADR-17 stands: `mcpscan` never imports ATB runtime code and
   never contacts a broker at runtime. IANUA never imports either.
 - **Not an enforcement contract.** Every consumer here is read-only and assessment-only.
@@ -77,10 +77,10 @@ reads (§7.3).
 
 ## 4. Normative Language
 
-**MUST** / **MUST NOT** are binding on the named party once §14 is complete. **SHOULD**
+**MUST** / **MUST NOT** are binding on the named party once §13 is complete. **SHOULD**
 carries a recorded reason to deviate. **MAY** is optional. Statements labelled
-**(measured)** were verified against the shipped code at the commits in §10.1; statements
-labelled **(proposed)** are not implemented anywhere and are the subject of §14.
+**(measured)** were verified against the shipped code at the commits in §9.1; statements
+labelled **(proposed)** are not implemented anywhere and are the subject of §13.
 
 ## 5. Encoding Conventions (apply to every surface)
 
@@ -252,14 +252,28 @@ the shipped ids and MUST NOT introduce the research record's names as synonyms.
 
 ### 7.3 v2 — the delta **(proposed; nothing below is implemented)**
 
-v2 adds integrity and runtime decision evidence. It is **additive**: a v2 file MUST remain
-parseable by the v1 reader, which ignores unknown keys.
+v2 adds integrity and runtime decision evidence. **A v1 consumer MUST refuse a
+`schema_version` of `2.0`**, per §11's unknown-major rule.
+
+An earlier draft of this section said the opposite — that v2 is "additive", so a v2 file
+"MUST remain parseable by the v1 reader, which ignores unknown keys". Review was right that
+this contradicts §11, and the contradiction is not merely editorial: **the shipped reader
+does not validate `schema_version` at all (§7.1, measured) and ignores unknown keys**, so a
+v2 manifest would be graded on its legacy enum fields by a consumer that never looks at
+`auth`. A forged or absent auth tag would therefore grade as sound. Compatibility was the
+wrong thing to optimize for against a fail-closed rule, which is the trade `AGENTS.md` §3
+already settles.
+
+Consequently **adopting v2 requires adding `schema_version` validation to the v1 reader
+first**, as a precondition rather than a follow-up — a release-ordering constraint, recorded
+in §13. Until that validation ships, no producer may write a `2.0` manifest, because the
+readers in the field would silently accept it unverified.
 
 | Field | Type | Purpose |
 |---|---|---|
 | `schema_version` | `"2.0"` | — |
 | `auth` | string | `hmac-sha256:` + 64 hex over the canonical body minus `auth` (§7.4) |
-| `generated_at` | RFC 3339 UTC string | staleness input; advisory only (§13.2) |
+| `generated_at` | RFC 3339 UTC string | staleness input; advisory only (§12.2) |
 | `catalog_digest` | bare 64 hex | scope-catalog fingerprint |
 | `bindings_digest` | bare 64 hex | role-binding fingerprint |
 | `ruleset_digest` | bare 64 hex | screening-ruleset fingerprint |
@@ -269,7 +283,7 @@ parseable by the v1 reader, which ignores unknown keys.
 | `protected_servers[].tool_map_digest` | bare 64 hex | §9.2 |
 
 **`decision_counts` is a count, never a record.** A per-tool count is metadata; a decision
-payload is evidence, and evidence does not cross (§13.3).
+payload is evidence, and evidence does not cross (§12.3).
 
 ### 7.4 The v2 auth envelope **(proposed)**
 
@@ -462,8 +476,25 @@ Each file is hostile input to its consumer, including one labelled redacted and 
 a valid auth tag — a valid tag proves provenance, not benignity. Malformed input MUST degrade
 to a finding or a named error, never a crash, and never a partial application of a file's
 claims. Consumers MUST bound size, depth and collection length (§6.3 is the reference set),
-MUST reject duplicate JSON keys, and MUST NOT dereference any path, URI or address appearing
+MUST reject duplicate JSON keys, and MUST NOT execute, connect to, or resolve anything named
 in a file.
+
+**Dereferencing is forbidden for display-only references and licensed for exactly one
+field.** An earlier draft forbade dereferencing *any* path, URI or address, and review was
+right that the absolute forbids the one read the evidence binding depends on: §7.1 licenses
+reading `evidence.chain_path` to verify the tip, and the shipped `mcpscan` engine does
+precisely that. An implementation obeying the absolute would have to skip the chain check,
+which leaves the posture enums self-attested — the very thing the binding exists to fix. The
+narrow rule, in the same shape `collect/` already uses for declared log sources:
+
+- **Never dereferenced:** a finding `location`, a `servers[].bind_addr`, a `port`, a
+  `fronts` entry, or any URI in any file. These are **labels**. They are rendered as text and
+  never opened, resolved or connected to.
+- **The single licensed read:** `evidence.chain_path`, read-only, to verify the declared tip.
+  It MUST be an absolute path; it MUST NOT be a symlink; the read MUST be size-bounded and
+  MUST NOT escalate to any other file; a failed or refused read MUST degrade to
+  `BROKER-EVIDENCE-MISMATCH` with a reason, never to a clean grade. A consumer unwilling to
+  take that read MUST emit the same finding rather than grade the enums as sound.
 
 ## 13. Ratification Checklist
 
@@ -475,6 +506,10 @@ names the repository that owns it.
       `schema_version` is genuinely unvalidated there.
 - [ ] Fix D-1 and land the two-spelling vector.
 - [ ] Decide R1 vs R2 for D-2, and state the decision in `ATB_POSTURE_CHECK.md` §4.
+- [ ] **Precondition for v2:** validate `broker.json`'s `schema_version` and refuse an
+      unknown major. This MUST ship **before** any producer writes a `2.0` manifest — the
+      current reader validates no version and ignores unknown keys, so until it does, a `2.0`
+      file would be graded on its legacy enums with its `auth` tag unread (§7.3).
 - [ ] Confirm §7.2's shipped finding ids are complete, and that no `BROKER-*` id is planned
       under the research record's names.
 - [ ] Carry §9's vectors in CI for surfaces 1 and 3.
@@ -519,4 +554,5 @@ shared vector file loaded by all three CIs instead of three transcriptions.
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-11-05 | `0.1-draft` rev 2 | Three defects found by automated review of rev 1, all confirmed, all in this document. **(a)** §7.3 promised a v2 file would stay parseable by a v1 reader, contradicting §11's unknown-major rule — and because the shipped reader validates no `schema_version` and ignores unknown keys, a v2 manifest with a forged or absent `auth` tag would have graded as sound; resolved fail-closed, with reader validation made a ratification precondition. **(b)** §12.5 forbade dereferencing any path, which forbids the `evidence.chain_path` read the tip binding depends on and the shipped engine performs; narrowed to display-only references plus one licensed, bounded read. **(c)** Eight cross-references had drifted (§14→§13, §13.2/.3/.4→§12.2/.3/.4, §10.1→§9.1) in a document whose value is being precisely referenceable. |
 | 2026-11-05 | `0.1-draft` | First draft. Consolidates the three surfaces from shipped code in all three repositories; records defects D-1 and D-2, both measured; proposes the v2 delta, the auth envelope and `tool_map_digest`. Ratification pending §13. |
