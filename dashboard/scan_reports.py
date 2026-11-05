@@ -14,6 +14,20 @@ because a major is where a producer may change what a field *means*; an unknown
 minor's field rules, because a minor only adds. Refusing the whole upload on a
 minor bump was defect D-2 — a routine producer release broke every import, and
 said so with a message that named neither the version nor the field.
+
+A producer adds a dimension in order to *tag findings with it*, so accepting the
+extra ``dimension_grades`` key alone left D-2 standing: ``_finding`` validated
+each finding against the closed display set and rejected the report. A finding in
+an unknown dimension is therefore retained under :data:`UNKNOWN_DIMENSION`.
+
+**The other closed enums still refuse, deliberately.** A finding ``severity``, an
+``overall_grade``, a ``servers[].grade`` and a ``servers[].state`` outside their
+sets reject the report (measured). Unlike a dimension — a grouping label nothing
+here renders — each of those carries risk *ordering*, and an unknown value given a
+sentinel is one an operator could mis-triage: a severity above ``critical`` shown
+as unknown reads as less urgent, not more. Refusing is the fail-closed answer
+there, and widening any of them is a decision for the owner rather than a
+consequence of this one.
 """
 
 from __future__ import annotations
@@ -36,12 +50,29 @@ SCHEMA_MAJOR = 1
 #: Known minors, oldest first. The last is the field-rule set an unknown minor
 #: is read with, so adding a minor here is what enables its new fields.
 KNOWN_SCHEMA_VERSIONS = ("1.0", "1.1")
+#: Stands in for any closed-set value the producer names and this build does not
+#: know. Parenthesised so it cannot collide with a real value, and a constant of
+#: ours so no producer text reaches the display.
+UNKNOWN_VALUE = "(unknown)"
+#: Every field whose value set this build knows. An unrecognised value in one of
+#: them is carried as :data:`UNKNOWN_VALUE` and its path is named in
+#: ``ScanReport.unrecognized_fields``, so the view can say so rather than letting
+#: a value the operator cannot interpret pass as if it were understood.
+WIDENED_FIELDS = (
+    "dimension_grades[]",
+    "overall_grade",
+    "servers[].findings[].dimension",
+    "servers[].findings[].severity",
+    "servers[].grade",
+    "servers[].state",
+)
 #: A version string is two short numbers and a dot; nothing here needs more.
 MAX_SCHEMA_VERSION_LENGTH = 16
 _ASCII_DIGITS = "0123456789"
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 DIMENSIONS = ("exposure", "credential", "tool_scope", "pinning")
 GRADES = ("A", "B", "C", "D", "F")
+SERVER_STATES = ("running", "declared")
 Identity = tuple[str, str, str, int | None]
 ChangeStatus = Literal["new", "resolved", "changed", "unchanged", "not observed"]
 
@@ -81,6 +112,11 @@ class ScanReport:
     server_ids: tuple[str, ...]
     incomplete_server_ids: tuple[str, ...]
     findings: tuple[Finding, ...]
+    #: Sorted paths from :data:`WIDENED_FIELDS` that carried a value this build
+    #: does not know. Non-empty means the report was read with values the
+    #: dashboard cannot interpret, which the view must surface — a widened field
+    #: that nobody is told about is a silent gap, not compatibility.
+    unrecognized_fields: tuple[str, ...] = ()
 
     @property
     def inspection_incomplete(self) -> bool:
@@ -215,11 +251,34 @@ def _schema_version(value: object) -> tuple[str, str]:
     return text, KNOWN_SCHEMA_VERSIONS[-1]
 
 
-def _choice(value: object, choices: tuple[str, ...]) -> str:
+def _known(
+    value: object,
+    choices: tuple[str, ...],
+    field: str,
+    unrecognized: set[str],
+) -> str:
+    """Map a closed-set value onto its set, or onto the unknown sentinel.
+
+    ``field`` is a path from :data:`WIDENED_FIELDS`; an unrecognised value adds it
+    to ``unrecognized`` so the report carries the fact.
+
+    Security consideration: the value is still validated as bounded, non-empty
+    text — a non-string, an empty string or an oversized one is still fatal, so
+    this widens the accepted *vocabulary* and never the accepted *shape*. An
+    unrecognised value is replaced by :data:`UNKNOWN_VALUE` rather than retained,
+    so a producer cannot route chosen text into the display.
+
+    The report is **kept** rather than rejected, which is defect D-2's fix; the
+    cost is that a value the operator cannot interpret now reaches them, so it is
+    recorded rather than absorbed. For a finding this is the lesser evil either
+    way: rejecting the whole report hides every *other* finding in it, and
+    dropping the one finding hides that one.
+    """
     text = _text(value)
-    if text not in choices:
-        _reject()
-    return text
+    if text in choices:
+        return text
+    unrecognized.add(field)
+    return UNKNOWN_VALUE
 
 
 def _bool(value: object) -> bool:
@@ -242,7 +301,7 @@ def _list(value: object, maximum: int) -> list[object]:
     return value
 
 
-def _finding(value: object, server_id: str, schema: str) -> Finding:
+def _finding(value: object, server_id: str, schema: str, unrecognized: set[str]) -> Finding:
     obj = _object(value)
     location = _object(obj.get("location"))
     line = location.get("line")
@@ -269,8 +328,12 @@ def _finding(value: object, server_id: str, schema: str) -> Finding:
         path=_text(location.get("path"), limit=2048),
         line=line,
         title=_text(obj.get("title"), limit=1024),
-        severity=_choice(obj.get("severity"), SEVERITIES),
-        dimension=_choice(obj.get("dimension"), DIMENSIONS),
+        severity=_known(
+            obj.get("severity"), SEVERITIES, "servers[].findings[].severity", unrecognized
+        ),
+        dimension=_known(
+            obj.get("dimension"), DIMENSIONS, "servers[].findings[].dimension", unrecognized
+        ),
         rationale=_text(obj.get("rationale"), allow_empty=True),
         remediation=_text(obj.get("remediation"), allow_empty=True),
     )
@@ -292,8 +355,9 @@ def parse_report(data: bytes) -> ScanReport:
         obj = _object(raw)
         if obj.get("tool") != "ianua-broker":
             _reject()
+        unrecognized: set[str] = set()
         reported_schema, schema = _schema_version(obj.get("schema_version"))
-        grade = _choice(obj.get("overall_grade"), GRADES)
+        grade = _known(obj.get("overall_grade"), GRADES, "overall_grade", unrecognized)
         online = _bool(obj.get("generated_with_online"))
         dimensions = _object(obj.get("dimension_grades"))
         if any(dim not in dimensions for dim in DIMENSIONS):
@@ -302,7 +366,10 @@ def parse_report(data: bytes) -> ScanReport:
             # An EXTRA one is ignored like any other unknown key, so a producer
             # adding a dimension no longer rejects the upload (D-2).
             raise ReportImportError("Report is missing a required dimension grade.")
-        grades = tuple((dim, _choice(dimensions[dim], GRADES)) for dim in DIMENSIONS)
+        grades = tuple(
+            (dim, _known(dimensions[dim], GRADES, "dimension_grades[]", unrecognized))
+            for dim in DIMENSIONS
+        )
         server_ids: list[str] = []
         incomplete_ids: list[str] = []
         findings: list[Finding] = []
@@ -315,15 +382,15 @@ def parse_report(data: bytes) -> ScanReport:
             server_ids.append(server_id)
             if _bool(server.get("inspection_incomplete")):
                 incomplete_ids.append(server_id)
-            _choice(server.get("state"), ("running", "declared"))
+            _known(server.get("state"), SERVER_STATES, "servers[].state", unrecognized)
             _bool(server.get("running"))
-            _choice(server.get("grade"), GRADES)
+            _known(server.get("grade"), GRADES, "servers[].grade", unrecognized)
             if server.get("bind_addr") is not None:
                 _text(server["bind_addr"], limit=256)
             if server.get("port") is not None:
                 _integer(server["port"], 0, 65535)
             for entry in _list(server.get("findings"), MAX_FINDINGS):
-                finding = _finding(entry, server_id, schema)
+                finding = _finding(entry, server_id, schema, unrecognized)
                 if finding.identity in identities or len(findings) >= MAX_FINDINGS:
                     _reject()
                 identities.add(finding.identity)
@@ -336,6 +403,7 @@ def parse_report(data: bytes) -> ScanReport:
             tuple(server_ids),
             tuple(incomplete_ids),
             tuple(findings),
+            tuple(sorted(unrecognized)),
         )
     except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError, OverflowError) as exc:
         if isinstance(exc, ReportImportError):

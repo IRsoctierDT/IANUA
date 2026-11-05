@@ -209,3 +209,46 @@ def test_current_only_finding_with_incomplete_baseline_is_not_observed(
     changes = [row["Change"] for table in ui.tables for row in table if "Change" in row]
     assert changes and set(changes) == {"not observed"}
     assert any("One or both inspections are incomplete" in message for message in ui.warnings)
+
+
+def test_unrecognised_values_are_surfaced_to_the_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A widened field nobody is told about is a silent gap, not compatibility."""
+    report = parse_report(_SAMPLE.read_bytes())
+    widened = replace(
+        report,
+        unrecognized_fields=("overall_grade", "servers[].findings[].severity"),
+    )
+    monkeypatch.setattr(view, "parse_report", lambda _data: widened)
+    ui = FakeUI(current=Upload(_SAMPLE.read_bytes()))
+    view.render_scan_reports(ui)
+    joined = " ".join(ui.warnings)
+    assert "does not recognise" in joined
+    # Severity gets its own sentence: the filter is how such a finding goes missing.
+    assert "does not mean no risk" in joined
+    assert any(
+        row.get("Field with an unrecognised value") == "overall_grade"
+        for table in ui.tables
+        for row in table
+    )
+
+
+def test_an_unrecognised_grade_alone_omits_the_severity_filter_caution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The severity sentence is specific, so it must not fire for other fields."""
+    report = parse_report(_SAMPLE.read_bytes())
+    widened = replace(report, unrecognized_fields=("overall_grade",))
+    monkeypatch.setattr(view, "parse_report", lambda _data: widened)
+    ui = FakeUI(current=Upload(_SAMPLE.read_bytes()))
+    view.render_scan_reports(ui)
+    joined = " ".join(ui.warnings)
+    assert "does not recognise" in joined
+    assert "unrecognised severity" not in joined
+
+
+def test_a_known_report_raises_no_unrecognised_warning() -> None:
+    ui = FakeUI(current=Upload(_SAMPLE.read_bytes()))
+    view.render_scan_reports(ui)
+    assert not any("does not recognise" in text for text in ui.warnings)
