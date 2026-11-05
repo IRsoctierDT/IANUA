@@ -42,18 +42,27 @@ All notable changes to this project. Versions correspond to git tags.
   kept because silently dropping a security finding is worse than mislabelling it, and
   consumer-owned because the display must not become a channel for producer-chosen text.
   A malformed dimension (non-string, empty, oversized) is still fatal. **The same trap
-  exists in four more enums and is deliberately left closed:** measured, an unknown finding
-  `severity`, `overall_grade`, `servers[].grade` or `servers[].state` each reject the whole
-  report. (That bullet's stated reason was wrong twice over, corrected in the entry below and
-  in the module docstring: a dimension **is** rendered — `finding_rows` puts it in a
-  `Dimension` cell — and this consumer has no severity ordering at all.) Those four are read
-  as risk *ordering*, and an unknown severity shown under a sentinel reads as **less** urgent
-  than `critical`, not more — so a sentinel there could cause a mis-triage a refusal cannot.
-  Widening them changes how risk is presented and is the owner's decision; until it is taken,
-  a producer adding a severity, grade or state in a minor still breaks every import, which is
-  recorded in §6.2 rather than left to be rediscovered. §6.1's field table said the key set
-  was **exactly** the four while §6.2 one section later said extras are accepted; the row is
-  corrected and two rows added for the per-finding fields.
+  existed in four more enums and was, at this commit, deliberately left closed:** measured,
+  an unknown finding `severity`, `overall_grade`, `servers[].grade` or `servers[].state` each
+  rejected the whole report, so a producer adding one in a minor still broke every import.
+
+  **The reason given for leaving them closed is SUPERSEDED, and is recorded here only as the
+  reason that was given.** It ran: *those four are read as risk ordering, and an unknown
+  severity shown under a sentinel reads as less urgent than `critical`, so a sentinel could
+  cause a mis-triage a refusal cannot; a dimension is only a grouping label this consumer
+  does not render.* **Both halves are false.** `finding_rows` puts `f.dimension` in a
+  `Dimension` cell, so an unknown dimension is as visible as an unknown severity; and this
+  consumer has **no severity ordering at all** — `_render_findings` sorts the severity filter
+  alphabetically and shows counts in insertion order, so nothing ranks `critical` above
+  `low` and a sentinel displaces nothing. The entry below widens all four, and the real
+  hazard is **filter exclusion**, not mis-ranking. Nothing in this paragraph should be read
+  as a live rationale.
+
+  Also in this commit: §6.1's field table said the `dimension_grades` key set was **exactly**
+  the four while §6.2 one section later said extras are accepted — §6.1 is the consumer's
+  required-field contract, so an implementer following it would have rejected input the same
+  document claimed to support. The row is corrected and two rows added for the per-finding
+  fields.
 - **Every closed value set the scan-report importer reads is now forward-compatible, on the
   owner's decision — so D-2's class is closed rather than narrowed.** A finding's `severity`,
   `overall_grade`, the `dimension_grades` values, `servers[].grade` and `servers[].state` join
