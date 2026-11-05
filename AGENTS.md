@@ -862,9 +862,25 @@ is minified vendor output. Three findings came out of those reviews and are reco
 than fixed, because each is an owner decision and not a defect: `gitleaks-action` is
 **proprietary** (a Gitleaks LLC EULA, where `gitleaks` the scanner is MIT) and needs a
 licence key for an *organization* account, so moving this repository under one breaks the
-required secret-scanning check until a key is obtained; and `scorecard-action`'s container
-receives a token carrying the `security-events: write` that exists for a *separate* upload
-step, because a workflow token is job-scoped.
+required secret-scanning check until a key is obtained.
+
+**The second finding is closed, and it could only be closed by moving a job boundary.**
+#324 recorded that `scorecard-action`'s container receives a token carrying
+`security-events: write` for an upload it never performs. The cause is that **a workflow
+token is job-scoped, not step-scoped**: while the SARIF upload shared a job with the
+analysis, that job's write was handed to the container through two inputs that default to
+`${{ github.token }}` (`repo_token` and `internal_default_token`, read at the pinned SHA) —
+and because it is a Docker action whose image our SHA does not fix, that write reached code
+this repository cannot read. Least privilege was therefore **not expressible inside one
+job**, which is why the fix is structural rather than a permissions edit: the write now
+lives in a `code-scanning` job that runs only GitHub's own actions, and the SARIF crosses
+as a run artifact. `tests/security/test_scorecard_boundary.py` asserts the split in **both**
+directions — no write in a job running a vendor action, and no vendor action in a job
+holding a write — because the second is the easier mistake, since adding a step to an
+existing job looks smaller than adding a job. **What this buys is narrow and is stated
+narrowly:** the write-capable token is now only ever handed to first-party code. It does
+not make the SARIF trustworthy; that file is still produced by the unreviewed image and
+uploaded verbatim.
 
 **The third finding is closed, and the way it was wrong is worth more than the fix.** #324
 recorded that `setup-uv` was passed no inputs and so pinned no `checksum`, and left whether

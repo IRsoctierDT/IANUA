@@ -277,6 +277,30 @@ All notable changes to this project. Versions correspond to git tags.
   action's ref and never its input values, so this pin is maintained by hand and will go stale
   silently; one checksum is correct only because the job is single-platform (`ubuntu-latest`,
   no matrix); and the review is of `src/`, while the artifact that runs is the `dist/` bundle.
+- **The Scorecard SARIF upload moved to its own job, so the scorecard container no longer
+  receives a write it never uses.** #324 recorded this and could not fix it in place, because
+  **a workflow token is job-scoped, not step-scoped**: while the upload shared a job with the
+  analysis, that job's `security-events: write` was handed to the container through two inputs
+  that default to `${{ github.token }}` — `repo_token` and `internal_default_token`, read in
+  `action.yaml` at the pinned SHA — and because `ossf/scorecard-action` is a **Docker** action
+  whose image our 40-hex pin does not fix (see #323), that write reached code this repository
+  cannot read. Least privilege was therefore not expressible inside one job, which is why the
+  fix is a job boundary and not a permissions edit. `analysis` now holds **no write at all**
+  and runs the vendor action; a new `code-scanning` job holds the only write and runs **only**
+  `actions/*` and `github/codeql-action/*`; the SARIF crosses between them as a run artifact,
+  which makes that artifact's retention a functional bound rather than housekeeping.
+  `tests/security/test_scorecard_boundary.py` asserts the split in **both** directions — no
+  write in a job that runs a vendor action, and no vendor action in a job that holds a write —
+  because the second is the easier mistake to make: adding a step to an existing job looks
+  smaller than adding a job. Five plants measured, each reddening its own rule: the write put
+  back on `analysis`, a vendor action inserted into the write-holding job, the two jobs
+  re-merged, `persist-credentials` flipped on the new checkout, and the new job deleted. The
+  write grant also moved in `test_workflow_permissions.py`'s declared allow-list, which is
+  what caught the new grant in the first place. **What this buys is narrow and is recorded
+  narrowly:** the write-capable token is now only ever handed to first-party code. It does
+  **not** make the SARIF trustworthy — that file is still produced by the unreviewed image and
+  uploaded verbatim, so the change is who holds the write, not what is written. The
+  mutable-tag gap is untouched and still upstream's to close.
 - **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
   third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
   PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather
