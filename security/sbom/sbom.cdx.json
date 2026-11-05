@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:1670f0ab-e288-506b-8f4b-53a2db552fcc",
+  "serialNumber": "urn:uuid:feb47e02-5ee8-57f7-ac8c-dab0e41ad49a",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-05T02:04:15Z",
+    "timestamp": "2026-11-05T04:00:53Z",
     "tools": {
       "components": [
         {
@@ -749,11 +749,11 @@
       "purl": "pkg:pypi/pyyaml@6.0.3"
     },
     {
-      "bom-ref": "pkg:pypi/qdrant-client@1.19.1",
+      "bom-ref": "pkg:pypi/qdrant-client@1.20.0",
       "name": "qdrant-client",
       "type": "library",
-      "version": "1.19.1",
-      "purl": "pkg:pypi/qdrant-client@1.19.1"
+      "version": "1.20.0",
+      "purl": "pkg:pypi/qdrant-client@1.20.0"
     },
     {
       "bom-ref": "pkg:pypi/referencing@0.37.0",
@@ -770,11 +770,11 @@
       "purl": "pkg:pypi/regex@2026.5.9"
     },
     {
-      "bom-ref": "pkg:pypi/reportlab@5.0.1",
+      "bom-ref": "pkg:pypi/reportlab@5.1.0",
       "name": "reportlab",
       "type": "library",
-      "version": "5.0.1",
-      "purl": "pkg:pypi/reportlab@5.0.1"
+      "version": "5.1.0",
+      "purl": "pkg:pypi/reportlab@5.1.0"
     },
     {
       "bom-ref": "pkg:pypi/requests@2.34.2",
@@ -826,11 +826,11 @@
       "purl": "pkg:pypi/scipy@1.18.0"
     },
     {
-      "bom-ref": "pkg:pypi/sentence-transformers@6.1.0",
+      "bom-ref": "pkg:pypi/sentence-transformers@6.2.0",
       "name": "sentence-transformers",
       "type": "library",
-      "version": "6.1.0",
-      "purl": "pkg:pypi/sentence-transformers@6.1.0"
+      "version": "6.2.0",
+      "purl": "pkg:pypi/sentence-transformers@6.2.0"
     },
     {
       "bom-ref": "pkg:pypi/setuptools@84.2.1",
