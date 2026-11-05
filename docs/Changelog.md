@@ -120,6 +120,26 @@ All notable changes to this project. Versions correspond to git tags.
   (test-only, no production path), and the case for recording this class in `AGENTS.md` §5
   alongside the existing four is now stronger than when #330 opened.
 
+  **A sixth, found by self-audit, and recorded as unreachable rather than as a defect that was
+  biting.** A PEP 695 `type Alias = int` binds `Alias` at module scope and `collect()` had no
+  `ast.TypeAlias` branch, so the narrowing dropped it — the former `ast.walk` rule bound it,
+  since a `TypeAlias` name is a `Name` store. **It cannot occur in this repository today**:
+  `requires-python` is `>=3.11`, where that syntax is a parse error, so no tracked module can
+  use it. The gap goes live the day that floor moves to 3.12. Fixed because three lines is
+  cheaper than rediscovering the same regression later, and stated as latent because calling it
+  a live defect would overstate it.
+
+  Two details of the fix are deliberate. `ast.TypeAlias` **does not exist on 3.11**, which CI
+  runs alongside 3.12, so a bare reference would be an `AttributeError` that fails the whole
+  suite on the older interpreter; the branch keys off a module constant that resolves to an
+  empty tuple there, where `isinstance(x, ())` is always `False`, so no version test appears at
+  the call site. That shape is chosen against the hazard `AGENTS.md` documents for
+  `is_unspecified` on CPython 3.12.3 — a rule written as a per-interpreter library property.
+  Verified by re-importing the module with `ast.TypeAlias` deleted: it imports, the guard is
+  inert, and ordinary bindings are unaffected. And a type *variable* is scoped to its
+  declaration, so `T` in `type Pair[T]`, `def f[T]` and `class C[T]` must all stay out of the
+  module namespace — pinned, because the lazy fix would have collected the whole statement.
+
 - **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
   IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
   a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so adding a dimension

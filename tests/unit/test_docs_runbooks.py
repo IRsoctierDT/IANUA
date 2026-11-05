@@ -188,6 +188,15 @@ def test_the_stage_table_names_each_stage_once() -> None:
 #: since Sphinx reads them as display sugar and not as part of the target.
 _SYMBOL_REF = re.compile(r":(?:data|func|class|meth|attr|mod):`~?([A-Za-z_][A-Za-z0-9_.]*)`")
 
+#: ``type X = int`` (PEP 695) binds ``X`` at module scope, and its statement node
+#: exists only from 3.12. Resolved to an empty tuple on 3.11, where
+#: ``isinstance(x, ())`` is always ``False`` — so the branch below needs no
+#: version test and the suite still imports on the older interpreter CI runs.
+#: Written this way deliberately: ``AGENTS.md`` records at length how a rule
+#: expressed as a per-interpreter library property drifts between patch
+#: releases, and a bare ``ast.TypeAlias`` would be an ``AttributeError`` on 3.11.
+_TYPE_ALIAS: tuple[type[ast.AST], ...] = (ast.TypeAlias,) if hasattr(ast, "TypeAlias") else ()
+
 
 def _tracked_python() -> list[str]:
     """Tracked ``*.py`` paths, so an untracked scratch file cannot fail the gate.
@@ -370,6 +379,10 @@ def _module_bindings(tree: ast.Module) -> set[str]:
                     if item.optional_vars is not None:
                         add_targets(item.optional_vars)
                 collect(statement.body)
+            elif isinstance(statement, _TYPE_ALIAS):
+                # `type X = int` binds X; a `type X[T] = ...` parameter does not
+                # escape the alias, so only the name is taken.
+                add_targets(statement.name)  # type: ignore[attr-defined]
             elif isinstance(statement, ast.Match):
                 for case in statement.cases:
                     add_pattern(case.pattern)
@@ -459,6 +472,44 @@ def test_a_compound_statement_at_module_scope_still_binds_its_targets() -> None:
     # `ast.walk` rule never saw these either.
     for name in ("MATCH_BOUND", "MAP_VALUE", "MAP_REST", "SEQ_ITEM", "SEQ_STARRED"):
         assert name in bound, f"{name!r} is bound by a match pattern and must resolve"
+
+
+@pytest.mark.skipif(not _TYPE_ALIAS, reason="PEP 695 `type X = ...` is 3.12+ syntax")
+def test_a_pep695_type_alias_binds_but_its_type_variables_do_not() -> None:
+    """``type X = int`` binds ``X``; ``type X[T]`` does not bind ``T``.
+
+    Found by self-audit on ``#330`` while working the list this PR's own body
+    called unverified. The former ``ast.walk`` rule bound both aliases (a
+    ``TypeAlias`` name is a ``Name`` store), so narrowing dropped them — the
+    same false-positive class as the compound statements and the walrus.
+
+    **Unreachable in this repository today, and recorded as unreachable.**
+    ``requires-python`` is ``>=3.11``, where this is a syntax error, so no
+    tracked module can use it; the gap goes live the day that floor moves to
+    3.12. Fixed anyway because the fix is three lines and a latent regression
+    found is cheaper than the same one rediscovered later — but it is not
+    presented as a defect that was biting.
+
+    A type *variable* is scoped to the alias, function or class that declares
+    it and never reaches the module namespace, so all three ``T`` cases must
+    stay out. That half is the reason this is not simply "collect the name and
+    everything under it".
+    """
+    assert "Alias" in _module_bindings(ast.parse("type Alias = int\n")), (
+        "a PEP 695 type alias binds its name at module scope"
+    )
+    assert "Pair" in _module_bindings(ast.parse("type Pair[T] = tuple[T, T]\n")), (
+        "a generic alias binds its name too"
+    )
+    for label, source in {
+        "alias": "type Pair[T] = tuple[T, T]\n",
+        "function": "def f[T](x: T) -> T:\n    return x\n",
+        "class": "class C[T]:\n    pass\n",
+    }.items():
+        assert "T" not in _module_bindings(ast.parse(source)), (
+            f"a {label} type variable is scoped to its declaration and never "
+            "reaches the module namespace"
+        )
 
 
 def test_only_store_context_names_count_as_bindings() -> None:
