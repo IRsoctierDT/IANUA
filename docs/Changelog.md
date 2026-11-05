@@ -52,6 +52,27 @@ All notable changes to this project. Versions correspond to git tags.
   recorded in §6.2 rather than left to be rediscovered. §6.1's field table said the key set
   was **exactly** the four while §6.2 one section later said extras are accepted; the row is
   corrected and two rows added for the per-finding fields.
+- **Every closed value set the scan-report importer reads is now forward-compatible, on the
+  owner's decision — so D-2's class is closed rather than narrowed.** A finding's `severity`,
+  `overall_grade`, the `dimension_grades` values, `servers[].grade` and `servers[].state` join
+  `dimension`: an unrecognised value is carried under a sentinel the consumer owns rather than
+  the producer's string, and a **malformed** value (non-string, empty, oversized) is still
+  fatal in every one of them — the *vocabulary* widened, never the accepted *shape*. The
+  roster is `WIDENED_FIELDS`, which drives its own tests, so a field cannot join the list
+  without being exercised. **The earlier argument for leaving them closed was partly wrong and
+  is corrected rather than quietly dropped:** it claimed an unknown severity "reads as less
+  urgent than `critical`", and the view has **no severity ranking** — the filter is
+  `sorted(severity_counts)`, alphabetical, and the count table is insertion-ordered, so a
+  sentinel displaces nothing. The real hazard is narrower and worse: **filter exclusion**, since
+  an operator selecting `critical` and `high` does not select the sentinel, and a finding whose
+  severity this build has never seen then sits silently outside their selection. So the
+  widening ships with a signal, not bare: `ScanReport.unrecognized_fields` carries the sorted
+  field paths that held an unknown value, and `dashboard/scan_report_view.py` warns naming
+  them, with a **second warning specific to severity** because that is the one field where a
+  filter can hide a finding. A widened field nobody is told about is a silent gap, not
+  compatibility. **Residual, stated rather than implied:** an operator who does not read the
+  warning is back in the position the closed sets protected them from — the cost of the
+  decision, against which the signal buys presence of the information, not attention to it.
 - **D-1 of the evidence contract is closed, and `docs/EVIDENCE_CONTRACT.md` §10 now says so.**
   `IRsoctierDT/IANUA-Broker#165` merged, routing both the manifest's `expect_tip_hash` and a
   chain record's `record_hash` through one normalizer, so the `sha256:`-prefixed spelling ATB

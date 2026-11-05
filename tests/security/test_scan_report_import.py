@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -76,7 +77,7 @@ def test_hostile_schema_rejected(case: str) -> None:
     elif case == "negative-line":
         finding["location"]["line"] = -1
     elif case == "bad-severity":
-        finding["severity"] = "urgent"
+        finding["severity"] = ["urgent"]  # malformed shape, not an unknown name
     elif case == "bad-dimension":
         finding["dimension"] = ["pinning"]
     elif case == "not-bool":
@@ -274,13 +275,13 @@ def test_a_finding_in_an_added_dimension_is_kept_under_a_sentinel() -> None:
     data["servers"][0]["findings"][0]["dimension"] = "SYNTHETIC-NEW-DIMENSION"
     report = reports.parse_report(encoded(data))
     assert len(report.findings) == 1
-    assert report.findings[0].dimension == reports.UNKNOWN_DIMENSION
+    assert report.findings[0].dimension == reports.UNKNOWN_VALUE
     # The producer's own string is replaced, never retained for display.
     assert "SYNTHETIC-NEW-DIMENSION" not in repr(report)
 
 
 def test_the_dimension_sentinel_cannot_collide_with_a_real_dimension() -> None:
-    assert reports.UNKNOWN_DIMENSION not in reports.DIMENSIONS
+    assert reports.UNKNOWN_VALUE not in reports.DIMENSIONS
 
 
 def test_known_finding_dimensions_still_map_to_themselves() -> None:
@@ -300,28 +301,59 @@ def test_a_malformed_finding_dimension_is_still_fatal(dimension: object) -> None
         reports.parse_report(encoded(data))
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("severity", "notice"),
-        ("overall_grade", "S"),
-        ("grade", "S"),
-        ("state", "stopped"),
-    ],
-)
-def test_risk_bearing_enums_still_refuse_an_unknown_value(field: str, value: str) -> None:
-    """Deliberately NOT widened: these order risk, so a sentinel could mis-triage.
-
-    A dimension is a grouping label nothing renders; a severity, a grade and a
-    state are read as risk. Refusing is the fail-closed answer, and widening any
-    of them is the owner's decision rather than a consequence of the D-2 fix.
-    """
+def _with_value(field: str, value: object) -> dict[str, Any]:
+    """Place `value` at the widened `field`'s path in an otherwise valid report."""
     data = payload()
-    if field == "severity":
-        data["servers"][0]["findings"][0]["severity"] = value
+    finding = data["servers"][0]["findings"][0]
+    server = data["servers"][0]
+    if field == "servers[].findings[].severity":
+        finding["severity"] = value
+    elif field == "servers[].findings[].dimension":
+        finding["dimension"] = value
     elif field == "overall_grade":
         data["overall_grade"] = value
-    else:
-        data["servers"][0][field] = value
+    elif field == "dimension_grades[]":
+        data["dimension_grades"][reports.DIMENSIONS[0]] = value
+    elif field == "servers[].grade":
+        server["grade"] = value
+    elif field == "servers[].state":
+        server["state"] = value
+    else:  # pragma: no cover - guards the roster against an unhandled name
+        raise AssertionError(f"WIDENED_FIELDS names {field!r}, which this helper cannot place")
+    return data
+
+
+@pytest.mark.parametrize("field", reports.WIDENED_FIELDS)
+def test_every_widened_field_accepts_an_unknown_value_and_records_it(field: str) -> None:
+    """Widened on the owner's decision: an unknown value no longer rejects.
+
+    Driven from the roster itself, so adding a name to `WIDENED_FIELDS` without
+    handling it fails here rather than silently going untested.
+    """
+    report = reports.parse_report(encoded(_with_value(field, "SYNTHETIC-UNKNOWN")))
+    assert report.unrecognized_fields == (field,)
+    # The producer's own string is replaced, never retained for display.
+    assert "SYNTHETIC-UNKNOWN" not in repr(report)
+
+
+def test_a_fully_known_report_records_nothing() -> None:
+    """The clean/negative fixture: the signal must not fire on a known report."""
+    assert reports.parse_report(encoded(payload())).unrecognized_fields == ()
+
+
+def test_several_unknown_fields_are_all_recorded_and_sorted() -> None:
+    data = payload()
+    data["overall_grade"] = "S"
+    data["servers"][0]["state"] = "stopped"
+    data["servers"][0]["findings"][0]["severity"] = "notice"
+    fields = reports.parse_report(encoded(data)).unrecognized_fields
+    assert set(fields) == {"overall_grade", "servers[].state", "servers[].findings[].severity"}
+    assert list(fields) == sorted(fields)
+
+
+@pytest.mark.parametrize("field", reports.WIDENED_FIELDS)
+@pytest.mark.parametrize("value", [None, "", 1, True, ["high"], {"v": "high"}])
+def test_a_malformed_value_is_still_fatal_in_every_widened_field(field: str, value: object) -> None:
+    """Widening the vocabulary never widened the accepted shape."""
     with pytest.raises(reports.ReportImportError):
-        reports.parse_report(encoded(data))
+        reports.parse_report(encoded(_with_value(field, value)))

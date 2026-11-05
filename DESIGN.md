@@ -513,6 +513,20 @@ name their cause without quoting the uploaded value. Refusing the whole upload o
 a minor bump was defect D-2: a routine producer release broke every import, and
 the generic message told the operator nothing they could act on.
 
+The same reasoning now covers every **closed value set** this boundary reads —
+a finding's `dimension` and `severity`, `overall_grade`, the `dimension_grades`
+values, `servers[].grade` and `servers[].state`. An unrecognised value in any of
+them is carried under a sentinel the consumer owns rather than the producer's
+string, and the report names the field's path in `unrecognized_fields` so the
+view can warn; a **malformed** value — non-string, empty, oversized — is still
+fatal in every one. Widening these was the owner's decision, taken after the
+narrower dimension fix, and the hazard it creates is **filter exclusion**
+rather than mis-ranking: this view has no severity ordering, so a sentinel
+displaces nothing, but an operator who selects `critical` and `high` does not
+select the sentinel. That is why the view carries a second warning specific to
+severity. A widened field nobody is told about would be a silent gap, not
+compatibility.
+
 ### Release publication
 
 Publishing a release crosses from CI into externally visible state (a git tag, a

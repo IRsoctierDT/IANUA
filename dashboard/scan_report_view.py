@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 from dashboard.scan_reports import (
     MAX_REPORT_BYTES,
+    UNKNOWN_VALUE,
     Finding,
     FindingChange,
     ReportImportError,
@@ -97,6 +98,35 @@ def change_rows(changes: Sequence[FindingChange]) -> list[dict[str, str | int | 
     return rows
 
 
+def _render_unrecognized(ui: Any, report: ScanReport) -> None:
+    """Say so when the report used values this build cannot interpret.
+
+    The importer accepts an unrecognised closed-set value rather than rejecting
+    the whole report, which is what lets a producer ship a new severity or grade
+    without breaking every import. The cost lands here: a value shown as
+    ``(unknown)`` is one the operator cannot rank. Severity gets its own sentence
+    because the severity filter is the way such a finding goes missing — an
+    operator selecting `critical` and `high` does not select the sentinel.
+    """
+    if not report.unrecognized_fields:
+        return
+    ui.warning(
+        f"This report uses values this build does not recognise, shown as {UNKNOWN_VALUE}. "
+        "Grades and severities it supplies are its own, and an unrecognised one cannot be "
+        "ranked against the rest."
+    )
+    if "servers[].findings[].severity" in report.unrecognized_fields:
+        ui.warning(
+            f"At least one finding has an unrecognised severity. Selecting severities below "
+            f"excludes it unless {UNKNOWN_VALUE} is among them, so no findings at your "
+            "selection does not mean no risk."
+        )
+    ui.dataframe(
+        [{"Field with an unrecognised value": field} for field in report.unrecognized_fields],
+        width="stretch",
+    )
+
+
 def _render_findings(ui: Any, report: ScanReport) -> None:
     severity_counts = Counter(finding.severity for finding in report.findings)
     ui.dataframe(
@@ -172,6 +202,7 @@ def render_scan_reports(ui: Any) -> None:
             [{"Incomplete server": server} for server in current.incomplete_server_ids],
             width="stretch",
         )
+    _render_unrecognized(ui, current)
     _render_findings(ui, current)
     if baseline is None:
         ui.session_state.pop("scan_report_changes", None)

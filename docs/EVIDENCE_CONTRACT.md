@@ -150,8 +150,9 @@ prefix explicitly and the contract MUST say so at the field (§8.2 does).
 | `servers[].bind_addr` | string? | ≤ 256 chars; a **label**, never resolved or connected to |
 | `servers[].port` | int? | 0–65535 |
 | `servers[].findings[]` | array | ≤ 5000 per report |
-| `servers[].findings[].dimension` | string | a known dimension, else retained under the consumer's own unknown-dimension sentinel — the finding is **kept**, never dropped (§6.2) |
-| `servers[].findings[].severity`, `overall_grade`, `servers[].grade`, `servers[].state` | string | closed sets; an unknown value **refuses the report** (§6.2 residual) |
+| `servers[].findings[].dimension` | string | a known dimension, else carried under the consumer's unknown-value sentinel — the finding is **kept**, never dropped (§6.2) |
+| `servers[].findings[].severity`, `overall_grade`, `dimension_grades[]` values, `servers[].grade`, `servers[].state` | string | known value, else carried under the sentinel and the field's path named in the report's `unrecognized_fields` (§6.2) |
+| *(all of the above)* | — | a **malformed** value — non-string, empty, oversized — is still **fatal** in every one of them |
 
 Unknown fields are discarded. Duplicate JSON keys, or duplicate finding identities, reject
 the whole upload.
@@ -206,16 +207,33 @@ than the producer's string. Kept, because silently dropping a security finding i
 failure than either rejecting or mislabelling; the consumer's own constant, because the
 display must not become a channel for producer-chosen text.
 
-**The same trap exists in four more enums and is deliberately left closed.** Measured: an
-unknown finding `severity`, `overall_grade`, `servers[].grade` or `servers[].state` each
-reject the whole report. Those are not widened here, and the asymmetry is the reason — a
-dimension is a grouping label this consumer does not even render, while each of those four is
-read as **risk ordering**. An unknown severity shown under a sentinel reads as *less* urgent
-than `critical`, not more, so a sentinel there could cause a mis-triage that a refusal cannot.
-Refusing is the fail-closed answer, and widening any of them changes how risk is presented —
-an owner's decision, not a consequence of this one. **Until it is taken, a producer adding a
-severity, a grade or a state in a minor still breaks every import**, which is D-2's class
-surviving in a narrower form and is recorded here rather than left to be rediscovered.
+**Every closed set is now widened, on the owner's decision.** An earlier revision left
+`severity`, `overall_grade`, `servers[].grade` and `servers[].state` refusing, and recorded
+that a producer adding any of them in a minor would still break every import. The owner chose
+to widen them, so D-2's class is closed rather than narrowed. `dimension_grades[]` values are
+included for the same reason — a new grade letter is the identical trap — and the full roster
+is `WIDENED_FIELDS` in the consumer, which drives its own tests so a field cannot be added to
+the list without being exercised.
+
+**The argument for leaving them closed was partly wrong, and the correction is the reason the
+mitigation is what it is.** That revision said an unknown severity "reads as *less* urgent
+than `critical`". Measured in the consumer's own view: there is **no severity ranking**. The
+filter is `sorted(severity_counts)` — alphabetical — and the count table is insertion-ordered,
+so nothing ranks `critical` above `low` today and a sentinel displaces nothing. The real
+hazard is narrower and worse: **filter exclusion**. An operator who selects `critical` and
+`high` does not select the sentinel, so a finding carrying a severity this build has never
+seen is silently outside their selection.
+
+So widening is paired with a signal rather than shipped bare. The report carries
+`unrecognized_fields`, the sorted paths that held an unknown value, and the view raises a
+warning naming them — with a **second, specific** warning when `severity` is among them,
+because that is the one field where a filter can hide a finding. A widened field nobody is
+told about is a silent gap, not compatibility.
+
+**The residual, stated rather than implied.** An operator who dismisses or does not read the
+warning is in exactly the position the closed sets protected them from. That is a real cost
+of the decision, and it is the cost the owner accepted; what the signal buys is that the
+information is present rather than absent.
 
 **R2's original wording said something this does not do, and §11 is why.** It read "an
 unknown `schema_version` … degrades to a named, actionable error", which would keep
@@ -494,6 +512,13 @@ Two things found while fixing it are worth carrying forward:
   Reading a `1.2` report with `1.1`'s rules is the only answer consistent with minors being
   additive — and it means **adding a minor to `KNOWN_SCHEMA_VERSIONS` is what enables its
   new fields**, not a cosmetic bump.
+- **The closed-set trap was general, not local.** Measured after the dimension fix: an
+  unknown `severity`, `overall_grade`, `dimension_grades[]` value, `servers[].grade` or
+  `servers[].state` each still rejected the whole report, so D-2's class survived in five
+  more places. All are widened on the owner's decision, paired with the report-level
+  `unrecognized_fields` signal and a view warning, because the hazard the widening creates
+  is **filter exclusion** — not the mis-ranking an earlier revision claimed, since the
+  consumer's view has no severity ordering at all (measured).
 - **The first fix was half of one.** Accepting the extra `dimension_grades` key left
   `_finding` rejecting any finding *tagged* with the new dimension — which is the only
   reason a producer adds one. Found by review, not by the matrix, whose sample finding sat
@@ -656,6 +681,7 @@ shared vector file loaded by all three CIs instead of three transcriptions.
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-11-05 | `0.1-draft` rev 6 | **Every closed set is widened, on the owner's decision**, so D-2's class is closed rather than narrowed: `severity`, `overall_grade`, `dimension_grades[]` values, `servers[].grade` and `servers[].state` join `dimension`, each carrying an unknown value under the sentinel and naming its path in the report's new `unrecognized_fields`. The view warns, with a second warning specific to `severity`. Rev 5's argument for leaving them closed is **corrected**: it claimed an unknown severity reads as less urgent than `critical`, and the consumer's view has no severity ranking at all — the filter is alphabetical and the count table insertion-ordered. The real hazard is **filter exclusion**, which is why the mitigation is a signal and a warning rather than an ordering. A malformed value stays fatal in every widened field. |
 | 2026-11-05 | `0.1-draft` rev 5 | Review of rev 4 found two defects, both confirmed. The D-2 fix was **half of one**: accepting an extra `dimension_grades` key still rejected any finding tagged with that dimension, which is the only reason a producer adds one — such a finding is now kept under a consumer-owned sentinel, never dropped and never carrying producer text. And §6.1's field row still said the key set was **exactly** the four, contradicting §6.2 one section later; it and two new rows now match. Also recorded, measured: the same forward-compatibility trap exists in `severity`, `overall_grade`, `servers[].grade` and `servers[].state`, and is deliberately left closed because each orders risk — widening them is the owner's call, and until it is taken D-2's class survives in that narrower form. |
 | 2026-11-05 | `0.1-draft` rev 4 | D-2 is **fixed**: R2 shipped in `dashboard/scan_reports.py`, so an unknown minor and an extra dimension are accepted while an unknown major and a missing dimension still fail closed with named causes. §6.1's row and §6.2 are rewritten around the measured before/after, §10 records the two findings the fix turned up (the version gates a real field; `str.isdigit` would have been a bypass), and §13 checks off both IANUA items while handing `mcpscan` the producer half of R3. **R2's original wording contradicted §11** — it would have kept refusing minor bumps with a better message — and §11 governs, which §6.2 now states rather than leaving the two to disagree. |
 | 2026-11-05 | `0.1-draft` rev 3 | D-1 is **fixed** — `IRsoctierDT/IANUA-Broker#165` merged. §10 records the merge and draws out the generalizable lesson (a fixture written from one side's assumption about the other is not a cross-repository test), and §13's first two IANUA-Broker items are checked off, one of them confirming that `broker.json`'s `schema_version` really is validated against nothing. D-2 remains open with no fix proposed, and ratification is still pending. |
