@@ -274,29 +274,64 @@ def _module_bindings(tree: ast.Module) -> set[str]:
             if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
                 names.add(inner.id)
 
+    def own_scope(node: ast.AST) -> list[ast.AST]:
+        """Children of ``node`` that belong to its own scope, not a nested one."""
+        reachable: list[ast.AST] = []
+        pending = list(ast.iter_child_nodes(node))
+        while pending:
+            child = pending.pop()
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+                continue  # a scope of its own; handled by its own pass
+            reachable.append(child)
+            pending.extend(ast.iter_child_nodes(child))
+        return reachable
+
     def add_global_stores(node: ast.AST) -> None:
-        """Record names a function declares ``global`` and then assigns.
+        """Record names a function declares ``global`` **and** assigns itself.
 
         ``global VALUE`` followed by ``VALUE = ...`` binds in the **module**
         namespace, so a ``:data:`VALUE``` reference is followable once the
         function has run — and an initialiser called at import time is the
-        ordinary way that happens. Skipping function bodies therefore rejected a
-        valid reference, which is the same false-positive class as the compound
+        ordinary way that happens. Skipping function bodies rejected a valid
+        reference, which is the same false-positive class as the compound
         statements above. Found by review on ``#330``.
 
-        Both halves are required: a bare ``global VALUE`` with no assignment
-        creates nothing, so the intersection of declared-global and stored names
-        is what gets recorded. ``nonlocal`` is deliberately **not** read — it
-        rebinds in an enclosing *function*, never at module scope.
+        **Paired per scope, not across the whole subtree.** The first version
+        intersected every ``global`` declaration in the subtree with every
+        ``Store`` in it, and review found the bypass that allows: ``outer``
+        declares ``global UNIQUE`` while a *nested* ``inner`` assigns a purely
+        local ``UNIQUE``. No module-level store happens anywhere, yet the name
+        was recorded, so a ``:data:`UNIQUE``` reference to an unbound name
+        passed. Measured as accepted before this fix.
+
+        That one is worth flagging for whoever edits this next: the subtree
+        intersection was chosen *deliberately*, on the reasoning that it could
+        only over-collect and therefore only cost false positives. That
+        reasoning was wrong — it produces a false **negative**, which is the
+        class this gate exists to catch. Each scope is now matched against its
+        own declarations and its own stores, and nested functions are visited
+        independently.
+
+        Both halves stay required: a bare ``global VALUE`` with no assignment
+        creates nothing. ``nonlocal`` is deliberately **not** read — it rebinds
+        in an enclosing *function*, never at module scope.
         """
+        scoped = own_scope(node)
         declared: set[str] = set()
         stored: set[str] = set()
-        for inner in ast.walk(node):
+        for inner in scoped:
             if isinstance(inner, ast.Global):
                 declared.update(inner.names)
             elif isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
                 stored.add(inner.id)
         names.update(declared & stored)
+
+        for inner in scoped:  # each nested scope pairs its own declarations
+            if isinstance(inner, ast.FunctionDef | ast.AsyncFunctionDef):
+                add_global_stores(inner)
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                add_global_stores(child)
 
     def add_pattern(pattern: ast.pattern) -> None:
         """Record names a ``match`` case binds.
@@ -387,9 +422,13 @@ def _module_bindings(tree: ast.Module) -> set[str]:
                 for case in statement.cases:
                     add_pattern(case.pattern)
                     collect(case.body)
-            elif isinstance(statement, ast.If | ast.Try | ast.While):
+            elif isinstance(statement, ast.If | ast.Try | ast.TryStar | ast.While):
                 # A module-level constant can sit under `if TYPE_CHECKING:` or
                 # in a try/except import guard; both are still module scope.
+                # `ast.TryStar` (`except*`, 3.11+) is NOT an `ast.Try`, so it
+                # has to be named: review measured four shapes rejected
+                # without it, and unlike the PEP 695 gap this one is reachable
+                # at this repository's `requires-python` floor.
                 for attribute in ("body", "orelse", "finalbody"):
                     collect(getattr(statement, attribute, None) or [])
                 for handler in getattr(statement, "handlers", None) or []:
@@ -472,6 +511,75 @@ def test_a_compound_statement_at_module_scope_still_binds_its_targets() -> None:
     # `ast.walk` rule never saw these either.
     for name in ("MATCH_BOUND", "MAP_VALUE", "MAP_REST", "SEQ_ITEM", "SEQ_STARRED"):
         assert name in bound, f"{name!r} is bound by a match pattern and must resolve"
+
+
+def test_an_except_star_suite_binds_at_module_scope() -> None:
+    """``ast.TryStar`` is not an ``ast.Try`` — review, ``#330``.
+
+    ``except*`` (PEP 654) parses to its own node type, so a branch naming
+    ``ast.Try`` skips its body, handlers, ``else`` and ``finally`` entirely.
+    Measured: four shapes rejected before the fix.
+
+    Unlike the PEP 695 gap below, **this one is reachable at this
+    repository's floor** — ``except*`` is 3.11+ and ``requires-python`` is
+    ``>=3.11`` — so it is a live false positive rather than a latent one.
+    """
+    shapes = {
+        "body": ("try:\n    BOUND = 1\nexcept* ValueError:\n    pass\n", "BOUND"),
+        "handler": ("try:\n    pass\nexcept* ValueError:\n    BOUND = 2\n", "BOUND"),
+        "else": (
+            "try:\n    pass\nexcept* ValueError:\n    pass\nelse:\n    BOUND = 3\n",
+            "BOUND",
+        ),
+        "finally": (
+            "try:\n    pass\nexcept* ValueError:\n    pass\nfinally:\n    BOUND = 4\n",
+            "BOUND",
+        ),
+    }
+    for label, (source, name) in shapes.items():
+        assert name in _module_bindings(ast.parse(source)), (
+            f"a store in an `except*` {label} binds at module scope; skipping "
+            "TryStar rejects a reference a reader can follow"
+        )
+
+
+def test_a_global_store_pairs_within_one_scope() -> None:
+    """A ``global`` in one scope must not pair with a store in another.
+
+    Review on ``#330`` found the bypass: ``outer`` declares ``global UNIQUE``
+    while a *nested* ``inner`` assigns a purely local ``UNIQUE``. No
+    module-level store happens anywhere, yet a whole-subtree intersection
+    recorded the name, so a ``:data:`UNIQUE``` reference to an unbound name
+    passed. Measured as accepted before the fix.
+
+    Kept as its own test because the subtree intersection was chosen
+    **deliberately**, on the reasoning that it could only over-collect and so
+    could only cost false positives. That reasoning was wrong: it produces a
+    false *negative*, the class this gate exists to catch. The four companion
+    rows guard the fix from overshooting into rejecting real module bindings.
+    """
+    assert "UNIQUE" not in _module_bindings(
+        ast.parse(
+            "def outer():\n    global UNIQUE\n    def inner():\n"
+            "        UNIQUE = 1\n        return UNIQUE\n    return inner\n"
+        )
+    ), "a global declared in one scope and stored only in another binds nothing"
+
+    paired = {
+        "same scope": "def init():\n    global VALUE\n    VALUE = 1\ninit()\n",
+        "nested scope, self-paired": (
+            "def outer():\n    def inner():\n        global VALUE\n"
+            "        VALUE = 1\n    return inner\n"
+        ),
+        "outer paired, nested unrelated": (
+            "def outer():\n    global VALUE\n    VALUE = 1\n"
+            "    def inner():\n        other = 2\n        return other\n    return inner\n"
+        ),
+    }
+    for label, source in paired.items():
+        assert "VALUE" in _module_bindings(ast.parse(source)), (
+            f"a global declared and stored in the {label} still binds at module scope"
+        )
 
 
 @pytest.mark.skipif(not _TYPE_ALIAS, reason="PEP 695 `type X = ...` is 3.12+ syntax")

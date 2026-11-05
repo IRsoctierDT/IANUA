@@ -140,6 +140,36 @@ All notable changes to this project. Versions correspond to git tags.
   declaration, so `T` in `type Pair[T]`, `def f[T]` and `class C[T]` must all stay out of the
   module namespace — pinned, because the lazy fix would have collected the whole statement.
 
+  **A seventh and an eighth, from the fourth review round. The eighth is a bypass I argued was
+  impossible.**
+
+  `ast.TryStar` — `except*`, PEP 654 — is **not** an `ast.Try`, so a branch naming `ast.Try`
+  skipped its body, handlers, `else` and `finally` outright. Measured, four shapes rejected.
+  Unlike the PEP 695 gap above, **this one is reachable at this repository's floor**: `except*`
+  is 3.11+ and `requires-python` is `>=3.11`, so it was a live false positive.
+
+  And `add_global_stores` intersected every `global` declaration in a function's whole subtree
+  with every `Store` in it, which lets a declaration in one scope pair with a store in another:
+  `outer` declares `global UNIQUE` while a nested `inner` assigns a purely local `UNIQUE`. No
+  module-level store occurs anywhere, yet the name was recorded, so a `:data:`UNIQUE`` reference
+  to an unbound name **passed**. Each scope now matches its own declarations against its own
+  stores, with nested functions visited independently.
+
+  **That second one is the sharpest entry in this list, because the reasoning was explicit and
+  wrong.** The subtree intersection was chosen deliberately: #330's own fourth-round review
+  request asked whether it could produce a real bypass and asserted, in the same sentence, that
+  it "over-collects toward fewer false positives". It does the opposite — it produces a false
+  **negative**, the class this gate exists to catch. Asking the right question and supplying the
+  wrong answer to it is worse than not asking, because the answer is what a later reader will
+  trust.
+
+  Running total: **eight defects of one root cause across four review rounds** — five found by
+  review, three by self-audit. Three were introduced by a fix for an earlier one; two came from
+  rewriting a predicate the replaced code had correct; one was asserted safe in writing before
+  being measured unsafe. With the four in `test_ha_listener_bounds.py` that `AGENTS.md` §5
+  already documents, this repository's AST-reading guards have now produced **twelve** instances
+  of reading *a* binding rather than the effective one.
+
 - **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
   IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
   a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so adding a dimension
