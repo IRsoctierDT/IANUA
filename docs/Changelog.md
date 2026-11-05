@@ -41,6 +41,28 @@ All notable changes to this project. Versions correspond to git tags.
   plants each redden exactly their targeted test, including #314's own bump replayed.
   Residual: this proves review provenance, not that vendor code is benign — each record names
   the bundled scanner it did not audit.
+- **Each review record now declares what actually executes, and the gate derives whether our
+  SHA pin fixes it.** A 40-hex pin fixes `action.yml`; for a **Docker** action, `action.yml`
+  names an image, so the pin does not fix the code that runs. Measured at the pinned SHAs:
+  `danoszz/penthera` is `composite`; `gitleaks/gitleaks-action` and `astral-sh/setup-uv` are
+  `node24`, the latter with a `post:` hook (`dist/save-cache/index.cjs`) that runs after the
+  job with the same token and that nobody has read — a property the penthera record verifies
+  the *absence* of, so it matters here; and `ossf/scorecard-action` is `runs.using: "docker"`
+  with `image: "docker://ghcr.io/ossf/scorecard-action:v2.5.0"`, a **mutable tag**. Alone
+  among the four, its executing code is not fixed by our pin: whoever can push that tag in
+  `ghcr.io/ossf` chooses the container this repository runs, and no SHA pin, Dependabot bump
+  or permissions gate can see a tag move. So every record carries an `execution` block, and
+  `tests/security/test_third_party_actions.py` **derives** `pinned_by_sha` from the entrypoint
+  and compares it with the declaration — a record cannot claim a pin it does not have — while
+  a record with a gap must state it in `pin_gap`, and one without must not. Six plants each
+  redden exactly their rule. **The same change fixes a bypass of the module's own reach:** it
+  globbed `*.yml` only, so a vendor action added in `foo.yaml` was invisible to every test
+  here (measured: the old glob does not see a planted `evilcorp/backdoor` in `sneaky.yaml`,
+  the both-extension scan does, and the record gate goes red). `test_workflow_permissions.py`
+  already read both spellings. Residual: the gap is upstream's image reference to close, not
+  ours — this makes it enumerable and un-droppable, not closed; and a Dockerfile built from a
+  pinned tree can still carry an unpinned `FROM`, which the derivation reads as sufficient
+  because no offline test can read a vendor's Dockerfile.
 - **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
   third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
   PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather
@@ -176,6 +198,23 @@ All notable changes to this project. Versions correspond to git tags.
   Branch-Protection tiers require an approving review, so a solo repository cannot reach the
   top band however it is configured; the condition that changes this is a second human with
   write access, which is recorded as the trigger to revisit rather than left implicit.
+- **`danoszz/penthera` moves to 2.2.0, accepted by the owner after a review at the pinned
+  commit.** Both pins and both `penthera-version` inputs go to 2.2.0
+  (`a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09`), and `security/third-party-actions.json` records
+  the review rather than leaving it in a commit message. A two-major jump on an action that runs
+  over this repository with a token, so it is a §5 decision and is recorded as one. Verified at
+  that commit, not at upstream's `main`: the tag resolves there; still composite with no Docker
+  image, JS entrypoint or `pre:`/`post:` hook; inputs still reach the shell only via `env:`;
+  `base-ref` still allow-listed and now also refusing `..` ranges; `--end-of-options` on both git
+  calls; the nested `upload-sarif` SHA-pinned; the comment script's API calls all scoped to this
+  repository's issues; `mode: deps` still fetching from no package registry; and still exactly one
+  runtime dependency. The behaviour change is fail-closed — the action now exits 2 when it wrote no
+  report instead of passing silently — which with `fail-on: none` on a non-required job makes it
+  noisier rather than more powerful. Not reviewed, and said so: the bundled scanner, which #305 did
+  not audit either. `tests/security/test_third_party_actions.py` was red on this change before the
+  record was updated and green after, which is #318's gate catching exactly the case it was built
+  for. #314 proposed this bundled with a setup-uv patch and was closed unmerged; #316 has since put
+  majors on their own pull request.
 - **Major GitHub Actions bumps leave the `actions-all` Dependabot group, so each arrives as
   its own pull request.** Measured on #314: one group pull request carried
   `astral-sh/setup-uv` 10.3.2 → 10.3.3 (patch) together with `danoszz/penthera` 1.9.0 →
