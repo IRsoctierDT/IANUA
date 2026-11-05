@@ -81,6 +81,23 @@ def test_the_normalize_target_refuses_an_unbounded_event(monkeypatch: pytest.Mon
 
 
 @pytest.mark.security
+def test_the_normalize_target_refuses_an_event_over_the_projection_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every field within its own bound, the whole past the store's ceiling:
+    # the shape the store refused before normalize fitted events under it.
+    over = dataclasses.replace(
+        _event(),
+        email=dataclasses.replace(
+            _event().email, urls=tuple("u" * MAX_FIELD_LEN for _ in range(40))
+        ),
+    )
+    monkeypatch.setattr(targets, "normalize", lambda _data: over)
+    with pytest.raises(AssertionError, match="over the store's 65536-byte ceiling"):
+        targets.one_input_normalize(b"anything")
+
+
+@pytest.mark.security
 def test_the_normalize_target_refuses_an_observable_from_outside_the_excerpt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

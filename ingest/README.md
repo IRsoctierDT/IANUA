@@ -114,6 +114,16 @@ builds an excerpt, so no parser can forget one and none can widen one.
   encoded-PowerShell `CommandLine` produced an event `append` accepted and `query` could
   never read back. Truncation demotes `parse_status` and adds a note rather than happening
   silently.
+- **The sum is bounded too, not only each field.** The store refuses a projection past
+  `MAX_PROJECTION_BYTES` (64 KiB), and a sum of bounded fields has no ceiling: a 61,670-byte
+  Defender line with thirty long URLs projected to 66,729 bytes and held a collector source's
+  offset on every pass. `normalize()` therefore fits every event it returns
+  (`fit_projection`), with one cap on every value: each string longer than the largest cap that
+  fits is cut to it, every list entry is kept, and an observable longer than the cap is dropped
+  whole, never cut, because a cut indicator is a false join key. A note names the cap and the
+  fields, and an event already within the ceiling is returned unchanged. `canonical_json` and
+  the constant live in `ingest/schema.py`, and `store` re-exports them, so the bytes the store
+  measures are the bytes this package fits.
 - **`activity` stays an enumerable vocabulary.** A Suricata alert's free-text signature
   lives in `message`, not in `activity` — otherwise the OCSF classification table keyed
   on it would be meaningless.
