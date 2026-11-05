@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:1f5c7360-c074-5f84-9929-72ccd814d60a",
+  "serialNumber": "urn:uuid:1670f0ab-e288-506b-8f4b-53a2db552fcc",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-24T16:17:47Z",
+    "timestamp": "2026-11-05T02:04:15Z",
     "tools": {
       "components": [
         {
@@ -392,11 +392,11 @@
       "purl": "pkg:pypi/mpmath@1.3.0"
     },
     {
-      "bom-ref": "pkg:pypi/msgpack@1.2.1",
+      "bom-ref": "pkg:pypi/msgpack@1.2.4",
       "name": "msgpack",
       "type": "library",
-      "version": "1.2.1",
-      "purl": "pkg:pypi/msgpack@1.2.1"
+      "version": "1.2.4",
+      "purl": "pkg:pypi/msgpack@1.2.4"
     },
     {
       "bom-ref": "pkg:pypi/mypy-extensions@1.1.0",
