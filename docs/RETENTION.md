@@ -288,7 +288,10 @@ python scripts/run_pipeline.py --root /srv/ianua --caller soc-op --json
 
 Measured: 120 of 120 recovered after a total prune (`lines_read: 120, events_stored: 120`),
 and on a partially pruned store the survivors deduplicate by `event_id` — 80 lines read, 40
-stored, count back to 80. **Three costs, all measured, none optional:**
+stored, count back to 80. They deduplicate against rows this build wrote: a survivor an
+earlier build stored with non-ASCII text in a modelled field is stored again, since the
+excerpt keeps that text as written from 2026-10-24 (`docs/RESTORE.md`, "Re-reading what an
+earlier build stored"). **Three costs, all measured, none optional:**
 
 - **It is bounded by the source.** After a rotation truncated the log in place, the same
   procedure reported `events_stored: 0, lines_read: 0` and exit 0 — a clean success that

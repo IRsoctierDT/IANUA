@@ -93,6 +93,34 @@ def test_the_normalize_target_refuses_an_observable_from_outside_the_excerpt(
 
 
 @pytest.mark.security
+def test_the_normalize_target_refuses_an_indicator_retained_only_escaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The form this target accepted while the excerpt escaped non-ASCII. Now
+    # that the excerpt keeps it as written, an escaped one is a defect.
+    escaped = dataclasses.replace(
+        _event(),
+        vendor="unrecognized",
+        raw_excerpt='{"msg": "go https://caf\\u00e9.example/x"}',
+        observables=("https://caf\u00e9.example/x",),
+    )
+    monkeypatch.setattr(targets, "normalize", lambda _data: escaped)
+    with pytest.raises(AssertionError, match="not inside the retained excerpt"):
+        targets.one_input_normalize(b"anything")
+
+
+@pytest.mark.security
+def test_the_normalize_target_refuses_an_event_the_store_cannot_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A lone surrogate, which canonical_json renders and UTF-8 refuses.
+    unhashable = dataclasses.replace(_event(), message="x " + chr(0xD800) + " y")
+    monkeypatch.setattr(targets, "normalize", lambda _data: unhashable)
+    with pytest.raises(AssertionError, match="cannot hash"):
+        targets.one_input_normalize(b"anything")
+
+
+@pytest.mark.security
 def test_the_keyvalue_target_refuses_a_value_the_line_does_not_contain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
