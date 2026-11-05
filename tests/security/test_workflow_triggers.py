@@ -118,6 +118,7 @@ _STR, _BOOL = "tag:yaml.org,2002:str", "tag:yaml.org,2002:bool"
 CONCURRENCY_GROUPS: dict[tuple[str, str], tuple[str, bool]] = {
     ("ci.yml", _WORKFLOW_LEVEL): ("ci-${{ github.ref }}", True),
     ("pages.yml", "deploy"): ("pages", True),
+    ("penthera.yml", _WORKFLOW_LEVEL): ("penthera-${{ github.ref }}", True),
     ("release-on-merge.yml", _WORKFLOW_LEVEL): ("release-on-merge", False),
     ("release.yml", _WORKFLOW_LEVEL): (
         "release-${{ github.event.release.tag_name || inputs.tag }}",
