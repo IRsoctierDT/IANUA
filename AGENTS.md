@@ -1126,12 +1126,88 @@ in the pipeline."
    dispatches `release.yml` — **only after human approval on the `release`
    environment**; tags are never moved. Runbook: `docs/RELEASING.md`.
 
-**Branch protection (recommended):**
+**Branch protection — required, and measured as partly unset.** This list read
+"recommended" until 2026-11-05, which is why nothing ever reconciled it with the
+repository's actual settings: a recommendation cannot drift, so no one checked. It is a
+requirement, and the gap between it and reality is recorded here rather than left for the
+next reader to discover.
+
+**Measured on 2026-11-05**, from the OpenSSF Scorecard `Branch-Protection` check (score
+**3**, severity High) plus direct reads of the GitHub API. `main` *is* protected, so this
+is an incomplete configuration and not an absent one:
+
+| Setting | State | Consequence while unset |
+|---|---|---|
+| Do not allow bypassing the above settings | **off** | An administrator — the owner — can push straight to `main`, which makes every other row on this list advisory. This is the one to fix first. |
+| Require review from Code Owners | **off** | `.github/CODEOWNERS` exists and covers `/agents/`, `/mcp/`, `/infra/`, `/.github/`, `AGENTS.md`, `DESIGN.md` and `SECURITY.md`, but it only *requests* a reviewer. Its own header comment says exactly this. So the §8 row below requiring a human review on those paths is currently unenforced. |
+| Require branches to be up to date before merging | **off** | Measured the same day: #315 and #318 each went stale and conflicted after other pull requests merged, and #310 merged while behind `main`. |
+| Require a pull request before merging | **unknown** | Scorecard cannot read it with the default `GITHUB_TOKEN` and says so in its own warning. Every one of the last fourteen commits on `main` carries a `(#N)` suffix, so pull requests are the practice; whether they are *enforced* is not readable from here. |
+
+Two of Scorecard's four warnings are its own blind spots rather than defects, and an agent
+should not "fix" either by editing this tree: "could not determine whether codeowners
+review is allowed" is a data-access limit — the file is present — and the pull-request
+warning is the one Scorecard itself qualifies with "or we don't have data to detect it".
+
+**Configure it as a repository ruleset, not classic branch protection.** Scorecard notes
+that rulesets are always publicly readable, so using one also closes the fourth warning's
+blind spot instead of leaving it permanently unknowable. Settings → Rules → Rulesets → new
+branch ruleset targeting `main`, with: require a pull request before merging, **with
+required approvals set to `0`** while there is one maintainer (see below); require status
+checks to pass, selecting all of stages 2–4 above; require branches to be up to date; block
+force pushes; restrict deletions; require linear history; and **do not allow bypassing**,
+with no bypass actors.
+
+**Three of those rows cannot be satisfied by a single maintainer, and an earlier version of
+this paragraph mandated two of them.** It said "one approval; require review from Code
+Owners", and that configuration deadlocks the repository on its first pull request.
+**GitHub never permits an author to approve their own pull request** — it is not a
+permission, a role, or a reviewer list anyone can be added to, so an owner with full admin
+cannot satisfy it. Measured on #319, which is the change that wrote this table: with the
+ruleset configured as the sentence above instructed, the owner's own review on it came back
+`state: COMMENTED` (the Approve control is disabled, reading "Can not approve your own pull
+request") and the pull request sat at `mergeable_state: blocked` with no action available on
+it. Two further rows fail the same way and are named because they are the plausible next
+additions: **require review from Code Owners**, since `.github/CODEOWNERS` names
+`@IRsoctierDT` for `*` and therefore for every file; and **require approval of the most
+recent reviewable push**, which by construction needs an approver who is not the pusher.
+
+This is the failure mode this charter names elsewhere in the same terms — a rule that
+cannot be met is not obeyed, it is switched off — arriving as a rule that could not be met
+*at all*. And the correction is **not** a bypass actor, a second account belonging to the
+owner, or an app configured to approve: each of those raises the Scorecard tier while
+removing the control it scores, and the first one reintroduces precisely the
+`do not allow bypassing` warning this table calls the one to fix first. Approvals at `0` is
+what makes keeping that row switched on affordable, so the trade is deliberate: the
+enforceable rows are enforced, against everyone including the owner, and the unenforceable
+ones are recorded as unenforceable instead of asserted.
+
+**The ceiling is real and is stated rather than engineered around.** Scorecard's
+`Branch-Protection` check is tiered and its upper tiers require at least one approving
+review, so a one-maintainer repository cannot reach the top band however it is configured,
+and the score will settle in the middle. **The condition under which these rows become
+satisfiable is a second human with write access** (Settings → Collaborators) — not a
+setting, and not something an agent can arrange. On the day that happens, required
+approvals and Code Owners review should both be switched on, and this paragraph revisited.
+
+**The up-to-date requirement has a real cost, and a merge queue is the better form of it.**
+`.github/dependabot.yml` opens action bumps daily and the pipeline runs about eight minutes,
+so the raw checkbox means every merge to `main` invalidates every open pull request, each
+then needing a base merge and a full re-run — precisely the serial churn that was done by
+hand on #315 and #318. GitHub's merge queue gives the same guarantee without it, and
+composes with the auto-merge `dependabot-automerge.yml` already enables.
+
+**No agent can set any of this, and none should try.** These are repository settings rather
+than files in this tree, so they fall under §5.1's deployment/infra-mutation gate and under
+`docs/PATH_RECONCILIATION_AUDIT.md`'s "Stage 0 — not autonomously fixable" bucket. An agent
+that finds this list unsatisfied reports it and stops. **Residual:** nothing in CI verifies
+these settings, so this table is a measurement with a date on it and not a gate. Closing
+that would take a scheduled workflow reading the ruleset through the API with a PAT carrying
+`admin:read` — a §5.1 secret-handling decision for the owner, not an agent.
 
 - No direct commits to `main`; changes land via reviewed pull request.
 - Required status checks: all of stages 2–4 above.
 - At least one human review on any change touching `agents/`, `mcp/`, `infra/`, or §5
-  boundaries.
+  boundaries. **Unenforced until Code Owners review is required** (see the table above).
 - Signed commits where supported; linear history; no force-push to protected branches.
 - **No stacking.** Start every branch from current `main`, never from a branch whose pull
   request is still open. `main` squash-merges, so a stacked branch conflicts the moment its
