@@ -141,20 +141,111 @@ def test_the_workflow_holds_exactly_one_write_permission() -> None:
 
     The upstream starter workflow declares ``permissions: read-all`` at the top
     level. This repository's convention is an explicit ``contents: read``, with
-    the job adding the single write it needs. Anything beyond that is a finding
-    here, including a write added for a step someone appends later.
+    exactly one job adding the single write it needs. Anything beyond that is a
+    finding here, including a write added for a step someone appends later.
     """
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}, (
         f"top-level permissions are {workflow['permissions']}, not a least-privilege "
         "`contents: read`"
     )
-    job = workflow["jobs"]["analysis"]["permissions"]
-    writes = {name for name, level in job.items() if level == "write"}
-    assert writes == {"security-events"}, (
-        f"the job holds writes {sorted(writes)}; only security-events is needed, to upload "
-        "the SARIF to Code scanning"
+    writes = {
+        name: sorted(
+            scope for scope, level in (job.get("permissions") or {}).items() if level == "write"
+        )
+        for name, job in workflow["jobs"].items()
+    }
+    holders = {name: scopes for name, scopes in writes.items() if scopes}
+    assert holders == {"code-scanning": ["security-events"]}, (
+        f"writes are held by {holders}; exactly one job may hold exactly security-events,"
+        " and it is the job that uploads the SARIF"
     )
+
+
+@pytest.mark.security
+def test_the_write_is_not_in_the_job_that_runs_the_third_party_action() -> None:
+    """The reason the job boundary exists, asserted as a boundary.
+
+    A workflow token is **job**-scoped, not step-scoped. While the SARIF upload
+    lived in the ``analysis`` job, that job held ``security-events: write`` — so
+    the scorecard container received a token carrying that write. Measured in
+    ``action.yaml`` at the pinned SHA: ``repo_token`` and
+    ``internal_default_token`` both default to ``${{ github.token }}``, so
+    GitHub passes the job's token into the container, for an upload the
+    container never performs. And because it is a **Docker** action whose image
+    is named by a mutable tag, that token reached code this repository cannot
+    read and does not pin.
+
+    Least privilege is therefore not expressible inside one job, which is why
+    this is a structural assertion and not a permissions nit: the only way to
+    keep the write away from the container is for the write to live in a
+    different job. Re-merging the two jobs fails here.
+
+    This does **not** assert the SARIF is trustworthy. It is produced by the
+    unreviewed image and uploaded verbatim either way; what changed is who
+    holds the write.
+    """
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+
+    vendor_jobs = {
+        name
+        for name, job in jobs.items()
+        for step in (job.get("steps") or [])
+        if str(step.get("uses", "")).startswith("ossf/scorecard-action@")
+    }
+    assert vendor_jobs, "no job runs the scorecard action; this assertion would be vacuous"
+
+    for name in sorted(vendor_jobs):
+        granted = (jobs[name].get("permissions") or {}).items()
+        writes = sorted(scope for scope, level in granted if level == "write")
+        assert not writes, (
+            f"job {name!r} runs ossf/scorecard-action AND holds writes {writes}. A workflow"
+            " token is job-scoped, so the container receives that write through its"
+            " token-defaulted inputs. Move the write to a job that runs no third-party action"
+        )
+
+    uploader = {
+        name
+        for name, job in jobs.items()
+        for step in (job.get("steps") or [])
+        if "codeql-action/upload-sarif@" in str(step.get("uses", ""))
+    }
+    assert uploader, "no job uploads the SARIF"
+    assert not (uploader & vendor_jobs), (
+        f"the SARIF upload and the scorecard action share a job ({sorted(uploader & vendor_jobs)});"
+        " the split is what keeps the write away from the vendor container"
+    )
+
+
+@pytest.mark.security
+def test_no_third_party_action_runs_in_the_job_that_holds_the_write() -> None:
+    """The converse, which is the direction a later edit would break.
+
+    The test above stops the write moving to the vendor's job. This one stops a
+    vendor action moving to the write's job — the same defect approached from
+    the other side, and the easier mistake to make, because adding a step to an
+    existing job looks smaller than adding a job.
+
+    First-party owners are named here rather than imported from
+    ``test_third_party_actions.py``: that module's list is the exemption list
+    for the review-record gate, and coupling a boundary assertion to it would
+    mean widening one silently widened the other.
+    """
+    first_party = ("actions/", "github/", "dependabot/")
+    workflow = _workflow()
+    for name, job in workflow["jobs"].items():
+        granted = (job.get("permissions") or {}).items()
+        if not any(level == "write" for _, level in granted):
+            continue
+        for step in job.get("steps") or []:
+            uses = str(step.get("uses", ""))
+            if not uses:
+                continue
+            assert uses.startswith(first_party), (
+                f"job {name!r} holds a write and runs the third-party action {uses!r}."
+                " A write-holding job may run only GitHub's own actions"
+            )
 
 
 @pytest.mark.security
@@ -176,26 +267,42 @@ def test_every_action_is_pinned_to_a_full_commit_sha() -> None:
         if not _FULL_SHA.match(reference):
             unpinned.append(f"{job_name}: {action}@{reference}")
     assert not unpinned, f"these actions are not pinned to a full commit SHA: {unpinned}"
-    assert len({job for job, _ in _all_steps()}) >= 2, (
-        "this workflow should have both the image-pin gate job and the analysis job; if a job"
-        " was removed, check whether the gate went with it"
+    # Named rather than counted: each of the three carries a boundary, so a
+    # vanished job is a vanished control and the failure should say which.
+    # `image-pin` gates on the mutable image tag; `analysis` runs the vendor
+    # action under no write; `code-scanning` holds the only write and runs no
+    # vendor action.
+    assert set(_workflow()["jobs"]) == {"image-pin", "analysis", "code-scanning"}, (
+        f"the jobs are {sorted(_workflow()['jobs'])}; expected image-pin, analysis and"
+        " code-scanning. If a job was removed, check which boundary went with it"
     )
 
 
 @pytest.mark.security
-def test_the_checkout_does_not_persist_credentials() -> None:
+def test_no_checkout_in_any_job_persists_credentials() -> None:
     """No token left on disk for the rest of the job to reach.
 
     Scorecard reads the tree and never needs it. This is also something
     Scorecard grades, so leaving it on would be a finding raised by the
     workflow against itself.
+
+    **Widened from the ``analysis`` job to every job**, and the new job is the
+    one that makes it matter: ``code-scanning`` is where the
+    ``security-events: write`` lives, so a credential persisted *there* would
+    put a write-capable token on disk — strictly worse than in a read-only job,
+    and precisely the place a narrow assertion would have missed.
     """
-    checkout = next(
-        step for step in _steps() if step.get("uses", "").startswith("actions/checkout@")
-    )
-    assert checkout["with"]["persist-credentials"] is False, (
-        "the checkout persists credentials; nothing in this job needs the token on disk"
-    )
+    checkouts = [
+        (job, step)
+        for job, step in _all_steps()
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert checkouts, "no checkout found; this assertion would be vacuous"
+    for job, step in checkouts:
+        assert (step.get("with") or {}).get("persist-credentials") is False, (
+            f"the checkout in job {job!r} does not set persist-credentials: false;"
+            " nothing in this workflow needs the token on disk"
+        )
 
 
 @pytest.mark.security

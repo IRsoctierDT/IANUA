@@ -161,7 +161,7 @@
       "status": "reviewed",
       "reviewed_version": "2.5.0",
       "reviewed_sha": "fa7117db83c52d787ae5a89f350999701505d78e",
-      "reviewed_in": "#324",
+      "reviewed_in": "#324, token scope narrowed in #327",
       "reason": "OpenSSF Scorecard reporting. Predates this file.",
       "execution": {
         "using": "docker",
@@ -191,10 +191,11 @@
         "publish_results: false, asserted by tests/security/test_scorecard_boundary.py",
         "the workflow is not one of section 8's required checks; it runs on a schedule and on push",
         "the image-pin job re-resolves the tag and the analysis job needs: it, so a moved tag fails before the image is pulled for analysis",
-        "checkout does not persist credentials",
-        "top-level permissions are contents: read and the job adds exactly one write"
+        "the job that runs this action holds NO write at all -- the security-events: write moved to a separate code-scanning job that runs no third-party action, because a workflow token is job-scoped and the container would otherwise receive that write through its two token-defaulted inputs",
+        "checkout does not persist credentials, in either job",
+        "top-level permissions are contents: read and exactly one job adds exactly one write"
       ],
-      "notes": "Reviewed at the pinned SHA on 2026-11-05. NEW FINDING, recorded rather than fixed: the analysis job holds security-events: write for the SEPARATE upload-sarif step, and a workflow token is job-scoped -- so the scorecard container also receives a token carrying that write, through the two token-defaulted inputs above, for an upload it does not perform. Narrowing it means splitting the job: run scorecard under contents: read and publish the SARIF as an artifact, then upload to code scanning from a second job holding the write. That is a workflow change with its own boundary test, not part of a review, so it is written down here instead of done. The mutable-tag gap is unchanged and still upstream's to close."
+      "notes": "Reviewed at the pinned SHA on 2026-11-05 (#324). The finding #324 recorded -- that the container received a token carrying security-events: write for an upload it never performs -- is FIXED in #327 rather than still merely recorded. A workflow token is job-scoped, not step-scoped, so least privilege was not expressible inside one job: the write now lives in a code-scanning job that runs only GitHub's own actions, and the SARIF crosses between them as a run artifact. What that buys is stated narrowly -- the write-capable token is now only ever handed to first-party code. It does NOT make the SARIF trustworthy: it is still produced by the unreviewed image and uploaded verbatim. The mutable-tag gap is unchanged and still upstream's to close; #323 detects it."
     }
   ]
 }

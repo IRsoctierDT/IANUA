@@ -96,7 +96,14 @@ WRITE_GRANTS: dict[tuple[str, str], dict[str, str]] = {
         "contents": "enable auto-merge; GitHub performs the squash merge",
         "pull-requests": "gh pr merge --auto sets the PR's auto-merge flag",
     },
-    ("scorecard.yml", "analysis"): {
+    # Moved off ("scorecard.yml", "analysis") deliberately. A workflow token is
+    # JOB-scoped, so while the upload lived in `analysis` that job's write was
+    # handed to the scorecard container — a Docker action whose two token inputs
+    # default to `${{ github.token }}` and whose image our SHA does not pin. The
+    # grant now sits in a job that runs no third-party action, which is the only
+    # way to express least privilege here; `tests/security/test_scorecard_boundary.py`
+    # asserts the split in both directions.
+    ("scorecard.yml", "code-scanning"): {
         "security-events": "upload the Scorecard SARIF to Code scanning",
     },
     ("penthera.yml", "deps"): {
