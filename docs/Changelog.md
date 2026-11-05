@@ -35,6 +35,37 @@ All notable changes to this project. Versions correspond to git tags.
   fails against the previous rule on both `local_only` and `comp_only`, and the narrowed gate
   still catches a planted dangling reference with its site, symbol and unresolvable head.
 
+  **The narrowing then broke what it was scoped around, and review caught that too (#330).**
+  Scoping to module and class bodies is not sufficient on its own: Python binds a `for` target,
+  a `with ... as` name and a `match` capture **in the enclosing namespace**, and a rule that only
+  recursed into `body`/`orelse`/`finalbody` dropped all of them. Measured on a probe, six names
+  the previous `ast.walk` rule accepted were **newly rejected** — `LOOP_TARGET`, `HANDLE`, the
+  three targets of `for A, (B, C) in []`, and a class-body `CLS_LOOP`. That is a false positive,
+  and a false positive is precisely what gets a gate switched off rather than obeyed, which is
+  the justification the whole rule was built on. `collect()` now records `For`/`AsyncFor` targets,
+  `With`/`AsyncWith` `optional_vars`, and `Match` captures, and recurses each of their bodies.
+
+  **`match` is the exception that proves the mechanism rather than a seventh instance of it.** A
+  pattern carries its captures as bare `name`/`rest` strings, not as `ast.Name` nodes, so a
+  target walk sees nothing and the *old* rule missed them too — measured: `MATCH_BOUND` resolved
+  under neither rule. `MatchAs`, `MatchStar` and `MatchMapping.rest` are handled by their own
+  helper for that reason, so this one is a gap being closed rather than restored.
+
+  The asymmetry of the whole fix is therefore sharper than first stated: **what a name is bound
+  *by* decides whether a reference to it can be followed, and where it is bound decides whether
+  it exists at all** — a function-local import binds a real module, a compound statement at
+  module scope binds a real module-level name, and a function-local variable binds neither.
+  `test_a_compound_statement_at_module_scope_still_binds_its_targets` covers all eleven names and
+  is verified to fail against the intermediate rule. Whole-tree measurement unchanged: 0 of 578
+  references unresolved.
+
+  **Two review rounds, two defects, and the second was introduced by the fix for the first** —
+  the same shape as the changelog correction earlier in this release that contradicted itself.
+  Worth recording because of what was asked and what came back: #330's body asked whether
+  `collect()`'s recursion *reached somewhere it should not*, and the actual defect was that it
+  *failed to reach* binding positions it should. The question named the right function and the
+  wrong direction, which is a better argument for independent review than any finding in it.
+
 - **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
   IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
   a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so adding a dimension

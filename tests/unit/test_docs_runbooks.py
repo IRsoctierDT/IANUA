@@ -246,6 +246,31 @@ def _module_bindings(tree: ast.Module) -> set[str]:
         if isinstance(node, ast.alias):
             names.add((node.asname or node.name).split(".")[0])
 
+    def add_targets(node: ast.AST) -> None:
+        """Record every name an assignment, loop or ``with`` target binds.
+
+        Walks the target expression, so tuple and nested unpacking
+        (``for a, (b, c) in ...``) contribute every name rather than the first.
+        """
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Name):
+                names.add(inner.id)
+
+    def add_pattern(pattern: ast.pattern) -> None:
+        """Record names a ``match`` case binds.
+
+        Separate from :func:`add_targets` because a pattern does **not** hold
+        ``ast.Name`` nodes for its captures: ``MatchAs`` and ``MatchStar`` carry
+        a bare ``name`` string and ``MatchMapping`` a ``rest``. A target walk
+        therefore sees nothing, which is why the previous ``ast.walk`` rule
+        missed these too — this is a gap being closed, not merely restored.
+        """
+        for inner in ast.walk(pattern):
+            if isinstance(inner, ast.MatchAs | ast.MatchStar) and inner.name:
+                names.add(inner.name)
+            elif isinstance(inner, ast.MatchMapping) and inner.rest:
+                names.add(inner.rest)
+
     def collect(body: list[ast.stmt]) -> None:
         """Walk statements in module or class scope, never into a function."""
         for statement in body:
@@ -259,10 +284,23 @@ def _module_bindings(tree: ast.Module) -> set[str]:
                     statement.targets if isinstance(statement, ast.Assign) else [statement.target]
                 )
                 for target in targets:
-                    for node in ast.walk(target):
-                        if isinstance(node, ast.Name):
-                            names.add(node.id)
-            elif isinstance(statement, ast.If | ast.Try | ast.For | ast.While | ast.With):
+                    add_targets(target)
+            elif isinstance(statement, ast.For | ast.AsyncFor):
+                # `for ITEM in ...` at module or class scope binds ITEM there.
+                add_targets(statement.target)
+                collect(statement.body)
+                collect(statement.orelse)
+            elif isinstance(statement, ast.With | ast.AsyncWith):
+                # `with ... as HANDLE` likewise.
+                for item in statement.items:
+                    if item.optional_vars is not None:
+                        add_targets(item.optional_vars)
+                collect(statement.body)
+            elif isinstance(statement, ast.Match):
+                for case in statement.cases:
+                    add_pattern(case.pattern)
+                    collect(case.body)
+            elif isinstance(statement, ast.If | ast.Try | ast.While):
                 # A module-level constant can sit under `if TYPE_CHECKING:` or
                 # in a try/except import guard; both are still module scope.
                 for attribute in ("body", "orelse", "finalbody"):
@@ -308,6 +346,45 @@ def test_a_function_local_name_does_not_satisfy_a_reference() -> None:
             f"{name!r} is legitimately citable ({'a function-local import' if name == 'importlib' else 'module or class scope'}), "
             "so the narrowing must not have dropped it"
         )
+
+
+def test_a_compound_statement_at_module_scope_still_binds_its_targets() -> None:
+    """The regression for what the narrowing itself broke, found by review on ``#330``.
+
+    Scoping to module and class bodies is not enough on its own: Python binds a
+    ``for`` target, a ``with ... as`` name and a ``match`` capture **in the
+    enclosing namespace**, so a rule that only recurses into ``body``/``orelse``
+    /``finalbody`` drops them and newly *rejects* a reference the previous rule
+    accepted. Measured before the fix — all six of the first cases below were
+    rejected, which is a false positive, and a false positive is what gets a
+    gate switched off rather than obeyed.
+
+    ``match`` is the exception that proves the mechanism rather than a seventh
+    instance of it: a pattern carries its captures as bare ``name``/``rest``
+    strings and not as ``ast.Name`` nodes, so the old ``ast.walk`` rule missed
+    those too. That one is a gap being closed, not restored.
+    """
+    planted = ast.parse(
+        "for LOOP_TARGET in range(3):\n    pass\n"
+        "with open('x') as HANDLE:\n    pass\n"
+        "for A, (B, C) in []:\n    pass\n"
+        "class K:\n    for CLS_LOOP in range(2):\n        pass\n"
+        "match 1:\n    case MATCH_BOUND:\n        pass\n"
+        "match {}:\n    case {'k': MAP_VALUE, **MAP_REST}:\n        pass\n"
+        "match []:\n    case [SEQ_ITEM, *SEQ_STARRED]:\n        pass\n"
+    )
+    bound = _module_bindings(planted)
+
+    restored = ("LOOP_TARGET", "HANDLE", "A", "B", "C", "CLS_LOOP")
+    for name in restored:
+        assert name in bound, (
+            f"{name!r} is bound at module or class scope by a compound statement; "
+            "dropping it makes the gate reject a reference a reader can follow"
+        )
+    # Not merely restored: a pattern's captures are strings, so the former
+    # `ast.walk` rule never saw these either.
+    for name in ("MATCH_BOUND", "MAP_VALUE", "MAP_REST", "SEQ_ITEM", "SEQ_STARRED"):
+        assert name in bound, f"{name!r} is bound by a match pattern and must resolve"
 
 
 def test_every_docstring_symbol_reference_resolves() -> None:
