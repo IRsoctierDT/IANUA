@@ -1151,10 +1151,43 @@ warning is the one Scorecard itself qualifies with "or we don't have data to det
 **Configure it as a repository ruleset, not classic branch protection.** Scorecard notes
 that rulesets are always publicly readable, so using one also closes the fourth warning's
 blind spot instead of leaving it permanently unknowable. Settings → Rules → Rulesets → new
-branch ruleset targeting `main`, with: require a pull request before merging (one
-approval); require review from Code Owners; require status checks to pass, selecting all of
-stages 2–4 above; require branches to be up to date; block force pushes; and **do not allow
-bypassing**, with no bypass actors.
+branch ruleset targeting `main`, with: require a pull request before merging, **with
+required approvals set to `0`** while there is one maintainer (see below); require status
+checks to pass, selecting all of stages 2–4 above; require branches to be up to date; block
+force pushes; restrict deletions; require linear history; and **do not allow bypassing**,
+with no bypass actors.
+
+**Three of those rows cannot be satisfied by a single maintainer, and an earlier version of
+this paragraph mandated two of them.** It said "one approval; require review from Code
+Owners", and that configuration deadlocks the repository on its first pull request.
+**GitHub never permits an author to approve their own pull request** — it is not a
+permission, a role, or a reviewer list anyone can be added to, so an owner with full admin
+cannot satisfy it. Measured on #319, which is the change that wrote this table: with the
+ruleset configured as the sentence above instructed, the owner's own review on it came back
+`state: COMMENTED` (the Approve control is disabled, reading "Can not approve your own pull
+request") and the pull request sat at `mergeable_state: blocked` with no action available on
+it. Two further rows fail the same way and are named because they are the plausible next
+additions: **require review from Code Owners**, since `.github/CODEOWNERS` names
+`@IRsoctierDT` for `*` and therefore for every file; and **require approval of the most
+recent reviewable push**, which by construction needs an approver who is not the pusher.
+
+This is the failure mode this charter names elsewhere in the same terms — a rule that
+cannot be met is not obeyed, it is switched off — arriving as a rule that could not be met
+*at all*. And the correction is **not** a bypass actor, a second account belonging to the
+owner, or an app configured to approve: each of those raises the Scorecard tier while
+removing the control it scores, and the first one reintroduces precisely the
+`do not allow bypassing` warning this table calls the one to fix first. Approvals at `0` is
+what makes keeping that row switched on affordable, so the trade is deliberate: the
+enforceable rows are enforced, against everyone including the owner, and the unenforceable
+ones are recorded as unenforceable instead of asserted.
+
+**The ceiling is real and is stated rather than engineered around.** Scorecard's
+`Branch-Protection` check is tiered and its upper tiers require at least one approving
+review, so a one-maintainer repository cannot reach the top band however it is configured,
+and the score will settle in the middle. **The condition under which these rows become
+satisfiable is a second human with write access** (Settings → Collaborators) — not a
+setting, and not something an agent can arrange. On the day that happens, required
+approvals and Code Owners review should both be switched on, and this paragraph revisited.
 
 **The up-to-date requirement has a real cost, and a merge queue is the better form of it.**
 `.github/dependabot.yml` opens action bumps daily and the pipeline runs about eight minutes,

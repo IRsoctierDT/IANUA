@@ -159,6 +159,23 @@ All notable changes to this project. Versions correspond to git tags.
   every merge. Residual: nothing in CI verifies these settings, so the table is a dated
   measurement and not a gate — closing that needs a PAT with `admin:read`, which is the
   owner's §5.1 call. No agent can set any of it, and the section now says so.
+  **Three of its rows cannot be satisfied by one maintainer, and the first version of this
+  section mandated two of them.** It specified "one approval; require review from Code
+  Owners", which deadlocks the repository on its first pull request: **GitHub never permits
+  an author to approve their own pull request**, so an owner with full admin cannot satisfy
+  it. Measured on this very change — with the ruleset configured as written, the owner's
+  review on #319 came back `state: COMMENTED`, the Approve control disabled with "Can not
+  approve your own pull request", and the pull request sat at `mergeable_state: blocked`
+  with no action available on it. Require review from Code Owners fails identically
+  (`CODEOWNERS` names the owner for `*`), as does require approval of the most recent
+  reviewable push. So required approvals is specified as `0` while there is one maintainer,
+  and the correction is explicitly **not** a bypass actor, a second owner-held account or an
+  auto-approving app — each raises the Scorecard tier while removing the control it scores,
+  and the first reintroduces the bypass warning this table calls the one to fix first.
+  Approvals at `0` is what makes keeping that row on affordable. Residual: Scorecard's upper
+  Branch-Protection tiers require an approving review, so a solo repository cannot reach the
+  top band however it is configured; the condition that changes this is a second human with
+  write access, which is recorded as the trigger to revisit rather than left implicit.
 - **Major GitHub Actions bumps leave the `actions-all` Dependabot group, so each arrives as
   its own pull request.** Measured on #314: one group pull request carried
   `astral-sh/setup-uv` 10.3.2 → 10.3.3 (patch) together with `danoszz/penthera` 1.9.0 →
