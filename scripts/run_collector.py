@@ -170,7 +170,7 @@ from store.paths import validated_root  # noqa: E402
 #: collector log cannot invalidate either of the others.
 AUDIT_FILE = "audit.log"
 
-#: Single-instance lock. A correctness control — see :func:`_single_instance`.
+#: Single-instance lock. A correctness control — see :func:`single_instance`.
 LOCK_FILE = "collect.lock"
 
 #: Owner-only, matching the offsets, the cursor and the audit log.

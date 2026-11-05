@@ -106,6 +106,36 @@ All notable changes to this project. Versions correspond to git tags.
   fix proposed (R1 vs R2 is an owner decision), and ratification is still pending.
 
 ### Added
+- **A drift gate on docstring cross-references: a `:func:`/`:data:`/`:class:` citation must name
+  a symbol that exists (`tests/unit/test_docs_runbooks.py`).** The host file already gated the
+  other half of what a document cites — a `docs/*.md` path — and nothing read the symbol half.
+  Measured on this tree, 578 such references across 81 modules, of which **three dangled**:
+  `scripts/run_pipeline.py:89`, `:169` and `scripts/run_collector.py:173` all said
+  `:func:`_single_instance`` while the symbol has always been `single_instance`, imported two
+  lines above one of them. All three are corrected in the same change, since the gate cannot
+  land green over them.
+
+  **The resolution rule is deliberately generous, and what that costs is stated rather than
+  implied.** A reference resolves against builtins, any name the citing module binds at any
+  depth, any top-level name bound in any tracked non-test module, a tracked module stem, or a
+  tracked top-level package; a dotted reference is resolved on its **head** only, because
+  following `a.b.c` through would mean importing `a` to check prose. So a typo that happens to
+  match a symbol defined anywhere in the repository resolves, and so does a right head with a
+  wrong tail. What it buys is **zero false positives on the shipped tree**, which is the
+  property that decides whether a gate is obeyed or switched off — the failure mode the charter
+  names in those terms, and the reason the scoping recommended *against* the `§`-reference half
+  of the same idea (measured: 176 failures on a clean tree).
+
+  Two narrowings were measured rather than assumed. Excluding function parameters and attribute
+  stores from the per-module binding set costs **zero** false positives and removes two ways for
+  a typo to resolve against something that is not the cited symbol, so the stricter form was
+  free. Dropping the repo-wide index, by contrast, costs four (`AuditLogger`, `Ed25519Verifier`,
+  `StoreError`, `to_dict` are genuine cross-module citations), so it is kept. The gate is driven
+  against a planted dangling reference to show it is not vacuous, and it catches the
+  `UNKNOWN_DIMENSION` dangler a rename left behind earlier in this release — the one historical
+  defect of seven that the scoping predicted it would have caught, which is recorded as one and
+  not three.
+
 - **The cross-repository evidence contract (`docs/EVIDENCE_CONTRACT.md`), drafted against shipped
   code in all three repositories rather than from the backlog record.** IANUA, IANUA-Broker
   (`mcpscan`) and agent-trust-broker (ATB) exchange security evidence as files, and nothing
