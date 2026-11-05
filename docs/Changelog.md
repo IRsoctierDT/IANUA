@@ -66,6 +66,36 @@ All notable changes to this project. Versions correspond to git tags.
   *failed to reach* binding positions it should. The question named the right function and the
   wrong direction, which is a better argument for independent review than any finding in it.
 
+  **A third defect, found by self-audit rather than by review, in the same place.** While
+  checking the cases #330's body had listed as *unverified rather than cleared*, a walrus
+  (`:=`) turned out to bind nothing the gate could see: `collect()` reads statement **bodies**,
+  and a walrus lives in a test, an iterable, a context expression, an assigned value, an
+  `assert`, a `match` subject or a bare expression statement. Measured — **fifteen**
+  enclosing-scope positions the former `ast.walk` rule accepted were newly rejected, including a
+  decorator argument, a default argument, a return annotation, a lambda default and a class
+  base. `add_walrus` now records `NamedExpr` targets, descending past comprehensions (PEP 572
+  binds a comprehension's walrus in the containing scope) and stopping at a function or lambda
+  **body** while still reading its decorators, defaults and annotations, which are evaluated in
+  the enclosing scope.
+
+  **Widening alone would have reinstated a bypass.** The old rule also accepted a walrus in a
+  function body, which binds locally — so the two halves are asserted together, and
+  `test_a_walrus_binds_where_python_binds_it` pins all fifteen enclosing positions and all three
+  local ones.
+
+  **And the first attempt at that fix had the bug this gate keeps producing.** It tested whether
+  a *child* was a `NamedExpr`, so `def f() -> (W := int)` — where the walrus is passed in as the
+  root — was missed, and a walrus inside a function body leaked because the prune checked
+  children rather than the node. Both are the root-versus-child asymmetry `AGENTS.md` names as
+  the single root cause of all four bypasses in `test_ha_listener_bounds.py`: **reading *a*
+  binding rather than the effective one.** The test now carries 20 cases and the check is on the
+  node itself.
+
+  So this gate has now produced **three** defects of one kind in three rounds, two found by
+  review and one by audit, and the honest summary is that each "measured, zero cost" claim was a
+  measurement of today's tree. Whole-tree measurement remains 0 of 578 unresolved — stated now as
+  what it is, evidence about this tree and not a property of the rule.
+
 - **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
   IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
   a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so adding a dimension

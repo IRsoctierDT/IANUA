@@ -271,9 +271,49 @@ def _module_bindings(tree: ast.Module) -> set[str]:
             elif isinstance(inner, ast.MatchMapping) and inner.rest:
                 names.add(inner.rest)
 
+    def add_walrus(node: ast.AST) -> None:
+        """Record ``:=`` targets this statement binds in the enclosing scope.
+
+        A walrus binds in the scope *containing* the expression, so one in an
+        ``if``/``while`` test, a ``for`` iterable, a ``with`` context, an
+        assigned value, an ``assert``, a ``match`` subject or a bare expression
+        statement at module or class scope binds a module-level name — and
+        ``collect`` reads none of those, since it only recurses into statement
+        *bodies*. Measured: eleven such positions were accepted by the former
+        ``ast.walk`` rule and newly rejected, the same regression class as the
+        ``for``/``with`` targets above and found the same way.
+
+        Descent stops at a nested function or lambda, whose walrus binds
+        locally (measured: the old rule wrongly accepted that one). It does
+        **not** stop at a comprehension: PEP 572 binds a comprehension's walrus
+        in the containing scope, so ``X = [(W := i) for i in ...]`` binds ``W``
+        at module level.
+        """
+        # Tested on the node itself, not on its children: a bare
+        # ``def f() -> (W := int)`` passes the ``NamedExpr`` in as the root, and
+        # a child-only test missed it. That is the same root-versus-child
+        # asymmetry that produced every other defect in this gate's history.
+        if isinstance(node, ast.NamedExpr):
+            names.add(node.target.id)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            # The body binds locally; the decorators, defaults and annotations
+            # are evaluated in the enclosing scope, so a walrus there is ours.
+            scoped: list[ast.AST] = [*node.decorator_list, node.args]
+            if node.returns is not None:
+                scoped.append(node.returns)
+            for part in scoped:
+                add_walrus(part)
+            return
+        if isinstance(node, ast.Lambda):
+            add_walrus(node.args)  # defaults only, for the same reason
+            return
+        for child in ast.iter_child_nodes(node):
+            add_walrus(child)
+
     def collect(body: list[ast.stmt]) -> None:
         """Walk statements in module or class scope, never into a function."""
         for statement in body:
+            add_walrus(statement)
             if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
                 names.add(statement.name)  # the name, not what its body binds
             elif isinstance(statement, ast.ClassDef):
@@ -385,6 +425,56 @@ def test_a_compound_statement_at_module_scope_still_binds_its_targets() -> None:
     # `ast.walk` rule never saw these either.
     for name in ("MATCH_BOUND", "MAP_VALUE", "MAP_REST", "SEQ_ITEM", "SEQ_STARRED"):
         assert name in bound, f"{name!r} is bound by a match pattern and must resolve"
+
+
+def test_a_walrus_binds_where_python_binds_it() -> None:
+    """``:=`` at module or class scope, found by self-audit on ``#330``.
+
+    Not reported by review — measured while checking the cases ``#330``'s own
+    body listed as unverified. Eleven module-scope positions that the former
+    ``ast.walk`` rule accepted were newly rejected, because ``collect`` reads
+    statement *bodies* and a walrus lives in a test, an iterable, a context
+    expression, an assigned value or a bare expression statement.
+
+    The two halves are asserted together because each is wrong without the
+    other: a walrus in an enclosing-scope position binds a module-level name,
+    while one in a function or lambda *body* does not — and the old rule
+    accepted that one too, so widening alone would have reinstated a bypass
+    while fixing a false positive.
+    """
+    enclosing = {
+        "if test": "if (W := 1):\n    pass\n",
+        "elif test": "if 0:\n    pass\nelif (W := 1):\n    pass\n",
+        "while test": "while (W := 0):\n    pass\n",
+        "for iterable": "for i in (W := []):\n    pass\n",
+        "with context": "with (W := open('x')):\n    pass\n",
+        "assigned value": "Y = f(W := 1) if 0 else 0\n",
+        "bare expression": "(W := 1)\n",
+        "assert test": "assert (W := 1)\n",
+        "comprehension": "Y = [(W := i) for i in range(3)]\n",
+        "match subject": "match (W := 1):\n    case _:\n        pass\n",
+        "class body": "class C:\n    if (W := 1):\n        pass\n",
+        "decorator argument": "def d(x):\n    return x\n@d(W := 1)\ndef f():\n    pass\n",
+        "default argument": "def f(a=(W := 1)):\n    pass\n",
+        "return annotation": "def f() -> (W := int):\n    pass\n",
+        "lambda default": "g = lambda a=(W := 1): a\n",
+    }
+    for label, source in enclosing.items():
+        assert "W" in _module_bindings(ast.parse(source)), (
+            f"a walrus in a {label} binds W in the enclosing scope, so a "
+            "reference to it must resolve"
+        )
+
+    local = {
+        "function body": "def f():\n    if (W := 1):\n        pass\n",
+        "lambda body": "g = lambda: (W := 1)\n",
+        "method body": "class C:\n    def m(self):\n        return (W := 2)\n",
+    }
+    for label, source in local.items():
+        assert "W" not in _module_bindings(ast.parse(source)), (
+            f"a walrus in a {label} binds locally; counting it would reinstate "
+            "the bypass this gate was narrowed to close"
+        )
 
 
 def test_every_docstring_symbol_reference_resolves() -> None:
