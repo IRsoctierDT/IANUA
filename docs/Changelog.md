@@ -5,6 +5,36 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Fixed
+- **The docstring-reference gate counted function-local names, so a reference to one resolved
+  (`tests/unit/test_docs_runbooks.py`).** Found by review on #329 — the fifth bypass of this kind
+  in this repository's AST-reading guards, and the one `AGENTS.md` told the next reviewer to
+  expect. `_module_bindings` walked the whole tree with `ast.walk` and counted every `Name` store
+  at any depth, so a bare `local_only = 3` inside a function and a comprehension target both
+  entered the binding set. Measured on the probe: `:data:`local_only`` and `:data:`comp_only``
+  each **resolved**, which is wrong — `:data:` means module-level data, and a name bound only
+  inside a call names nothing a reader can follow.
+
+  **The rule is now module scope and class bodies, never function bodies — plus imports at any
+  depth**, and that asymmetry is the fix rather than an exception to it. A function-local
+  *import* names a real importable module (`:func:`importlib.util.find_spec`` in
+  `compliance/controls.py` is a followable reference even though `import importlib.util` sits
+  inside the function below it); a function-local *variable* does not. Measured: scoping without
+  the import carve-out breaks exactly that one reference and nothing else, and with it the
+  narrowed rule leaves **zero** of all 578 references unresolved — identical to the wide rule, so
+  the narrowing costs nothing and strictly removes a bypass.
+
+  **The prior docstring's justification was hypothetical and was paying a real price.** It said
+  the wide rule was needed because a class docstring "legitimately cites a helper defined in a
+  sibling method" — no such citation exists in this tree, which the zero-cost measurement above
+  is what established. A guard weakened for a case that does not occur is the inverse of the
+  defect the guard exists to catch, and it is recorded here rather than quietly narrowed.
+
+  `test_a_function_local_name_does_not_satisfy_a_reference` is driven against **planted source**,
+  not the shipped tree, because the shipped tree contains no such reference and a guard proven
+  only by the absence of a counterexample is not proven. Verified it is not vacuous: the test
+  fails against the previous rule on both `local_only` and `comp_only`, and the narrowed gate
+  still catches a planted dangling reference with its site, symbol and unresolvable head.
+
 - **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
   IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
   a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so adding a dimension

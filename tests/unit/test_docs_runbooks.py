@@ -209,24 +209,105 @@ def _tracked_python() -> list[str]:
 
 
 def _module_bindings(tree: ast.Module) -> set[str]:
-    """Every name the module binds, at any nesting depth.
+    """Names the module binds that a docstring could legitimately cite.
 
-    Deliberately depth-insensitive: a docstring on a class legitimately cites a
-    helper defined in a sibling method, and scoping that properly would mean
-    re-implementing name resolution to reject references a reader can follow.
-    Parameters and attribute stores are **not** counted — measured on this tree,
-    excluding them costs zero false positives and removes two ways for a typo to
-    resolve against something that is not the symbol being cited.
+    **Module scope and class bodies, never function bodies — plus imports at any
+    depth.** That asymmetry is the whole of this function and it is deliberate:
+
+    - A function-local ``import`` names a real, importable module, so
+      ``:func:`importlib.util.find_spec``` in ``compliance/controls.py`` is a
+      reference a reader can follow even though ``import importlib.util`` sits
+      inside the function seven lines below it.
+    - A function-local *variable* names nothing outside that call. ``:data:``
+      means module-level data, so a reference resolving against a local is a
+      dangling reference this gate reported as fine.
+
+    An earlier version walked the whole tree with ``ast.walk`` and counted every
+    ``Name`` store at any depth, which admitted exactly that. Measured on the
+    probe: a bare ``_LOCAL_ONLY = 7`` inside a function, and a comprehension
+    target ``[x for _COMP_ONLY in ...]``, both entered the binding set and both
+    satisfied a ``:data:`` reference to them. Found by review on ``#329``, which
+    is the fifth bypass of this kind in this repository's AST-reading guards and
+    the one ``AGENTS.md`` told the next reviewer to expect.
+
+    Scoping it costs **nothing**: measured over all 578 references in the tree,
+    the narrow rule leaves zero unresolved, exactly as the wide one did. The
+    prior docstring justified the wide rule by saying a class docstring
+    "legitimately cites a helper defined in a sibling method" — no such citation
+    exists here, so that was a hypothetical paying a real price.
+
+    Parameters and attribute stores are likewise not counted, for the same
+    reason and at the same measured cost of zero.
     """
     names: set[str] = set()
+    # Imports bind an importable name wherever they appear, function bodies
+    # included, so they are collected before scope is considered at all.
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            names.add(node.name)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            names.add(node.id)
-        elif isinstance(node, ast.alias):
+        if isinstance(node, ast.alias):
             names.add((node.asname or node.name).split(".")[0])
+
+    def collect(body: list[ast.stmt]) -> None:
+        """Walk statements in module or class scope, never into a function."""
+        for statement in body:
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                names.add(statement.name)  # the name, not what its body binds
+            elif isinstance(statement, ast.ClassDef):
+                names.add(statement.name)
+                collect(statement.body)  # methods and class attributes
+            elif isinstance(statement, ast.Assign | ast.AnnAssign | ast.AugAssign):
+                targets = (
+                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                )
+                for target in targets:
+                    for node in ast.walk(target):
+                        if isinstance(node, ast.Name):
+                            names.add(node.id)
+            elif isinstance(statement, ast.If | ast.Try | ast.For | ast.While | ast.With):
+                # A module-level constant can sit under `if TYPE_CHECKING:` or
+                # in a try/except import guard; both are still module scope.
+                for attribute in ("body", "orelse", "finalbody"):
+                    collect(getattr(statement, attribute, None) or [])
+                for handler in getattr(statement, "handlers", None) or []:
+                    collect(handler.body)
+
+    collect(tree.body)
     return names
+
+
+def test_a_function_local_name_does_not_satisfy_a_reference() -> None:
+    """The regression fixture for the bypass review found on ``#329``.
+
+    Driven against planted source rather than the shipped tree, because the
+    shipped tree has no such reference — and a guard proven only by the absence
+    of a counterexample is not proven. The three cases are the ones measured as
+    having been *accepted* by the previous rule, plus the local import that must
+    keep working.
+    """
+    planted = ast.parse(
+        "import os\n"
+        "MODULE_LEVEL = 1\n"
+        "class C:\n"
+        "    ATTR = 2\n"
+        "    def meth(self) -> None: ...\n"
+        "def f():\n"
+        "    local_only = 3\n"
+        "    return [comp_only for comp_only in range(local_only)]\n"
+        "def g():\n"
+        "    import importlib.util\n"
+        "    return importlib.util\n"
+    )
+    bound = _module_bindings(planted)
+
+    for name in ("local_only", "comp_only"):
+        assert name not in bound, (
+            f"{name!r} is only bound inside a function body, so a reference to it "
+            "dangles; counting it is the bypass #329's review found"
+        )
+    for name in ("os", "MODULE_LEVEL", "C", "ATTR", "meth", "f", "g", "importlib"):
+        assert name in bound, (
+            f"{name!r} is legitimately citable ({'a function-local import' if name == 'importlib' else 'module or class scope'}), "
+            "so the narrowing must not have dropped it"
+        )
 
 
 def test_every_docstring_symbol_reference_resolves() -> None:
