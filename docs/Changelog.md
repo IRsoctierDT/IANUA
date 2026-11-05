@@ -4,6 +4,28 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Fixed
+- **D-1 of the evidence contract is closed, and `docs/EVIDENCE_CONTRACT.md` §10 now says so.**
+  `IRsoctierDT/IANUA-Broker#165` merged, routing both the manifest's `expect_tip_hash` and a
+  chain record's `record_hash` through one normalizer, so the `sha256:`-prefixed spelling ATB
+  actually writes and the bare-hex spelling the manifest documented compare equal. A correct
+  ATB deployment grades clean end to end (`findings == []`) instead of High on either branch.
+  The widening is of the *spelling* only — `sha512:`, a doubled prefix, a bare prefix and any
+  wrong length stay refused, and a genuinely different digest still mismatches in both
+  spellings. The merged contract had been left asserting the fix was "not yet merged" and
+  that "D-1 is open", which is why this correction is a change to the record and not
+  bookkeeping: the document is the authoritative cross-repository reference, so a false
+  status line in it is a defect. §13's first two IANUA-Broker items are checked off, the
+  second confirming that `broker.json`'s `schema_version` is validated against nothing —
+  which is why adding that validation stays a **precondition** for v2 rather than a
+  follow-up. **The generalizable lesson is recorded in §10 rather than left implicit:** the
+  defect survived a green suite because the repository's own fixture put bare hex into
+  `record_hash`, a shape the ATB never emits, so a fixture written from one side's assumption
+  about the other agreed with itself and disagreed with production. That is the argument for
+  §9's vectors being computed from the shipped implementations, and for §9.5 making an
+  irreproducible vector a code defect rather than a stale vector. D-2 remains open with no
+  fix proposed (R1 vs R2 is an owner decision), and ratification is still pending.
+
 ### Added
 - **The cross-repository evidence contract (`docs/EVIDENCE_CONTRACT.md`), drafted against shipped
   code in all three repositories rather than from the backlog record.** IANUA, IANUA-Broker

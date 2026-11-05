@@ -412,11 +412,19 @@ either spelling at parse time, normalize to bare hex, and compare against the ch
 `record_hash` with its prefix stripped. The manifest spelling stays bare hex per §5.3. A
 vector pinning both spellings MUST land with the fix.
 
-**Status: a fix is proposed at `IRsoctierDT/IANUA-Broker#165`** (not yet merged), taking that
-shape — one normalizer used by the manifest side and the chain side alike, accepting bare hex
-or an exact `sha256:` prefix and nothing else. It also records why the defect survived: the
-repository's own fixtures put bare hex into `record_hash`, a shape the ATB never emits, so
-both sides agreed in the test and disagreed in production. Until it merges, D-1 is open.
+**Status: FIXED.** `IRsoctierDT/IANUA-Broker#165` merged on 2026-11-05, taking that shape —
+one `_normalize_tip_hash` used by the manifest side and the chain side alike, accepting bare
+hex or an exact `sha256:` prefix and nothing else, so the widening is of the *spelling* and
+never of the accepted value. A correct ATB deployment now grades clean, asserted end to end
+(`findings == []`) rather than only at the parse boundary.
+
+It also recorded why the defect survived nine months of a green suite: the repository's own
+fixtures put bare hex into `record_hash`, a shape the ATB never emits, so both sides agreed
+in the test and disagreed in production. **The lesson generalizes past this defect and is why
+§9 exists:** a fixture written from one side's assumption about the other side is not a
+cross-repository test, however green it is. The vectors in §9 are computed from the shipped
+implementations for that reason, and §9.5 makes an irreproducible vector a defect in the
+repository rather than a stale vector.
 
 ### D-2 — a `mcpscan` minor release breaks IANUA's importer (P2)
 
@@ -508,9 +516,14 @@ This document binds nothing until every box is checked and the owner signs off. 
 names the repository that owns it.
 
 **IANUA-Broker (`mcpscan`)**
-- [ ] Confirm the §7.1 field table against the shipped reader, including that
-      `schema_version` is genuinely unvalidated there.
-- [ ] Fix D-1 and land the two-spelling vector.
+- [x] Confirm the §7.1 field table against the shipped reader, including that
+      `schema_version` is genuinely unvalidated there. *(Confirmed while fixing D-1;
+      `schema_version` is read into the manifest and validated against nothing, which is why
+      the v2 precondition below is a precondition.)*
+- [x] **Fix D-1 and land the two-spelling vector.** Merged as
+      `IRsoctierDT/IANUA-Broker#165`. The vector is six tests in
+      `tests/test_checks_broker.py`; three of them fail without the source change, verified
+      by reverting it.
 - [ ] Decide R1 vs R2 for D-2, and state the decision in `ATB_POSTURE_CHECK.md` §4.
 - [ ] **Precondition for v2:** validate `broker.json`'s `schema_version` and refuse an
       unknown major. This MUST ship **before** any producer writes a `2.0` manifest — the
@@ -560,5 +573,6 @@ shared vector file loaded by all three CIs instead of three transcriptions.
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-11-05 | `0.1-draft` rev 3 | D-1 is **fixed** — `IRsoctierDT/IANUA-Broker#165` merged. §10 records the merge and draws out the generalizable lesson (a fixture written from one side's assumption about the other is not a cross-repository test), and §13's first two IANUA-Broker items are checked off, one of them confirming that `broker.json`'s `schema_version` really is validated against nothing. D-2 remains open with no fix proposed, and ratification is still pending. |
 | 2026-11-05 | `0.1-draft` rev 2 | Three defects found by automated review of rev 1, all confirmed, all in this document. **(a)** §7.3 promised a v2 file would stay parseable by a v1 reader, contradicting §11's unknown-major rule — and because the shipped reader validates no `schema_version` and ignores unknown keys, a v2 manifest with a forged or absent `auth` tag would have graded as sound; resolved fail-closed, with reader validation made a ratification precondition. **(b)** §12.5 forbade dereferencing any path, which forbids the `evidence.chain_path` read the tip binding depends on and the shipped engine performs; narrowed to display-only references plus one licensed, bounded read. **(c)** Eight cross-references had drifted (§14→§13, §13.2/.3/.4→§12.2/.3/.4, §10.1→§9.1) in a document whose value is being precisely referenceable. |
 | 2026-11-05 | `0.1-draft` | First draft. Consolidates the three surfaces from shipped code in all three repositories; records defects D-1 and D-2, both measured; proposes the v2 delta, the auth envelope and `tool_map_digest`. Ratification pending §13. |
