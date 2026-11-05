@@ -3,7 +3,7 @@
   "_comment": [
     "Every GitHub Action in .github/workflows/ whose owner is not GitHub's own",
     "platform must appear here. A third-party action runs over this repository",
-    "with a token on every pull request, so accepting one is a §5 boundary",
+    "with a token on every pull request, so accepting one is a \u00a75 boundary",
     "decision; this file is where that decision is recorded, and",
     "tests/security/test_third_party_actions.py fails when an action is pinned",
     "without a record or when its MAJOR version moves past the reviewed one.",
@@ -13,6 +13,9 @@
     "the failure mode AGENTS.md names for a rule that fires too often. A major is",
     "where an action's internals change, which is also why #316 made majors",
     "arrive as their own pull request.",
+    "",
+    "For an 'accepted_unreviewed' entry, reviewed_version and reviewed_sha record the",
+    "pin it is grandfathered at -- not a review that happened.",
     "",
     "status is 'reviewed' only when a human read the action's own definition at",
     "the recorded SHA. 'accepted_unreviewed' is grandfathered debt: pinned and",
@@ -43,20 +46,20 @@
       ],
       "bounded_by": [
         "fail-on: none, so findings never fail the step",
-        "the workflow is not one of §8's required checks",
+        "the workflow is not one of \u00a78's required checks",
         "two write grants only (pull-requests for one comment, security-events for one SARIF upload)",
         "checkout does not persist credentials",
         "mode: scan is structurally excluded and mode: agents is reachable only by manual dispatch",
         "penthera-version asserts the version, so a re-pointed ref fails closed",
         "tests/security/test_penthera_boundary.py"
       ],
-      "notes": "Version 2.2.0 (a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09) was reviewed on 2026-11-05 against this same property list and all nine held, with the behaviour change being stricter failure reporting. It is deliberately NOT recorded as reviewed here: accepting it is the owner's §5 call on #314, and this file must not pre-empt it."
+      "notes": "Version 2.2.0 (a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09) was reviewed on 2026-11-05 against this same property list and all nine held, with the behaviour change being stricter failure reporting. It is deliberately NOT recorded as reviewed here: accepting it is the owner's \u00a75 call on #314, and this file must not pre-empt it."
     },
     {
       "action": "astral-sh/setup-uv",
       "status": "accepted_unreviewed",
-      "reviewed_version": "10.3.2",
-      "reviewed_sha": "07a047e608db84b3d8c06cd9a7c7dcc9c355c18e",
+      "reviewed_version": "10.3.3",
+      "reviewed_sha": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
       "reviewed_in": "",
       "reason": "Installs uv for the lock-sync gate. Predates this file; pinned and in use since before the record existed.",
       "properties_verified": [],
@@ -67,7 +70,7 @@
         "SHA-pinned with a version comment, asserted by tests/security/test_workflow_permissions.py",
         "runs in the static-analysis job, which holds contents: read only"
       ],
-      "notes": "Grandfathered. Reading it is the first follow-up this file creates."
+      "notes": "Grandfathered. Reading it is the first follow-up this file creates. Updated to the pin #317 landed; for an accepted_unreviewed entry these fields record the pin it is grandfathered at, not a review."
     },
     {
       "action": "gitleaks/gitleaks-action",
@@ -75,7 +78,7 @@
       "reviewed_version": "3",
       "reviewed_sha": "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e",
       "reviewed_in": "",
-      "reason": "One of the two required secret scanners (AGENTS.md §8 stage 3). Predates this file.",
+      "reason": "One of the two required secret scanners (AGENTS.md \u00a78 stage 3). Predates this file.",
       "properties_verified": [],
       "not_reviewed": [
         "the action's own definition has not been read at the pinned SHA"

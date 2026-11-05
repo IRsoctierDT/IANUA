@@ -5,6 +5,25 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **A CI gate holds the append-only logs to growth against the merge base
+  (`scripts/check_append_only_logs.py`).** `DESIGN.md` §11 and `docs/Changelog.md` are the
+  logs `AGENTS.md` §2 step 8 exempts from the concurrent-session overlap rule, because
+  nearly every branch conflicts with its base in both and the resolution is mechanical --
+  which is exactly why nobody reads it. Five merges have resolved one of those conflicts by
+  keeping a side and silently dropping the other's entries, and nothing in CI detected any
+  of them: `697df79`, `76b3e96`, `0b7f4fb` (caught in review as #306), `0608b79a` (#313
+  exists to restore it), and `2b3f6b6c`, found by this gate's own development -- it
+  overwrote the §11 row recording the concurrent-session rules with its own row at the same
+  date, so the row count held, and that row is absent from `DESIGN.md` and from every
+  tracked markdown file to this day. The gate keys each entry by its title -- the Decision
+  column of a §11 row, the bold lead-in of a changelog bullet -- so an in-place correction
+  passes untouched while a vanished entry does not. A count was measured and rejected
+  (#306's swap left both trees at 87 rows; a test pins the equal counts), as was line
+  containment (15 of the 38 commits touching these files over 60 commits delete lines, one
+  release promotion by 184). It compares against the merge base, not the base tip, so a
+  branch merely behind its base is not flagged. A deliberate removal -- a "Known issues"
+  entry whose issue is fixed, as #301 and #310 each did correctly -- is declared in
+  `docs/log_removals.json` with a reason, which ships empty.
 - **Every third-party GitHub Action now carries a committed review record
   (`security/third-party-actions.json`).** #305 accepted `danoszz/penthera` by reading its
   `action.yml` at a pinned SHA and enumerating nine properties — and nothing held that
