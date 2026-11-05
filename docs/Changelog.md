@@ -139,6 +139,23 @@ All notable changes to this project. Versions correspond to git tags.
   Dependabot groups it with the dev toolchain.
 
 ### Changed
+- **`danoszz/penthera` moves to 2.2.0, accepted by the owner after a review at the pinned
+  commit.** Both pins and both `penthera-version` inputs go to 2.2.0
+  (`a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09`), and `security/third-party-actions.json` records
+  the review rather than leaving it in a commit message. A two-major jump on an action that runs
+  over this repository with a token, so it is a §5 decision and is recorded as one. Verified at
+  that commit, not at upstream's `main`: the tag resolves there; still composite with no Docker
+  image, JS entrypoint or `pre:`/`post:` hook; inputs still reach the shell only via `env:`;
+  `base-ref` still allow-listed and now also refusing `..` ranges; `--end-of-options` on both git
+  calls; the nested `upload-sarif` SHA-pinned; the comment script's API calls all scoped to this
+  repository's issues; `mode: deps` still fetching from no package registry; and still exactly one
+  runtime dependency. The behaviour change is fail-closed — the action now exits 2 when it wrote no
+  report instead of passing silently — which with `fail-on: none` on a non-required job makes it
+  noisier rather than more powerful. Not reviewed, and said so: the bundled scanner, which #305 did
+  not audit either. `tests/security/test_third_party_actions.py` was red on this change before the
+  record was updated and green after, which is #318's gate catching exactly the case it was built
+  for. #314 proposed this bundled with a setup-uv patch and was closed unmerged; #316 has since put
+  majors on their own pull request.
 - **Major GitHub Actions bumps leave the `actions-all` Dependabot group, so each arrives as
   its own pull request.** Measured on #314: one group pull request carried
   `astral-sh/setup-uv` 10.3.2 → 10.3.3 (patch) together with `danoszz/penthera` 1.9.0 →

@@ -26,9 +26,9 @@
     {
       "action": "danoszz/penthera",
       "status": "reviewed",
-      "reviewed_version": "1.9.0",
-      "reviewed_sha": "3707f0f71571488268f9f1995389c134f2025cc4",
-      "reviewed_in": "#305",
+      "reviewed_version": "2.2.0",
+      "reviewed_sha": "a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09",
+      "reviewed_in": "#320 (owner accepted 2.2.0 on 2026-11-05; the review itself is recorded here)",
       "reason": "Dependency capability diff on every pull request; agent-config audit by manual dispatch only.",
       "properties_verified": [
         "runs.using is composite: no Docker image, no JS entrypoint",
@@ -42,7 +42,7 @@
         "exactly one runtime dependency (yaml)"
       ],
       "not_reviewed": [
-        "bin/penthera.js and the bundled scanner it runs -- thousands of lines of bundled JavaScript. #305 did not audit it either, and this file does not claim otherwise."
+        "bin/penthera.js and the bundled scanner it runs -- thousands of lines of bundled JavaScript. Neither #305's review of 1.9.0 nor this one audited it, and this record does not claim otherwise. What bounds it is the list below, not a reading of the code."
       ],
       "bounded_by": [
         "fail-on: none, so findings never fail the step",
@@ -50,10 +50,11 @@
         "two write grants only (pull-requests for one comment, security-events for one SARIF upload)",
         "checkout does not persist credentials",
         "mode: scan is structurally excluded and mode: agents is reachable only by manual dispatch",
-        "penthera-version asserts the version, so a re-pointed ref fails closed",
-        "tests/security/test_penthera_boundary.py"
+        "penthera-version asserts 2.2.0, so a re-pointed ref fails closed -- a vendor-supplied layer",
+        "tests/security/test_penthera_boundary.py",
+        "tests/security/test_third_party_actions.py, which fails if this pin's major moves past 2"
       ],
-      "notes": "Version 2.2.0 (a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09) was reviewed on 2026-11-05 against this same property list and all nine held, with the behaviour change being stricter failure reporting. It is deliberately NOT recorded as reviewed here: accepting it is the owner's \u00a75 call on #314, and this file must not pre-empt it."
+      "notes": "Reviewed at a9bbcab4 on 2026-11-05 by reading action.yml at that commit, verified as the commit the v2.2.0 tag names. All nine properties #305 established for 1.9.0 still hold, and two tightened: base-ref now also refuses `..` ranges, and the action exits 2 when it wrote no report rather than passing silently. Upstream changed nine exit codes in 2.2.0; for this repository's usage (mode: deps, fail-on: none, non-required job) they only make the job more likely to go red, which is the safe direction. The jump was two majors, 1.9.0 to 2.2.0; Dependabot's #314 proposed it bundled with a setup-uv patch and was closed unmerged, and #316 has since moved majors out of the group so the next one arrives alone."
     },
     {
       "action": "astral-sh/setup-uv",
