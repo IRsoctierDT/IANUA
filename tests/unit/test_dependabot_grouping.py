@@ -54,6 +54,11 @@ NEVER_AUTO_MERGE = {"pyyaml", "reportlab", "cryptography", "packaging"}
 #: without renaming it there silently disables auto-merge.
 AUTO_MERGE_GROUP = "dev-toolchain"
 
+#: The github-actions ecosystem's group, which the same workflow also
+#: auto-merges. Majors are excluded from it; see
+#: ``test_the_actions_group_excludes_majors``.
+AUTO_MERGE_GROUP_ACTIONS = "actions-all"
+
 #: Every identity that must resolve to Dependabot before auto-merge is enabled.
 #: They are not redundant: ``user.login`` is the PR's author and stays
 #: ``dependabot[bot]`` after a human pushes to the branch, while ``actor``
@@ -92,6 +97,15 @@ def _automerge_job() -> dict[str, Any]:
     job = data["jobs"]["automerge"]
     assert isinstance(job, dict), "the automerge job must parse to a mapping"
     return job
+
+
+def _actions_group() -> dict[str, Any]:
+    """The ``actions-all`` group, so its update-types are read as YAML not text."""
+    blocks = [u for u in _dependabot()["updates"] if u["package-ecosystem"] == "github-actions"]
+    assert len(blocks) == 1, "expected exactly one github-actions ecosystem block"
+    group = blocks[0]["groups"][AUTO_MERGE_GROUP_ACTIONS]
+    assert isinstance(group, dict), "the actions-all group must parse to a mapping"
+    return group
 
 
 def _declared_packages() -> set[str]:
@@ -241,3 +255,33 @@ def test_auto_merge_does_not_disable_commit_verification() -> None:
             f"{flag} must stay false: the auto-merge workflow would otherwise "
             "act on Dependabot metadata it has not verified"
         )
+
+
+@pytest.mark.unit
+def test_the_actions_group_excludes_majors() -> None:
+    """A major action bump must arrive as its own pull request.
+
+    #314 is why this is pinned rather than left to the auto-merge gate. That
+    group PR carried `astral-sh/setup-uv` 10.3.2 -> 10.3.3 (patch) alongside
+    `danoszz/penthera` 1.9.0 -> 2.2.0 (major). The gate did hold --
+    ``fetch-metadata`` reported the group's ``update-type`` as
+    ``version-update:semver-major`` and the enable step skipped -- but holding
+    the gate is not the whole job: the routine patch was then blocked behind a
+    third-party major needing a §5 boundary review, inside a single PR that
+    cannot be split without Dependabot abandoning it.
+
+    Excluding majors from the group is what makes the header's promise
+    ("majors still wait for a human") structural. The auto-merge workflow's own
+    major check stays as the second layer, pinned by
+    ``test_imported_libraries_never_auto_merge`` and the gate assertions below;
+    neither is sufficient alone.
+    """
+    update_types = _actions_group().get("update-types")
+    assert update_types is not None, (
+        "the actions-all group must declare update-types; without it a major"
+        " rides into the auto-merging group with routine patches (#314)"
+    )
+    assert "major" not in update_types, f"the actions-all group admits majors: {update_types}"
+    assert set(update_types) == {"minor", "patch"}, (
+        f"expected exactly minor and patch in the actions-all group, got {update_types}"
+    )

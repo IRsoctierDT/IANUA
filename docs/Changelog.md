@@ -80,6 +80,24 @@ All notable changes to this project. Versions correspond to git tags.
   is byte-identical to its backup afterward. One of those plants initially "passed" because the
   `sed` that was meant to inject it used the wrong indentation and never landed — recorded because
   a planted violation that does not land looks exactly like a check that works.
+- **A first-visit welcome on the Pages site (`docs/index.html`).** A visitor arriving for the
+  first time gets a card naming what IANUA is and four ways in (capabilities, quickstart, live
+  status, source); a returning one gets a slim, self-dismissing note instead. New-versus-returning
+  is decided by one versioned `localStorage` key in the visitor's own browser, which is the whole
+  of the "visitor database": Pages is static hosting, so there is no server side to hold one, and
+  storing an identifier anywhere else would be personal data needing a notice and a lawful basis.
+  The card says so on screen — no cookies, no analytics, no request — and
+  `tests/unit/test_welcome_banner.py` enforces that sentence, failing on a planted `fetch(`
+  (measured). Both elements ship `hidden`, so with JavaScript off the page is unchanged. The
+  dialog is a real one: `role="dialog"`, `aria-modal`, labelled, focus moved in and trapped,
+  Escape and backdrop close, focus restored, `prefers-reduced-motion` respected. The stored record
+  is untrusted input — every Pages site under one github.io account shares an origin — so it is
+  parsed defensively, the count is clamped to an integer, the date is matched against a literal
+  pattern, and both render through `textContent`. Blocked site data and an exhausted quota throw
+  on write rather than returning null, so the storage probe is a write and falls back
+  `localStorage` → `sessionStorage` → greet once per page load. No dependency, no external script.
+  Measured by driving the real page in Chromium: 20 checks covering first visit, return visit, a
+  second visitor, a malformed record, a hostile stored value, and storage blocked outright.
 - **Coverage-guided fuzzing with Atheris (`tests/fuzz/`, `.github/workflows/fuzz.yml`).** There
   are four targets, one for each surface that parses untrusted bytes: `ingest.normalize` on the
   bytes `collect/` feeds it, `ingest.keyvalue.decode`, the egress address and port checks, and
@@ -104,6 +122,19 @@ All notable changes to this project. Versions correspond to git tags.
   Dependabot groups it with the dev toolchain.
 
 ### Changed
+- **Major GitHub Actions bumps leave the `actions-all` Dependabot group, so each arrives as
+  its own pull request.** Measured on #314: one group pull request carried
+  `astral-sh/setup-uv` 10.3.2 → 10.3.3 (patch) together with `danoszz/penthera` 1.9.0 →
+  2.2.0 (major). The auto-merge gate held — `fetch-metadata` reported the group's
+  `update-type` as `version-update:semver-major`, so the enable step skipped and auto-merge
+  was never armed — but it could not unbundle the PR, leaving a routine first-party patch
+  blocked behind a third-party major that needs a §5 boundary review, in a pull request that
+  cannot be split without Dependabot abandoning it. `update-types: [minor, patch]` on the
+  group makes `dependabot.yml`'s own header promise ("majors still wait for a human")
+  structural instead of a property of the workflow downstream; the workflow's major check
+  stays as the second layer. `tests/unit/test_dependabot_grouping.py` pins that the group
+  admits exactly minor and patch, driven against two plants. The cost is a few more pull
+  requests in a busy week, which is the trade for not bundling a vendor major with a patch.
 - **An event's excerpt keeps non-ASCII text as written, so every indicator it yields is a
   substring of it. This changes `event_id` for any record with non-ASCII text in a modelled
   field.** `ingest/normalize.py` rendered `raw_excerpt` with `json.dumps`, whose default is
