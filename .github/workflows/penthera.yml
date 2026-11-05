@@ -164,7 +164,7 @@ jobs:
         with:
           node-version: "22"
       - name: "Penthera: dependency capability diff"
-        uses: danoszz/penthera@3707f0f71571488268f9f1995389c134f2025cc4 # v1.9.0
+        uses: danoszz/penthera@a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09 # v2.2.0
         with:
           mode: deps
           penthera-version: "1.9.0"
@@ -193,7 +193,7 @@ jobs:
         with:
           node-version: "22"
       - name: "Penthera: agent-config audit"
-        uses: danoszz/penthera@3707f0f71571488268f9f1995389c134f2025cc4 # v1.9.0
+        uses: danoszz/penthera@a9bbcab41d7c016d6cd333c7e50b2cf76f0b7a09 # v2.2.0
         with:
           mode: agents
           penthera-version: "1.9.0"
