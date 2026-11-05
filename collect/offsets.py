@@ -64,6 +64,16 @@ _FILE_MODE = 0o600
 _DIR_MODE = 0o700
 
 
+#: Most bytes of stored offsets this loader will read. Bounded because
+#: ``read_text`` on an unbounded file is a ``MemoryError``, which is neither of
+#: the two outcomes :func:`load` documents, and this file lives under the
+#: writable lab-data root. Measured at 184 bytes per source, so this is room
+#: for roughly 22,700 declared sources — three orders of magnitude past a real
+#: node, where every source is typed on a command line by a human (AGENTS.md
+#: §5, "declared, never discovered"). The asymmetry is deliberate: a ceiling
+#: set too low stops a legitimate collector, one set generously costs nothing.
+MAX_OFFSETS_BYTES = 4 * 1024 * 1024
+
 #: Bytes of trailing context hashed into :attr:`Position.fingerprint`. Small
 #: enough that re-reading them costs nothing, long enough that two unrelated
 #: log files are overwhelmingly unlikely to agree on them.
@@ -105,18 +115,76 @@ def load(path: Path) -> dict[str, Position]:
     plausible recoveries both lose: starting from zero re-ingests every line of
     every source, and starting from the end skips everything written since the
     last run.
+
+    **Absent is ENOENT and nothing else.** The read happens first and only
+    ``FileNotFoundError`` answers ``{}``; every other failure is a refusal.
+    This replaces a ``path.exists()`` pre-check, which could not tell the two
+    apart: ``exists()`` answers False for any error it meets, so a path that
+    could not be *examined* read as a path that had never been *written*, and
+    the collector restarted every source from byte zero without telling
+    anyone. Measured on CPython 3.13.17 — an offsets path whose parent is a
+    regular file (ENOTDIR, errno 20), one that is a symlink loop (ELOOP,
+    errno 40) and one holding an embedded NUL each returned ``{}``, and on
+    3.14, where pathlib's predicates swallow every ``OSError``, an offsets
+    file the process may not read joins them. None of those is a first run.
+
+    The cost of the rule, stated because it is a real behaviour change: a
+    mistyped ``--root`` whose ``data/collect`` is a file now exits 1 instead
+    of starting clean. That is the fail-closed direction and the one this
+    module's own rule above asks for — ``sli/indicators.py`` already
+    documents grading such a file UNKNOWN rather than zero, "because 'never
+    collected' and 'position lost' demand" different answers.
+
+    **Bounded.** At most :data:`MAX_OFFSETS_BYTES` is read, because an
+    unbounded read is a ``MemoryError`` — neither the empty mapping nor the
+    :class:`OffsetError` this function documents.
     """
-    if not path.exists():
-        return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as handle:
+            # One byte past the ceiling, so "too long" is detectable without a
+            # prior `stat()` — a separate syscall a writer can race.
+            blob = handle.read(MAX_OFFSETS_BYTES + 1)
+    except FileNotFoundError:
+        # The *only* absent case. Deliberately not `except OSError`: every
+        # other errno means the path is broken, not that it is new.
+        return {}
+    except OSError as exc:
+        # `strerror` alone, because OSError's own text repeats the path.
+        raise OffsetError(
+            f"{path}: offsets cannot be read ({exc.strerror or type(exc).__name__})"
+        ) from exc
+    except ValueError as exc:
+        # `open()` refuses a path with an embedded NUL this way, not as OSError.
+        raise OffsetError(f"{path}: offsets cannot be read ({exc})") from exc
+    if len(blob) > MAX_OFFSETS_BYTES:
+        # The ceiling is quoted and no measurement of the file is, for the same
+        # reason the refusals above quote no content: only this loader's own
+        # limit is this loader's to state.
+        raise OffsetError(
+            f"{path}: offsets are larger than {MAX_OFFSETS_BYTES} bytes; refusing "
+            "rather than reading an unbounded file into memory"
+        )
+    try:
+        # Decoding here and not in `read_text` is what makes the bound safe:
+        # the read asked for one byte past the ceiling and got fewer, so `blob`
+        # is the whole file and cannot be cut mid-character.
+        raw = blob.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # Its own text quotes the offending byte; this names where it is and
+        # not what it is, so the refusal carries none of the file's content.
+        # The same treatment `EgressAllowlist.load` gives invalid UTF-8.
+        raise OffsetError(
+            f"{path}: offsets are not valid UTF-8 ({exc.reason} at byte {exc.start})"
+        ) from exc
+    try:
+        payload = json.loads(raw)
     except RecursionError as exc:  # depth bomb — not a ValueError subclass
         # Measured: "[" * 100000 escaped as RecursionError, past both callers'
         # handlers (the collector's and the SLI monitor's), as a traceback.
         raise OffsetError(
             f"{path}: offsets are unreadable (nesting depth exceeds parser limits)"
         ) from exc
-    except (OSError, ValueError) as exc:
+    except ValueError as exc:
         raise OffsetError(f"{path}: offsets are unreadable ({exc})") from exc
     if not isinstance(payload, dict):
         raise OffsetError(f"{path}: offsets must be a JSON object, got {type(payload).__name__}")

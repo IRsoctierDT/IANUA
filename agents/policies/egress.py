@@ -47,6 +47,14 @@ from typing import Any
 #: this file names the *destination*, and neither alone is sufficient.
 DEFAULT_EGRESS_ALLOWLIST_PATH = Path(__file__).with_name("egress.json")
 
+#: Most bytes of allow-list this loader will read. Bounded because an unbounded
+#: ``read_text`` is a ``MemoryError``, which is not the
+#: :class:`EgressAllowlistError` this loader documents. Measured at about 150
+#: bytes per declared host — the shipped file is 34 bytes and 64 hosts is under
+#: 10 KB — so this is room for roughly 7,000 hosts in a committed, reviewed file
+#: that a lab populates with a handful.
+MAX_ALLOWLIST_BYTES = 1024 * 1024
+
 #: The schema version this loader understands. An unknown version is refused rather
 #: than read optimistically — a file written for a later schema may mean something
 #: narrower than this code would enforce.
@@ -338,25 +346,44 @@ class EgressAllowlist:
         nested past the parser's limits, and an integer longer than
         ``sys.get_int_max_str_digits()`` each escaped as ``UnicodeDecodeError``,
         ``RecursionError`` and a bare ``ValueError`` (measured), so a caller handling
-        this type got a traceback instead.
+        this type got a traceback instead. A file past
+        :data:`MAX_ALLOWLIST_BYTES` is refused for the same reason: an unbounded
+        read is a ``MemoryError``, which is not this type either.
         """
         allowlist_path = Path(path)
         try:
-            raw = allowlist_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            # A ValueError, not an OSError, so it used to escape the clause below as
-            # a bare traceback (measured: b'{"hosts": ["\xff"]}'). Its own text
-            # quotes the offending byte; this names where it is and not what it is,
-            # so the refusal carries none of the file's content.
-            raise EgressAllowlistError(
-                f"egress allow-list is not valid UTF-8: {allowlist_path} "
-                f"({exc.reason} at byte {exc.start})"
-            ) from exc
+            with allowlist_path.open("rb") as handle:
+                # One byte past the ceiling, so "too long" is detectable without
+                # a prior stat() — a separate syscall a writer can race.
+                blob = handle.read(MAX_ALLOWLIST_BYTES + 1)
         except (OSError, ValueError) as exc:
             # ValueError: open() refuses a path with an embedded NUL that way.
             raise EgressAllowlistError(
                 f"egress allow-list not readable: {allowlist_path} ({exc}) — refusing "
                 "rather than treating it as empty, so a broken file is visible"
+            ) from exc
+        if len(blob) > MAX_ALLOWLIST_BYTES:
+            # An unbounded read is a MemoryError, which is not the documented type.
+            raise EgressAllowlistError(
+                f"egress allow-list is larger than {MAX_ALLOWLIST_BYTES} bytes: "
+                f"{allowlist_path} — refusing rather than reading an unbounded file "
+                "into memory"
+            )
+        try:
+            # Decoded here rather than by read_text, and that is what makes the
+            # bound safe: the read asked for one byte past the ceiling and got
+            # fewer, so blob is the whole file and cannot be cut mid-character.
+            # Still strict UTF-8, because json.loads(bytes) would start accepting
+            # UTF-16/32 for a committed policy file.
+            raw = blob.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # A ValueError, not an OSError, so it used to escape as a bare
+            # traceback (measured: b'{"hosts": ["\xff"]}'). Its own text quotes
+            # the offending byte; this names where it is and not what it is, so
+            # the refusal carries none of the file's content.
+            raise EgressAllowlistError(
+                f"egress allow-list is not valid UTF-8: {allowlist_path} "
+                f"({exc.reason} at byte {exc.start})"
             ) from exc
         try:
             data: Any = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)

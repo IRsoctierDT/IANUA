@@ -247,7 +247,8 @@ a more-trusted one. Crossing one requires validation and (often) an approval gat
     *into persistence*, and the asymmetry matters: `ingest/` is a pure function that can be
     re-run, while a stored event is evidence that something else will later rely on. Three
     controls carry it. **Integrity:** rows are content-addressed (SHA-256 of the canonical
-    projection), so a replayed batch stores nothing new and a row edited outside the
+    projection), so a replayed batch stores nothing new (when the build replaying it is the
+    one that stored it; see the 2026-10-24 row on the excerpt) and a row edited outside the
     platform fails its hash on read rather than returning a plausible event; SQLite triggers
     refuse `UPDATE` outright, because append-only enforced only in the Python API is not a
     control when anything holding the file could rewrite history. **Containment:** the

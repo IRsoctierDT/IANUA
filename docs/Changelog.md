@@ -84,6 +84,34 @@ All notable changes to this project. Versions correspond to git tags.
   and the SBOM are regenerated: 136 Python components, and `pip-audit` reports none vulnerable.
   Dependabot groups it with the dev toolchain.
 
+### Changed
+- **An event's excerpt keeps non-ASCII text as written, so every indicator it yields is a
+  substring of it. This changes `event_id` for any record with non-ASCII text in a modelled
+  field.** `ingest/normalize.py` rendered `raw_excerpt` with `json.dumps`, whose default is
+  `ensure_ascii=True`. An unclaimed record's indicator `https://café.example/x` was
+  extracted as written and retained as `https://caf\u00e9.example/x`, so it was not in the
+  evidence it came from. Each escaped character also spent six of the excerpt's 4,096
+  characters, or twelve outside the BMP. Measured: a modelled field of 2,048 `é` kept 681
+  of them and now keeps all 2,048. The excerpt and the leaf fragments it is searched for share
+  one encoder, because with only the excerpt changed the search stopped at the first
+  non-ASCII value and extracted no indicator in it or after it (measured). The store's
+  `canonical_json` already kept Unicode as written, so the stored projection no longer holds
+  the excerpt's escape escaped a second time. Format characters such as U+202E are written
+  as themselves, as they already were in the typed fields, and are escaped where they are
+  printed (`scripts/_terminal.printable`). The fuzz target's escaped-form allowance is gone.
+  `tests/security/test_ingest_unicode.py` pins the rendering, the budget and the encoder
+  pairing. **Action for operators:** the owner accepted the one-time id change instead of a
+  `SCHEMA_VERSION` bump, which would make every existing store and backup refuse to open.
+  Rows stored before this release stay readable and still verify. A restore
+  (`docs/RESTORE.md` step 5) or a re-collection (`docs/RETENTION.md`) that re-reads a log
+  line an earlier build stored stores it again if a modelled field holds non-ASCII text.
+  Measured across the two builds: two lines re-read, the ASCII one deduplicated, the other
+  stored a second time. ASCII-only events still deduplicate, a second re-read by this build
+  stores nothing, and a line that has rotated out of its source cannot be re-read. The
+  committed fixtures are all ASCII, so no committed id or digest changes (0 of 15 on either
+  path). An unclaimed record's projection stays under the store's 64 KiB ceiling: about
+  50 KiB at most by its per-field bounds, and 46,668 bytes on a record built to fill them.
+
 ### Fixed
 - **The MCP stdio transport answers a malformed line with a JSON-RPC error and keeps reading,
   as its docstring said it did.** Measured on `2090519`, five lines ended `serve()`: a
@@ -137,6 +165,61 @@ All notable changes to this project. Versions correspond to git tags.
   **Residual:** on 3.14, pathlib's predicates swallow every `OSError`, so there an unsearchable
   source is refused as "does not exist" rather than "cannot be examined". It is still a
   `SourceError`.
+- **A broken offsets path is refused instead of read as "never collected", so the collector no
+  longer restarts every source from byte zero without saying so.** `collect.load_offsets` asked
+  `path.exists()` before reading, and `exists()` answers False for *any* error it meets, not only
+  for ENOENT — so a path that could not be examined was indistinguishable from one that had never
+  been written. #300 recorded this as a 3.14 residual. **It was not 3.14-only:** measured on
+  CPython 3.13.17, an offsets path whose parent is a regular file (ENOTDIR, errno 20), one that is
+  a symlink loop (ELOOP, errno 40), and one holding an embedded NUL each returned `{}` on the
+  current interpreter. On 3.14, where pathlib's predicates swallow every `OSError`, an offsets
+  file the process may not read joins them; through 3.13 that one case raised a bare
+  `PermissionError` instead. The read now happens first and only `FileNotFoundError` answers `{}`;
+  every other failure raises `OffsetError`, cause-chained. Both callers already handled that type,
+  so `scripts/run_collector.py` exits 1 and leaves the file for inspection, and the SLO monitor's
+  `collection-pending` measurement grades UNKNOWN — which is what `sli/indicators.py` already
+  documented for a file whose position is lost rather than absent. **The cost, stated because it
+  is a behaviour change:** a mistyped `--root` whose `data/collect` is a regular file now exits 1
+  rather than starting clean. A genuine first run is unaffected, both when the file is missing
+  from an existing directory and when the whole tree has yet to be made.
+- **An offsets file that is not valid UTF-8 no longer carries one of its bytes in the refusal.**
+  The type was already right — `UnicodeDecodeError` is a `ValueError`, which the old clause
+  caught — but the message interpolated the decoder's text, which quotes the offending byte
+  (measured: `can't decode byte 0xff in position 28`). It now names the reason and the offset and
+  nothing else, the same treatment `EgressAllowlist.load` gives invalid UTF-8.
+  `tests/security/test_loader_error_contracts.py` gains five tests: one per broken-path regime,
+  the invalid-UTF-8 refusal, an EACCES case that skips where DAC is bypassed, and a control
+  asserting a genuine first run still reads as `{}`. On the unfixed loader four of them fail and
+  the control passes.
+- **`collect.declare` refuses a symlink loop at `resolve()` instead of raising `RuntimeError`.**
+  `Path.resolve()` reports a loop with a `RuntimeError` carrying no errno, so `declare`'s
+  `except OSError` never saw it and the function could return neither a `Source` nor a
+  `SourceError`. Measured across the whole of `requires-python`: `RuntimeError` on CPython
+  3.11.15 and 3.12.13, while on 3.13.17 a non-strict resolve tolerates a loop and returns the
+  path unchanged, so the clause is inert there. Only the `resolve()` call is wrapped, and
+  `RecursionError` and `NotImplementedError` — both `RuntimeError` subclasses, neither meaning
+  "symlink loop" — are re-raised ahead of it, which is the objection that left this unfixed in
+  #300. Reachable in production only by a race, since a loop present at declare time is refused
+  earlier: measured on all three interpreters, a loop at the final component is caught by the
+  symlink refusal and a loop in an ancestor by "does not exist".
+- **Neither loader reads an unbounded file any more.** `collect.load_offsets` and
+  `EgressAllowlist.load` both called `read_text` with no ceiling, so a sufficiently large file
+  was a `MemoryError` — not the empty mapping, and not the error type either loader documents.
+  Each now reads one byte past its ceiling from an open handle and refuses if it got that far,
+  which needs no `stat()` and so cannot be raced by a writer, and each decodes the bytes itself
+  afterwards: because the read asked for one byte more than it accepts, a file that passes is
+  whole and cannot be cut mid-character. The ceilings are measured, not guessed —
+  `MAX_OFFSETS_BYTES` is 4 MiB against 184 bytes per source, room for roughly 22,700 declared
+  sources where every source is typed on a command line by a human; `MAX_ALLOWLIST_BYTES` is
+  1 MiB against about 150 bytes per host, where the shipped file is 34 bytes and 64 hosts is
+  under 10 KB. Both bounds are inclusive, and the refusals state the ceiling and nothing
+  measured from the file. Five planted regressions each turned exactly the targeted tests red,
+  including a bare `except RuntimeError` with no re-raise, which reddens both of the tests that
+  hold `RecursionError` and `NotImplementedError` propagating.
+  **Still open, unchanged:** `declare`'s "does not exist" wording for an unsearchable or
+  over-long source on 3.14, where pathlib's predicates swallow every `OSError`. Precise wording
+  needs an explicit `lstat()` before the predicates, which would also change the ENOTDIR and
+  ELOOP messages on every version.
 
 ### Security
 - **Every `pip install` in CI is hash-pinned (OpenSSF Scorecard Pinned-Dependencies).** Eight
@@ -164,16 +247,29 @@ All notable changes to this project. Versions correspond to git tags.
   nothing else. Both cross a major version, and no dependent caps either. The derived locks and
   the SBOM are regenerated. The build-system floor rises from `setuptools>=84.0.0` to
   `>=84.1.0`, because the old floor still admitted the vulnerable 84.0.0.
+- **A log line carrying a JSON-escaped lone surrogate no longer stalls its collector source.**
+  `json.loads` turns an escape such as `\ud800` into a lone surrogate, and `ingest`'s `text()`
+  kept it. The store encodes each projection as UTF-8 before writing it, which refused it with a
+  bare `UnicodeEncodeError`, and `scripts/run_collector.py` holds a source's offsets until its
+  batch is durable. Measured on `2090519` under CPython 3.12.13 and 3.13.17: a three-line,
+  all-ASCII log whose middle line carried a Defender `Subject` of `x \ud800 y` stored 0 of 3
+  events on every pass, `offsets held`, exit 1, so no later line of that source was ever stored.
+  An unclaimed record whose key name held the escape was refused the same way, because the
+  withheld-field note names the key. `text()` now replaces every surrogate with U+FFFD, as the
+  bytes path's `errors="replace"` already did, so the event is stored with the replacement
+  visible and the source advances. Every typed field, key name, excerpt value and carried text
+  passes through `text()`: a security test plants a surrogate at every string site of every
+  committed fixture, on both paths and through both entry types, and none reaches the
+  projection. The fuzz target now hashes the projection as the store does. It could not see this
+  before, because `canonical_json` alone never encodes.
 
 ### Known issues
-- **An unclaimed record's `raw_excerpt` escapes non-ASCII characters.** It is serialized with
-  `json.dumps`, whose default is `ensure_ascii=True` (`ingest/normalize.py`), so an indicator
-  such as `https://café.example/x` is extracted as written but retained as
-  `https://café.example/x`. It is then not a substring of the excerpt it came from. The
-  fuzz harness found this on its first run, and its normalize target accepts the escaped form
-  until the fix lands. The fix is a change of its own, because it alters `event_id` for every
-  such record. `tests/fuzz/targets.py` lists one further documented contract that does not
-  hold today and is not asserted yet; it needs its own fix too.
+- **`tests/fuzz/targets.py` does not yet assert one documented contract, because it does
+  not hold today:** the event store's 64 KiB projection ceiling (`normalize` can build an
+  event the store refuses, which stalls that source). It needs its own fix. Keeping non-ASCII
+  as written above moves a claimed record up to about 12 KiB closer to that ceiling: measured
+  with three-byte characters, the excerpt's share of the projection grew from 4,734 to 11,073
+  bytes.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 
