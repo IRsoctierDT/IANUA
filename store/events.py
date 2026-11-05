@@ -921,7 +921,13 @@ class EventStore:
         return identifier
 
     @_refuse_corruption
-    def append_many(self, events: tuple[NormalizedEvent, ...], *, ingested_at: float) -> int:
+    def append_many(
+        self,
+        events: tuple[NormalizedEvent, ...],
+        *,
+        ingested_at: float,
+        stand_in: Callable[[NormalizedEvent, Exception], NormalizedEvent] | None = None,
+    ) -> int:
         """Store a batch in one transaction; return how many were *new*.
 
         All-or-nothing: one bad event rolls the whole batch back rather than
@@ -947,10 +953,33 @@ class EventStore:
         pass runs to completion before the transaction opens, so a batch
         containing an event no ``query`` could return is refused in full
         rather than stored up to the bad one (:meth:`_project`).
+
+        **``stand_in`` lets a caller keep a batch that holds one such event.**
+        For a caller that advances a cursor only once its batch is stored,
+        refusing the whole batch over one event stops that cursor for good:
+        every retry carries the same event. The collector stood still like
+        that on every pass over a source holding one oversized line, so every
+        later line of that log was never stored. Given ``stand_in``, an event
+        the projection pass refuses is handed to it with the refusal, and what
+        it returns is projected and stored in that event's place. The rest of
+        the contract holds. The batch is still one transaction, every position
+        in it still holds a stored row, and a stand-in this store also refuses
+        refuses the batch, so a bad stand-in fails closed.
+
+        Only the projection pass is covered, and every ``Exception`` it raises
+        except ``MemoryError`` is passed on, without a list of types.
+        :meth:`_project` is a pure function of the event (serialize, measure,
+        read back, hash), so whatever it raises is a property of that event
+        and not of this database. A list would also miss the next refusal
+        nobody listed, which is the argument ``ingest.normalize_many`` makes
+        for its own outer layer. ``MemoryError`` is the one exception that
+        says something about the process instead, and it propagates.
+        Contention, corruption and ordering errors come from the transaction
+        and are never handed to ``stand_in``.
         """
         if not events:
             return 0
-        projected = [(event, *self._project(event)) for event in events]
+        projected = [self._project_or_stand_in(event, stand_in) for event in events]
         stamp = float(ingested_at)
         with self._conn:
             self._begin_write()
@@ -1147,13 +1176,44 @@ class EventStore:
         )
 
     @staticmethod
+    def _project_or_stand_in(
+        event: NormalizedEvent,
+        stand_in: Callable[[NormalizedEvent, Exception], NormalizedEvent] | None,
+    ) -> tuple[NormalizedEvent, str, str]:
+        """Project ``event``, or what ``stand_in`` returns for it if it is refused.
+
+        See :meth:`append_many`. Without ``stand_in`` this re-raises the
+        refusal unchanged, so the default contract is the one every caller had
+        before the parameter existed.
+        """
+        try:
+            return (event, *EventStore._project(event))
+        except MemoryError:
+            raise
+        except Exception as refusal:
+            if stand_in is None:
+                raise
+            replacement = stand_in(event, refusal)
+            # Projected with the same check, so a stand-in is never stored on
+            # trust; a refused one raises here, chained to the first refusal.
+            return (replacement, *EventStore._project(replacement))
+
+    @staticmethod
     def _project(event: NormalizedEvent) -> tuple[str, str]:
         """Serialize to canonical JSON, content-address it, and refuse what cannot be read.
 
         Two checks, and the second exists because the first was not enough.
 
-        **The size ceiling** bounds the whole projection. It caught an event
-        far larger than any ``ingest/`` output, which is what it was for.
+        **The size ceiling** bounds the whole projection. It was written for a
+        hand-built event far larger than any ``ingest/`` output, and it also
+        refused ``ingest/`` output, because a sum of per-field bounds had no
+        ceiling. Measured on ``2c92e3f``: a 61,670-byte Defender line
+        projected to 66,729 bytes, and since :meth:`append_many` refuses a
+        whole batch, the collector held that source's offsets on every pass.
+        ``ingest`` now fits every event under this same constant, which
+        ``store.schema`` re-exports from there (``NormalizedEvent.bounded``).
+        So the refusal is back to meaning what it says, and a caller that
+        must not stall on it can pass ``stand_in`` to :meth:`append_many`.
 
         **The read-back** refuses a projection this store could not return.
         ``_rebuild`` reconstructs every row a query yields through
@@ -1200,8 +1260,8 @@ class EventStore:
         if size > MAX_PROJECTION_BYTES:
             raise StoreIntegrityError(
                 f"projection is {size} bytes, over the {MAX_PROJECTION_BYTES}-byte "
-                "ceiling; ingest/ bounds every field, so an event this large was "
-                "not built through it"
+                "ceiling; ingest/ fits every event under it (NormalizedEvent.bounded), "
+                "so an event this large was not built through it"
             )
         # The write-side twin of `_rebuild`'s read. Checked before any insert,
         # and `append_many` projects the whole batch before opening its
