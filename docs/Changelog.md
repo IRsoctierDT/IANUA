@@ -42,16 +42,27 @@ All notable changes to this project. Versions correspond to git tags.
   kept because silently dropping a security finding is worse than mislabelling it, and
   consumer-owned because the display must not become a channel for producer-chosen text.
   A malformed dimension (non-string, empty, oversized) is still fatal. **The same trap
-  exists in four more enums and is deliberately left closed:** measured, an unknown finding
-  `severity`, `overall_grade`, `servers[].grade` or `servers[].state` each reject the whole
-  report. A dimension is a grouping label this consumer does not render; those four are read
-  as risk *ordering*, and an unknown severity shown under a sentinel reads as **less** urgent
-  than `critical`, not more — so a sentinel there could cause a mis-triage a refusal cannot.
-  Widening them changes how risk is presented and is the owner's decision; until it is taken,
-  a producer adding a severity, grade or state in a minor still breaks every import, which is
-  recorded in §6.2 rather than left to be rediscovered. §6.1's field table said the key set
-  was **exactly** the four while §6.2 one section later said extras are accepted; the row is
-  corrected and two rows added for the per-finding fields.
+  existed in four more enums and was, at this commit, deliberately left closed:** measured,
+  an unknown finding `severity`, `overall_grade`, `servers[].grade` or `servers[].state` each
+  rejected the whole report, so a producer adding one in a minor still broke every import.
+
+  **The reason given for leaving them closed is SUPERSEDED, and is recorded here only as the
+  reason that was given.** It ran: *those four are read as risk ordering, and an unknown
+  severity shown under a sentinel reads as less urgent than `critical`, so a sentinel could
+  cause a mis-triage a refusal cannot; a dimension is only a grouping label this consumer
+  does not render.* **Both halves are false.** `finding_rows` puts `f.dimension` in a
+  `Dimension` cell, so an unknown dimension is as visible as an unknown severity; and this
+  consumer has **no severity ordering at all** — `_render_findings` sorts the severity filter
+  alphabetically and shows counts in insertion order, so nothing ranks `critical` above
+  `low` and a sentinel displaces nothing. The entry below widens all four, and the real
+  hazard is **filter exclusion**, not mis-ranking. Nothing in this paragraph should be read
+  as a live rationale.
+
+  Also in this commit: §6.1's field table said the `dimension_grades` key set was **exactly**
+  the four while §6.2 one section later said extras are accepted — §6.1 is the consumer's
+  required-field contract, so an implementer following it would have rejected input the same
+  document claimed to support. The row is corrected and two rows added for the per-finding
+  fields.
 - **Every closed value set the scan-report importer reads is now forward-compatible, on the
   owner's decision — so D-2's class is closed rather than narrowed.** A finding's `severity`,
   `overall_grade`, the `dimension_grades` values, `servers[].grade` and `servers[].state` join
@@ -95,6 +106,36 @@ All notable changes to this project. Versions correspond to git tags.
   fix proposed (R1 vs R2 is an owner decision), and ratification is still pending.
 
 ### Added
+- **A drift gate on docstring cross-references: a `:func:`/`:data:`/`:class:` citation must name
+  a symbol that exists (`tests/unit/test_docs_runbooks.py`).** The host file already gated the
+  other half of what a document cites — a `docs/*.md` path — and nothing read the symbol half.
+  Measured on this tree, 578 such references across 81 modules, of which **three dangled**:
+  `scripts/run_pipeline.py:89`, `:169` and `scripts/run_collector.py:173` all said
+  `:func:`_single_instance`` while the symbol has always been `single_instance`, imported two
+  lines above one of them. All three are corrected in the same change, since the gate cannot
+  land green over them.
+
+  **The resolution rule is deliberately generous, and what that costs is stated rather than
+  implied.** A reference resolves against builtins, any name the citing module binds at any
+  depth, any top-level name bound in any tracked non-test module, a tracked module stem, or a
+  tracked top-level package; a dotted reference is resolved on its **head** only, because
+  following `a.b.c` through would mean importing `a` to check prose. So a typo that happens to
+  match a symbol defined anywhere in the repository resolves, and so does a right head with a
+  wrong tail. What it buys is **zero false positives on the shipped tree**, which is the
+  property that decides whether a gate is obeyed or switched off — the failure mode the charter
+  names in those terms, and the reason the scoping recommended *against* the `§`-reference half
+  of the same idea (measured: 176 failures on a clean tree).
+
+  Two narrowings were measured rather than assumed. Excluding function parameters and attribute
+  stores from the per-module binding set costs **zero** false positives and removes two ways for
+  a typo to resolve against something that is not the cited symbol, so the stricter form was
+  free. Dropping the repo-wide index, by contrast, costs four (`AuditLogger`, `Ed25519Verifier`,
+  `StoreError`, `to_dict` are genuine cross-module citations), so it is kept. The gate is driven
+  against a planted dangling reference to show it is not vacuous, and it catches the
+  `UNKNOWN_DIMENSION` dangler a rename left behind earlier in this release — the one historical
+  defect of seven that the scoping predicted it would have caught, which is recorded as one and
+  not three.
+
 - **The cross-repository evidence contract (`docs/EVIDENCE_CONTRACT.md`), drafted against shipped
   code in all three repositories rather than from the backlog record.** IANUA, IANUA-Broker
   (`mcpscan`) and agent-trust-broker (ATB) exchange security evidence as files, and nothing

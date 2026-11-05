@@ -86,7 +86,7 @@ flag is not recorded anywhere that pass can read it.
 **One cycle at a time.** An exclusive lock is held for the whole cycle. Two
 cycles appending to the hash-chained audit log at once fork the chain and break
 ``verify()`` permanently, which would put a false positive into a tamper
-detector — see :func:`_single_instance`. A declined lock exits ``0``: the timer
+detector — see :func:`single_instance`. A declined lock exits ``0``: the timer
 outrunning the cycle is expected on a tight schedule, not a failure.
 
 Exit codes:
@@ -166,7 +166,7 @@ ACTION_CLASS: ActionClass = "read_only"
 ACTION_NAME = "pipeline_cycle"
 
 #: Single-instance lock, beside the cursor. A correctness control, not an
-#: optimization — see :func:`_single_instance`.
+#: optimization — see :func:`single_instance`.
 LOCK_FILE = "cycle.lock"
 
 #: Owner-only, matching the cursor and the audit log.
