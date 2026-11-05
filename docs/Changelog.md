@@ -41,6 +41,28 @@ All notable changes to this project. Versions correspond to git tags.
   plants each redden exactly their targeted test, including #314's own bump replayed.
   Residual: this proves review provenance, not that vendor code is benign — each record names
   the bundled scanner it did not audit.
+- **Each review record now declares what actually executes, and the gate derives whether our
+  SHA pin fixes it.** A 40-hex pin fixes `action.yml`; for a **Docker** action, `action.yml`
+  names an image, so the pin does not fix the code that runs. Measured at the pinned SHAs:
+  `danoszz/penthera` is `composite`; `gitleaks/gitleaks-action` and `astral-sh/setup-uv` are
+  `node24`, the latter with a `post:` hook (`dist/save-cache/index.cjs`) that runs after the
+  job with the same token and that nobody has read — a property the penthera record verifies
+  the *absence* of, so it matters here; and `ossf/scorecard-action` is `runs.using: "docker"`
+  with `image: "docker://ghcr.io/ossf/scorecard-action:v2.5.0"`, a **mutable tag**. Alone
+  among the four, its executing code is not fixed by our pin: whoever can push that tag in
+  `ghcr.io/ossf` chooses the container this repository runs, and no SHA pin, Dependabot bump
+  or permissions gate can see a tag move. So every record carries an `execution` block, and
+  `tests/security/test_third_party_actions.py` **derives** `pinned_by_sha` from the entrypoint
+  and compares it with the declaration — a record cannot claim a pin it does not have — while
+  a record with a gap must state it in `pin_gap`, and one without must not. Six plants each
+  redden exactly their rule. **The same change fixes a bypass of the module's own reach:** it
+  globbed `*.yml` only, so a vendor action added in `foo.yaml` was invisible to every test
+  here (measured: the old glob does not see a planted `evilcorp/backdoor` in `sneaky.yaml`,
+  the both-extension scan does, and the record gate goes red). `test_workflow_permissions.py`
+  already read both spellings. Residual: the gap is upstream's image reference to close, not
+  ours — this makes it enumerable and un-droppable, not closed; and a Dockerfile built from a
+  pinned tree can still carry an unpinned `FROM`, which the derivation reads as sufficient
+  because no offline test can read a vendor's Dockerfile.
 - **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
   third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
   PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather

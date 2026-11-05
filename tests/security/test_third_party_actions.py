@@ -35,6 +35,29 @@ in this repository predate this file and nobody has read them. Recording them as
 reviewed would assert what was never measured, so they carry that status with a
 reason, and this module requires the reason. The debt is now enumerable instead
 of invisible, which is the whole gain — not that the debt is gone.
+
+**A 40-hex pin does not always fix the code that runs, so each record declares
+what executes.** The first version of this module treated the SHA as the whole
+control, which is true for a composite action (the steps are in the file) and a
+node action (the `dist/` bundle is in the tree at that commit) — and false for a
+**Docker** action, where the pin fixes `action.yml` and `action.yml` names an
+image. Measured at the pinned SHAs on 2026-11-05: `danoszz/penthera` is
+composite; `gitleaks/gitleaks-action` and `astral-sh/setup-uv` are `node24`,
+the latter with a `post:` hook nobody has read; and `ossf/scorecard-action`
+is `runs.using: "docker"` with
+`image: "docker://ghcr.io/ossf/scorecard-action:v2.5.0"` — a **mutable tag**.
+Whoever can push that tag chooses the container this repository executes, and
+no SHA pin, Dependabot bump or permissions gate can see a tag move. So every
+record declares an `execution` block, this module **derives** whether the pin
+suffices from the entrypoint and compares it with the declaration, and a record
+with a gap must state it in `pin_gap`. The gap itself is upstream's to close;
+what this buys is that it is enumerable and cannot be quietly dropped.
+
+**And the scan reads both extensions GitHub accepts.** `*.yml` alone was a
+bypass of the same shape this repository keeps finding in its own controls — a
+rule written to match one spelling that the thing it stops can simply spell
+differently. A vendor action added in `foo.yaml` was invisible to every test
+here. `test_workflow_permissions.py` already read both; this module did not.
 """
 
 from __future__ import annotations
@@ -49,6 +72,11 @@ import pytest
 _REPO = Path(__file__).resolve().parents[2]
 _WORKFLOWS = _REPO / ".github" / "workflows"
 _RECORD = _REPO / "security" / "third-party-actions.json"
+
+#: Both spellings GitHub accepts for a workflow file. `*.yml` alone let a vendor
+#: action in `foo.yaml` past every test in this module;
+#: `test_workflow_permissions.py` already read both, so this matches its idiom.
+_WORKFLOW_SUFFIXES = (".yml", ".yaml")
 
 #: Owners that are GitHub's own platform and need no vendor review record.
 #: Deliberately in code: in the JSON, adding an owner here would be a bypass.
@@ -101,12 +129,56 @@ def _major(version: str) -> str:
     return version.split(".")[0]
 
 
+def workflow_files(directory: Path) -> list[Path]:
+    """Every workflow file in ``directory``, in both spellings GitHub accepts."""
+    return sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in _WORKFLOW_SUFFIXES
+    )
+
+
 def _all_pins() -> list[tuple[Path, dict[str, str]]]:
     found: list[tuple[Path, dict[str, str]]] = []
-    for path in sorted(_WORKFLOWS.glob("*.yml")):
+    for path in workflow_files(_WORKFLOWS):
         for pin in pinned_actions(path.read_text(encoding="utf-8")):
             found.append((path, pin))
     return found
+
+
+def sha_pin_is_sufficient(using: str, entrypoint: str) -> bool:
+    """Does a 40-hex pin on the action fix the code that will actually run?
+
+    For ``composite`` it does: the steps are in ``action.yml`` at that commit.
+    For ``nodeNN`` it does: the bundled entrypoint is in the vendor's tree at
+    that commit. For ``docker`` it depends on the image reference — a
+    ``docker://`` registry reference is pinned only by a ``@sha256:`` digest,
+    and a **tag** is what most Docker actions ship, so the pin fixes
+    ``action.yml`` while the code it names can be replaced underneath it. An
+    ``image:`` that is not a ``docker://`` reference is a Dockerfile path, built
+    from the pinned tree, so the pin holds.
+
+    **Residual, stated rather than implied:** a Dockerfile built from the pinned
+    tree can still carry an unpinned ``FROM``, which this derivation reads as
+    sufficient. Closing that would mean reading the vendor's Dockerfile, which
+    no test here can do offline; it is a reviewer's question, recorded in the
+    record's ``not_reviewed`` list rather than enforced.
+    """
+    if using != "docker":
+        return True
+    ref = entrypoint.strip()
+    if not ref.startswith("docker://"):
+        return True  # a Dockerfile path: built from the tree the SHA pins
+    return "@sha256:" in ref.removeprefix("docker://")
+
+
+#: ``runs.using`` values a record may declare. ``nodeNN`` covers the versions
+#: GitHub has shipped and the ones it has not shipped yet.
+_USING = re.compile(r"^(?:composite|docker|node\d+)$")
+
+#: The fields an ``execution`` block must carry. Each one is a question a
+#: reviewer of a vendor action has to answer, made mechanical.
+_EXECUTION_FIELDS = ("using", "entrypoint", "hooks", "pinned_by_sha", "measured_on")
 
 
 # --------------------------------------------------------------------------- #
@@ -301,3 +373,160 @@ def test_the_majors_of_the_shipped_pins_match_their_records() -> None:
         assert _major(pin["version"]) == _major(str(entry["reviewed_version"])), (
             f"{path.name}: {pin['ref']} v{pin['version']} vs reviewed v{entry['reviewed_version']}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# What actually executes, and whether our SHA pin fixes it
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.security
+def test_every_record_declares_how_the_action_executes() -> None:
+    """A record that does not say what runs cannot say what was pinned."""
+    for name, entry in _records_by_action().items():
+        execution = entry.get("execution")
+        assert isinstance(execution, dict), (
+            f"{name}: must declare an execution block — runs.using, the entrypoint,"
+            " any pre/post hook, and whether the SHA pin fixes the code that runs"
+        )
+        for field in _EXECUTION_FIELDS:
+            assert field in execution, f"{name}: execution is missing {field!r}"
+        assert _USING.fullmatch(str(execution["using"])), (
+            f"{name}: execution.using {execution['using']!r} is not composite, docker or nodeNN"
+        )
+        assert isinstance(execution["entrypoint"], str) and execution["entrypoint"].strip(), (
+            f"{name}: execution.entrypoint must name what runs"
+        )
+        assert isinstance(execution["hooks"], list), (
+            f"{name}: execution.hooks must be a list, empty when there is no pre:/post: hook"
+        )
+        assert isinstance(execution["pinned_by_sha"], bool), (
+            f"{name}: execution.pinned_by_sha must be a bool, not {execution['pinned_by_sha']!r}"
+        )
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(execution["measured_on"])), (
+            f"{name}: execution.measured_on must be an ISO date; this block is measured"
+            " at the pinned SHA, not inferred"
+        )
+
+
+@pytest.mark.security
+def test_a_record_cannot_claim_a_pin_it_does_not_have() -> None:
+    """``pinned_by_sha`` is derived from the entrypoint, never trusted."""
+    for name, entry in _records_by_action().items():
+        execution = entry["execution"]
+        derived = sha_pin_is_sufficient(str(execution["using"]), str(execution["entrypoint"]))
+        assert execution["pinned_by_sha"] == derived, (
+            f"{name}: the record declares pinned_by_sha={execution['pinned_by_sha']!r} but"
+            f" {execution['using']} + {execution['entrypoint']!r} derives {derived!r}"
+        )
+
+
+@pytest.mark.security
+def test_the_pin_gap_is_stated_exactly_when_the_sha_does_not_pin_the_code() -> None:
+    """Symmetric on purpose: an unstated gap hides it, a stale one misleads."""
+    for name, entry in _records_by_action().items():
+        execution = entry["execution"]
+        gap = execution.get("pin_gap", "")
+        if execution["pinned_by_sha"]:
+            assert not str(gap).strip(), (
+                f"{name}: the SHA pin fixes the code that runs, so pin_gap must be absent;"
+                " stale gap prose reads as a live finding"
+            )
+        else:
+            assert isinstance(gap, str) and len(gap.strip()) >= 40, (
+                f"{name}: the SHA pin does NOT fix the code that runs, so pin_gap must say"
+                " what is unpinned and what bounds it"
+            )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("using", "entrypoint", "sufficient"),
+    [
+        ("composite", "inline steps in action.yml", True),
+        ("node24", "dist/index.js", True),
+        ("node20", "dist/setup/index.cjs", True),
+        # The shipped scorecard case: a mutable tag.
+        ("docker", "docker://ghcr.io/ossf/scorecard-action:v2.5.0", False),
+        ("docker", "docker://alpine:latest", False),
+        ("docker", "docker://alpine", False),
+        # A digest fixes it, in either position.
+        ("docker", "docker://ghcr.io/ossf/scorecard-action@sha256:" + "a" * 64, True),
+        ("docker", "docker://alpine:3.20@sha256:" + "b" * 64, True),
+        # A Dockerfile is built from the tree the SHA pins.
+        ("docker", "Dockerfile", True),
+        ("docker", "build/Dockerfile", True),
+    ],
+)
+def test_the_derivation_reads_planted_entrypoints(
+    using: str, entrypoint: str, sufficient: bool
+) -> None:
+    assert sha_pin_is_sufficient(using, entrypoint) is sufficient
+
+
+@pytest.mark.security
+def test_a_planted_record_that_lies_about_its_pin_is_caught() -> None:
+    """The bypass this contract exists to close, driven rather than asserted."""
+    planted = {
+        "using": "docker",
+        "entrypoint": "docker://ghcr.io/vendor/thing:v1",
+        "pinned_by_sha": True,  # the lie
+    }
+    derived = sha_pin_is_sufficient(str(planted["using"]), str(planted["entrypoint"]))
+    assert derived is False, "a tag-referenced image must not derive as pinned"
+    assert planted["pinned_by_sha"] != derived, "the plant must disagree with the derivation"
+
+
+@pytest.mark.security
+def test_a_hook_declaration_is_not_mistaken_for_a_review() -> None:
+    """``execution`` is measured; it must not smuggle verified-sounding claims.
+
+    ``astral-sh/setup-uv`` carries a ``post:`` hook that runs after the job with
+    the same token, and the penthera record verifies the *absence* of such a
+    hook — so the property matters here. Declaring the hook records a fact; it
+    does not promote the entry out of ``accepted_unreviewed``.
+    """
+    for name, entry in _records_by_action().items():
+        if entry["status"] != "accepted_unreviewed":
+            continue
+        assert not entry.get("properties_verified"), (
+            f"{name}: an execution block is a measurement, not a review"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# The scan's own reach
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.security
+def test_the_pin_scan_reads_both_workflow_extensions(tmp_path: Path) -> None:
+    """``*.yml`` alone let a vendor action in ``foo.yaml`` past every test here."""
+    (tmp_path / "a.yml").write_text("on: push\n", encoding="utf-8")
+    (tmp_path / "b.yaml").write_text("on: push\n", encoding="utf-8")
+    (tmp_path / "c.YAML").write_text("on: push\n", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("not a workflow\n", encoding="utf-8")
+    (tmp_path / "nested").mkdir()
+    names = [p.name for p in workflow_files(tmp_path)]
+    assert names == ["a.yml", "b.yaml", "c.YAML"], names
+
+
+@pytest.mark.security
+def test_a_vendor_action_hidden_in_a_yaml_workflow_is_still_scanned(tmp_path: Path) -> None:
+    """The bypass, driven end to end against a planted directory."""
+    planted = "jobs:\n  j:\n    steps:\n      - uses: evilcorp/backdoor@" + "d" * 40 + " # v1\n"
+    (tmp_path / "sneaky.yaml").write_text(planted, encoding="utf-8")
+    pins = [
+        pin
+        for path in workflow_files(tmp_path)
+        for pin in third_party(pinned_actions(path.read_text(encoding="utf-8")))
+    ]
+    assert len(pins) == 1, "a vendor pin in a .yaml workflow must be seen"
+    assert pins[0]["ref"] == "evilcorp/backdoor"
+    assert pins[0]["ref"] not in _records_by_action()
+
+
+@pytest.mark.security
+def test_the_shipped_workflow_scan_is_not_empty() -> None:
+    """A reach fix over zero files would be vacuous."""
+    assert len(workflow_files(_WORKFLOWS)) >= 10
