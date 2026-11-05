@@ -259,3 +259,69 @@ def test_non_string_schema_versions_are_refused(version: object) -> None:
     data["schema_version"] = version
     with pytest.raises(reports.ReportImportError):
         reports.parse_report(encoded(data))
+
+
+def test_a_finding_in_an_added_dimension_is_kept_under_a_sentinel() -> None:
+    """A producer adds a dimension in order to tag findings with it (D-2, round 2).
+
+    Accepting the extra `dimension_grades` key alone left the report rejected by
+    `_finding`. The finding is kept rather than dropped, because silently
+    discarding a security finding is the worse failure.
+    """
+    data = payload()
+    data["schema_version"] = _UNKNOWN_MINOR
+    data["dimension_grades"]["governance"] = "B"
+    data["servers"][0]["findings"][0]["dimension"] = "SYNTHETIC-NEW-DIMENSION"
+    report = reports.parse_report(encoded(data))
+    assert len(report.findings) == 1
+    assert report.findings[0].dimension == reports.UNKNOWN_DIMENSION
+    # The producer's own string is replaced, never retained for display.
+    assert "SYNTHETIC-NEW-DIMENSION" not in repr(report)
+
+
+def test_the_dimension_sentinel_cannot_collide_with_a_real_dimension() -> None:
+    assert reports.UNKNOWN_DIMENSION not in reports.DIMENSIONS
+
+
+def test_known_finding_dimensions_still_map_to_themselves() -> None:
+    for dimension in reports.DIMENSIONS:
+        data = payload()
+        data["servers"][0]["findings"][0]["dimension"] = dimension
+        report = reports.parse_report(encoded(data))
+        assert report.findings[0].dimension == dimension
+
+
+@pytest.mark.parametrize("dimension", [None, "", 1, True, ["pinning"], {"d": "pinning"}])
+def test_a_malformed_finding_dimension_is_still_fatal(dimension: object) -> None:
+    """The sentinel covers an UNKNOWN name, not an unvalidated value."""
+    data = payload()
+    data["servers"][0]["findings"][0]["dimension"] = dimension
+    with pytest.raises(reports.ReportImportError):
+        reports.parse_report(encoded(data))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("severity", "notice"),
+        ("overall_grade", "S"),
+        ("grade", "S"),
+        ("state", "stopped"),
+    ],
+)
+def test_risk_bearing_enums_still_refuse_an_unknown_value(field: str, value: str) -> None:
+    """Deliberately NOT widened: these order risk, so a sentinel could mis-triage.
+
+    A dimension is a grouping label nothing renders; a severity, a grade and a
+    state are read as risk. Refusing is the fail-closed answer, and widening any
+    of them is the owner's decision rather than a consequence of the D-2 fix.
+    """
+    data = payload()
+    if field == "severity":
+        data["servers"][0]["findings"][0]["severity"] = value
+    elif field == "overall_grade":
+        data["overall_grade"] = value
+    else:
+        data["servers"][0][field] = value
+    with pytest.raises(reports.ReportImportError):
+        reports.parse_report(encoded(data))

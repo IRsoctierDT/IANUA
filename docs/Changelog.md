@@ -32,6 +32,26 @@ All notable changes to this project. Versions correspond to git tags.
   in `DESIGN.md` §5 records the posture, and
   `tests/security/test_scan_report_import.py` carries R3's consumer half: the six-row matrix,
   the field-rule consequence, the malformed-version set and non-string versions.
+  **Review found the first fix was half of one, and it was confirmed by measurement.**
+  Accepting the extra `dimension_grades` key still left `_finding` rejecting any finding
+  *tagged* with the new dimension — which is the only reason a producer adds one — so a
+  report carrying both the grade and a `governance` finding was still rejected whole. The
+  matrix missed it because its sample finding sat in an existing dimension: a fixture that
+  exercises the *shape* of a change without its *purpose*, which is §10 D-1's lesson in a
+  different costume. Such a finding is now **kept** under a consumer-owned sentinel —
+  kept because silently dropping a security finding is worse than mislabelling it, and
+  consumer-owned because the display must not become a channel for producer-chosen text.
+  A malformed dimension (non-string, empty, oversized) is still fatal. **The same trap
+  exists in four more enums and is deliberately left closed:** measured, an unknown finding
+  `severity`, `overall_grade`, `servers[].grade` or `servers[].state` each reject the whole
+  report. A dimension is a grouping label this consumer does not render; those four are read
+  as risk *ordering*, and an unknown severity shown under a sentinel reads as **less** urgent
+  than `critical`, not more — so a sentinel there could cause a mis-triage a refusal cannot.
+  Widening them changes how risk is presented and is the owner's decision; until it is taken,
+  a producer adding a severity, grade or state in a minor still breaks every import, which is
+  recorded in §6.2 rather than left to be rediscovered. §6.1's field table said the key set
+  was **exactly** the four while §6.2 one section later said extras are accepted; the row is
+  corrected and two rows added for the per-finding fields.
 - **D-1 of the evidence contract is closed, and `docs/EVIDENCE_CONTRACT.md` §10 now says so.**
   `IRsoctierDT/IANUA-Broker#165` merged, routing both the manifest's `expect_tip_hash` and a
   chain record's `record_hash` through one normalizer, so the `sha256:`-prefixed spelling ATB

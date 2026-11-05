@@ -14,6 +14,20 @@ because a major is where a producer may change what a field *means*; an unknown
 minor's field rules, because a minor only adds. Refusing the whole upload on a
 minor bump was defect D-2 — a routine producer release broke every import, and
 said so with a message that named neither the version nor the field.
+
+A producer adds a dimension in order to *tag findings with it*, so accepting the
+extra ``dimension_grades`` key alone left D-2 standing: ``_finding`` validated
+each finding against the closed display set and rejected the report. A finding in
+an unknown dimension is therefore retained under :data:`UNKNOWN_DIMENSION`.
+
+**The other closed enums still refuse, deliberately.** A finding ``severity``, an
+``overall_grade``, a ``servers[].grade`` and a ``servers[].state`` outside their
+sets reject the report (measured). Unlike a dimension — a grouping label nothing
+here renders — each of those carries risk *ordering*, and an unknown value given a
+sentinel is one an operator could mis-triage: a severity above ``critical`` shown
+as unknown reads as less urgent, not more. Refusing is the fail-closed answer
+there, and widening any of them is a decision for the owner rather than a
+consequence of this one.
 """
 
 from __future__ import annotations
@@ -36,6 +50,10 @@ SCHEMA_MAJOR = 1
 #: Known minors, oldest first. The last is the field-rule set an unknown minor
 #: is read with, so adding a minor here is what enables its new fields.
 KNOWN_SCHEMA_VERSIONS = ("1.0", "1.1")
+#: Stands in for a finding's dimension when the producer names one this build
+#: does not know. Parenthesised so it cannot collide with a dimension name, and
+#: a constant of ours so no producer text reaches the display.
+UNKNOWN_DIMENSION = "(unknown)"
 #: A version string is two short numbers and a dot; nothing here needs more.
 MAX_SCHEMA_VERSION_LENGTH = 16
 _ASCII_DIGITS = "0123456789"
@@ -215,6 +233,19 @@ def _schema_version(value: object) -> tuple[str, str]:
     return text, KNOWN_SCHEMA_VERSIONS[-1]
 
 
+def _dimension(value: object) -> str:
+    """Map a finding's dimension onto the display set, or onto a sentinel.
+
+    Security consideration: the value is still validated as bounded text, and an
+    unknown one is replaced by :data:`UNKNOWN_DIMENSION` rather than retained, so
+    a producer cannot route chosen text into the display. The finding is **kept**
+    rather than dropped or fatal: silently discarding a security finding is the
+    worse failure, and rejecting the whole report is what defect D-2 was.
+    """
+    text = _text(value)
+    return text if text in DIMENSIONS else UNKNOWN_DIMENSION
+
+
 def _choice(value: object, choices: tuple[str, ...]) -> str:
     text = _text(value)
     if text not in choices:
@@ -270,7 +301,7 @@ def _finding(value: object, server_id: str, schema: str) -> Finding:
         line=line,
         title=_text(obj.get("title"), limit=1024),
         severity=_choice(obj.get("severity"), SEVERITIES),
-        dimension=_choice(obj.get("dimension"), DIMENSIONS),
+        dimension=_dimension(obj.get("dimension")),
         rationale=_text(obj.get("rationale"), allow_empty=True),
         remediation=_text(obj.get("remediation"), allow_empty=True),
     )
