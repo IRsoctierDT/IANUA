@@ -22,6 +22,16 @@
     "bounded, but nobody has read it. That distinction is the point of this file",
     "-- seeding every entry as 'reviewed' would assert what was never measured.",
     "",
+    "All four entries now read 'reviewed' (2026-11-05). That is NOT a claim that",
+    "the vendor code is benign: every record names what was not read, and for all",
+    "four that includes the bundle or image the action actually executes. What a",
+    "review establishes is provenance and blast radius, not safety. The status",
+    "exists so the next reader can tell a measurement from an assumption, and",
+    "'accepted_unreviewed' remains the correct status for anything added later",
+    "and not yet read -- the gate still enforces that such an entry claims",
+    "nothing verified, driven against a planted record so the rule is exercised",
+    "even while no shipped entry carries that status.",
+    "",
     "Each record also declares `execution`: what actually runs (runs.using, the",
     "entrypoint, any pre/post hook) and whether our 40-hex pin fixes it. For a",
     "composite or node action it does -- the steps, or the bundled dist/",
@@ -77,10 +87,10 @@
     },
     {
       "action": "astral-sh/setup-uv",
-      "status": "accepted_unreviewed",
+      "status": "reviewed",
       "reviewed_version": "10.3.3",
       "reviewed_sha": "68559e99cc807c1eb7e9238fd43a15bba460eec2",
-      "reviewed_in": "",
+      "reviewed_in": "#324",
       "reason": "Installs uv for the lock-sync gate. Predates this file; pinned and in use since before the record existed.",
       "execution": {
         "using": "node24",
@@ -91,22 +101,31 @@
         "pinned_by_sha": true,
         "measured_on": "2026-11-05"
       },
-      "properties_verified": [],
+      "properties_verified": [
+        "runs.using is node24 with main: dist/setup/index.cjs -- no Docker image, so the 40-hex pin fixes the code that runs",
+        "a post: hook EXISTS -- dist/save-cache/index.cjs with post-if: success() -- which runs after the job with the same token. There is no pre: hook",
+        "27 inputs are declared and OUR STEP PASSES NONE, so every default applies; the top-level keys are name, description, author, inputs, outputs, runs, branding, with no nested action",
+        "download-from-astral-mirror defaults to \"true\", so by default the uv binary is fetched from Astral's own mirror rather than from GitHub releases",
+        "checksum is an optional input and we pass none, so this repository pins no checksum for the binary that then resolves and installs its whole dependency tree",
+        "github-token defaults to ${{ github.token }}; manifest-file, which would point version lookups at a custom URL, is unset, so the bundled manifest is used"
+      ],
       "not_reviewed": [
-        "the action's own definition has not been read at the pinned SHA"
+        "dist/setup/index.cjs and dist/save-cache/index.cjs -- both bundles unread. In particular what the post: hook does with the token, and what it writes into the cache",
+        "whether the downloaded uv binary is checksum-verified internally by default. The action offers a `checksum` input, we pass none, and the bundle that would do any default verification is unread -- so this record claims no verification, in either direction"
       ],
       "bounded_by": [
+        "runs in the static-analysis job, which declares no job-level permissions and so inherits the workflow's top-level contents: read -- no write anywhere",
         "SHA-pinned with a version comment, asserted by tests/security/test_workflow_permissions.py",
-        "runs in the static-analysis job, which holds contents: read only"
+        "the only thing run with the installed uv is `uv lock --check`; scripts/check_locks.py independently verifies the exported pip locks against uv.lock, so a tampered resolver would have to satisfy that gate too"
       ],
-      "notes": "Grandfathered. Reading it is the first follow-up this file creates. Updated to the pin #317 landed; for an accepted_unreviewed entry these fields record the pin it is grandfathered at, not a review. Its execution block is measured, not reviewed: it carries a post: hook (dist/save-cache/index.cjs, post-if: success()), which runs after the job with the same token. The penthera record verifies the absence of such a hook, so the property matters here; nobody has read what this one does."
+      "notes": "Reviewed at the pinned SHA on 2026-11-05 -- the pin #317 landed. The finding worth an owner decision is the unpinned download: we pass no `checksum`, and the mirror is the default source. Setting `checksum` would close it, at the cost of an input to update on every version bump. Also carried forward from the execution block: the post: hook runs after the job with the same token and nobody has read it -- the penthera record verifies the ABSENCE of such a hook, so the property matters here."
     },
     {
       "action": "gitleaks/gitleaks-action",
-      "status": "accepted_unreviewed",
+      "status": "reviewed",
       "reviewed_version": "3",
       "reviewed_sha": "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e",
-      "reviewed_in": "",
+      "reviewed_in": "#324",
       "reason": "One of the two required secret scanners (AGENTS.md \u00a78 stage 3). Predates this file.",
       "execution": {
         "using": "node24",
@@ -115,22 +134,32 @@
         "pinned_by_sha": true,
         "measured_on": "2026-11-05"
       },
-      "properties_verified": [],
+      "properties_verified": [
+        "runs.using is node24 with a single entrypoint, dist/index.js: no Docker image, so the 40-hex pin fixes the code that runs",
+        "no pre: or post: hooks",
+        "the action declares NO inputs at all -- its only top-level keys are name, author, branding, description and runs -- so no `with:` value can reach it, and our step passes none",
+        "LICENCE: a proprietary Gitleaks LLC end-user licence agreement, NOT open source. The action.yml header reads 'Copyright (c) 2022 Gitleaks LLC - All Rights Reserved' and points at gitleaks.io/COMMERCIAL-LICENSE.txt. This differs from `gitleaks` the scanner, which is MIT",
+        "per its README at the pinned SHA, a licence key is required for ORGANIZATION-owned repositories and 'not required for user accounts'; this repository is user-owned and our step sets no GITLEAKS_LICENSE",
+        "per the same README, GITHUB_TOKEN is used 'to call a GitHub API to comment on PRs', and the only third-party data it claims to send is licence-key validation traffic"
+      ],
       "not_reviewed": [
-        "the action's own definition has not been read at the pinned SHA"
+        "dist/index.js, the bundled driver -- not read. It is proprietary, so auditing it is licence-constrained as well as impractical, and this record does not claim otherwise",
+        "whether the vendor's 'only licence-validation data leaves' claim holds, since the bundle is unread. It is recorded as the vendor's claim, not as a verified property",
+        "what it actually does with the GITHUB_TOKEN it is handed"
       ],
       "bounded_by": [
-        "SHA-pinned with a version comment",
-        "runs in the security job, whose grants are contents: read and pull-requests: read"
+        "the security job holds contents: read and pull-requests: READ -- no write anywhere, so the token it receives cannot comment or modify despite the README saying it comments on PRs",
+        "GITLEAKS_VERSION: 8.30.1 pins the scanner binary it fetches",
+        "SHA-pinned with a version comment, asserted by tests/security/test_workflow_permissions.py"
       ],
-      "notes": "Grandfathered. It reads the whole history, so it is worth reading before setup-uv."
+      "notes": "Reviewed at the pinned SHA on 2026-11-05. Two things an operator should carry forward. FIRST, this is the only PROPRIETARY dependency in the tree: AGENTS.md section 4 requires a dependency's licence to be justified, and this one never was -- whether a commercial EULA belongs in a portfolio repository whose own code is Apache-2.0 is the owner's call, not a defect. SECOND, an operational cliff: the licence key is free but REQUIRED for an organization account, so moving this repository under a GitHub organization breaks the required secret-scanning check (section 8 stage 3) until a key is obtained. Counter-note to the bounds above, stated because it is the opposite of a bound: this IS a required check, so a compromised release could not write anything but could deny every merge."
     },
     {
       "action": "ossf/scorecard-action",
-      "status": "accepted_unreviewed",
+      "status": "reviewed",
       "reviewed_version": "2.5.0",
       "reviewed_sha": "fa7117db83c52d787ae5a89f350999701505d78e",
-      "reviewed_in": "",
+      "reviewed_in": "#324",
       "reason": "OpenSSF Scorecard reporting. Predates this file.",
       "execution": {
         "using": "docker",
@@ -143,18 +172,27 @@
         "image_digest_checked_by": ".github/workflows/scorecard.yml (image-pin job) via scripts/check_action_image_digest.py",
         "measured_on": "2026-11-05"
       },
-      "properties_verified": [],
+      "properties_verified": [
+        "runs.using is docker with image: docker://ghcr.io/ossf/scorecard-action:v2.5.0 -- a MUTABLE tag, so the 40-hex pin does NOT fix the code that runs. See execution.pin_gap; the image-pin job watches it",
+        "seven inputs: results_file and results_format (both required), repo_token, publish_results, file_mode, internal_publish_base_url, internal_default_token",
+        "internal_publish_base_url defaults to \"https://api.scorecard.dev\", which is the egress endpoint tests/security/test_scorecard_boundary.py asserts and the one shown for the section 5.1 approval",
+        "publish_results defaults to false AND our step sets it to false explicitly, so the decision is recorded rather than inherited",
+        "BOTH repo_token and internal_default_token default to ${{ github.token }}, so the container receives the job's token",
+        "top-level keys are name, description, author, inputs, branding, runs -- no nested action and no composite steps"
+      ],
       "not_reviewed": [
-        "the action's own definition has not been read at the pinned SHA",
-        "the contents of ghcr.io/ossf/scorecard-action:v2.5.0 -- an image this repository cannot pin, see execution.pin_gap"
+        "the action's own definition has been read, but the CONTENTS of ghcr.io/ossf/scorecard-action:v2.5.0 have not -- for a Docker action the image IS the code, and it cannot be read from this repository",
+        "the contents of that image are additionally not pinned by our SHA, see execution.pin_gap",
+        "what the container does with the token it receives"
       ],
       "bounded_by": [
-        "SHA-pinned with a version comment",
-        "publish_results: false",
-        "tests/security/test_scorecard_boundary.py already pins its boundary",
-        "the image-pin job re-resolves the tag and the analysis job needs: it, so a moved tag fails before the image is pulled for analysis"
+        "publish_results: false, asserted by tests/security/test_scorecard_boundary.py",
+        "the workflow is not one of section 8's required checks; it runs on a schedule and on push",
+        "the image-pin job re-resolves the tag and the analysis job needs: it, so a moved tag fails before the image is pulled for analysis",
+        "checkout does not persist credentials",
+        "top-level permissions are contents: read and the job adds exactly one write"
       ],
-      "notes": "Grandfathered, and the only one of the four whose executing code our SHA pin does not fix. The gap is upstream's image reference, not our pin. It is not closed; it is detected, by a committed digest and a CI job that re-resolves the tag. A fork pinning the image by digest would close it outright and was weighed: it costs a repository to maintain and, worse, ends Dependabot coverage for this action, trading a tag-move risk for a staleness risk. Detection keeps both."
+      "notes": "Reviewed at the pinned SHA on 2026-11-05. NEW FINDING, recorded rather than fixed: the analysis job holds security-events: write for the SEPARATE upload-sarif step, and a workflow token is job-scoped -- so the scorecard container also receives a token carrying that write, through the two token-defaulted inputs above, for an upload it does not perform. Narrowing it means splitting the job: run scorecard under contents: read and publish the SARIF as an artifact, then upload to code scanning from a second job holding the write. That is a workflow change with its own boundary test, not part of a review, so it is written down here instead of done. The mutable-tag gap is unchanged and still upstream's to close."
     }
   ]
 }
