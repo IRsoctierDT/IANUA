@@ -103,6 +103,19 @@ All notable changes to this project. Versions correspond to git tags.
   Dependabot groups it with the dev toolchain.
 
 ### Changed
+- **Major GitHub Actions bumps leave the `actions-all` Dependabot group, so each arrives as
+  its own pull request.** Measured on #314: one group pull request carried
+  `astral-sh/setup-uv` 10.3.2 → 10.3.3 (patch) together with `danoszz/penthera` 1.9.0 →
+  2.2.0 (major). The auto-merge gate held — `fetch-metadata` reported the group's
+  `update-type` as `version-update:semver-major`, so the enable step skipped and auto-merge
+  was never armed — but it could not unbundle the PR, leaving a routine first-party patch
+  blocked behind a third-party major that needs a §5 boundary review, in a pull request that
+  cannot be split without Dependabot abandoning it. `update-types: [minor, patch]` on the
+  group makes `dependabot.yml`'s own header promise ("majors still wait for a human")
+  structural instead of a property of the workflow downstream; the workflow's major check
+  stays as the second layer. `tests/unit/test_dependabot_grouping.py` pins that the group
+  admits exactly minor and patch, driven against two plants. The cost is a few more pull
+  requests in a busy week, which is the trade for not bundling a vendor major with a patch.
 - **An event's excerpt keeps non-ASCII text as written, so every indicator it yields is a
   substring of it. This changes `event_id` for any record with non-ASCII text in a modelled
   field.** `ingest/normalize.py` rendered `raw_excerpt` with `json.dumps`, whose default is
