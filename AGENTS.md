@@ -70,6 +70,20 @@ state, in its working notes, that it has done so:
    fixed twice (#275 against #276, #277 against #278), with one fix of each pair thrown
    away after review. See §6.4.
 
+   **Exempting them from the overlap rule is not exempting them from review.** Because
+   the conflicts are mechanical, nobody reads the resolution, and five times a merge has
+   resolved one by keeping a side and silently dropping the other's entries: `697df79`
+   (five conflicts, one side of each), `76b3e96` (main's side of the SBOM documents),
+   `0b7f4fb` (main's Penthera §11 row, caught in review as #306), `0608b79a` (#301's and
+   #304's entries reverted on main, which #313 exists to restore), and `2b3f6b6c`, which
+   overwrote the §11 row recording *these very rules* with its own row at the same date —
+   one insertion, one deletion, so the row count held and nothing noticed. That row is
+   absent from `DESIGN.md` and from every tracked markdown file to this day. Nothing in
+   CI detected any of the five. `scripts/check_append_only_logs.py` (§7) now fails a pull
+   request whose tree has lost an entry either log held at the merge base, keyed on the
+   entry's title so an in-place correction still passes; a deliberate removal is declared
+   in `docs/log_removals.json` with a reason, which ships empty.
+
 > **Fail-closed rule:** if any pre-flight step cannot be completed (missing `DESIGN.md`,
 > unreadable module, unclear ownership), **do not guess** — halt and report.
 
@@ -893,6 +907,7 @@ python scripts/update_attack.py --check       # ATT&CK shards ↔ signed pin; re
 python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; techniques resolve in the pin
 python scripts/check_intel_store.py --check   # intel library ↔ digest; licenses, TLP, anchors validate
 python scripts/build_behavior_index.py --check # behavioral index ↔ corpus; anchors resolve active
+python scripts/check_append_only_logs.py      # DESIGN.md §11 + Changelog lose no entry vs the merge base
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)
