@@ -79,8 +79,10 @@ Exit codes: ``0`` no entry lost · ``1`` an undeclared entry was lost ·
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
+import shutil
 import subprocess  # nosec B404 — fixed argv, shell=False, local git only
 import sys
 from collections.abc import Callable
@@ -212,10 +214,26 @@ def load_declared_removals(root: Path) -> dict[str, set[str]]:
     return declared
 
 
+@functools.cache
+def _git_executable() -> str:
+    """Absolute path to ``git``, resolved once.
+
+    Resolved rather than spelled ``"git"`` because bandit's B607 (CWE-78) is
+    right that a bare program name is whatever ``PATH`` resolves it to. Every
+    other call site in this repository avoids B607 structurally rather than
+    with a ``# nosec``, so this addresses the finding instead of adding a new
+    suppression style.
+    """
+    found = shutil.which("git")
+    if found is None:
+        raise RuntimeError("git was not found on PATH")
+    return found
+
+
 def _git(root: Path, *args: str) -> str:
     """Run git with a fixed argv and return stdout, or raise ``RuntimeError``."""
     proc = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv, shell=False, validated ref
-        ["git", *args],  # noqa: S607 - git from PATH, as every call site here does
+        [_git_executable(), *args],
         cwd=root,
         capture_output=True,
         text=True,
