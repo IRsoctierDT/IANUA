@@ -147,3 +147,115 @@ def test_global_node_and_total_finding_limits(monkeypatch: pytest.MonkeyPatch) -
     data["servers"].append(other)
     with pytest.raises(reports.ReportImportError):
         reports.parse_report(encoded(data))
+
+
+# --- schema-version and dimension forward compatibility (defect D-2) ---------
+#
+# A producer bumping its minor or adding a dimension used to reject the WHOLE
+# upload with the generic message, so an operator saw a broken uploader rather
+# than a version mismatch (`docs/EVIDENCE_CONTRACT.md` §6.2, §10 D-2). An
+# unknown minor is now read with the newest known minor's field rules and an
+# extra dimension is ignored, while an unknown MAJOR and a MISSING dimension
+# still fail closed.
+_NEWEST_KNOWN = reports.KNOWN_SCHEMA_VERSIONS[-1]
+_UNKNOWN_MINOR = f"{reports.SCHEMA_MAJOR}.{int(_NEWEST_KNOWN.split('.')[1]) + 1}"
+
+
+def test_d2_matrix_producer_may_bump_a_minor_and_add_a_dimension() -> None:
+    """The exact four cases measured as broken when D-2 was recorded."""
+    for version in (_NEWEST_KNOWN, _UNKNOWN_MINOR):
+        for extra in ({}, {"governance": "B"}):
+            data = payload()
+            data["schema_version"] = version
+            data["dimension_grades"].update(extra)
+            report = reports.parse_report(encoded(data))
+            # The REPORTED version is displayed, not the one its rules came from.
+            assert report.schema_version == version, (version, extra)
+            assert {dim for dim, _ in report.dimension_grades} == set(reports.DIMENSIONS)
+
+
+def test_an_extra_dimension_is_ignored_and_never_retained() -> None:
+    data = payload()
+    data["dimension_grades"]["governance"] = "SYNTHETIC-EXTRA"
+    report = reports.parse_report(encoded(data))
+    assert "governance" not in {dim for dim, _ in report.dimension_grades}
+    assert "SYNTHETIC-EXTRA" not in repr(report)
+
+
+def test_an_unknown_minor_is_read_with_the_newest_known_field_rules() -> None:
+    """`acceptance` is a 1.1 field, so a 1.2 report may carry it; 1.0 may not."""
+    accepted = {
+        "owner": "Synthetic owner",
+        "accepted": "2026-01-01",
+        "expires": "2026-12-01",
+        "reason": "Synthetic reason",
+        "expired": False,
+    }
+    data = payload()
+    data["schema_version"] = _UNKNOWN_MINOR
+    data["servers"][0]["findings"][0]["acceptance"] = deepcopy(accepted)
+    assert reports.parse_report(encoded(data)).schema_version == _UNKNOWN_MINOR
+
+    data["schema_version"] = reports.KNOWN_SCHEMA_VERSIONS[0]
+    with pytest.raises(reports.ReportImportError):
+        reports.parse_report(encoded(data))
+
+
+def test_a_missing_dimension_is_still_fatal_and_named() -> None:
+    data = payload()
+    del data["dimension_grades"][reports.DIMENSIONS[0]]
+    with pytest.raises(reports.ReportImportError) as raised:
+        reports.parse_report(encoded(data))
+    assert "missing a required dimension" in str(raised.value)
+
+
+def test_an_unknown_major_fails_closed_and_names_the_supported_major() -> None:
+    for version in ("2.0", "0.9", "9.9", "10.0"):
+        data = payload()
+        data["schema_version"] = version
+        with pytest.raises(reports.ReportImportError) as raised:
+            reports.parse_report(encoded(data))
+        message = str(raised.value)
+        assert "major version is not supported" in message, version
+        assert version not in message  # never quotes the uploaded value
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "",
+        "1",
+        "1.",
+        ".1",
+        "1.2.3",
+        "a.b",
+        "1.-1",
+        "+1.2",
+        "01.2",
+        "1.02",
+        " 1.2",
+        "1.2 ",
+        "1,2",
+        # ARABIC-INDIC ONE and SUPERSCRIPT ONE: str.isdigit() is True for both and
+        # int() parses them, so a property-based check would read these as 1.1 and
+        # 1.2. Composed from chr() so this source file stays ASCII.
+        "1." + chr(0x0661),
+        chr(0x00B9) + ".2",
+        "1.2\u0000",
+        "x" * (reports.MAX_SCHEMA_VERSION_LENGTH + 1),
+    ],
+)
+def test_malformed_schema_versions_are_refused(version: str) -> None:
+    data = payload()
+    data["schema_version"] = version
+    with pytest.raises(reports.ReportImportError) as raised:
+        reports.parse_report(encoded(data))
+    assert version.strip() not in str(raised.value) or not version.strip()
+
+
+@pytest.mark.parametrize("version", [None, 1.1, 11, True, ["1.1"], {"v": "1.1"}])
+def test_non_string_schema_versions_are_refused(version: object) -> None:
+    data = payload()
+    data["schema_version"] = version
+    with pytest.raises(reports.ReportImportError):
+        reports.parse_report(encoded(data))

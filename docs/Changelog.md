@@ -5,6 +5,33 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Fixed
+- **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
+  IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
+  a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so adding a dimension
+  or bumping a minor rejected the **whole** upload with the generic
+  `"Report format or limits are invalid."` — an operator saw a broken uploader rather than a
+  version mismatch. IANUA-Broker's own `ATB_POSTURE_CHECK.md` §4 *recommends* adding a
+  `GOVERNANCE` dimension in a minor, so this was live, not hypothetical. Measured through the
+  shipped parser before and after: `1.1`+governance, `1.2`, and `1.2`+governance all went from
+  rejected to accepted, while `2.0` (unknown **major**) and a **missing** dimension stay refused
+  and now name their cause. **The asymmetry is the control**: a minor only adds, so a `1.2`
+  report is read with `1.1`'s field rules and every field still passes the same allow-list and
+  the same bounds; a major may redefine a field, so it fails closed. R2 widened which *version
+  strings* reach the parser and nothing else — no limit relaxed, no field unvalidated, and an
+  extra dimension's value never read. **R2's original wording in the contract said something
+  else** — unknown versions "degrade to a named, actionable error", i.e. keep refusing with a
+  better message — which contradicts §11's rule to refuse unknown majors and ignore unknown
+  fields within a known major. §11 governs and §6.2 now says so; explaining the rejection
+  better would not have fixed D-2, since the import would still fail with nothing for the
+  operator to do but wait for a new release. Two findings from the fix are recorded in §10:
+  the version was never a label (`_finding` gates the `acceptance` block on it, so adding a
+  minor to `KNOWN_SCHEMA_VERSIONS` is what enables its new fields), and `str.isdigit` would
+  have been a bypass — it answers True for non-ASCII digits and `int` parses them, so
+  `"1.\u0661"` and `"\u00b9.2"` would have validated as `1.1` and `1.2`; the accepted
+  characters are named literally and both spellings are pinned by test. The boundary paragraph
+  in `DESIGN.md` §5 records the posture, and
+  `tests/security/test_scan_report_import.py` carries R3's consumer half: the six-row matrix,
+  the field-rule consequence, the malformed-version set and non-string versions.
 - **D-1 of the evidence contract is closed, and `docs/EVIDENCE_CONTRACT.md` §10 now says so.**
   `IRsoctierDT/IANUA-Broker#165` merged, routing both the manifest's `expect_tip_hash` and a
   chain record's `record_hash` through one normalizer, so the `sha256:`-prefixed spelling ATB
