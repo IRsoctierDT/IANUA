@@ -105,6 +105,31 @@ All notable changes to this project. Versions correspond to git tags.
   ours — this makes it enumerable and un-droppable, not closed; and a Dockerfile built from a
   pinned tree can still carry an unpinned `FROM`, which the derivation reads as sufficient
   because no offline test can read a vendor's Dockerfile.
+- **A CI job re-resolves the one mutable image tag this repository depends on and fails
+  before the dependent job runs (`scripts/check_action_image_digest.py`).** `ossf/scorecard-action`
+  is a Docker action naming `docker://ghcr.io/ossf/scorecard-action:v2.5.0`, so our 40-hex
+  `uses:` pin fixes `action.yaml` and not the container — and nothing could see a tag move,
+  because the `uses:` SHA does not change and Dependabot never fires. The digest the tag
+  resolved to is now committed beside the record
+  (`sha256:1e1481c6…`, measured against `ghcr.io` on 2026-11-05 and confirmed to be a
+  single-architecture manifest, so the pin is exact) and the `image-pin` job re-resolves it.
+  **It is a separate job the `analysis` job `needs:`, not a step**, because a Docker action's
+  image is pulled during job *preparation* — measured in `actions/runner`'s
+  `ActionManager.PrepareRepositoryActionAsync`, where the image goes into `state.ImagesToPull`
+  before any step executes — so an in-job check would report on an image already pulled. A
+  **moved tag exits 1 and "could not determine" exits 2**, kept distinct so a registry outage
+  cannot read as an attack or vice versa, and both stop the dependent job. Registries are an
+  allow-list in the script rather than a value from the record, so a record pointing at a new
+  registry is refused rather than contacted. Five plants measured: a wrong digest exits 1; a
+  missing one, an undeclared registry and a reference with a port each exit 2; an already
+  digest-pinned reference reports nothing to check. 28 unit tests drive it offline with a
+  stub resolver, and the networked form was run against the live registry. **This detects, it
+  does not prevent** — the record keeps `pinned_by_sha: false` and keeps its `pin_gap`. A fork
+  pinning the image by digest would close it outright and was refused: it costs a repository
+  to maintain and ends Dependabot coverage for the action, trading a tag-move risk for a
+  staleness risk. Residual: a tag that moves and moves back between runs is invisible, and the
+  check trusts TLS to `ghcr.io` — a TLS-terminating proxy could lie about the digest, which is
+  why it runs in CI where none is configured.
 - **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
   third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
   PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather

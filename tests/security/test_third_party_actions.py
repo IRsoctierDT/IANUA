@@ -440,6 +440,42 @@ def test_the_pin_gap_is_stated_exactly_when_the_sha_does_not_pin_the_code() -> N
 
 
 @pytest.mark.security
+def test_a_tag_referenced_docker_action_commits_the_digest_its_tag_resolved_to() -> None:
+    """Detection is required where prevention is not available.
+
+    A Docker action whose image is named by a mutable tag cannot be fixed by our
+    SHA pin, and that gap is upstream's to close. What *is* available is noticing
+    the move: ``execution.image_digest`` records what the tag resolved to when
+    measured, and ``scripts/check_action_image_digest.py`` re-resolves it in CI.
+
+    Without the committed digest there is nothing to compare against, so the
+    whole mechanism would be a workflow job that always passes — which is worse
+    than no job, because it reads as coverage. Requiring the field here is what
+    makes a future Docker action answer the question rather than inherit silence.
+    """
+    for name, entry in _records_by_action().items():
+        execution = entry["execution"]
+        if str(execution["using"]) != "docker":
+            continue
+        entrypoint = str(execution["entrypoint"]).strip()
+        if not entrypoint.startswith("docker://") or "@sha256:" in entrypoint:
+            continue  # a Dockerfile path, or already pinned by digest
+        digest = str(execution.get("image_digest", ""))
+        assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest), (
+            f"{name}: execution.entrypoint names a MUTABLE tag ({entrypoint}) but"
+            " execution.image_digest is missing or malformed. Resolve the tag and commit"
+            " the digest, or nothing can tell that the tag has moved —"
+            " scripts/check_action_image_digest.py has nothing to compare against"
+        )
+        assert re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}", str(execution.get("image_digest_measured_on", ""))
+        ), (
+            f"{name}: execution.image_digest_measured_on must be an ISO date; the digest is"
+            " measured against the registry, not inferred"
+        )
+
+
+@pytest.mark.security
 @pytest.mark.parametrize(
     ("using", "entrypoint", "sufficient"),
     [

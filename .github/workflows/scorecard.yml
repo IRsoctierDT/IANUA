@@ -85,9 +85,58 @@ permissions:
   contents: read
 
 jobs:
+  # `ossf/scorecard-action` is a DOCKER action: its `action.yaml` at the SHA
+  # pinned below reads `image: "docker://ghcr.io/ossf/scorecard-action:v2.5.0"`.
+  # So the 40-hex `uses:` pin fixes `action.yaml` and NOT the container that
+  # runs — whoever can push that tag in ghcr.io/ossf chooses the code. Nothing
+  # else here can see that happen: the `uses:` SHA does not change, so
+  # Dependabot never opens a pull request, and
+  # `tests/security/test_workflow_permissions.py` sees a correctly pinned
+  # action, because it is one.
+  #
+  # This job re-resolves the tag against the registry and compares it with the
+  # digest committed in `security/third-party-actions.json`. It DETECTS a moved
+  # tag; it does not prevent one (only an image referenced by digest does that,
+  # which is upstream's to do), and the record says so rather than claiming the
+  # gap is closed.
+  #
+  # It is a separate job, not a step, and that is load-bearing. Measured from
+  # the runner's own source (`actions/runner`,
+  # `ActionManager.PrepareRepositoryActionAsync`): a Docker action's image is
+  # collected into `state.ImagesToPull` and pulled by `PullActionContainerAsync`
+  # during job PREPARATION, before any step executes. A check running as an
+  # earlier step in `analysis` would therefore report on an image that had
+  # already been pulled. As its own job with `needs:` below, it runs to
+  # completion first and `analysis` never starts if the tag moved.
+  #
+  # Egress, named in full for the §5.1 record — the two exact URLs, anonymous
+  # and read-only, with no credential of this repository's sent:
+  #   https://ghcr.io/token?scope=repository:ossf/scorecard-action:pull&service=ghcr.io
+  #   https://ghcr.io/v2/ossf/scorecard-action/manifests/v2.5.0
+  # The repository and tag come from the record, but the registry does not: the
+  # script refuses any host outside its own committed allow-list rather than
+  # following the record wherever it points.
+  image-pin:
+    name: Pinned image tag still resolves to the committed digest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # stdlib only, so the runner's preinstalled python3 is enough and this
+      # adds no action and no dependency. `dependencies = []` stands.
+      - name: Re-resolve the tag and compare
+        run: python3 scripts/check_action_image_digest.py
+
   analysis:
     name: Scorecard analysis (SARIF to code scanning)
     runs-on: ubuntu-latest
+    # Gate, not garnish: if the tag moved, the image is never pulled for
+    # analysis. Exit 1 is a moved tag and exit 2 is "could not determine" —
+    # both stop this job, because a check that cannot answer must not pass.
+    needs: image-pin
     permissions:
       contents: read
       # Upload the SARIF to the Code scanning dashboard. This is the only

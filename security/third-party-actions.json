@@ -137,7 +137,10 @@
         "entrypoint": "docker://ghcr.io/ossf/scorecard-action:v2.5.0",
         "hooks": [],
         "pinned_by_sha": false,
-        "pin_gap": "A Docker action whose image is referenced by the MUTABLE tag v2.5.0, not by a sha256 digest. Our 40-hex pin fixes action.yaml; action.yaml names an image, so the pin does not fix the code that runs. Whoever can push that tag in ghcr.io/ossf chooses the container this repository executes, and neither the SHA pin, nor Dependabot, nor test_workflow_permissions.py can see a tag move. Alone among the four records here. Not resolvable from this repository: the image reference is upstream's to change, so what bounds it is the grant list below.",
+        "pin_gap": "A Docker action whose image is referenced by the MUTABLE tag v2.5.0, not by a sha256 digest. Our 40-hex pin fixes action.yaml; action.yaml names an image, so the pin does not fix the code that runs. Whoever can push that tag in ghcr.io/ossf chooses the container this repository executes. Alone among the four records here. NOT closed -- referencing the image by digest is upstream's to do -- but now DETECTED: image_digest below is the digest the tag resolved to when measured, and the image-pin job re-resolves it and fails before the analysis job runs. Detection is the weaker property and is recorded as the weaker one: a moved tag is caught on the next run of that workflow, not prevented.",
+        "image_digest": "sha256:1e1481c65fc2407d3fd6ab18a23c741eb4d1c0d9359ebafc4b3ab13aa61d8627",
+        "image_digest_measured_on": "2026-11-05",
+        "image_digest_checked_by": ".github/workflows/scorecard.yml (image-pin job) via scripts/check_action_image_digest.py",
         "measured_on": "2026-11-05"
       },
       "properties_verified": [],
@@ -148,9 +151,10 @@
       "bounded_by": [
         "SHA-pinned with a version comment",
         "publish_results: false",
-        "tests/security/test_scorecard_boundary.py already pins its boundary"
+        "tests/security/test_scorecard_boundary.py already pins its boundary",
+        "the image-pin job re-resolves the tag and the analysis job needs: it, so a moved tag fails before the image is pulled for analysis"
       ],
-      "notes": "Grandfathered, and the most bounded of the three by its existing boundary test -- but the only one of the four whose executing code our SHA pin does not fix. The gap is upstream's image reference, not our pin, and it is recorded rather than closed."
+      "notes": "Grandfathered, and the only one of the four whose executing code our SHA pin does not fix. The gap is upstream's image reference, not our pin. It is not closed; it is detected, by a committed digest and a CI job that re-resolves the tag. A fork pinning the image by digest would close it outright and was weighed: it costs a repository to maintain and, worse, ends Dependabot coverage for this action, trading a tag-move risk for a staleness risk. Detection keeps both."
     }
   ]
 }

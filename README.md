@@ -212,6 +212,7 @@ python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; tech
 python scripts/check_intel_store.py --check   # intel library ↔ digest; licenses, TLP, anchors validate
 python scripts/build_behavior_index.py --check # behavioral index ↔ corpus; anchors resolve active
 python scripts/check_append_only_logs.py      # DESIGN.md §11 + Changelog lose no entry vs the merge base
+python scripts/check_action_image_digest.py --offline  # every tag-referenced Docker action commits its digest
 ```
 <!-- END GENERATED: quality-gates -->
 
