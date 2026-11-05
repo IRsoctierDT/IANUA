@@ -843,10 +843,36 @@ Two properties of the mechanism are load-bearing. The **first-party owner list l
 test module, not in the JSON**: if the declaration file could name exempt owners, the bypass
 for any vendor would be to add its owner there, and the gate would approve its own
 exemption (`actions/`, `github/` and `dependabot/` are the platform; everything else is a
-vendor, `astral-sh` included). And a record may read **`accepted_unreviewed`**, which three
-of the four current entries do, because nobody has read them — recording them as reviewed
-would assert what was never measured. The gate requires such an entry to claim nothing
-verified. The gain is that the debt is enumerable, not that it is gone.
+vendor, `astral-sh` included). And a record may read **`accepted_unreviewed`**, meaning
+pinned and bounded but unread — recording such an entry as reviewed would assert what was
+never measured, so the gate requires it to claim nothing verified. The gain is that the
+debt is enumerable, not that it is gone.
+
+**All four entries now read `reviewed`** (2026-11-05). Three were promoted that day, each
+read at its pinned SHA. The debt that status tracked is therefore discharged, and this
+paragraph is updated rather than left asserting three unread entries — a charter that
+describes a state the tree has left is the drift §8's branch-protection table was written
+to stop.
+
+**What a review establishes, stated because "reviewed" is the stronger-sounding word.** It
+is provenance and blast radius, not safety. Every one of the four names what was *not* read,
+and for all four that includes the bundle or image the action actually executes: a Docker
+action's image is its code and cannot be read from here, and a node action's `dist/` bundle
+is minified vendor output. Three findings came out of those reviews and are recorded rather
+than fixed, because each is an owner decision and not a defect: `gitleaks-action` is
+**proprietary** (a Gitleaks LLC EULA, where `gitleaks` the scanner is MIT) and needs a
+licence key for an *organization* account, so moving this repository under one breaks the
+required secret-scanning check until a key is obtained; `setup-uv` is passed **no inputs at
+all**, so it fetches `uv` from Astral's mirror by default with no `checksum` pinned by us,
+and that binary then resolves the dependency tree; and `scorecard-action`'s container
+receives a token carrying the `security-events: write` that exists for a *separate* upload
+step, because a workflow token is job-scoped.
+
+**One consequence for whoever edits the gate.** Promoting the last unreviewed entry made
+the `accepted_unreviewed` rules vacuous on the shipped record — a conditional guard with
+nothing to iterate is proven by absence, which is not proof. The rule is now a callable
+function driven against planted records, so it still has teeth while no shipped entry
+carries that status. Any future conditional rule here owes the same.
 
 ---
 

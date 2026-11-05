@@ -152,6 +152,34 @@ All notable changes to this project. Versions correspond to git tags.
   staleness risk. Residual: a tag that moves and moves back between runs is invisible, and the
   check trusts TLS to `ghcr.io` — a TLS-terminating proxy could lie about the digest, which is
   why it runs in CI where none is configured.
+- **The last three third-party actions were read at their pinned SHAs, so all four review
+  records now read `reviewed`.** `gitleaks-action`, `setup-uv` and `scorecard-action`
+  predated `security/third-party-actions.json` and carried `accepted_unreviewed` — pinned and
+  bounded, but unread. **This is provenance, not a safety claim:** every record names what was
+  not read, and for all four that includes the bundle or image the action actually executes.
+  Three findings came out of it, each recorded rather than fixed because each is an owner
+  decision. **(1)** `gitleaks-action` is **proprietary** — its `action.yml` header reads
+  `Copyright © 2022 Gitleaks LLC - All Rights Reserved` under a commercial EULA, where
+  `gitleaks` the scanner is MIT — and per its own README a licence key is required for
+  *organization*-owned repositories and not for user accounts, so moving this repository under
+  a GitHub organization breaks the required secret-scanning check until one is obtained. It
+  also declares **no `inputs:` at all**, so nothing can reach it through `with:`, and the
+  security job grants only `contents: read` and `pull-requests: read`, so the token it is
+  handed cannot perform the PR commenting its README describes. **(2)** `setup-uv` is passed
+  **no inputs at all**, so all 27 defaults apply: `download-from-astral-mirror` is `"true"`
+  and `checksum` is unset, so this repository pins no checksum for the `uv` binary that then
+  resolves and installs its whole dependency tree. Its `post:` hook
+  (`dist/save-cache/index.cjs`, `post-if: success()`) runs after the job with the same token
+  and is unread — a property the penthera record verifies the *absence* of. **(3)**
+  `scorecard-action`'s two token inputs both default to `${{ github.token }}`, and a workflow
+  token is job-scoped, so the container receives a token carrying the `security-events: write`
+  that exists for the *separate* `upload-sarif` step. Narrowing that means splitting the job,
+  which is a workflow change with its own boundary test rather than part of a review. Teeth:
+  four plants each redden exactly their rule (a reviewed record dropping its limits, its
+  reference, or thinning its claims; and a record claiming properties while unreviewed).
+  **Promoting the last unreviewed entry made the `accepted_unreviewed` rules vacuous on the
+  shipped record**, so that rule is now a callable function driven against planted records —
+  a conditional guard with nothing to iterate is proven by absence, which is not proof.
 - **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
   third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
   PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather

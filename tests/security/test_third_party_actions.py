@@ -129,6 +129,29 @@ def _major(version: str) -> str:
     return version.split(".")[0]
 
 
+def unreviewed_record_violations(name: str, entry: dict[str, Any]) -> list[str]:
+    """Ways an ``accepted_unreviewed`` record could claim what nobody measured.
+
+    A separate function, not an inline loop, because the shipped record stopped
+    exercising this rule when the last three entries were promoted to
+    ``reviewed``. A conditional guard over zero matching entries is proven by
+    absence; keeping the rule callable lets a planted record prove it instead.
+    Returns an empty list for anything that is not ``accepted_unreviewed``: the
+    rule does not apply to a reviewed entry, which is *expected* to carry claims.
+    """
+    if entry.get("status") != "accepted_unreviewed":
+        return []
+    problems: list[str] = []
+    if entry.get("properties_verified"):
+        problems.append(
+            f"{name}: status is accepted_unreviewed but properties_verified is non-empty;"
+            " promote it to 'reviewed' with a reference, or drop the claims"
+        )
+    if not entry.get("not_reviewed"):
+        problems.append(f"{name}: an unreviewed record must say so in not_reviewed")
+    return problems
+
+
 def workflow_files(directory: Path) -> list[Path]:
     """Every workflow file in ``directory``, in both spellings GitHub accepts."""
     return sorted(
@@ -294,17 +317,54 @@ def test_a_reviewed_record_names_what_was_verified_and_what_was_not() -> None:
 
 @pytest.mark.security
 def test_an_unreviewed_record_claims_nothing_verified() -> None:
-    """Grandfathered debt must not quietly accumulate verified-sounding prose."""
+    """Grandfathered debt must not quietly accumulate verified-sounding prose.
+
+    **Vacuous on the shipped record since 2026-11-05**, when the last three
+    entries were read and promoted to ``reviewed``. The rule is still the right
+    rule — it fires on the next entry added and not yet read — but a conditional
+    guard with nothing to iterate is proven by absence, which is not proof. So
+    the rule lives in ``unreviewed_record_violations`` and the test below drives
+    it against planted records. This loop is the live half; that one is the teeth.
+    """
     for name, entry in _records_by_action().items():
         if entry["status"] != "accepted_unreviewed":
             continue
-        assert not entry.get("properties_verified"), (
-            f"{name}: status is accepted_unreviewed but properties_verified is non-empty;"
-            " promote it to 'reviewed' with a reference, or drop the claims"
-        )
-        assert entry.get("not_reviewed"), (
-            f"{name}: an unreviewed record must say so in not_reviewed"
-        )
+        assert not unreviewed_record_violations(name, entry)
+
+
+@pytest.mark.security
+def test_the_unreviewed_rule_is_exercised_against_planted_records() -> None:
+    """The teeth for the rule above, which the shipped record no longer exercises.
+
+    Three plants, each isolating one way an ``accepted_unreviewed`` entry could
+    smuggle a claim nobody made: verified properties, an execution block
+    masquerading as a review, and silence where the limits belong.
+    """
+    clean = {
+        "status": "accepted_unreviewed",
+        "properties_verified": [],
+        "not_reviewed": ["the action's own definition has not been read at the pinned SHA"],
+    }
+    assert unreviewed_record_violations("vendor/clean", clean) == []
+
+    claims = {**clean, "properties_verified": ["runs.using is node24"]}
+    assert unreviewed_record_violations("vendor/claims", claims), (
+        "an unreviewed record claiming a verified property must be caught"
+    )
+
+    silent = {**clean, "not_reviewed": []}
+    assert unreviewed_record_violations("vendor/silent", silent), (
+        "an unreviewed record that does not say what was not reviewed must be caught"
+    )
+
+    # And the inverse: a `reviewed` entry is not subject to this rule at all,
+    # so the helper must not fire on one just because it carries properties.
+    reviewed = {
+        "status": "reviewed",
+        "properties_verified": ["a", "b", "c"],
+        "not_reviewed": ["the bundle"],
+    }
+    assert unreviewed_record_violations("vendor/reviewed", reviewed) == []
 
 
 @pytest.mark.security
