@@ -5,6 +5,33 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **The cross-repository evidence contract (`docs/EVIDENCE_CONTRACT.md`), drafted against shipped
+  code in all three repositories rather than from the backlog record.** IANUA, IANUA-Broker
+  (`mcpscan`) and agent-trust-broker (ATB) exchange security evidence as files, and nothing
+  described the exchange in one place; the 2026-10-09 research record ranked that drift as a
+  medium risk and named this document as the mitigation. Three surfaces are pinned: the scan
+  report JSON `mcpscan` writes and `dashboard/scan_reports.py` reads (shipped both sides), the
+  `broker.json` posture manifest `mcpscan` reads (reader shipped, **no writer exists in ATB** —
+  measured), and the canonical per-tool digest `mcpscan` owns and ATB must adopt. Test vectors
+  are computed from the shipped implementations at `agent-trust-broker@85cf4d4` and
+  `IANUA-Broker@2bfd3e0` on CPython 3.13.17, and §9.5 makes an irreproducible vector a code
+  defect rather than a stale vector. **Two defects were found by measurement while drafting and
+  are recorded before any fix.** *D-1:* ATB writes `record_hash` as `sha256:`-prefixed while
+  `mcpscan` constrains `expect_tip_hash` to bare 64-hex and then compares it against the
+  prefixed chain value, so copying the chain's value voids the evidence block
+  (`BROKER-EVIDENCE-MISSING`, High) and stripping the prefix fails the comparison
+  (`BROKER-EVIDENCE-MISMATCH`, High) — **no value passes both gates**, so a correct ATB
+  deployment grades High either way. *D-2:* IANUA's importer validates `schema_version` against
+  a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so a new dimension or
+  any bump rejects the whole upload with a generic message — measured on all three variants —
+  and IANUA-Broker's own `ATB_POSTURE_CHECK.md` §4 recommends exactly that change. The document
+  also corrects the research record's predicted finding ids against the seven actually shipped,
+  two of which would have been duplicates and one of which (`BROKER-HMAC-MISMATCH`) has no
+  implementation because the reader performs no HMAC verification at all (measured). It carries
+  no code: the v2 delta, the domain-separated auth envelope and `tool_map_digest` are labelled
+  proposed, §13 is a ratification checklist, and §12.4 refuses in terms any reading of the
+  contract as authorization for a network transport — every surface is a local file, and egress
+  or a listener remains an `AGENTS.md` §5.1 boundary gate.
 - **A CI gate holds the append-only logs to growth against the merge base
   (`scripts/check_append_only_logs.py`).** `DESIGN.md` §11 and `docs/Changelog.md` are the
   logs `AGENTS.md` §2 step 8 exempts from the concurrent-session overlap rule, because
