@@ -6,6 +6,14 @@
 Only display fields are retained. Strings remain untrusted plain text: callers must
 use text/table widgets, never HTML or Markdown interpolation. Schema validation
 cannot establish that uploaded text is redacted. Locations are labels, never read.
+
+Version handling is asymmetric on purpose, per the evidence contract
+(`docs/EVIDENCE_CONTRACT.md` §11): an unknown **major** is refused outright,
+because a major is where a producer may change what a field *means*; an unknown
+**minor** inside the supported major is accepted and read with the newest known
+minor's field rules, because a minor only adds. Refusing the whole upload on a
+minor bump was defect D-2 — a routine producer release broke every import, and
+said so with a message that named neither the version nor the field.
 """
 
 from __future__ import annotations
@@ -23,6 +31,14 @@ MAX_COLLECTION_ITEMS = 5000
 MAX_NODES = 100000
 MAX_SERVERS = 200
 MAX_FINDINGS = 5000
+#: The one schema major this build can read. An unknown major fails closed.
+SCHEMA_MAJOR = 1
+#: Known minors, oldest first. The last is the field-rule set an unknown minor
+#: is read with, so adding a minor here is what enables its new fields.
+KNOWN_SCHEMA_VERSIONS = ("1.0", "1.1")
+#: A version string is two short numbers and a dot; nothing here needs more.
+MAX_SCHEMA_VERSION_LENGTH = 16
+_ASCII_DIGITS = "0123456789"
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 DIMENSIONS = ("exposure", "credential", "tool_scope", "pinning")
 GRADES = ("A", "B", "C", "D", "F")
@@ -162,6 +178,43 @@ def _text(value: object, *, limit: int = MAX_STRING_LENGTH, allow_empty: bool = 
     return value
 
 
+def _ascii_number(text: str) -> bool:
+    """Whether ``text`` is a canonical ASCII integer (no sign, no leading zero).
+
+    Security consideration: ``str.isdigit`` is True for non-ASCII digits and
+    ``int`` accepts them, so ``"1.\u0661"`` would pass a property-based check and
+    parse as 1.1. The accepted characters are therefore named literally, which is
+    the idiom the secret-fingerprint check in :func:`_finding` already uses.
+    """
+    if not text or any(char not in _ASCII_DIGITS for char in text):
+        return False
+    return text == "0" or not text.startswith("0")
+
+
+def _schema_version(value: object) -> tuple[str, str]:
+    """Return ``(reported, effective)`` for an untrusted ``schema_version``.
+
+    ``reported`` is what the producer claimed, retained for display. ``effective``
+    is the known version whose field rules the report is read with: itself when
+    known, otherwise the newest known minor of the supported major.
+
+    Security consideration: the shape is checked before anything reads it, an
+    unknown major is refused (fail closed, since a major may redefine a field),
+    and no message quotes the uploaded value.
+    """
+    text = _text(value, limit=MAX_SCHEMA_VERSION_LENGTH)
+    major, dot, minor = text.partition(".")
+    if not dot or not _ascii_number(major) or not _ascii_number(minor):
+        raise ReportImportError("Report schema version is not in MAJOR.MINOR form.")
+    if major != str(SCHEMA_MAJOR):
+        raise ReportImportError(
+            f"Report schema major version is not supported; this build reads major {SCHEMA_MAJOR}."
+        )
+    if text in KNOWN_SCHEMA_VERSIONS:
+        return text, text
+    return text, KNOWN_SCHEMA_VERSIONS[-1]
+
+
 def _choice(value: object, choices: tuple[str, ...]) -> str:
     text = _text(value)
     if text not in choices:
@@ -239,12 +292,16 @@ def parse_report(data: bytes) -> ScanReport:
         obj = _object(raw)
         if obj.get("tool") != "ianua-broker":
             _reject()
-        schema = _choice(obj.get("schema_version"), ("1.0", "1.1"))
+        reported_schema, schema = _schema_version(obj.get("schema_version"))
         grade = _choice(obj.get("overall_grade"), GRADES)
         online = _bool(obj.get("generated_with_online"))
         dimensions = _object(obj.get("dimension_grades"))
-        if set(dimensions) != set(DIMENSIONS):
-            _reject()
+        if any(dim not in dimensions for dim in DIMENSIONS):
+            # A MISSING dimension is still fatal: the grade it would carry is not
+            # inferable, and a partial posture rendered as a whole one misleads.
+            # An EXTRA one is ignored like any other unknown key, so a producer
+            # adding a dimension no longer rejects the upload (D-2).
+            raise ReportImportError("Report is missing a required dimension grade.")
         grades = tuple((dim, _choice(dimensions[dim], GRADES)) for dim in DIMENSIONS)
         server_ids: list[str] = []
         incomplete_ids: list[str] = []
@@ -272,7 +329,13 @@ def parse_report(data: bytes) -> ScanReport:
                 identities.add(finding.identity)
                 findings.append(finding)
         return ScanReport(
-            schema, grade, online, grades, tuple(server_ids), tuple(incomplete_ids), tuple(findings)
+            reported_schema,
+            grade,
+            online,
+            grades,
+            tuple(server_ids),
+            tuple(incomplete_ids),
+            tuple(findings),
         )
     except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError, OverflowError) as exc:
         if isinstance(exc, ReportImportError):

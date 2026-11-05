@@ -500,6 +500,19 @@ clears stale results when an upload is removed or invalid. It cannot certify
 that free text is secret-free. Comparisons preserve incomplete-inspection
 signals and never infer resolution from an incomplete current report.
 
+Version handling across this boundary is **asymmetric by decision**, per
+`docs/EVIDENCE_CONTRACT.md` §6.2 and §11. An unknown schema **major** is
+refused, because a major is where a producer may change what an existing field
+*means* and there is no safe default for that. An unknown **minor** inside the
+supported major is accepted and read with the newest known minor's field rules,
+and an **extra** `dimension_grades` key is ignored like any other unknown key —
+because a minor only adds, so no bound is relaxed and no field skips validation.
+A **missing** required dimension is still fatal: the grade it would carry is not
+inferable, and a partial posture rendered as a whole one misleads. Both refusals
+name their cause without quoting the uploaded value. Refusing the whole upload on
+a minor bump was defect D-2: a routine producer release broke every import, and
+the generic message told the operator nothing they could act on.
+
 ### Release publication
 
 Publishing a release crosses from CI into externally visible state (a git tag, a

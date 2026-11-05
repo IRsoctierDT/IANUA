@@ -137,7 +137,7 @@ prefix explicitly and the contract MUST say so at the field (§8.2 does).
 | Field | Type | Accepted values |
 |---|---|---|
 | `tool` | string | exactly `"ianua-broker"` |
-| `schema_version` | string | exactly `"1.0"` or `"1.1"` |
+| `schema_version` | string | `MAJOR.MINOR`, canonical ASCII digits; major MUST be `1`, any minor accepted (§6.2) |
 | `overall_grade` | string | `A` `B` `C` `D` `F` |
 | `generated_with_online` | bool | — |
 | `dimension_grades` | object | key set **exactly** `{exposure, credential, tool_scope, pinning}`, each a grade |
@@ -154,34 +154,57 @@ prefix explicitly and the contract MUST say so at the field (§8.2 does).
 Unknown fields are discarded. Duplicate JSON keys, or duplicate finding identities, reject
 the whole upload.
 
-### 6.2 Forward compatibility — a binding rule, because the current behaviour is a trap
+### 6.2 Forward compatibility — **R2 shipped; this records what it does**
 
-IANUA's importer validates `schema_version` against a closed set and `dimension_grades`
-against **exact set equality**. Measured against the shipped parser:
+The importer used to validate `schema_version` against a closed `{1.0, 1.1}` set and
+`dimension_grades` by **exact set equality**, so a producer bumping its minor or adding a
+dimension rejected the *whole* upload with the generic
+`"Report format or limits are invalid."` — an operator saw a broken uploader, not a version
+mismatch. That was defect D-2 (§10), and it was live rather than hypothetical, because
+IANUA-Broker's `ATB_POSTURE_CHECK.md` §4 **recommends** adding a `Dimension.GOVERNANCE`
+member in a deliberate minor with a schema bump.
 
-| Report | Outcome **(measured)** |
-|---|---|
-| `schema_version` `1.1`, the four current dimensions | accepted |
-| `schema_version` `1.1`, plus a `governance` dimension | **rejected** |
-| `schema_version` `1.2`, the four current dimensions | **rejected** |
-| `schema_version` `1.2`, plus a `governance` dimension | **rejected** |
+Measured through the shipped parser, before and after:
 
-This matters now, not hypothetically: IANUA-Broker's `ATB_POSTURE_CHECK.md` §4 **recommends
-adding a `Dimension.GOVERNANCE` member in a deliberate minor with a schema bump.** Shipping
-that recommendation breaks every IANUA import — and it fails *closed and total*, with the
-generic message `"Report format or limits are invalid."`, so an operator sees a broken
-uploader and not a version mismatch.
+| Report | Before | After |
+|---|---|---|
+| `1.1`, the four current dimensions | accepted | accepted |
+| `1.1`, plus a `governance` dimension | **rejected** | accepted (extra ignored) |
+| `1.2`, the four current dimensions | **rejected** | accepted (displays `1.2`) |
+| `1.2`, plus a `governance` dimension | **rejected** | accepted |
+| `2.0` — unknown **major** | rejected, generic message | **rejected**, names the supported major |
+| `1.1`, **missing** a dimension | rejected, generic message | **rejected**, names the cause |
 
-Therefore:
+The rules now in force:
 
-- **R1.** `mcpscan` MUST NOT add, remove or rename a `dimension_grades` key, nor bump
-  `schema_version`, without a coordinated IANUA change landing first or in the same wave.
-- **R2.** IANUA SHOULD relax the importer so an unknown `schema_version` or an unknown
-  *extra* dimension degrades to a named, actionable error — and MUST keep rejecting a report
-  **missing** a required dimension. Until R2 lands, R1 is the only thing preventing the
-  break, and R1 is a convention that a release can forget.
-- **R3.** Whichever side moves first, the vector file in §10 gains a case pinning the
-  outcome, run in both CIs.
+- **R1 stands, narrowed to majors.** `mcpscan` MUST NOT change a **major** without a
+  coordinated IANUA change landing first or in the same wave. A minor bump or an added
+  dimension no longer needs coordination, which is the point of R2: R1 was a convention a
+  release could forget, and it is now load-bearing only where the consumer deliberately
+  fails closed.
+- **R2 — shipped.** An unknown **minor** inside the supported major is accepted and read
+  with the newest known minor's field rules; an **extra** dimension is ignored like any
+  other unknown key and is not retained; an unknown **major** is refused; a **missing**
+  required dimension is refused. Both refusals name their cause without quoting the
+  uploaded value.
+- **R3 — shipped on the IANUA side**, as `tests/security/test_scan_report_import.py`: the
+  six-row matrix above, the field-rule consequence (a `1.1`-only field is accepted at `1.2`
+  and refused at `1.0`), and the malformed-version set. `mcpscan` owes the producer half.
+
+**R2's original wording said something this does not do, and §11 is why.** It read "an
+unknown `schema_version` … degrades to a named, actionable error", which would keep
+*refusing* a minor bump and merely explain itself better. That contradicts §11, which
+requires refusing an unknown **major** and ignoring unknown fields **within** a known major
+— and §11 is the normative versioning section, so it governs. Explaining the rejection more
+clearly would also not have fixed D-2: the import would still fail, and the operator would
+still have nothing to do about it but wait for a new IANUA release.
+
+**The asymmetry is the control, not an oversight.** A minor only adds, so reading a `1.2`
+report with `1.1`'s rules is safe — every field still passes the same allow-list and the
+same bounds. A major is where a producer may change what an existing field *means*, and
+there is no safe default for that, so it fails closed. Accepting unknown minors therefore
+widens which *version strings* reach the parser and nothing else: no limit is relaxed, no
+field skips validation, and an extra dimension's value is never read.
 
 ### 6.3 Consumer limits (IANUA, normative on the reader) **(measured)**
 
@@ -426,11 +449,31 @@ cross-repository test, however green it is. The vectors in §9 are computed from
 implementations for that reason, and §9.5 makes an irreproducible vector a defect in the
 repository rather than a stale vector.
 
-### D-2 — a `mcpscan` minor release breaks IANUA's importer (P2)
+### D-2 — a `mcpscan` minor release breaks IANUA's importer (P2) — **FIXED**
 
-Measured in §6.2. A new `dimension_grades` key or any `schema_version` outside `{1.0, 1.1}`
-rejects the entire upload with a generic message. `ATB_POSTURE_CHECK.md` §4 recommends
-exactly that change. Fix: R1–R3 in §6.2.
+A new `dimension_grades` key or any `schema_version` outside `{1.0, 1.1}` rejected the
+entire upload with a generic message, and `ATB_POSTURE_CHECK.md` §4 recommends exactly that
+change.
+
+**Fixed by R2 in the consumer** (`dashboard/scan_reports.py`), measured before and after in
+§6.2's six-row table: an unknown minor and an extra dimension are now accepted, while an
+unknown major and a missing dimension are refused with messages that name the cause. R1
+survives narrowed to majors, and R3's consumer half ships as
+`tests/security/test_scan_report_import.py`.
+
+Two things found while fixing it are worth carrying forward:
+
+- **The version was never a label.** `_finding` gates the `acceptance` block on
+  `schema != "1.1"`, so "accept unknown minors" had to decide which field rules apply.
+  Reading a `1.2` report with `1.1`'s rules is the only answer consistent with minors being
+  additive — and it means **adding a minor to `KNOWN_SCHEMA_VERSIONS` is what enables its
+  new fields**, not a cosmetic bump.
+- **`str.isdigit` would have been a bypass.** It answers True for non-ASCII digits and
+  `int` parses them, so `"1.\u0661"` (ARABIC-INDIC ONE) and `"\u00b9.2"` (SUPERSCRIPT ONE)
+  would have validated as `1.1` and `1.2`. The accepted characters are named literally
+  instead. This is the same defect class §5 of `AGENTS.md` records twice over — a rule
+  written as a library property that answers differently than the author assumed — so it is
+  pinned by test rather than left to the next reader.
 
 ## 11. Versioning
 
@@ -524,7 +567,11 @@ names the repository that owns it.
       `IRsoctierDT/IANUA-Broker#165`. The vector is six tests in
       `tests/test_checks_broker.py`; three of them fail without the source change, verified
       by reverting it.
-- [ ] Decide R1 vs R2 for D-2, and state the decision in `ATB_POSTURE_CHECK.md` §4.
+- [ ] State in `ATB_POSTURE_CHECK.md` §4 that R2 shipped on the consumer, so adding a
+      `GOVERNANCE` dimension in a minor no longer breaks the IANUA import — and that R1
+      still binds for a **major**.
+- [ ] Carry R3's producer half: a test that the emitted report satisfies §6.1, so the
+      consumer's matrix is pinned from both ends.
 - [ ] **Precondition for v2:** validate `broker.json`'s `schema_version` and refuse an
       unknown major. This MUST ship **before** any producer writes a `2.0` manifest — the
       current reader validates no version and ignores unknown keys, so until it does, a `2.0`
@@ -542,9 +589,13 @@ names the repository that owns it.
 - [ ] Carry §9's vectors in CI for surfaces 2 and 3.
 
 **IANUA**
-- [ ] Decide R2 (relax the importer) and, if yes, scope it as its own change — it touches a
-      trust boundary and needs its own `tests/security` cases.
-- [ ] Confirm §6.3's limits are current.
+- [x] **Decide R2 (relax the importer) and scope it as its own change.** Decided by the
+      owner and shipped: §6.2 and §10 D-2 record what it does, and the boundary's own
+      `tests/security/test_scan_report_import.py` carries the matrix, the field-rule
+      consequence and the malformed-version set.
+- [x] Confirm §6.3's limits are current. *(Confirmed while shipping R2; the byte, depth,
+      string, collection, node, server and finding bounds are unchanged by it — R2 widened
+      which version strings reach the parser and nothing else.)*
 - [ ] Record the surface-2 consumption decision. IANUA reading `broker.json` to show runtime
       protection beside static posture is a **new untrusted input format from a third-party
       producer** and needs explicit human scoping under `AGENTS.md` §6.3 before implementation.
@@ -573,6 +624,7 @@ shared vector file loaded by all three CIs instead of three transcriptions.
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-11-05 | `0.1-draft` rev 4 | D-2 is **fixed**: R2 shipped in `dashboard/scan_reports.py`, so an unknown minor and an extra dimension are accepted while an unknown major and a missing dimension still fail closed with named causes. §6.1's row and §6.2 are rewritten around the measured before/after, §10 records the two findings the fix turned up (the version gates a real field; `str.isdigit` would have been a bypass), and §13 checks off both IANUA items while handing `mcpscan` the producer half of R3. **R2's original wording contradicted §11** — it would have kept refusing minor bumps with a better message — and §11 governs, which §6.2 now states rather than leaving the two to disagree. |
 | 2026-11-05 | `0.1-draft` rev 3 | D-1 is **fixed** — `IRsoctierDT/IANUA-Broker#165` merged. §10 records the merge and draws out the generalizable lesson (a fixture written from one side's assumption about the other is not a cross-repository test), and §13's first two IANUA-Broker items are checked off, one of them confirming that `broker.json`'s `schema_version` really is validated against nothing. D-2 remains open with no fix proposed, and ratification is still pending. |
 | 2026-11-05 | `0.1-draft` rev 2 | Three defects found by automated review of rev 1, all confirmed, all in this document. **(a)** §7.3 promised a v2 file would stay parseable by a v1 reader, contradicting §11's unknown-major rule — and because the shipped reader validates no `schema_version` and ignores unknown keys, a v2 manifest with a forged or absent `auth` tag would have graded as sound; resolved fail-closed, with reader validation made a ratification precondition. **(b)** §12.5 forbade dereferencing any path, which forbids the `evidence.chain_path` read the tip binding depends on and the shipped engine performs; narrowed to display-only references plus one licensed, bounded read. **(c)** Eight cross-references had drifted (§14→§13, §13.2/.3/.4→§12.2/.3/.4, §10.1→§9.1) in a document whose value is being precisely referenceable. |
 | 2026-11-05 | `0.1-draft` | First draft. Consolidates the three surfaces from shipped code in all three repositories; records defects D-1 and D-2, both measured; proposes the v2 delta, the auth envelope and `tool_map_digest`. Ratification pending §13. |
