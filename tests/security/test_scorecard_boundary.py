@@ -75,6 +75,24 @@ def _steps() -> list[dict[str, Any]]:
     return typing.cast("list[dict[str, Any]]", _workflow()["jobs"]["analysis"]["steps"])
 
 
+def _all_steps() -> list[tuple[str, dict[str, Any]]]:
+    """Every step of every job, with its job name.
+
+    The pin assertion below used ``_steps()`` — the ``analysis`` job alone —
+    which was the whole workflow until the ``image-pin`` gate job was added.
+    A guard scoped narrower than the file it guards is the pattern this
+    repository keeps finding in its own controls, so it reads both jobs now.
+    (``tests/security/test_workflow_permissions.py`` covers every job of every
+    workflow independently; this is the second layer, not the only one.)
+    """
+    jobs = typing.cast("dict[str, dict[str, Any]]", _workflow()["jobs"])
+    return [
+        (name, step)
+        for name, job in jobs.items()
+        for step in typing.cast("list[dict[str, Any]]", job.get("steps") or [])
+    ]
+
+
 @pytest.mark.security
 def test_publishing_results_is_off() -> None:
     """The §5.1 egress decision, pinned so it cannot be flipped quietly.
@@ -151,13 +169,17 @@ def test_every_action_is_pinned_to_a_full_commit_sha() -> None:
     belongs in ``uses:``.
     """
     unpinned: list[str] = []
-    for step in _steps():
+    for job_name, step in _all_steps():
         if "uses" not in step:
             continue
         action, _, reference = step["uses"].partition("@")
         if not _FULL_SHA.match(reference):
-            unpinned.append(f"{action}@{reference}")
+            unpinned.append(f"{job_name}: {action}@{reference}")
     assert not unpinned, f"these actions are not pinned to a full commit SHA: {unpinned}"
+    assert len({job for job, _ in _all_steps()}) >= 2, (
+        "this workflow should have both the image-pin gate job and the analysis job; if a job"
+        " was removed, check whether the gate went with it"
+    )
 
 
 @pytest.mark.security

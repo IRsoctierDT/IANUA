@@ -807,6 +807,38 @@ fired on every patch would be switched off rather than obeyed — the failure mo
 charter names elsewhere in the same terms. A major is where an action's internals change,
 which is also why #316 made majors arrive as their own pull request.
 
+**A 40-hex pin does not always fix the code that runs, so each record declares what
+executes.** The pin was treated as the whole control, and it is one for a composite action
+(the steps are in the file) and for a node action (the `dist/` bundle is in the vendor's
+tree at that commit). It is **not** one for a **Docker** action: the pin fixes `action.yml`,
+and `action.yml` names an image. Measured at the four pinned SHAs on 2026-11-05,
+`ossf/scorecard-action` declares `image: "docker://ghcr.io/ossf/scorecard-action:v2.5.0"` —
+a **mutable tag** — so whoever can push that tag in `ghcr.io/ossf` chooses the container
+this repository executes, and nothing already here could see it: the `uses:` SHA does not
+change, so Dependabot never fires, and the permissions gate sees a correctly pinned action
+because it is one. Each record therefore carries an `execution` block and the gate
+**derives** whether the pin suffices from the entrypoint rather than trusting the
+declaration.
+
+**Where prevention is not available, detection is required.** Referencing the image by
+digest would close the gap outright and is upstream's to do; a fork of the action pinning it
+ourselves was weighed and refused, because it costs a repository to maintain and — the
+deciding reason — ends Dependabot coverage for that action, trading a tag-move risk for a
+staleness risk. So the tag is **watched** instead: `execution.image_digest` commits the
+digest the tag resolved to when measured, and `scripts/check_action_image_digest.py`
+re-resolves it. Three properties of that mechanism are deliberate. It runs as **its own
+job** which the protected job declares `needs:` on, because a Docker action's image is
+pulled during job *preparation* (measured in `actions/runner`,
+`ActionManager.PrepareRepositoryActionAsync`), so a check running as an earlier step in the
+same job would report on an image already pulled. A **moved tag exits 1 and an
+undetermined answer exits 2**, kept distinct because a gate that conflated an outage with an
+attack would teach an operator to ignore the one that matters — and both stop the dependent
+job, since a check that cannot answer must not report success. And the registries it will
+contact are an **allow-list in the script**, not a value read from the record: `collect/`'s
+control with one word changed, declared and never discovered. **The record keeps
+`pinned_by_sha: false` and keeps its `pin_gap`**: detection is the weaker property and is
+recorded as the weaker property.
+
 Two properties of the mechanism are load-bearing. The **first-party owner list lives in the
 test module, not in the JSON**: if the declaration file could name exempt owners, the bypass
 for any vendor would be to add its owner there, and the gate would approve its own
@@ -937,6 +969,7 @@ python scripts/check_mapping_rules.py --check # mapping ruleset ↔ digest; tech
 python scripts/check_intel_store.py --check   # intel library ↔ digest; licenses, TLP, anchors validate
 python scripts/build_behavior_index.py --check # behavioral index ↔ corpus; anchors resolve active
 python scripts/check_append_only_logs.py      # DESIGN.md §11 + Changelog lose no entry vs the merge base
+python scripts/check_action_image_digest.py --offline  # every tag-referenced Docker action commits its digest
 ```
 
 ### 7.1 Extended gate (run when the change warrants it)
