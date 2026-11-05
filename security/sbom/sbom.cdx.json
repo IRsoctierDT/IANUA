@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:feb47e02-5ee8-57f7-ac8c-dab0e41ad49a",
+  "serialNumber": "urn:uuid:a373e460-9339-5ca4-aff9-abb03d755134",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-05T04:00:53Z",
+    "timestamp": "2026-11-05T06:08:28Z",
     "tools": {
       "components": [
         {
@@ -287,11 +287,11 @@
       "purl": "pkg:pypi/hyperframe@6.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/hypothesis@6.170.5",
+      "bom-ref": "pkg:pypi/hypothesis@6.170.14",
       "name": "hypothesis",
       "type": "library",
-      "version": "6.170.5",
-      "purl": "pkg:pypi/hypothesis@6.170.5"
+      "version": "6.170.14",
+      "purl": "pkg:pypi/hypothesis@6.170.14"
     },
     {
       "bom-ref": "pkg:pypi/identify@2.6.19",
@@ -406,11 +406,11 @@
       "purl": "pkg:pypi/mypy-extensions@1.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/mypy@2.4.0",
+      "bom-ref": "pkg:pypi/mypy@2.4.1",
       "name": "mypy",
       "type": "library",
-      "version": "2.4.0",
-      "purl": "pkg:pypi/mypy@2.4.0"
+      "version": "2.4.1",
+      "purl": "pkg:pypi/mypy@2.4.1"
     },
     {
       "bom-ref": "pkg:pypi/narwhals@2.22.1",
@@ -714,11 +714,11 @@
       "purl": "pkg:pypi/pytest-cov@7.1.0"
     },
     {
-      "bom-ref": "pkg:pypi/pytest@9.1.1",
+      "bom-ref": "pkg:pypi/pytest@9.2.0",
       "name": "pytest",
       "type": "library",
-      "version": "9.1.1",
-      "purl": "pkg:pypi/pytest@9.1.1"
+      "version": "9.2.0",
+      "purl": "pkg:pypi/pytest@9.2.0"
     },
     {
       "bom-ref": "pkg:pypi/python-dateutil@2.9.0.post0",
@@ -798,11 +798,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.17.1",
+      "bom-ref": "pkg:pypi/ruff@0.17.3",
       "name": "ruff",
       "type": "library",
-      "version": "0.17.1",
-      "purl": "pkg:pypi/ruff@0.17.1"
+      "version": "0.17.3",
+      "purl": "pkg:pypi/ruff@0.17.3"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
