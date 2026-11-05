@@ -787,6 +787,35 @@ irreversible, externally visible, or security-sensitive:
 When a gate is hit, the agent presents: *what* it intends to do, *why*, the *blast radius*,
 and a *rollback plan* — then waits.
 
+**A third-party GitHub Action is a dependency, and its acceptance is now recorded rather
+than remembered.** A vendor action runs over this repository with a token on every pull
+request, so taking one on is the **Dependency addition** row above. #305 made that
+decision for `danoszz/penthera` by reading the action's own definition at a pinned SHA and
+enumerating what it checked — and then nothing held the result. Measured on #314:
+Dependabot moved the pin two majors, 1.9.0 to 2.2.0, and the only thing that objected was
+the vendor's own `penthera-version` input. That input is a courtesy; a vendor who drops it
+in a later release silently removes this repository's control, which means the control was
+never ours.
+
+`security/third-party-actions.json` therefore names every pinned action whose owner is not
+GitHub's own platform, with the version a human reviewed, what they verified, **what they
+did not**, and what bounds the blast radius.
+`tests/security/test_third_party_actions.py` fails a pull request that pins a vendor action
+with no record, or whose pinned **major** has moved past the reviewed one. Patch and minor
+bumps pass deliberately: `.github/dependabot.yml` bumps actions daily, and a rule that
+fired on every patch would be switched off rather than obeyed — the failure mode this
+charter names elsewhere in the same terms. A major is where an action's internals change,
+which is also why #316 made majors arrive as their own pull request.
+
+Two properties of the mechanism are load-bearing. The **first-party owner list lives in the
+test module, not in the JSON**: if the declaration file could name exempt owners, the bypass
+for any vendor would be to add its owner there, and the gate would approve its own
+exemption (`actions/`, `github/` and `dependabot/` are the platform; everything else is a
+vendor, `astral-sh` included). And a record may read **`accepted_unreviewed`**, which three
+of the four current entries do, because nobody has read them — recording them as reviewed
+would assert what was never measured. The gate requires such an entry to claim nothing
+verified. The gain is that the debt is enumerable, not that it is gone.
+
 ---
 
 ## 6. Agent Roles & Workflow

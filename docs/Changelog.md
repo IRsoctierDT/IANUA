@@ -24,6 +24,23 @@ All notable changes to this project. Versions correspond to git tags.
   branch merely behind its base is not flagged. A deliberate removal -- a "Known issues"
   entry whose issue is fixed, as #301 and #310 each did correctly -- is declared in
   `docs/log_removals.json` with a reason, which ships empty.
+- **Every third-party GitHub Action now carries a committed review record
+  (`security/third-party-actions.json`).** #305 accepted `danoszz/penthera` by reading its
+  `action.yml` at a pinned SHA and enumerating nine properties — and nothing held that
+  result afterwards. Measured on #314: Dependabot moved the pin two majors, 1.9.0 → 2.2.0,
+  and the only objection came from the vendor's own `penthera-version` input. That is a
+  courtesy, not a control: a vendor who drops it in a later release silently removes it.
+  `tests/security/test_third_party_actions.py` now fails a pull request that pins a vendor
+  action with no record, or whose pinned **major** has moved past the reviewed one. Patch and
+  minor bumps pass deliberately, because actions are bumped daily and a rule firing on every
+  patch gets switched off. The first-party owner list lives in the test module rather than the
+  JSON, so a vendor cannot be exempted by editing the declaration file. Three of the four
+  entries read `accepted_unreviewed` — `setup-uv`, `gitleaks-action` and `scorecard-action`
+  predate the file and nobody has read them — because recording them as reviewed would assert
+  what was never measured; the gate requires such an entry to claim nothing verified. Five
+  plants each redden exactly their targeted test, including #314's own bump replayed.
+  Residual: this proves review provenance, not that vendor code is benign — each record names
+  the bundled scanner it did not audit.
 - **Penthera offline security review on pull requests (`.github/workflows/penthera.yml`).** A
   third-party composite action (`danoszz/penthera`, MIT) posts a dependency capability diff as one
   PR comment and uploads SARIF to Code scanning. It reads this repository's real lockfile rather
