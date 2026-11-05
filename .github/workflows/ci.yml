@@ -327,6 +327,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The append-only-log gate resolves the merge base of this branch and
+          # its base, which a depth-1 checkout does not contain: the gate would
+          # exit 2 ("git merge-base failed") rather than reporting on the logs.
+          fetch-depth: 0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -381,6 +385,28 @@ jobs:
         # technique fails with the successor named, so stale post-compromise
         # content cannot merge.
         run: python scripts/build_behavior_index.py --check
+      - name: DESIGN.md §11 and docs/Changelog.md lost no entry vs the merge base
+        # The append-only logs. Nearly every branch conflicts with its base in
+        # both, the resolution is mechanical, and five times a merge has
+        # resolved one by keeping a side and dropping the other's entries
+        # silently (697df79, 76b3e96, 0b7f4fb, 0608b79a, and 2b3f6b6c, whose
+        # §11 row is still missing). Nothing in CI saw any of them.
+        #
+        # Pull requests only: `main` squash-merges, so the diff this gate reads
+        # is exactly what lands, and blocking here is sufficient. On a push
+        # there is no base to compare against.
+        #
+        # The base ref reaches the shell only through `env:`, never through
+        # `${{ }}` interpolation in `run:` — a branch name is attacker-chosen
+        # on a fork PR. The gate validates it again against a character
+        # allow-list before it reaches git.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin \
+            "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          python scripts/check_append_only_logs.py --base "origin/${BASE_REF}"
 
   build:
     name: Build package
