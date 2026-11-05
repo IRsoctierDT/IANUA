@@ -251,10 +251,43 @@ def _module_bindings(tree: ast.Module) -> set[str]:
 
         Walks the target expression, so tuple and nested unpacking
         (``for a, (b, c) in ...``) contribute every name rather than the first.
+
+        **Only ``Store`` context counts.** A target expression also holds
+        ``Load`` names: in ``missing.attr = 1`` and ``missing[index] = 1`` the
+        base and the index are read, not bound. Measured — without the context
+        test, five such shapes entered the binding set, so a ``:data:`missing```
+        reference resolved against a module that never binds it. That is the
+        bypass this gate exists to catch, and the ``ast.walk`` rule this one
+        replaced *did* test the context: it was dropped in the rewrite, not
+        absent from the original. Found by review on ``#330``.
         """
         for inner in ast.walk(node):
-            if isinstance(inner, ast.Name):
+            if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
                 names.add(inner.id)
+
+    def add_global_stores(node: ast.AST) -> None:
+        """Record names a function declares ``global`` and then assigns.
+
+        ``global VALUE`` followed by ``VALUE = ...`` binds in the **module**
+        namespace, so a ``:data:`VALUE``` reference is followable once the
+        function has run — and an initialiser called at import time is the
+        ordinary way that happens. Skipping function bodies therefore rejected a
+        valid reference, which is the same false-positive class as the compound
+        statements above. Found by review on ``#330``.
+
+        Both halves are required: a bare ``global VALUE`` with no assignment
+        creates nothing, so the intersection of declared-global and stored names
+        is what gets recorded. ``nonlocal`` is deliberately **not** read — it
+        rebinds in an enclosing *function*, never at module scope.
+        """
+        declared: set[str] = set()
+        stored: set[str] = set()
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Global):
+                declared.update(inner.names)
+            elif isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                stored.add(inner.id)
+        names.update(declared & stored)
 
     def add_pattern(pattern: ast.pattern) -> None:
         """Record names a ``match`` case binds.
@@ -316,6 +349,7 @@ def _module_bindings(tree: ast.Module) -> set[str]:
             add_walrus(statement)
             if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
                 names.add(statement.name)  # the name, not what its body binds
+                add_global_stores(statement)  # except what it declares global
             elif isinstance(statement, ast.ClassDef):
                 names.add(statement.name)
                 collect(statement.body)  # methods and class attributes
@@ -425,6 +459,72 @@ def test_a_compound_statement_at_module_scope_still_binds_its_targets() -> None:
     # `ast.walk` rule never saw these either.
     for name in ("MATCH_BOUND", "MAP_VALUE", "MAP_REST", "SEQ_ITEM", "SEQ_STARRED"):
         assert name in bound, f"{name!r} is bound by a match pattern and must resolve"
+
+
+def test_only_store_context_names_count_as_bindings() -> None:
+    """A target expression's ``Load`` names are not bindings — review, ``#330``.
+
+    ``missing.attr = 1`` reads ``missing`` and writes its attribute; the module
+    never binds ``missing``. Counting it let a ``:data:`missing``` reference
+    resolve against nothing, which is the bypass this gate exists to catch.
+    Measured as accepted before the fix on all five shapes below.
+
+    The ``ast.walk`` rule this collector replaced *did* test the context. It was
+    dropped in the rewrite, so this is a regression reintroduced by a fix rather
+    than an original gap — worth stating, because reusing the old predicate
+    would have prevented it.
+    """
+    not_bound = {
+        "attribute target": ("missing.attr = 1\n", "missing"),
+        "subscript base": ("missing[index] = 1\n", "missing"),
+        "subscript index": ("missing[index] = 1\n", "index"),
+        "unreachable attribute": ("if False:\n    missing.attr = 1\n", "missing"),
+        "annotated attribute": ("holder.x: int = 1\n", "holder"),
+        "loop attribute target": ("for holder.x in []:\n    pass\n", "holder"),
+    }
+    for label, (source, name) in not_bound.items():
+        assert name not in _module_bindings(ast.parse(source)), (
+            f"{name!r} is read, not bound, by a {label}; counting it lets a "
+            "reference resolve against a module that never defines it"
+        )
+
+    bound = {"plain": ("REAL = 1\n", "REAL"), "starred": ("*HEAD, tail = []\n", "HEAD")}
+    for label, (source, name) in bound.items():
+        assert name in _module_bindings(ast.parse(source)), (
+            f"{name!r} is a real {label} store and must still resolve"
+        )
+
+
+def test_a_global_declared_and_assigned_binds_at_module_scope() -> None:
+    """``global X`` then ``X = …`` binds in the module — review, ``#330``.
+
+    An initialiser called at import time is the ordinary way a module gains a
+    name this way, so skipping function bodies rejected a followable reference.
+    Both halves are required and both are pinned: a bare ``global`` with no
+    assignment creates nothing, and ``nonlocal`` rebinds in an enclosing
+    *function*, never at module scope.
+    """
+    bound = {
+        "declared, assigned and called": "def init():\n    global VALUE\n    VALUE = 1\ninit()\n",
+        "declared and assigned, not called": "def init():\n    global VALUE\n    VALUE = 1\n",
+        "declared in a nested function": (
+            "def outer():\n    def inner():\n        global VALUE\n        VALUE = 1\n    return inner\n"
+        ),
+    }
+    for label, source in bound.items():
+        assert "VALUE" in _module_bindings(ast.parse(source)), (
+            f"a global {label} binds VALUE in the module namespace"
+        )
+
+    assert "BARE" not in _module_bindings(
+        ast.parse("def init():\n    global BARE\n    print(BARE)\n")
+    ), "a global declaration with no assignment creates nothing"
+    assert "shadowed" not in _module_bindings(
+        ast.parse(
+            "def outer():\n    shadowed = 1\n    def inner():\n"
+            "        nonlocal shadowed\n        shadowed = 2\n    return inner\n"
+        )
+    ), "nonlocal rebinds in the enclosing function, not at module scope"
 
 
 def test_a_walrus_binds_where_python_binds_it() -> None:

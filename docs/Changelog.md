@@ -91,10 +91,34 @@ All notable changes to this project. Versions correspond to git tags.
   binding rather than the effective one.** The test now carries 20 cases and the check is on the
   node itself.
 
-  So this gate has now produced **three** defects of one kind in three rounds, two found by
-  review and one by audit, and the honest summary is that each "measured, zero cost" claim was a
-  measurement of today's tree. Whole-tree measurement remains 0 of 578 unresolved — stated now as
-  what it is, evidence about this tree and not a property of the rule.
+  **Two further defects, both found by the same review round, and both regressions from the
+  rewrite rather than original gaps.**
+
+  First, `add_targets` recorded every `ast.Name` in a target expression **without testing its
+  context**. A target also holds `Load` names: `missing.attr = 1` and `missing[index] = 1` *read*
+  `missing` and write an attribute or item, so the module never binds `missing`. Measured —
+  six such shapes entered the binding set, so a `:data:`missing`` reference resolved against a
+  module that never defines it. That is a **bypass**, the class this gate exists to catch, and
+  the `ast.walk` rule being replaced *did* test the context: reusing its predicate instead of
+  rewriting it would have prevented this outright.
+
+  Second, `global VALUE` followed by `VALUE = …` inside a function binds in the **module**
+  namespace — an initialiser called at import time is the ordinary way a module gains a name that
+  way — and skipping function bodies rejected the reference. Both halves are now required and
+  pinned: a bare `global` with no assignment creates nothing, and `nonlocal` is deliberately not
+  read, since it rebinds in an enclosing *function*. Nested `global` declarations are covered.
+
+  So this gate produced **five** defects of one kind across three review rounds — three found by
+  review, one by self-audit, one by review after the self-audit — and the honest summary is that
+  every "measured, zero cost" claim was a measurement of today's tree. Two of the five were
+  **introduced by a fix for an earlier one**, and two were caused by rewriting a predicate the
+  replaced code already had right. The root cause `AGENTS.md` names for the four bypasses in
+  `test_ha_listener_bounds.py` — reading *a* binding rather than the effective one — covers all
+  five here as well, which makes nine instances of one defect class in this repository's
+  AST-reading guards. Whole-tree measurement remains 0 of 578 unresolved, stated as what it is:
+  evidence about this tree, not a property of the rule. The gate's blast radius is small
+  (test-only, no production path), and the case for recording this class in `AGENTS.md` §5
+  alongside the existing four is now stronger than when #330 opened.
 
 - **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
   IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
