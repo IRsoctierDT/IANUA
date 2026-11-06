@@ -2,15 +2,24 @@
 
 ## Current Version
 
-v2.3.1 — **Immutable Releases & Gate Hardening** — a patch release on v2.3.0's SOC
-platform, whose components are listed under **SOC Platform** below. It is the first
-immutable release: GitHub locks a published release's tag and assets, and the release
-workflow never uploads to a locked release. It also tightens three gates. A file
-named like an option can no longer make the pre-commit secret scan pass. The
-pre-commit hooks run the locked toolchain rather than pins of their own. Compliance
-control CFG-02 accepts only IP literals, so a dashboard bound to `localhost` now
-fails it. See [`docs/Changelog.md`](./Changelog.md) for the full history, including
-the known issue carried over from v2.3.0.
+v2.4.0 — **Supply-Chain Integrity & Parser Hardening** — a minor release on v2.3.0's SOC
+platform, whose components are listed under **SOC Platform** below. Its weight is in what
+the build trusts. Every pinned third-party action now carries a review record naming what a
+human verified and what they did not, and a major bump past the reviewed one fails the gate;
+the one Docker action whose `uses:` SHA cannot fix its image is watched by digest instead,
+because a 40-hex pin does not fix a mutable tag. Every pip install in CI is hash-pinned, `uv`
+is pinned to an exact version with a checksum fetched from a different origin, and the
+Scorecard SARIF upload moved to its own job so the vendor container never holds a
+write-capable token. A pull request that drops an entry from either append-only log now
+fails. On the input side, the four untrusted-input parsers are fuzzed with Atheris in CI with
+pytest replaying the seeds everywhere, one malformed record can no longer stall a collector,
+a malformed stdio line gets a JSON-RPC error instead of ending the server, and non-ASCII
+excerpts keep their bytes as written. The cross-repository evidence contract between IANUA,
+IANUA-Broker and the ATB is pinned in [`docs/EVIDENCE_CONTRACT.md`](./EVIDENCE_CONTRACT.md),
+and the dashboard's scan-report importer now accepts a producer's minor bump and its widened
+value sets with a signal the operator sees. Three advisories are cleared (msgpack, filelock,
+setuptools). See [`docs/Changelog.md`](./Changelog.md) for the full history, including the
+`--help` known issue still carried from v2.3.0.
 
 ## Operational Components
 
