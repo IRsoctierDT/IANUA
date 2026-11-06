@@ -4,7 +4,247 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Removed
+- **The docstring cross-reference gate is reverted, by owner decision
+  (`tests/unit/test_docs_runbooks.py`).** It resolved `:func:`/`:data:`/`:class:`/`:meth:`/
+  `:attr:`/`:mod:` references in tracked non-test modules against the tree. It found **three
+  real dangling references** — `scripts/run_pipeline.py:89`, `:169` and
+  `scripts/run_collector.py:173`, all naming `_single_instance` where the symbol has always been
+  `single_instance` — **and those fixes are kept.** What is removed is the gate, not its
+  findings.
+
+  The reason is its own defect record: **eleven defects of one root cause across five review
+  rounds**, six found by independent review and five by self-audit. Three were bypasses (the
+  gate accepting a reference to a name nothing binds), eight were false positives, three were
+  introduced by the fix for an earlier one, two came from rewriting a predicate the replaced
+  code already had correct, and one — the `global` cross-scope pairing — had been asserted safe
+  **in writing**, in the same sentence that asked a reviewer to check it. The final round also
+  surfaced dead code in the newest commit: a recursion loop that could never match, under a
+  comment describing behaviour it could not perform, which is the stale-prose class this whole
+  chain began with.
+
+  Eleven defects in one AST traversal whose only job is checking documentation references is a
+  sufficient argument that the cost exceeded the benefit. `AGENTS.md` names the same root cause
+  — reading *a* binding rather than the effective one — for four bypasses in
+  `test_ha_listener_bounds.py`, so this repository's AST-reading guards have produced fifteen
+  instances of it.
+
+- **A closing audit of the five shapes left unverified, and the more useful half of its result
+  is about the verification method rather than the gate.** Measured against a runtime oracle
+  (execute the planted module, call any initialiser, read the namespace) **whose call site
+  asserts success** rather than swallowing exceptions:
+
+  | Shape | Gate | Runtime | Verdict |
+  |---|---|---|---|
+  | `X = 1; del X` at module scope | binds | absent | **real bypass**, pathological |
+  | `del` of a never-assigned name; `del` of a local | correct | | ok |
+  | `global G` declared + stored + called | binds | present | ok |
+  | `global G` declared, never stored | rejects | absent | ok |
+  | `nonlocal` rebind | rejects | absent | ok |
+  | `global G` + augmented assign | binds | present | ok |
+  | `global G` stored but function **never called** | binds | absent | **not a defect** — see below |
+  | `if TYPE_CHECKING:` import | binds | absent | **not a defect** — see below |
+  | store under `if False:` / unreached `except` / `while False:` | binds | absent | **not a defect** — see below |
+  | `:attr:` on a `self.x = …`-only attribute | rejects | n/a | not a live gap — see below |
+
+  **Only one of the six runtime disagreements is a defect**, and it is `X = 1; del X`, which no
+  real module does and then documents.
+
+  **The oracle has a domain, and three rows fall outside it.** It is authoritative for
+  *scoping* questions — a comprehension target, a class body, a nested function — because those
+  are unconditional facts about where Python binds a name, and that is how the three genuine
+  bypasses were caught. It is **wrong** for:
+
+  - **Call-dependence.** Whether an import-time initialiser runs is statically undecidable, so
+    binding a `global`-declared store is the deliberate trade (prefer not rejecting a valid
+    reference), not an error.
+  - **Reachability.** The probe used `if False:`, which is a strawman. Real conditional
+    bindings are version and import guards — measured, a `try/except ImportError` alias
+    fallback and a `sys.version_info` branch each bind at runtime in whichever environment
+    runs, so recording both branches is correct. `collect()`'s recursion into
+    `If`/`Try`/`While` does **not** over-reach.
+  - **Documentation resolution.** A `TYPE_CHECKING`-only import is absent from the runtime
+    namespace and is still a reference a reader and Sphinx can follow. The runtime namespace is
+    simply the wrong question for it.
+
+  So the recommendation recorded in the previous entry — "rebuild the tests on the runtime
+  oracle" — **was too simple, and acting on it would have encoded three wrong expectations.**
+  That is the pattern's twelfth instance, appearing in the proposed remedy for the first eleven.
+  Any future rebuild should use execution for scoping questions only, and argue the others from
+  what a reader can follow.
+
+  On `:attr:`: 4 of the 13 `:attr:` references in non-test modules use the bare form
+  (`compliance/engine.py:87`, `pipeline/cycle.py:81`, `:84`, `:124`) and all resolve, because a
+  dataclass field is an `AnnAssign` in a class body and class bodies are collected. Only an
+  attribute set solely in `__init__` with no class-level annotation would fail, and the tree
+  contains none.
+
 ### Fixed
+- **The docstring-reference gate counted function-local names, so a reference to one resolved
+  (`tests/unit/test_docs_runbooks.py`).** Found by review on #329 — the fifth bypass of this kind
+  in this repository's AST-reading guards, and the one `AGENTS.md` told the next reviewer to
+  expect. `_module_bindings` walked the whole tree with `ast.walk` and counted every `Name` store
+  at any depth, so a bare `local_only = 3` inside a function and a comprehension target both
+  entered the binding set. Measured on the probe: `:data:`local_only`` and `:data:`comp_only``
+  each **resolved**, which is wrong — `:data:` means module-level data, and a name bound only
+  inside a call names nothing a reader can follow.
+
+  **The rule is now module scope and class bodies, never function bodies — plus imports at any
+  depth**, and that asymmetry is the fix rather than an exception to it. A function-local
+  *import* names a real importable module (`:func:`importlib.util.find_spec`` in
+  `compliance/controls.py` is a followable reference even though `import importlib.util` sits
+  inside the function below it); a function-local *variable* does not. Measured: scoping without
+  the import carve-out breaks exactly that one reference and nothing else, and with it the
+  narrowed rule leaves **zero** of all 578 references unresolved — identical to the wide rule, so
+  the narrowing costs nothing and strictly removes a bypass.
+
+  **The prior docstring's justification was hypothetical and was paying a real price.** It said
+  the wide rule was needed because a class docstring "legitimately cites a helper defined in a
+  sibling method" — no such citation exists in this tree, which the zero-cost measurement above
+  is what established. A guard weakened for a case that does not occur is the inverse of the
+  defect the guard exists to catch, and it is recorded here rather than quietly narrowed.
+
+  `test_a_function_local_name_does_not_satisfy_a_reference` is driven against **planted source**,
+  not the shipped tree, because the shipped tree contains no such reference and a guard proven
+  only by the absence of a counterexample is not proven. Verified it is not vacuous: the test
+  fails against the previous rule on both `local_only` and `comp_only`, and the narrowed gate
+  still catches a planted dangling reference with its site, symbol and unresolvable head.
+
+  **The narrowing then broke what it was scoped around, and review caught that too (#330).**
+  Scoping to module and class bodies is not sufficient on its own: Python binds a `for` target,
+  a `with ... as` name and a `match` capture **in the enclosing namespace**, and a rule that only
+  recursed into `body`/`orelse`/`finalbody` dropped all of them. Measured on a probe, six names
+  the previous `ast.walk` rule accepted were **newly rejected** — `LOOP_TARGET`, `HANDLE`, the
+  three targets of `for A, (B, C) in []`, and a class-body `CLS_LOOP`. That is a false positive,
+  and a false positive is precisely what gets a gate switched off rather than obeyed, which is
+  the justification the whole rule was built on. `collect()` now records `For`/`AsyncFor` targets,
+  `With`/`AsyncWith` `optional_vars`, and `Match` captures, and recurses each of their bodies.
+
+  **`match` is the exception that proves the mechanism rather than a seventh instance of it.** A
+  pattern carries its captures as bare `name`/`rest` strings, not as `ast.Name` nodes, so a
+  target walk sees nothing and the *old* rule missed them too — measured: `MATCH_BOUND` resolved
+  under neither rule. `MatchAs`, `MatchStar` and `MatchMapping.rest` are handled by their own
+  helper for that reason, so this one is a gap being closed rather than restored.
+
+  The asymmetry of the whole fix is therefore sharper than first stated: **what a name is bound
+  *by* decides whether a reference to it can be followed, and where it is bound decides whether
+  it exists at all** — a function-local import binds a real module, a compound statement at
+  module scope binds a real module-level name, and a function-local variable binds neither.
+  `test_a_compound_statement_at_module_scope_still_binds_its_targets` covers all eleven names and
+  is verified to fail against the intermediate rule. Whole-tree measurement unchanged: 0 of 578
+  references unresolved.
+
+  **Two review rounds, two defects, and the second was introduced by the fix for the first** —
+  the same shape as the changelog correction earlier in this release that contradicted itself.
+  Worth recording because of what was asked and what came back: #330's body asked whether
+  `collect()`'s recursion *reached somewhere it should not*, and the actual defect was that it
+  *failed to reach* binding positions it should. The question named the right function and the
+  wrong direction, which is a better argument for independent review than any finding in it.
+
+  **A third defect, found by self-audit rather than by review, in the same place.** While
+  checking the cases #330's body had listed as *unverified rather than cleared*, a walrus
+  (`:=`) turned out to bind nothing the gate could see: `collect()` reads statement **bodies**,
+  and a walrus lives in a test, an iterable, a context expression, an assigned value, an
+  `assert`, a `match` subject or a bare expression statement. Measured — **fifteen**
+  enclosing-scope positions the former `ast.walk` rule accepted were newly rejected, including a
+  decorator argument, a default argument, a return annotation, a lambda default and a class
+  base. `add_walrus` now records `NamedExpr` targets, descending past comprehensions (PEP 572
+  binds a comprehension's walrus in the containing scope) and stopping at a function or lambda
+  **body** while still reading its decorators, defaults and annotations, which are evaluated in
+  the enclosing scope.
+
+  **Widening alone would have reinstated a bypass.** The old rule also accepted a walrus in a
+  function body, which binds locally — so the two halves are asserted together, and
+  `test_a_walrus_binds_where_python_binds_it` pins all fifteen enclosing positions and all three
+  local ones.
+
+  **And the first attempt at that fix had the bug this gate keeps producing.** It tested whether
+  a *child* was a `NamedExpr`, so `def f() -> (W := int)` — where the walrus is passed in as the
+  root — was missed, and a walrus inside a function body leaked because the prune checked
+  children rather than the node. Both are the root-versus-child asymmetry `AGENTS.md` names as
+  the single root cause of all four bypasses in `test_ha_listener_bounds.py`: **reading *a*
+  binding rather than the effective one.** The test now carries 20 cases and the check is on the
+  node itself.
+
+  **Two further defects, both found by the same review round, and both regressions from the
+  rewrite rather than original gaps.**
+
+  First, `add_targets` recorded every `ast.Name` in a target expression **without testing its
+  context**. A target also holds `Load` names: `missing.attr = 1` and `missing[index] = 1` *read*
+  `missing` and write an attribute or item, so the module never binds `missing`. Measured —
+  six such shapes entered the binding set, so a `:data:`missing`` reference resolved against a
+  module that never defines it. That is a **bypass**, the class this gate exists to catch, and
+  the `ast.walk` rule being replaced *did* test the context: reusing its predicate instead of
+  rewriting it would have prevented this outright.
+
+  Second, `global VALUE` followed by `VALUE = …` inside a function binds in the **module**
+  namespace — an initialiser called at import time is the ordinary way a module gains a name that
+  way — and skipping function bodies rejected the reference. Both halves are now required and
+  pinned: a bare `global` with no assignment creates nothing, and `nonlocal` is deliberately not
+  read, since it rebinds in an enclosing *function*. Nested `global` declarations are covered.
+
+  So this gate produced **five** defects of one kind across three review rounds — three found by
+  review, one by self-audit, one by review after the self-audit — and the honest summary is that
+  every "measured, zero cost" claim was a measurement of today's tree. Two of the five were
+  **introduced by a fix for an earlier one**, and two were caused by rewriting a predicate the
+  replaced code already had right. The root cause `AGENTS.md` names for the four bypasses in
+  `test_ha_listener_bounds.py` — reading *a* binding rather than the effective one — covers all
+  five here as well, which makes nine instances of one defect class in this repository's
+  AST-reading guards. Whole-tree measurement remains 0 of 578 unresolved, stated as what it is:
+  evidence about this tree, not a property of the rule. The gate's blast radius is small
+  (test-only, no production path), and the case for recording this class in `AGENTS.md` §5
+  alongside the existing four is now stronger than when #330 opened.
+
+  **A sixth, found by self-audit, and recorded as unreachable rather than as a defect that was
+  biting.** A PEP 695 `type Alias = int` binds `Alias` at module scope and `collect()` had no
+  `ast.TypeAlias` branch, so the narrowing dropped it — the former `ast.walk` rule bound it,
+  since a `TypeAlias` name is a `Name` store. **It cannot occur in this repository today**:
+  `requires-python` is `>=3.11`, where that syntax is a parse error, so no tracked module can
+  use it. The gap goes live the day that floor moves to 3.12. Fixed because three lines is
+  cheaper than rediscovering the same regression later, and stated as latent because calling it
+  a live defect would overstate it.
+
+  Two details of the fix are deliberate. `ast.TypeAlias` **does not exist on 3.11**, which CI
+  runs alongside 3.12, so a bare reference would be an `AttributeError` that fails the whole
+  suite on the older interpreter; the branch keys off a module constant that resolves to an
+  empty tuple there, where `isinstance(x, ())` is always `False`, so no version test appears at
+  the call site. That shape is chosen against the hazard `AGENTS.md` documents for
+  `is_unspecified` on CPython 3.12.3 — a rule written as a per-interpreter library property.
+  Verified by re-importing the module with `ast.TypeAlias` deleted: it imports, the guard is
+  inert, and ordinary bindings are unaffected. And a type *variable* is scoped to its
+  declaration, so `T` in `type Pair[T]`, `def f[T]` and `class C[T]` must all stay out of the
+  module namespace — pinned, because the lazy fix would have collected the whole statement.
+
+  **A seventh and an eighth, from the fourth review round. The eighth is a bypass I argued was
+  impossible.**
+
+  `ast.TryStar` — `except*`, PEP 654 — is **not** an `ast.Try`, so a branch naming `ast.Try`
+  skipped its body, handlers, `else` and `finally` outright. Measured, four shapes rejected.
+  Unlike the PEP 695 gap above, **this one is reachable at this repository's floor**: `except*`
+  is 3.11+ and `requires-python` is `>=3.11`, so it was a live false positive.
+
+  And `add_global_stores` intersected every `global` declaration in a function's whole subtree
+  with every `Store` in it, which lets a declaration in one scope pair with a store in another:
+  `outer` declares `global UNIQUE` while a nested `inner` assigns a purely local `UNIQUE`. No
+  module-level store occurs anywhere, yet the name was recorded, so a `:data:`UNIQUE`` reference
+  to an unbound name **passed**. Each scope now matches its own declarations against its own
+  stores, with nested functions visited independently.
+
+  **That second one is the sharpest entry in this list, because the reasoning was explicit and
+  wrong.** The subtree intersection was chosen deliberately: #330's own fourth-round review
+  request asked whether it could produce a real bypass and asserted, in the same sentence, that
+  it "over-collects toward fewer false positives". It does the opposite — it produces a false
+  **negative**, the class this gate exists to catch. Asking the right question and supplying the
+  wrong answer to it is worse than not asking, because the answer is what a later reader will
+  trust.
+
+  Running total: **eight defects of one root cause across four review rounds** — five found by
+  review, three by self-audit. Three were introduced by a fix for an earlier one; two came from
+  rewriting a predicate the replaced code had correct; one was asserted safe in writing before
+  being measured unsafe. With the four in `test_ha_listener_bounds.py` that `AGENTS.md` §5
+  already documents, this repository's AST-reading guards have now produced **twelve** instances
+  of reading *a* binding rather than the effective one.
+
 - **D-2 of the evidence contract is closed: a producer's minor release no longer rejects every
   IANUA import (`dashboard/scan_reports.py`).** The importer validated `schema_version` against
   a closed `{1.0, 1.1}` set and `dimension_grades` by exact set equality, so adding a dimension
