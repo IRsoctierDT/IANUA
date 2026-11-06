@@ -4,6 +4,8 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+## v2.4.0 — Supply-Chain Integrity & Parser Hardening — 2026-11-06
+
 ### Removed
 - **The docstring cross-reference gate is reverted, by owner decision
   (`tests/unit/test_docs_runbooks.py`).** It resolved `:func:`/`:data:`/`:class:`/`:meth:`/
@@ -1004,6 +1006,15 @@ All notable changes to this project. Versions correspond to git tags.
   committed fixture, on both paths and through both entry types, and none reaches the
   projection. The fuzz target now hashes the projection as the store does. It could not see this
   before, because `canonical_json` alone never encodes.
+
+### Known issues
+- **`--help` still raises `UnicodeEncodeError` on an ASCII-only stdout in the `scripts/` CLIs,
+  as in v2.3.0 and v2.3.1.** Re-measured for this release with `PYTHONIOENCODING=ascii`: four of
+  a five-CLI sample (`run_retention.py`, `run_pipeline.py`, `run_collector.py`,
+  `secret_gate.py`) exit non-zero on a non-ASCII character in their help text. A UTF-8 locale
+  or `PYTHONIOENCODING=utf-8` still works around it (measured on `scripts/run_retention.py`:
+  exit 0). Carried forward rather than dropped, because a reader of this section would
+  otherwise take the omission for a fix.
 
 ## v2.3.1 — Immutable Releases & Gate Hardening — 2026-10-23
 

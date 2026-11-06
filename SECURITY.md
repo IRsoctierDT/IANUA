@@ -10,7 +10,8 @@ or have written authorization to test. See [AGENTS.md](./AGENTS.md) §5.
 
 | Version | Status |
 |---------|--------|
-| 2.3.x (current — Production SOC Foundations) | Supported — security fixes applied |
+| 2.4.x (current — Supply-Chain Integrity & Parser Hardening) | Supported — security fixes applied |
+| 2.3.x | Critical security fixes only, upgrade recommended |
 | 2.2.x | Critical security fixes only, upgrade recommended |
 | 2.1.x | Critical security fixes only, upgrade recommended |
 | 2.0.x | Critical security fixes only, upgrade recommended |
