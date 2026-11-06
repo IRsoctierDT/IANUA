@@ -4,6 +4,81 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Removed
+- **The docstring cross-reference gate is reverted, by owner decision
+  (`tests/unit/test_docs_runbooks.py`).** It resolved `:func:`/`:data:`/`:class:`/`:meth:`/
+  `:attr:`/`:mod:` references in tracked non-test modules against the tree. It found **three
+  real dangling references** — `scripts/run_pipeline.py:89`, `:169` and
+  `scripts/run_collector.py:173`, all naming `_single_instance` where the symbol has always been
+  `single_instance` — **and those fixes are kept.** What is removed is the gate, not its
+  findings.
+
+  The reason is its own defect record: **eleven defects of one root cause across five review
+  rounds**, six found by independent review and five by self-audit. Three were bypasses (the
+  gate accepting a reference to a name nothing binds), eight were false positives, three were
+  introduced by the fix for an earlier one, two came from rewriting a predicate the replaced
+  code already had correct, and one — the `global` cross-scope pairing — had been asserted safe
+  **in writing**, in the same sentence that asked a reviewer to check it. The final round also
+  surfaced dead code in the newest commit: a recursion loop that could never match, under a
+  comment describing behaviour it could not perform, which is the stale-prose class this whole
+  chain began with.
+
+  Eleven defects in one AST traversal whose only job is checking documentation references is a
+  sufficient argument that the cost exceeded the benefit. `AGENTS.md` names the same root cause
+  — reading *a* binding rather than the effective one — for four bypasses in
+  `test_ha_listener_bounds.py`, so this repository's AST-reading guards have produced fifteen
+  instances of it.
+
+- **A closing audit of the five shapes left unverified, and the more useful half of its result
+  is about the verification method rather than the gate.** Measured against a runtime oracle
+  (execute the planted module, call any initialiser, read the namespace) **whose call site
+  asserts success** rather than swallowing exceptions:
+
+  | Shape | Gate | Runtime | Verdict |
+  |---|---|---|---|
+  | `X = 1; del X` at module scope | binds | absent | **real bypass**, pathological |
+  | `del` of a never-assigned name; `del` of a local | correct | | ok |
+  | `global G` declared + stored + called | binds | present | ok |
+  | `global G` declared, never stored | rejects | absent | ok |
+  | `nonlocal` rebind | rejects | absent | ok |
+  | `global G` + augmented assign | binds | present | ok |
+  | `global G` stored but function **never called** | binds | absent | **not a defect** — see below |
+  | `if TYPE_CHECKING:` import | binds | absent | **not a defect** — see below |
+  | store under `if False:` / unreached `except` / `while False:` | binds | absent | **not a defect** — see below |
+  | `:attr:` on a `self.x = …`-only attribute | rejects | n/a | not a live gap — see below |
+
+  **Only one of the six runtime disagreements is a defect**, and it is `X = 1; del X`, which no
+  real module does and then documents.
+
+  **The oracle has a domain, and three rows fall outside it.** It is authoritative for
+  *scoping* questions — a comprehension target, a class body, a nested function — because those
+  are unconditional facts about where Python binds a name, and that is how the three genuine
+  bypasses were caught. It is **wrong** for:
+
+  - **Call-dependence.** Whether an import-time initialiser runs is statically undecidable, so
+    binding a `global`-declared store is the deliberate trade (prefer not rejecting a valid
+    reference), not an error.
+  - **Reachability.** The probe used `if False:`, which is a strawman. Real conditional
+    bindings are version and import guards — measured, a `try/except ImportError` alias
+    fallback and a `sys.version_info` branch each bind at runtime in whichever environment
+    runs, so recording both branches is correct. `collect()`'s recursion into
+    `If`/`Try`/`While` does **not** over-reach.
+  - **Documentation resolution.** A `TYPE_CHECKING`-only import is absent from the runtime
+    namespace and is still a reference a reader and Sphinx can follow. The runtime namespace is
+    simply the wrong question for it.
+
+  So the recommendation recorded in the previous entry — "rebuild the tests on the runtime
+  oracle" — **was too simple, and acting on it would have encoded three wrong expectations.**
+  That is the pattern's twelfth instance, appearing in the proposed remedy for the first eleven.
+  Any future rebuild should use execution for scoping questions only, and argue the others from
+  what a reader can follow.
+
+  On `:attr:`: 4 of the 13 `:attr:` references in non-test modules use the bare form
+  (`compliance/engine.py:87`, `pipeline/cycle.py:81`, `:84`, `:124`) and all resolve, because a
+  dataclass field is an `AnnAssign` in a class body and class bodies are collected. Only an
+  attribute set solely in `__init__` with no class-level annotation would fail, and the tree
+  contains none.
+
 ### Fixed
 - **The docstring-reference gate counted function-local names, so a reference to one resolved
   (`tests/unit/test_docs_runbooks.py`).** Found by review on #329 — the fifth bypass of this kind
