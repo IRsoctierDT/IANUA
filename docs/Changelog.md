@@ -9,6 +9,9 @@ All notable changes to this project. Versions correspond to git tags.
   evaluates seven typed endpoint rules and stamps matching event references with pinned
   ATT&CK metadata. Detection Intelligence shows observed sensor coverage and atomic
   freshness. Dashboard triage can use a reviewed, SHA-256-pinned local atomic snapshot.
+- **Lab Command Center.** The local dashboard now supports vulnerability remediation and
+  explicit rescan verification, PCI DSS lab evidence and a weekly scorecard, refreshed SOC
+  telemetry, and aggregate phishing simulation metrics. See [the lab runbook](LAB_COMMAND_CENTER.md).
 - **`verify`: a read-only read-back that settles an unknown send
   (`scripts/pfsense_containment.py verify`, `PfSenseLive.verify`).** Exit `0` when the
   address is where the capability would leave it, `5` when it is not. Uses the existing

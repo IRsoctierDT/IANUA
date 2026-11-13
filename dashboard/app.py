@@ -31,6 +31,7 @@ from dashboard.compliance_view import (
 )
 from dashboard.escalations import AuditChainError, load_chain_view
 from dashboard.kb_search import search_kb_resilient
+from dashboard.lab_views import render_lab_command_center
 from dashboard.markdown_safety import code_span, inert
 from dashboard.ollama_service import ensure_ollama_running
 from dashboard.scan_report_view import render_scan_reports
@@ -115,6 +116,7 @@ def _sigma_rule_count() -> int:
     tab_scan_reports,
     tab_approvals,
     tab_compliance,
+    tab_lab_command_center,
 ) = st.tabs(
     [
         "SOC Workflow",
@@ -127,6 +129,7 @@ def _sigma_rule_count() -> int:
         "Scan Reports",
         "Pending Approvals",
         "Compliance",
+        "Lab Command Center",
     ]
 )
 
@@ -735,3 +738,8 @@ with tab_reports:
 
 with tab_scan_reports:
     render_scan_reports(st)
+
+
+with tab_lab_command_center:
+    if st.toggle("Open Lab Command Center", key="open_lab_command_center"):
+        render_lab_command_center(Path.cwd())
