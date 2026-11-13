@@ -38,11 +38,14 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from agents.tools.behavior_runtime import BehavioralRules
 from correlation import DEFAULT_THRESHOLDS, Incident, Thresholds, assemble
 from pipeline.cursor import Cursor
 from store import MAX_QUERY_LIMIT, EventStore, Query
+
+if TYPE_CHECKING:
+    from agents.tools.behavior_runtime import BehavioralRules
 
 #: Events considered in one cycle. Bounded so a backlog is worked through over
 #: several scheduled runs rather than in one unbounded read: the store's own
