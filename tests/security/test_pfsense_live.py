@@ -149,6 +149,8 @@ def firewall(tmp_path: Path) -> Iterator[tuple[Firewall, int, str]]:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _handler(state))
     server.daemon_threads = True
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # The same floor the client enforces, so the stub never offers TLS 1.0/1.1.
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert, key)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -259,6 +261,14 @@ def test_restore_removes_from_the_isolate_alias(
         "remove": True,
         "apply": True,
     }
+
+
+@pytest.mark.security
+def test_the_client_refuses_tls_below_1_2() -> None:
+    """The pin replaces chain validation; it must not also relax the protocol floor."""
+    target = live.FirewallTarget(address="127.0.0.1", port=443, certificate_sha256="a" * 64)
+    context = live.PinnedConnection(target)._context()
+    assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
 
 
 @pytest.mark.security
