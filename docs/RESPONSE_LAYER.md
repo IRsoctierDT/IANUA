@@ -49,8 +49,9 @@ row with a *verified* approver rather than a claimed one. Approvers are declared
 
 **Nothing in this document's first sentence has changed yet.** `agents/response/` still
 ships no executor and `tests/security/test_response_no_executor.py` still enforces it.
-Phase 2 adds a pfSense adapter that runs dry; phase 3 makes it live under its own egress
-amendment. `AGENTS.md` §5 records what each owes.
+Phase 2 is in place: `agents/tools/pfsense.py` prepares and audits the pfSense requests
+for an approved action and has no transport (`docs/PFSENSE_CONTAINMENT.md`). Phase 3
+makes it live under its own egress amendment. `AGENTS.md` §5 records what it owes.
 
 ## The tiered model
 

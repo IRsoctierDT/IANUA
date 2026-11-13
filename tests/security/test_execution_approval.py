@@ -33,7 +33,7 @@ _CONTAINMENT = _MODULE.parents[1] / "tools" / "containment.py"
 @pytest.fixture
 def keys() -> Keys:
     private, public = generate_ed25519_keypair()
-    return Ed25519Signer(private), {"ivan": ea.Ed25519Verifier(public)}
+    return Ed25519Signer(private), {"owner": ea.Ed25519Verifier(public)}
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def ledger(tmp_path: Path) -> ea.ApprovalLedger:
 
 def _issue(signer: Ed25519Signer, **overrides: object) -> str:
     kwargs: dict[str, object] = {
-        "approver": "ivan",
+        "approver": "owner",
         "capability": "block_indicator",
         "target": "203.0.113.7",
         "plan_id": _PLAN,
@@ -82,7 +82,7 @@ def test_a_valid_approval_is_accepted_once(keys: Keys, ledger: ea.ApprovalLedger
     token = _issue(signer)
     verified = _authorize(token, approvers, ledger)
     assert (verified.approver, verified.capability, verified.target) == (
-        "ivan",
+        "owner",
         "block_indicator",
         "203.0.113.7",
     )
@@ -149,7 +149,7 @@ def test_editing_any_signed_field_breaks_the_signature(
     signer, approvers = keys
     envelope = json.loads(_issue(signer))
     envelope["approval"][field] = value
-    approvers = {**approvers, "mallory": approvers["ivan"]}
+    approvers = {**approvers, "mallory": approvers["owner"]}
     with pytest.raises(ea.ApprovalError, match="does not verify"):
         _authorize(json.dumps(envelope), approvers, ledger)
 
@@ -179,7 +179,7 @@ def test_hmac_is_refused_at_issue_and_at_verify(keys: Keys, ledger: ea.ApprovalL
     with pytest.raises(ea.ApprovalError, match="Ed25519 only"):
         ea.issue_approval(
             HmacSigner(b"k" * 32),  # type: ignore[arg-type]
-            approver="ivan",
+            approver="owner",
             capability="block_indicator",
             target="x",
             plan_id=_PLAN,
@@ -326,7 +326,7 @@ def test_both_outcomes_are_audited_and_the_allow_names_the_digest(
         if line.strip()
     ]
     assert [line["decision"] for line in lines] == ["allow", "deny"]
-    assert verified.digest in lines[0]["reason"] and lines[0]["actor"] == "approval/ivan"
+    assert verified.digest in lines[0]["reason"] and lines[0]["actor"] == "approval/owner"
     assert "|" not in lines[1]["action"], (
         "a hostile target must not corrupt (or mask) the deny record"
     )
@@ -350,8 +350,8 @@ def test_the_shipped_registry_is_empty_so_the_default_is_deny(
     [
         "not json",
         '{"version": 1}',
-        '{"version": 1, "approvers": [{"id": "ivan", "public_key": "00"}]}',
-        '{"version": 1, "approvers": [{"id": "ivan", "public_key": "'
+        '{"version": 1, "approvers": [{"id": "owner", "public_key": "00"}]}',
+        '{"version": 1, "approvers": [{"id": "owner", "public_key": "'
         + "a" * 64
         + '", "authorization": " "}]}',
         '{"version": 1, "version": 1, "approvers": []}',
