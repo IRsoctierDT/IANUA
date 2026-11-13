@@ -807,10 +807,12 @@ no executor, no adapter, no egress and no change to `agents/response/`;
   chat or the repository; and the §5.1 external-network gate, approved again. Whether a
   `ResponsePlan` may feed the adapter at all is a phase 3 decision and is **not** made
   here.
-- **Residuals.** The ledger grows by one line per consumed approval and is not pruned
-  yet; a compromised approver key authorizes anything in `CAPABILITIES` until it is
-  removed from the registry; and the gate cannot verify that the caller then does what it
-  described — that is phase 2's obligation and phase 2's security tests.
+- **Residuals.** The ledger keeps each consumed approval for 30 days after it expired and
+  then prunes it (amended 2026-11-13: a separate lock file guards the rewrite), so a clock
+  set back by more than that could revive a pruned approval; a compromised approver key
+  authorizes anything in `CAPABILITIES` until it is removed from the registry; and the
+  gate cannot verify that the caller then does what it described — that is phase 2's
+  obligation and phase 2's security tests.
 
 **Containment execution — amended for the pfSense adapter, dry run (stage 8, phase 2).**
 Licensed by the phased plan the owner approved on 2026-11-13. `agents/tools/pfsense.py`
@@ -872,7 +874,12 @@ committed allow-list" **for this path only**, for the reason in the second bulle
   `host`, integer `id`) before any change is written.
 - **An unknown outcome is reported as unknown.** A change written whose answer was lost
   is audited `unknown` and exits `4`, telling the operator to check the alias before
-  retrying, rather than being guessed as success or failure.
+  retrying, rather than being guessed as success or failure. `verify` (added 2026-11-13)
+  is that check: a read-only alias read-back under the **existing** `pfsense:probe`
+  grant, with no approval because it changes nothing — so this amendment still licenses
+  exactly two labels. It exits `5` when the address is not where the capability would
+  leave it, and refuses an alias whose address list it cannot read rather than calling
+  the address absent.
 - **Nothing automatic may send.** A whole-tree guard asserts no shipped module other than
   `scripts/pfsense_containment.py` imports the transport — no scheduler, pipeline, agent,
   MCP tool or dashboard — proven by planting an import. `agents/response/` is untouched,

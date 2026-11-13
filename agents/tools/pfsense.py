@@ -104,6 +104,20 @@ _OPERATIONS: dict[str, tuple[str, str]] = {
 #: a firewall action and is refused.
 SUPPORTED = frozenset(_OPERATIONS)
 
+
+def operation_for(capability: str) -> tuple[str, str]:
+    """``(role, array operation)`` for ``capability``, e.g. ``("block", "append")``.
+
+    The one mapping from a capability to what it does to an alias, shared by the
+    adapter and by the live client's read-back. Raises :class:`PfSenseError` for
+    anything that is not a firewall action.
+    """
+    operation = _OPERATIONS.get(capability) if type(capability) is str else None
+    if operation is None:
+        raise PfSenseError(f"{capability!r} is not a pfSense action")
+    return operation
+
+
 _Address = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
@@ -241,10 +255,7 @@ class PfSenseDryRun:
         """
         if type(approval) is not VerifiedApproval:
             raise PfSenseError("a VerifiedApproval from execution_approval.authorize is required")
-        operation = _OPERATIONS.get(approval.capability)
-        if operation is None:
-            raise PfSenseError(f"{approval.capability!r} is not a pfSense action")
-        role, array_op = operation
+        role, array_op = operation_for(approval.capability)
         parse_target(approval.target)
         alias = self.config.alias_for(role)
         if array_op == "append" and approval.target in self.config.protected:

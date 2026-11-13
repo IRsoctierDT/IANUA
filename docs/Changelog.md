@@ -5,6 +5,15 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **`verify`: a read-only read-back that settles an unknown send
+  (`scripts/pfsense_containment.py verify`, `PfSenseLive.verify`).** Exit `0` when the
+  address is where the capability would leave it, `5` when it is not. Uses the existing
+  `pfsense:probe` grant and no approval, runs the same alias precondition as a send, and
+  refuses an unreadable address list rather than calling the address absent.
+- **The approval ledger is pruned.** Lines record their approval's expiry; past 1024
+  entries, those expired more than 30 days are dropped. The lock moved to a separate
+  file so the atomic rewrite cannot leave a waiting consumer locking an unlinked inode
+  (a double spend). A malformed ledger now refuses. Pre-pruning lines are kept forever.
 - **Live pfSense containment — stage 8, phase 3 (`agents/tools/pfsense_live.py`,
   `scripts/pfsense_containment.py`).** By owner direction, with the owner's two decisions:
   the firewall is declared in gitignored local files (`data/pfsense.local.json`,
@@ -49,6 +58,8 @@ All notable changes to this project. Versions correspond to git tags.
   2 (pfSense adapter, dry-run) and 3 (live) each owe.
 
 ### Fixed
+- **Streamlit 1.67 deprecation.** `st.dataframe(..., use_container_width=True)` became
+  `width="stretch"` at all three call sites in `dashboard/app.py`.
 - **Statements that phase 3 made false are corrected, not left.** The dashboard's
   response-layer banner and `docs/RESPONSE_LAYER.md` said no executor exists anywhere in
   the repository, and the response plan's disclaimer said IANUA does not execute

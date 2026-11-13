@@ -57,8 +57,9 @@ addresses an alias by an index that changes when aliases are deleted. The send r
 unless that returns exactly one alias with exactly that name, type `host` and an integer
 `id`. `disable_account` and `enable_account` are not firewall actions and are refused.
 
-**Exit codes:** `0` done · `1` refused, nothing changed · `3` not granted · `4` the change
-was sent and its outcome is unknown — check the alias on the firewall before retrying.
+**Exit codes:** `0` done (for `verify`: the alias is in the intended state) · `1`
+refused, nothing changed · `3` not granted · `4` the change was sent and its outcome is
+unknown — run `verify` · `5` (`verify` only) the address is **not** in the intended state.
 
 ## Implementation Steps
 
@@ -145,16 +146,28 @@ was sent and its outcome is unknown — check the alias on the firewall before r
     `unblock_indicator` for the same address. The audit chain is
     `data/containment/audit.log`.
 
+11. If a send exits `4` (sent, answer lost), settle it with a read-only check before
+    doing anything else. It needs only the `pfsense:probe` grant and no approval:
+
+    ```zsh
+    IANUA_PFSENSE_API_KEY="$(security find-generic-password -s ianua-pfsense -w)" \
+      python scripts/pfsense_containment.py verify --capability block_indicator --target 203.0.113.7
+    ```
+
+    Exit `0`: the change took effect. Exit `5`: it did not, and a fresh approval is
+    needed to try again, because the first one was consumed.
+
 ## Risks
 
 | Risk | Control | Residual |
 |---|---|---|
 | Blocking the firewall's own management path | The firewall's address is always protected; your `protected` list adds more; your isolate rule exempts management | Only addresses you list are protected beyond the firewall itself |
 | A stolen approver key | Approvals expire within 900 s, work once, and name one address | Until you remove the key from `approvers.json`, it can sign any listed action |
+| A replayed approval | Consumed in `data/containment/approvals.ledger` under a separate lock file; entries kept 30 days past expiry | A clock set back by more than 30 days could revive a pruned approval |
 | A stolen API key | Limited to the two alias endpoints by the pfREST user's privileges | It can edit those aliases until you revoke it on the firewall |
 | A redirected destination | The address must match in both local files, and the certificate pin must match | Whoever can write `data/` on the node can retarget a send (and could equally edit the code) |
 | An interception on the LAN | TLS pinned to the exact certificate, checked before any byte is sent; no proxy is used | A regenerated firewall certificate stops sending until you re-pin (step 5) |
-| A lost answer after sending | Reported as `unknown`, exit `4`, audited | You must check the alias by hand before retrying |
+| A lost answer after sending | Reported as `unknown`, exit `4`, audited; `verify` reads the alias back | None once `verify` has run; a retry needs a fresh approval |
 | The API differs from the documented shape | Step 3's documentation check, and the read-only probe | Unverified until you run them |
 
 ## Cost Considerations
@@ -164,7 +177,5 @@ One-time setup is roughly an hour; each action then costs one signed approval.
 
 ## Future Enhancements
 
-- A `verify` subcommand that reads an alias back after a send, to settle an `unknown`.
-- Ledger pruning of entries past their expiry.
 - Whether a draft response plan may *propose* the exact `issue` command for an operator
   to sign — never execute it — is an open decision for the owner.

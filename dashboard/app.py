@@ -532,7 +532,7 @@ with tab_batch:
                         f"event(s), dominant: _{rf['dominant_event_type']}_"
                     )
                     with st.expander(f"Risk story for {inert(rf['entity'])}"):
-                        st.dataframe(rf["contributions"], use_container_width=True)
+                        st.dataframe(rf["contributions"], width="stretch")
             else:
                 st.caption("No entity crossed the risk threshold in this batch.")
 
@@ -563,7 +563,7 @@ with tab_batch:
                 }
                 for entry in sequence["events"]
             ]
-            st.dataframe(per_event, use_container_width=True)
+            st.dataframe(per_event, width="stretch")
 
             st.subheader("Matching Detections")
             sequence_detections = result.get("sequence_detections", [])
@@ -640,7 +640,7 @@ with tab_coverage:
                 }
                 for t in techniques
             ],
-            use_container_width=True,
+            width="stretch",
         )
         st.download_button(
             "Download ATT&CK Navigator layer (JSON)",
