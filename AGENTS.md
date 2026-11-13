@@ -807,9 +807,10 @@ no executor, no adapter, no egress and no change to `agents/response/`;
   chat or the repository; and the §5.1 external-network gate, approved again. Whether a
   `ResponsePlan` may feed the adapter at all is a phase 3 decision and is **not** made
   here.
-- **Residuals.** The ledger grows by one line per consumed approval and is not pruned
-  yet; a compromised approver key authorizes anything in `CAPABILITIES` until it is
-  removed from the registry; and the gate cannot verify that the caller then does what it
+- **Residuals.** The ledger keeps each consumed approval for 30 days after it expired and
+  then prunes it (amended 2026-11-13: a separate lock file guards the rewrite), so a clock
+  set back by more than that could revive a pruned approval; a compromised approver key
+  authorizes anything in `CAPABILITIES` until it is removed from the registry; and the gate cannot verify that the caller then does what it
   described — that is phase 2's obligation and phase 2's security tests.
 
 **Containment execution — amended for the pfSense adapter, dry run (stage 8, phase 2).**

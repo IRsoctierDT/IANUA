@@ -60,8 +60,9 @@ Security considerations (AGENTS.md §3, §5):
   :data:`CLOCK_SKEW_SECONDS` in the future, not expired, and a lifetime no
   longer than :data:`MAX_TTL_SECONDS`.
 
-Residuals, stated rather than implied: the ledger grows by one line per
-consumed approval and is not pruned in this phase; a compromised approver key
+Residuals, stated rather than implied: the ledger keeps each consumed approval
+for :data:`PRUNE_GRACE_SECONDS` after it expired, so a clock set back further
+than that could revive a pruned one; a compromised approver key
 authorizes anything inside :data:`CAPABILITIES` until it is removed from
 ``approvers.json``; and this module cannot know whether the action the caller
 then performs is the one it described — that is the adapter's obligation, and
@@ -275,49 +276,135 @@ def issue_approval(
     return json.dumps(envelope, sort_keys=True, separators=(",", ":"))
 
 
+#: An entry is kept this long after its approval expired before it may be
+#: pruned. An expired approval is refused by :func:`authorize` before the ledger
+#: is consulted, so a pruned entry can only be replayed by setting this node's
+#: clock back by more than this. Thirty days of entries cost a few kilobytes,
+#: so the margin is set generously rather than tuned.
+PRUNE_GRACE_SECONDS = 30 * 86_400
+#: Rewrite the ledger only once it holds more entries than this.
+PRUNE_THRESHOLD = 1024
+
+_LEDGER_LINE = re.compile(r"^([0-9a-f]{64})(?: ([0-9]{1,12}))?$")
+
+
 class ApprovalLedger:
     """Durable record of consumed approvals, so each one authorizes once.
 
-    One line per consumed digest. Opened owner-only, ``O_NOFOLLOW``, and
-    refused unless it is a regular file owned by this process's user, under an
-    exclusive ``flock`` held across the check and the append so two processes
-    presenting the same token cannot both succeed.
+    One line per consumed approval: its digest and, since pruning, its expiry
+    (``<digest> <expires_at>``). A line with no expiry predates pruning and is
+    kept forever, because nothing says when it stops mattering.
+
+    **The lock is a separate file**, ``<ledger>.lock``, held exclusively across
+    every read, check, append and rewrite. That is what makes pruning safe: the
+    rewrite replaces the ledger atomically with :func:`os.replace`, and a lock
+    taken on the ledger's own descriptor would then guard an unlinked file, so a
+    process waiting on it would append its consumption somewhere nobody reads —
+    and that approval could be presented again. Both files are opened
+    owner-only and ``O_NOFOLLOW``, and refused unless they are regular files
+    owned by this process's user with no group or other permissions.
+
+    **A malformed ledger refuses**, rather than skipping the line it cannot read:
+    a skipped line is a forgotten consumption.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.lock_path = path.with_name(path.name + ".lock")
+
+    @staticmethod
+    def _open_owned(path: Path, flags: int) -> int:
+        try:
+            fd = os.open(path, flags | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        except OSError as exc:
+            raise ApprovalError(f"cannot open approval ledger {path}: {exc}") from exc
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            os.close(fd)
+            raise ApprovalError(f"approval ledger {path} is not a regular file we own")
+        if info.st_mode & 0o077:
+            os.close(fd)
+            raise ApprovalError(f"approval ledger {path} is readable by others")
+        return fd
 
     @contextlib.contextmanager
-    def _locked(self) -> Iterator[int]:
+    def _locked(self) -> Iterator[None]:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC
+        lock = self._open_owned(self.lock_path, os.O_RDWR | os.O_CREAT)
         try:
-            fd = os.open(self.path, flags, 0o600)
-        except OSError as exc:
-            raise ApprovalError(f"cannot open approval ledger {self.path}: {exc}") from exc
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-                raise ApprovalError(f"approval ledger {self.path} is not a regular file we own")
-            if info.st_mode & 0o077:
-                raise ApprovalError(f"approval ledger {self.path} is readable by others")
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield fd
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
         finally:
-            os.close(fd)
+            os.close(lock)
 
-    def consume(self, digest: str) -> None:
-        """Record ``digest`` as spent, or raise if it already is."""
-        with self._locked() as fd:
-            os.lseek(fd, 0, os.SEEK_SET)
+    def _read(self) -> list[tuple[str, int | None]]:
+        fd = self._open_owned(self.path, os.O_RDONLY | os.O_CREAT)
+        try:
             chunks: list[bytes] = []
             while chunk := os.read(fd, 65536):
                 chunks.append(chunk)
-            spent = set(b"".join(chunks).decode("ascii", errors="strict").split())
-            if digest in spent:
-                raise ApprovalError("approval has already been used")
-            os.write(fd, f"{digest}\n".encode("ascii"))
+        finally:
+            os.close(fd)
+        try:
+            text = b"".join(chunks).decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ApprovalError(f"approval ledger {self.path} is corrupt") from exc
+        entries: list[tuple[str, int | None]] = []
+        for number, line in enumerate(text.splitlines(), start=1):
+            match = _LEDGER_LINE.fullmatch(line)
+            if match is None:
+                raise ApprovalError(f"approval ledger {self.path} is corrupt at line {number}")
+            expiry = match.group(2)
+            entries.append((match.group(1), int(expiry) if expiry is not None else None))
+        return entries
+
+    def _append(self, digest: str, expires_at: int) -> None:
+        fd = self._open_owned(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        try:
+            os.write(fd, f"{digest} {expires_at}\n".encode("ascii"))
             os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _rewrite(self, entries: list[tuple[str, int | None]]) -> None:
+        staged = self.path.with_name(self.path.name + ".staged")
+        fd = self._open_owned(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        try:
+            body = "".join(
+                f"{digest}\n" if expiry is None else f"{digest} {expiry}\n"
+                for digest, expiry in entries
+            )
+            os.write(fd, body.encode("ascii"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        staged.replace(self.path)
+        directory = os.open(self.path.parent, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def consume(self, digest: str, *, expires_at: int, now: int) -> None:
+        """Record ``digest`` as spent, or raise if it already is; prune when large.
+
+        ``expires_at`` is the approval's own expiry and ``now`` the clock
+        :func:`authorize` used, so pruning and the expiry check read one clock.
+        """
+        with self._locked():
+            entries = self._read()
+            if any(seen == digest for seen, _ in entries):
+                raise ApprovalError("approval has already been used")
+            self._append(digest, expires_at)
+            entries.append((digest, expires_at))
+            if len(entries) > PRUNE_THRESHOLD:
+                kept = [
+                    (seen, expiry)
+                    for seen, expiry in entries
+                    if expiry is None or expiry + PRUNE_GRACE_SECONDS > now
+                ]
+                if len(kept) < len(entries):
+                    self._rewrite(kept)
 
 
 def authorize(
@@ -407,7 +494,7 @@ def _verify(
     if current >= fields["expires_at"]:
         raise ApprovalError("approval has expired")
     digest = hashlib.sha256(message).hexdigest()
-    ledger.consume(digest)
+    ledger.consume(digest, expires_at=fields["expires_at"], now=current)
     return VerifiedApproval(
         approver=fields["approver"],
         capability=fields["capability"],

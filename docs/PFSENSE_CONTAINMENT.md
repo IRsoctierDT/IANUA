@@ -165,6 +165,5 @@ One-time setup is roughly an hour; each action then costs one signed approval.
 ## Future Enhancements
 
 - A `verify` subcommand that reads an alias back after a send, to settle an `unknown`.
-- Ledger pruning of entries past their expiry.
 - Whether a draft response plan may *propose* the exact `issue` command for an operator
   to sign — never execute it — is an open decision for the owner.

@@ -418,3 +418,168 @@ def test_the_approval_module_executes_nothing() -> None:
             assert (node.module or "").split(".")[0] not in banned
         elif isinstance(node, ast.FunctionDef):
             assert node.name not in {"execute", "perform", "run_action", "apply_plan", "arm"}
+
+
+# --- ledger pruning -------------------------------------------------------------
+
+_OLD = "a" * 64  # expired long before the grace window
+_RECENT = "b" * 64  # expired, but inside the grace window
+_LEGACY = "c" * 64  # a pre-pruning line with no recorded expiry
+
+
+@pytest.mark.security
+def test_each_consumption_records_its_expiry(keys: Keys, ledger: ea.ApprovalLedger) -> None:
+    signer, approvers = keys
+    verified = _authorize(_issue(signer), approvers, ledger)
+    assert ledger.path.read_text() == f"{verified.digest} {verified.expires_at}\n"
+
+
+@pytest.mark.security
+def test_pruning_drops_only_entries_past_the_grace_window(
+    keys: Keys, ledger: ea.ApprovalLedger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signer, approvers = keys
+    monkeypatch.setattr(ea, "PRUNE_THRESHOLD", 2)
+    now = _NOW + 10
+    ledger.path.parent.mkdir(parents=True)
+    ledger.path.write_text(
+        f"{_OLD} {now - ea.PRUNE_GRACE_SECONDS - 1}\n"
+        f"{_RECENT} {now - ea.PRUNE_GRACE_SECONDS + 60}\n"
+        f"{_LEGACY}\n"
+    )
+    ledger.path.chmod(0o600)
+    fresh = _authorize(_issue(signer), approvers, ledger, now=now)
+    kept = [line.split()[0] for line in ledger.path.read_text().splitlines()]
+    assert kept == [_RECENT, _LEGACY, fresh.digest], "pruned the wrong entries"
+    assert ledger.path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.security
+def test_nothing_is_rewritten_when_nothing_is_prunable(
+    keys: Keys, ledger: ea.ApprovalLedger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signer, approvers = keys
+    monkeypatch.setattr(ea, "PRUNE_THRESHOLD", 0)
+    _authorize(_issue(signer), approvers, ledger)
+    inode = ledger.path.stat().st_ino
+    _authorize(_issue(signer), approvers, ledger)
+    assert ledger.path.stat().st_ino == inode
+
+
+@pytest.mark.security
+def test_a_live_approval_stays_spent_through_a_prune(
+    keys: Keys, ledger: ea.ApprovalLedger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    signer, approvers = keys
+    monkeypatch.setattr(ea, "PRUNE_THRESHOLD", 0)
+    ledger.path.parent.mkdir(parents=True)
+    ledger.path.write_text(f"{_OLD} 1\n")
+    ledger.path.chmod(0o600)
+    token = _issue(signer)
+    _authorize(token, approvers, ledger)
+    assert _OLD not in ledger.path.read_text(), "the prune did not run"
+    with pytest.raises(ea.ApprovalError, match="already been used"):
+        _authorize(token, approvers, ledger)
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "content",
+    ["not-a-digest\n", f"{_OLD} -5\n", f"{_OLD} 12 extra\n", f"{_OLD.upper()}\n", "\xff\n"],
+)
+def test_a_corrupt_ledger_refuses_rather_than_skipping(
+    keys: Keys, ledger: ea.ApprovalLedger, content: str
+) -> None:
+    signer, approvers = keys
+    ledger.path.parent.mkdir(parents=True)
+    ledger.path.write_bytes(content.encode("latin-1"))
+    ledger.path.chmod(0o600)
+    with pytest.raises(ea.ApprovalError, match="corrupt"):
+        _authorize(_issue(signer), approvers, ledger)
+
+
+@pytest.mark.security
+def test_the_lock_file_is_owner_only_and_never_a_symlink(keys: Keys, tmp_path: Path) -> None:
+    signer, approvers = keys
+    ledger = ea.ApprovalLedger(tmp_path / "ledger")
+    _authorize(_issue(signer), approvers, ledger)
+    assert ledger.lock_path.stat().st_mode & 0o777 == 0o600
+    target = tmp_path / "elsewhere"
+    target.write_text("")
+    other = ea.ApprovalLedger(tmp_path / "second")
+    other.lock_path.symlink_to(target)
+    with pytest.raises(ea.ApprovalError, match="cannot open"):
+        _authorize(_issue(signer), approvers, other)
+
+
+@pytest.mark.security
+def test_concurrent_consumers_spend_each_approval_exactly_once(
+    keys: Keys, ledger: ea.ApprovalLedger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A realistic smoke test: two ledgers race on every token while every write prunes.
+
+    It is **not** the guarantee. Mutation-checked, thread races under the GIL are
+    too well-behaved: it caught a removed lock in one of three runs and a lock
+    moved onto the ledger file itself in none.
+    ``test_the_lock_survives_the_rewrite_it_guards`` is the deterministic test of
+    the property; this one checks the whole path end to end.
+    """
+    import threading
+
+    signer, approvers = keys
+    monkeypatch.setattr(ea, "PRUNE_THRESHOLD", 0)
+    ledger.path.parent.mkdir(parents=True)
+    ledger.path.write_text("".join(f"{i:064x} 1\n" for i in range(50)))
+    ledger.path.chmod(0o600)
+    tokens = [_issue(signer) for _ in range(25)]
+    wins: list[str] = []
+    guard = threading.Lock()
+
+    def race(token: str, barrier: threading.Barrier) -> None:
+        mine = ea.ApprovalLedger(ledger.path)
+        barrier.wait()
+        try:
+            _authorize(token, approvers, mine)
+        except ea.ApprovalError:
+            return
+        with guard:
+            wins.append(token)
+
+    for token in tokens:
+        barrier = threading.Barrier(2)
+        threads = [threading.Thread(target=race, args=(token, barrier)) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert sorted(wins) == sorted(tokens), "a token was spent twice or not at all"
+
+
+@pytest.mark.security
+def test_the_lock_survives_the_rewrite_it_guards(tmp_path: Path) -> None:
+    """While one ledger holds the lock and rewrites the file, another must still wait.
+
+    Pruning replaces the ledger with a new file. A lock taken on the ledger's own
+    descriptor would then sit on the unlinked old file, and a second consumer
+    opening the path afresh would get the new file and lock it at once — two
+    consumers inside the critical section, so one approval could be spent twice.
+    Deterministic, unlike the race above: it fails against a ledger with no lock,
+    and against one whose lock is the ledger file itself.
+    """
+    import threading
+
+    path = tmp_path / "ledger"
+    holder, waiter = ea.ApprovalLedger(path), ea.ApprovalLedger(path)
+    entered = threading.Event()
+
+    def contend() -> None:
+        with waiter._locked():
+            entered.set()
+
+    with holder._locked():
+        holder._rewrite([("d" * 64, 1)])
+        thread = threading.Thread(target=contend)
+        thread.start()
+        assert not entered.wait(0.5), "a second consumer entered while the lock was held"
+    thread.join(timeout=5)
+    assert entered.is_set(), "the waiting consumer never acquired the lock after release"
