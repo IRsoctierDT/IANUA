@@ -36,7 +36,7 @@ security operation.
 | **Behavioral Detections (`detections/behaviors/`)** — post-compromise TTP corpus, reference-gated against the pinned corpus, each rule declaring whether its telemetry is ingested | Detection | Complete |
 | **Event Store (`store/`)** — durable append-only SOC memory: content-addressed rows, engine-enforced append-only, tamper-evident reads, bounded queries ([plan](./docs/PRODUCTION_SOC_PLAN.md)) | Data | Complete |
 | **Correlation (`correlation/`)** — entity resolution across five domains + scored incident assembly: declared-exact merges only, fan-out suppression, explainable scoring ([README](./correlation/README.md)) | Detection | Complete |
-| **Response Layer (`agents/response/`)** — draft containment plans with per-action rollback and human owners; **no executor exists** and security tests prove it ([doc](./docs/RESPONSE_LAYER.md)) | Agent | Complete |
+| **Response Layer (`agents/response/`)** — draft containment plans with per-action rollback and human owners; **nothing executes a plan** and security tests prove it; a separate, operator-invoked pfSense alias edit runs only under a signed per-action approval ([doc](./docs/RESPONSE_LAYER.md)) | Agent | Complete |
 | **RAG Pipeline** — Local document ingestion → chunking → Ollama embeddings → in-memory retrieval | RAG | Complete |
 | **MCP Server** — Model context protocol server (stdio JSON-RPC) with allow-listed, validated tools | MCP | Complete |
 | **Governance system** — `AGENTS.md` operating charter, CI/CD with bandit + gitleaks + pip-audit + mypy, least-privilege job permissions | Governance | Active |

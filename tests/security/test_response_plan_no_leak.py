@@ -182,7 +182,7 @@ def test_hostile_target_cannot_break_the_rendered_report(tmp_path: Path) -> None
     content = out.read_text(encoding="utf-8")
     assert "`whoami`" not in content
     assert "DRAFT PLAN" in content
-    assert "IANUA does not execute containment actions" in content
+    assert "IANUA does not execute this plan" in content
 
 
 @pytest.mark.security

@@ -137,7 +137,7 @@ class ResponsePlan:
 
     #: Stated on every rendering so a reader never mistakes a plan for an act.
     DISCLAIMER: str = (
-        "This is a DRAFT PLAN. IANUA does not execute containment actions: every "
+        "This is a DRAFT PLAN. IANUA does not execute this plan: every "
         "step below is performed by a human operator on systems they own or are "
         "authorized to administer. Actions are ordered so evidence capture "
         "precedes any disruptive step."

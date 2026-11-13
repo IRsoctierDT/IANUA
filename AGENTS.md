@@ -836,6 +836,57 @@ no transport and no change to `agents/response/`.
   type `host`, else refuse); and certificate pinning to the firewall. The operator
   procedure is `docs/PFSENSE_CONTAINMENT.md`.
 
+**Containment execution — amended for live pfSense sends (stage 8, phase 3).** On
+2026-11-13 the owner directed phase 3 and decided its two open questions. This licenses
+**outbound HTTPS from `agents/tools/pfsense_live.py` alone, to one declared firewall, for
+two labels** — and nothing wider. It supersedes stage 7's "no egress to a host not in the
+committed allow-list" **for this path only**, for the reason in the second bullet.
+
+- **Two separate standing grants, neither shipped.** `pfsense:probe` (alias lookups only)
+  and `pfsense:send` (the alias `PATCH`) are each gated by `guarded.enforce` under
+  `external_network`, which the shipped bundle answers `require_approval`. An operator
+  grants each by adding its label to the `allow` list of their policy bundle, a reviewed
+  edit. Granting the probe does not grant a send. A test asserts the shipped bundle
+  grants neither.
+- **The destination is declared locally, not committed — by owner decision, and this is
+  a real departure.** Phase 1 and stage 7 both said "committed allow-list". The owner
+  chose a gitignored `data/egress.local.json` plus `data/pfsense.local.json`, because the
+  repository is public and this section lists internal addresses as sensitive. **The
+  cost:** a change of destination is not reviewed in a diff. **What bounds it:** the
+  address must match in both files and pass the egress validator; the TLS pin means a
+  redirected address must still present the one pinned certificate; and the committed
+  grant still names the action. **The residual, stated:** whoever can write `data/` on
+  the node can retarget the send — and could equally edit the code, so this is not a new
+  class of attacker, only a lost review step. A test asserts both files are gitignored.
+- **Pinned TLS, checked before any byte is written.** The handshake completes, the peer
+  certificate's SHA-256 is compared with `hmac.compare_digest`, and a mismatch closes the
+  socket having sent nothing — asserted against a real TLS stub that records every
+  request. Chain validation is replaced by the pin (pfSense's default certificate is
+  self-signed), not skipped. `http.client` connects directly, so an environment proxy is
+  never used (asserted with a bogus `HTTPS_PROXY` set).
+- **The key is environment-only and never echoed.** `IANUA_PFSENSE_API_KEY`, validated as
+  a bounded printable token (so it cannot inject a header), read at send time, sent only
+  to the pinned peer, absent from every exception and audit record (asserted).
+- **Every send still needs a signed, unexpired, unused approval**, re-checked immediately
+  before the change, and the alias precondition (exactly one alias, exact name, type
+  `host`, integer `id`) before any change is written.
+- **An unknown outcome is reported as unknown.** A change written whose answer was lost
+  is audited `unknown` and exits `4`, telling the operator to check the alias before
+  retrying, rather than being guessed as success or failure.
+- **Nothing automatic may send.** A whole-tree guard asserts no shipped module other than
+  `scripts/pfsense_containment.py` imports the transport — no scheduler, pipeline, agent,
+  MCP tool or dashboard — proven by planting an import. `agents/response/` is untouched,
+  and no plan is executed: the operator names the capability, target and plan on the
+  command line and signs the approval themselves.
+- **Not verified against the owner's firewall.** This session cannot reach the owner's
+  LAN. The request shapes follow pfREST's documentation; the read-only `probe` exists so
+  the first contact with the real device changes nothing.
+
+**What this still does not license:** any other destination; any label but the two
+above; a plan executor or any code path from a `ResponsePlan` to the transport; any
+automatic, scheduled or agent-initiated send; prefixes or more than one address per
+approval; and any third-party fetch, which stage 7's refusals still govern.
+
 ### 5.1 Approval Gates (human-in-the-loop)
 
 An agent must **pause and obtain explicit human approval** before any action that is
