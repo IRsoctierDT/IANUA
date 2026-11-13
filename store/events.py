@@ -816,6 +816,28 @@ class EventStore:
             raise
         return cls(conn, path)
 
+    @classmethod
+    @_refuse_corruption
+    def open_read_only(cls, root: Path) -> Self:
+        """Open the existing default event store without creating or migrating it."""
+        path = cls._resolve(root, DEFAULT_FILENAME)
+        refuse_unsafe_database(path)
+        refuse_unsafe_sidecars(path)
+        if not path.is_file():
+            raise FileNotFoundError("Local event store is unavailable.")
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.text_factory = _decode_text
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            if not _has_meta(conn):
+                raise SchemaVersionError("Event store metadata is unavailable.")
+            cls._apply_schema(conn)
+        except Exception:
+            conn.close()
+            raise
+        return cls(conn, path)
+
     @staticmethod
     def _resolve(root: Path, filename: str) -> Path:
         """Confine the database to the events directory under the lab-data root.
