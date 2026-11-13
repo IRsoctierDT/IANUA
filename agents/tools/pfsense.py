@@ -111,8 +111,11 @@ class PfSenseError(ValueError):
     """Raised when an approved action cannot be expressed safely (fail closed)."""
 
 
-def _parse_target(value: str) -> _Address:
-    """Parse a target as a canonical, single-host, non-loopback IP literal."""
+def parse_target(value: str) -> _Address:
+    """Parse an alias target: a canonical, single-host, non-loopback IP literal.
+
+    Raises :class:`PfSenseError` naming the reason for anything refused.
+    """
     try:
         address = parse_address(value)
     except EgressAllowlistError as exc:
@@ -148,7 +151,7 @@ class PfSenseConfig:
         if not isinstance(self.protected, frozenset):
             raise PfSenseError("protected must be a frozenset of IP literals")
         for entry in self.protected:
-            _parse_target(entry)
+            parse_target(entry)
 
     def alias_for(self, role: str) -> str:
         """The alias name for ``role`` (``block`` or ``isolate``)."""
@@ -242,7 +245,7 @@ class PfSenseDryRun:
         if operation is None:
             raise PfSenseError(f"{approval.capability!r} is not a pfSense action")
         role, array_op = operation
-        _parse_target(approval.target)
+        parse_target(approval.target)
         alias = self.config.alias_for(role)
         if array_op == "append" and approval.target in self.config.protected:
             raise PfSenseError(f"{approval.target} is protected and cannot be added to {alias}")

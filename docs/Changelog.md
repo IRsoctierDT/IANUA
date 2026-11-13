@@ -5,6 +5,21 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **Live pfSense containment — stage 8, phase 3 (`agents/tools/pfsense_live.py`,
+  `scripts/pfsense_containment.py`).** By owner direction, with the owner's two decisions:
+  the firewall is declared in gitignored local files (`data/pfsense.local.json`,
+  `data/egress.local.json`) because the repository is public, and trusted by a SHA-256
+  certificate pin because pfSense's certificate is self-signed. A send needs, in order:
+  the `pfsense:send` grant (separate from the read-only `pfsense:probe`; the shipped
+  bundle grants neither), the destination in both local files, a signed unexpired unused
+  approval, `IANUA_PFSENSE_API_KEY`, the pinned certificate — compared before any byte is
+  written — and the alias precondition. A lost answer after sending is reported as
+  `unknown` (exit 4). Stdlib only; no proxy. The CLI's `issue` / `probe` / `send` take no
+  secret on argv. Tested over real TLS against a stub that records every request, so
+  "nothing was sent" is asserted; twelve controls mutation-checked; a whole-tree guard
+  asserts only the CLI imports the transport. Not yet run against the owner's firewall:
+  the runbook's read-only probe is the first contact.
+
 - **pfSense containment adapter, dry run — stage 8, phase 2 (`agents/tools/pfsense.py`,
   `docs/PFSENSE_CONTAINMENT.md`).** Turns a `VerifiedApproval` into the exact pfREST v2
   requests (an alias lookup, then a `PATCH` with `append` or `remove` and `apply`) that
@@ -32,6 +47,17 @@ All notable changes to this project. Versions correspond to git tags.
   controls was removed in turn and a test went red; the domain-separation test was vacuous
   on first writing and is fixed. Boundary 8 stays closed; AGENTS.md §5 records what phases
   2 (pfSense adapter, dry-run) and 3 (live) each owe.
+
+### Fixed
+- **Statements that phase 3 made false are corrected, not left.** The dashboard's
+  response-layer banner and `docs/RESPONSE_LAYER.md` said no executor exists anywhere in
+  the repository, and the response plan's disclaimer said IANUA does not execute
+  containment actions. Each now says what remains true — nothing executes a *plan* — and
+  names the one operator-invoked path. Two test assertions pinned to the old wording were
+  updated with them (`test_response_plan_no_leak.py`, `test_intelligence_view.py`).
+- **`DESIGN.md` §11's closing marker restored.** The phase 2 decision row (#337) was
+  inserted by replacing the log's "Append new architectural decisions here" line rather
+  than inserting before it, leaving a fragment under the table.
 
 ## v2.4.0 — Supply-Chain Integrity & Parser Hardening — 2026-11-06
 

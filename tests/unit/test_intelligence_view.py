@@ -80,7 +80,7 @@ def test_behavior_status_states_the_telemetry_split() -> None:
 def test_response_status_is_always_plan_only() -> None:
     status = view.response_status()
     assert status.status == "📝 plan-only"
-    assert "executes nothing" in status.detail
+    assert "never executes a plan" in status.detail
     assert "human" in status.detail
 
 

@@ -38,7 +38,7 @@ class OrchestratorAgent:
         self.detections = DetectionMatcherAgent()
         self.report = IncidentReportAgent()
         # Plan-only containment: emits draft guidance for a human, never acts
-        # (DESIGN.md §5 boundary 8 — no executor exists anywhere in the repo).
+        # (DESIGN.md §5 boundary 8 — no executor consumes a plan).
         self.response = ResponsePlanner()
         # Risk-based alerting: aggregates the sequence's per-event scores into
         # per-entity (source) risk findings (deterministic; see RiskEngine).

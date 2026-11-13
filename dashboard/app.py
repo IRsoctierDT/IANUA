@@ -158,11 +158,14 @@ with tab_intel:
 
     st.subheader("Response layer")
     st.error(
-        "**PLAN ONLY — NOT EXECUTED.** IANUA does not perform containment actions. "
-        "The platform drafts an evidence-linked plan; a named human operator "
-        "executes it on systems they own or are authorized to administer. No "
-        "executor exists anywhere in this repository, and security tests fail the "
-        "build if one appears (DESIGN.md §5 boundary 8, docs/RESPONSE_LAYER.md)."
+        "**PLAN ONLY — NOT EXECUTED.** IANUA never executes a plan. The platform "
+        "drafts an evidence-linked plan; a named human operator carries it out on "
+        "systems they own or are authorized to administer, and security tests fail "
+        "the build if a plan executor appears. One step type — adding or removing a "
+        "single address in an operator-created pfSense alias — can be applied by "
+        "that operator through scripts/pfsense_containment.py, and only with their "
+        "own signed, single-use approval (DESIGN.md §5 boundary 8, "
+        "docs/PFSENSE_CONTAINMENT.md)."
     )
 
 with tab_compliance:

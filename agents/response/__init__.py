@@ -3,10 +3,13 @@
 
 """Plan-only containment layer — produces guidance, never actions.
 
-IANUA does not execute containment. This package emits a draft
+Nothing executes a plan this package emits. It produces a draft
 :class:`ResponsePlan` that a human operator carries out on systems they own
 or are authorized to administer; ``tests/security/test_response_no_executor.py``
-fails the build if executor code ever appears here. See
+fails the build if executor code ever appears here. The one operator-invoked
+action path that exists — a single pfSense alias edit, under a signed per-action
+approval (``scripts/pfsense_containment.py``, stage 8) — lives outside this
+package and does not read a plan. See
 ``agents/response/plan.py`` for why the boundary is closed by construction and
 what would have to be designed first to open it.
 """

@@ -172,7 +172,7 @@ def response_status() -> LayerStatus:
     return LayerStatus(
         "Response layer",
         "📝 plan-only",
-        f"{len(catalogue)} catalogued actions · PLAN ONLY — IANUA executes nothing; "
+        f"{len(catalogue)} catalogued actions · PLAN ONLY — IANUA never executes a plan; "
         "every action is performed by a named human operator",
     )
 

@@ -1,9 +1,12 @@
 # Response Layer — containment as a plan, not a capability
 
-> **IANUA does not execute containment actions.** `agents/response/` produces
-> a draft plan a human operator carries out. There is no executor, no arming
-> flag, and no code path from a plan to a host —
+> **IANUA never executes a plan.** `agents/response/` produces a draft plan a
+> human operator carries out. There is no plan executor, no arming flag, and no
+> code path from a plan to a host —
 > `tests/security/test_response_no_executor.py` fails the build if one appears.
+> Since stage 8, one operator-invoked action exists *outside* this layer: a
+> single pfSense alias edit under a signed, single-use, per-action approval
+> (`docs/PFSENSE_CONTAINMENT.md`). It does not read a plan.
 
 ## Purpose · Risk level · Skill level · Deployment complexity
 
@@ -49,9 +52,13 @@ row with a *verified* approver rather than a claimed one. Approvers are declared
 
 **Nothing in this document's first sentence has changed yet.** `agents/response/` still
 ships no executor and `tests/security/test_response_no_executor.py` still enforces it.
-Phase 2 is in place: `agents/tools/pfsense.py` prepares and audits the pfSense requests
-for an approved action and has no transport (`docs/PFSENSE_CONTAINMENT.md`). Phase 3
-makes it live under its own egress amendment. `AGENTS.md` §5 records what it owes.
+Phases 2 and 3 are in place. `agents/tools/pfsense.py` prepares the pfSense request for an
+approved action, and `agents/tools/pfsense_live.py` sends it over pinned TLS to one
+declared firewall, reached only through the operator CLI `scripts/pfsense_containment.py`
+(`docs/PFSENSE_CONTAINMENT.md`). **The plan → host half of this boundary is still closed:**
+nothing reads a plan to act, the operator names and signs every action themselves, and a
+whole-tree guard asserts that only the CLI imports the transport. `AGENTS.md` §5 records
+the stage 8 phase 3 amendment and what it does not license.
 
 ## The tiered model
 
