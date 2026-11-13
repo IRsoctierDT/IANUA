@@ -159,6 +159,10 @@ finding review and before/after comparison. Uploaded snapshots stay in the
 session; the feature does not initiate scans. See the
 [report-review walkthrough](docs/dashboard/STREAMLIT_DASHBOARD.md).
 
+Open **Lab Command Center** for vulnerability management, PCI DSS evidence, SOC
+operations, and phishing metrics. See the [lab runbook](docs/LAB_COMMAND_CENTER.md)
+for sample data, metric definitions and workspace setup.
+
 **Try the dashboard in your browser — no local setup (GitHub Codespaces):**
 
 GitHub Pages can only serve static files, so the live dashboard can't run
