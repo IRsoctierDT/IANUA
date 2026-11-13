@@ -15,6 +15,7 @@ before any partial work is done.
 import json
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import date
 from typing import Any
 
 from agents.detection_matcher_agent import DetectionMatcherAgent
@@ -27,13 +28,21 @@ from agents.soc_analyst_agent import SocAnalystAgent
 from agents.threat_intel_agent import ThreatIntelAgent
 from agents.tools.llm import Generator, resolve_generator
 from agents.tools.scanner_labels import canary_source, label_source
+from intel import IntelStore
 
 
 class OrchestratorAgent:
-    def __init__(self, *, generator: Generator | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        generator: Generator | None = None,
+        intel_store: IntelStore | None = None,
+        intel_as_of: date | None = None,
+    ) -> None:
         self.soc = SocAnalystAgent()
         self.mitre = MitreMapperAgent()
-        self.threat = ThreatIntelAgent()
+        self.threat = ThreatIntelAgent(intel_store)
+        self.intel_as_of = intel_as_of
         self.knowledge_base = KnowledgeBaseAgent()
         self.detections = DetectionMatcherAgent()
         self.report = IncidentReportAgent()
@@ -99,7 +108,9 @@ class OrchestratorAgent:
 
         indicators = soc_result.get("indicators", [])
 
-        intel_results = [self.threat.analyze_indicator(ind) for ind in indicators]
+        intel_results = [
+            self.threat.analyze_indicator(ind, as_of=self.intel_as_of) for ind in indicators
+        ]
 
         kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
 
@@ -176,7 +187,9 @@ class OrchestratorAgent:
         all_indicators = sorted(
             {ind for entry in sequence_result["events"] for ind in entry["indicators"]}
         )
-        intel_results = [self.threat.analyze_indicator(ind) for ind in all_indicators]
+        intel_results = [
+            self.threat.analyze_indicator(ind, as_of=self.intel_as_of) for ind in all_indicators
+        ]
 
         kb_references = self.knowledge_base.reference_for_event(soc_result, mitre_result)
         detection_matches = self.detections.match_for_event(mitre_result)

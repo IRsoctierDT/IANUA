@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -40,6 +41,9 @@ from dashboard.system_health import (
     get_python_info,
     get_qdrant_collections,
 )
+from intel import IntelStoreError
+from intel.store import load_local_snapshot
+from store import EventStore, Query, StoreError
 
 st.set_page_config(
     page_title="IANUA",
@@ -66,7 +70,15 @@ st.sidebar.write("Ollama:", ensure_ollama_running())
 with st.sidebar.expander("Ollama Models"):
     st.text(get_ollama_models())
 
-agent = OrchestratorAgent()
+_as_of = datetime.now(UTC).date()
+_snapshot = None
+_snapshot_error = False
+if _pin := os.environ.get("IANUA_INTEL_SNAPSHOT_SHA256"):
+    try:
+        _snapshot = load_local_snapshot(Path.cwd(), sha256=_pin)
+    except (IntelStoreError, OSError):
+        _snapshot_error = True
+agent = OrchestratorAgent(intel_store=_snapshot, intel_as_of=_as_of)
 
 
 @st.cache_data
@@ -123,29 +135,46 @@ def _sigma_rule_count() -> int:
 
 with tab_intel:
     st.subheader("Detection Intelligence")
-    st.caption(
-        "Health of the layers that give triage its vocabulary: multi-source "
-        "telemetry ingest, the pinned ATT&CK corpus, the mapping ruleset, the "
-        "threat-intel library, the behavioral detection corpus, and the plan-only "
-        "response layer. Staleness is reported as status, not hidden — a corpus "
-        "nobody refreshes is stale whether or not anything looks broken, and a "
-        "domain with no parser is a blind spot whether or not anything alerts."
-    )
-    _as_of = date.today()
-    st.table(intelligence_view.layer_rows(as_of=_as_of))
-
-    st.subheader("Behavioral coverage (post-compromise)")
-    st.caption(
-        "Rules aimed at payloads already resident on a host. A rule marked "
-        "'⏳ required' replays green against fixtures but cannot fire in this "
-        "deployment until the telemetry it needs is ingested — it is validated "
-        "logic waiting on a sensor, never counted as live coverage."
-    )
-    _behaviors = intelligence_view.behavior_rows()
+    if _snapshot_error:
+        st.error("Local threat-intel snapshot rejected. Check the operator pin and snapshot.")
+    _observed: frozenset[str] = frozenset()
+    _matches: list[dict[str, str]] = []
+    _now = datetime.now(UTC)
+    try:
+        with EventStore.open_read_only(Path.cwd()) as _events:
+            _sample = _events.query(
+                Query(
+                    source_type="endpoint",
+                    since=(_now - timedelta(hours=24)).timestamp(),
+                    until=_now.timestamp(),
+                    limit=501,
+                )
+            )
+        _observed, _matches = intelligence_view.behavior_evidence(
+            item.event for item in _sample[:500]
+        )
+        if len(_sample) > 500:
+            st.warning("Coverage is based on the newest 500 endpoint events in the last 24 hours.")
+    except FileNotFoundError:
+        st.info("Collect local Sysmon or auditd events to verify sensor coverage.")
+    except (OSError, ValueError, sqlite3.Error, StoreError):
+        st.error("Local endpoint telemetry or the behavioral rule index is unavailable.")
+    st.table(intelligence_view.layer_rows(as_of=_as_of, observed=_observed, local=_snapshot))
+    with st.expander("Atomic indicator freshness"):
+        _source_rows = intelligence_view.intel_source_rows(as_of=_as_of, local=_snapshot)
+        if _source_rows:
+            st.dataframe(_source_rows, width="stretch", hide_index=True)
+        else:
+            st.info("Atomic indicator source details are unavailable.")
+    st.subheader("Behavioral coverage")
+    st.caption("Observed coverage requires eligible endpoint events from the last 24 hours.")
+    _behaviors = intelligence_view.behavior_rows(_observed)
     if _behaviors:
         st.table(_behaviors)
     else:
-        st.info("Behavioral index unavailable — run scripts/build_behavior_index.py.")
+        st.info("Behavioral index unavailable. Run scripts/build_behavior_index.py.")
+    if _matches:
+        st.dataframe(_matches, width="stretch", hide_index=True)
 
     st.subheader("Maintenance debt")
     st.caption(
@@ -153,7 +182,9 @@ with tab_intel:
         "was retired upstream. This is the honest cost of an 'ongoing' library."
     )
     _debt = intelligence_view.review_due_rows(as_of=_as_of)
-    if _debt:
+    if _debt is None:
+        st.error("Behavioral intelligence review status is unavailable.")
+    elif _debt:
         st.warning(f"{len(_debt)} record(s) need review.")
         st.table(_debt)
     else:

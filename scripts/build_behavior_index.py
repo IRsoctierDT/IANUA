@@ -47,6 +47,8 @@ except ModuleNotFoundError:  # pragma: no cover - yaml present in dev/CI
     print("PyYAML is required (pip install -e '.[dev]').", file=sys.stderr)
     raise SystemExit(2) from None
 
+from agents.tools.behavior_runtime import SIGNALS  # noqa: E402
+from agents.tools.sigma_eval import evaluate  # noqa: E402
 from attack import AttackError, load_corpus, validate_reference  # noqa: E402
 from scripts._rule_yaml import load_rule  # noqa: E402
 
@@ -150,6 +152,19 @@ def build_index(behaviors_dir: Path = BEHAVIORS_DIR) -> dict[str, Any]:
         if not isinstance(detection, dict) or "condition" not in detection:
             raise _reject(f"{context}: detection must be a mapping with a condition")
 
+        signals = rule.get("signals")
+        if (
+            not isinstance(signals, list)
+            or not signals
+            or not all(isinstance(signal, str) and signal in SIGNALS for signal in signals)
+            or len(signals) != len(set(signals))
+        ):
+            raise _reject(f"{context}: declare supported runtime signals")
+        try:
+            evaluate(rule, {})
+        except ValueError as exc:
+            raise _reject(f"{context}: invalid detection: {exc}") from exc
+
         techniques = _techniques(rule["tags"], context)
         for technique_id in techniques:
             try:
@@ -172,6 +187,8 @@ def build_index(behaviors_dir: Path = BEHAVIORS_DIR) -> dict[str, Any]:
                 "techniques": techniques,
                 "false_positives": [str(item) for item in false_positives],
                 "file": path.name,
+                "signals": signals,
+                "detection": detection,
             }
         )
 

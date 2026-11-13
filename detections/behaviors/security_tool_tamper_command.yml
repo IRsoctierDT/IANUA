@@ -3,6 +3,9 @@ name: security_tool_tamper_command
 id: 5e7a9c1b-3d2f-4b6e-8c5a-4b5c6d7e8f93
 status: experimental
 validation: telemetry-required
+signals:
+  - sysmon-process
+  - auditd-command
 description: >-
   A command line disabling real-time protection or stopping an endpoint
   security service. An administrator does this rarely and with a ticket; an

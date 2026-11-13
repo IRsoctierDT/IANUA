@@ -205,9 +205,8 @@ def _render_sequence(
 def _render_behaviors(behavior_matches: list[dict] | None) -> str:
     """Render behavioral (post-compromise TTP) coverage for the event.
 
-    Each rule states whether the telemetry it needs is ingested today, so a
-    rule that replays green against fixtures but cannot fire in production is
-    labelled rather than counted as real coverage.
+    Technique coverage is a rule reference. Sensor verification and actual
+    event matches are reported by the scheduled pipeline and dashboard.
     """
     if not behavior_matches:
         return "- No behavioral rule covers this technique yet"
@@ -215,9 +214,9 @@ def _render_behaviors(behavior_matches: list[dict] | None) -> str:
     for match in behavior_matches:
         validation = str(match.get("validation", "unknown"))
         flag = (
-            "active"
+            "audit daemon telemetry"
             if validation == "telemetry-available"
-            else "awaiting telemetry - not live in this deployment"
+            else "endpoint sensor required"
         )
         lines.append(
             f"- **{_md_cell(str(match.get('title', '')))}** "

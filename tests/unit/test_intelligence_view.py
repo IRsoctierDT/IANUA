@@ -71,9 +71,10 @@ def test_corpus_status_flags_version_distance(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.unit
 def test_behavior_status_states_the_telemetry_split() -> None:
     status = view.behavior_status()
-    assert "awaiting telemetry" in status.detail
+    assert "awaiting telemetry verification" in status.detail
     # Rules that cannot fire must never be presented as unqualified coverage.
-    assert "live" in status.detail
+    assert "7 executable rules" in status.detail
+    assert "0 with observed telemetry" in status.detail
 
 
 @pytest.mark.unit
@@ -86,12 +87,12 @@ def test_response_status_is_always_plan_only() -> None:
 
 @pytest.mark.unit
 def test_behavior_rows_sort_live_coverage_first() -> None:
-    rows = view.behavior_rows()
+    rows = view.behavior_rows(frozenset({"sysmon-process"}))
     assert rows
     # Assert the grouping directly rather than via the badge glyphs — emoji
     # sort by codepoint, so "⏳" precedes "✅" and a naive sorted() comparison
     # would test the wrong thing.
-    live_flags = [row["Telemetry"].endswith("live") for row in rows]
+    live_flags = [row["Telemetry"] == "Observed" for row in rows]
     assert live_flags == sorted(live_flags, reverse=True), (
         "live rules should group ahead of the ones awaiting telemetry"
     )

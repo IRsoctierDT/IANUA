@@ -115,6 +115,7 @@ import math
 import sqlite3
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -134,7 +135,9 @@ from agents.policies.audit import (  # noqa: E402
     signer_from_env,
 )
 from agents.policies.bundle import DEFAULT_BUNDLE_PATH, PolicyBundleError, load_bundle  # noqa: E402
+from agents.tools.behavior_runtime import load_behavioral_rules  # noqa: E402
 from agents.tools.guarded import ToolBlockedError, enforce  # noqa: E402
+from attack import AttackError  # noqa: E402
 from correlation import Incident, ThresholdError, Thresholds  # noqa: E402
 from pipeline import (  # noqa: E402
     DEFAULT_BATCH,
@@ -301,6 +304,7 @@ def _report(
         "context_limited": result.context_limited,
         "repeats": result.repeats,
         "include_seen": include_seen,
+        "behavioral_detections": [asdict(hit) for hit in result.detection_hits],
         # Only the fresh ones: an incident the lookback re-assembled was
         # reported by an earlier cycle, and emitting it again every run would
         # make a log shipper duplicate every alert for the whole lookback.
@@ -348,6 +352,11 @@ def _print_text(
             "  note: the correlation window's trailing context filled its row "
             "budget, so older context inside --lookback was not read. Lower "
             "--batch to buy more context per cycle."
+        )
+    for hit in result.detection_hits:
+        print(
+            f"  {hit.rule} ({hit.level}) · {hit.event_id} · "
+            f"ATT&CK {hit.attack_version}: {', '.join(hit.techniques)}"
         )
     for incident in _reportable(result, include_seen=include_seen):
         print(
@@ -489,8 +498,9 @@ def _run(
                 thresholds=thresholds,
                 batch=args.batch,
                 lookback=args.lookback,
+                behavioral_rules=load_behavioral_rules(),
             )
-    except (CursorError, StoreError, sqlite3.Error, ValueError, OSError) as exc:
+    except (AttackError, CursorError, StoreError, sqlite3.Error, ValueError, OSError) as exc:
         # sqlite3.Error is neither an OSError nor a StoreError, so a corrupt or
         # externally-locked database would otherwise escape as a traceback.
         # Contention is tested first: it is also a `sqlite3.Error`, so the
@@ -518,6 +528,7 @@ def _run(
             reason=(
                 f"read {result.events_read} event(s), correlated "
                 f"{result.events_correlated}, assembled "
+                f"{len(result.detection_hits)} behavioral match(es), "
                 f"{len(result.fresh)} new incident(s) "
                 f"({result.repeats} re-seen), "
                 + (

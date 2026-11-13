@@ -15,30 +15,19 @@ whether it can actually fire here.
 - **Deployment complexity:** none — the committed JSON index ships with the
   repository and the matcher reads it with stdlib `json`.
 
-## The `validation:` marker — read this before trusting coverage
+## Runtime coverage
 
-Every rule declares one of:
-
-| Marker | Meaning |
-|---|---|
-| `telemetry-available` | The signal this rule needs is ingested today; it can fire in production. |
-| `telemetry-required` | The rule replays green against fixtures but **cannot fire here** until the sensor exists (typically endpoint process telemetry: Sysmon EID 1, auditd `execve` with parent linkage, or an EDR feed). |
-
-This platform currently ingests syslog-shaped text only, so most endpoint
-rules are `telemetry-required` — and a security test asserts that any rule
-keying on `command_line` / `parent_image` / `image` declares itself so.
-Aspirational coverage stays visibly aspirational: the published ATT&CK
-Navigator layer is deliberately sourced from `detections/sigma/` alone, so a
-rule that cannot fire never inflates a public coverage claim.
-
-**Answering "is real endpoint telemetry available?" is what promotes these
-rules.** Until then they are validated logic waiting on a sensor, and they
-say so in every report they appear in.
+The generated JSON index includes the executable Sigma subset and required sensor
+signals. The scheduled pipeline evaluates it on new normalized events. The
+dashboard counts observed prerequisites from recent stored telemetry. The
+`validation` marker describes the rule's declared sensor prerequisite in older
+technique-coverage reports. See the [operations guide](../../docs/DETECTION_INTELLIGENCE_PLAN.md#operate-the-behavioral-detections)
+for source fields and rollout instructions.
 
 ## Authoring a rule
 
 1. Write the YAML in this directory. Required: `title`, `name`, `id` (UUID),
-   `description`, `level`, `validation`, `tags` (with an `attack.tXXXX`
+   `description`, `level`, `validation`, `signals`, `tags` (with an `attack.tXXXX`
    technique tag), `logsource`, `detection`, `falsepositives`, `references`.
 2. Add fixtures to `detections/fixtures/behavior_fixtures.json` — at least
    one `should_fire` and **at least three** `should_not_fire`. Behavioral

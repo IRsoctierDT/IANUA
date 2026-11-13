@@ -38,10 +38,14 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from correlation import DEFAULT_THRESHOLDS, Incident, Thresholds, assemble
 from pipeline.cursor import Cursor
 from store import MAX_QUERY_LIMIT, EventStore, Query
+
+if TYPE_CHECKING:
+    from agents.tools.behavior_runtime import BehavioralRules
 
 #: Events considered in one cycle. Bounded so a backlog is worked through over
 #: several scheduled runs rather than in one unbounded read: the store's own
@@ -68,6 +72,17 @@ DEFAULT_BATCH = 1_000
 #: (``docs/PRODUCTION_SOC_PLAN.md`` stage 9). A lookback buys correctness for
 #: the common case and states its own boundary rather than hiding it.
 DEFAULT_LOOKBACK = 900.0
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionHit:
+    """A behavioral match tied to a stored event and ATT&CK pin."""
+
+    event_id: str
+    rule: str
+    level: str
+    techniques: tuple[str, ...]
+    attack_version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +139,8 @@ class CycleResult:
     #: changed the window. :attr:`incidents` always holds everything assembled.
     fresh: tuple[Incident, ...] = field(default_factory=tuple)
 
+    detection_hits: tuple[DetectionHit, ...] = ()
+
     @property
     def idle(self) -> bool:
         """Whether there was nothing new. A normal, common outcome."""
@@ -142,6 +159,7 @@ def run_cycle(
     thresholds: Thresholds = DEFAULT_THRESHOLDS,
     batch: int = DEFAULT_BATCH,
     lookback: float = DEFAULT_LOOKBACK,
+    behavioral_rules: BehavioralRules | None = None,
 ) -> CycleResult:
     """Read the next window after ``cursor``, correlate it with a trailing
     overlap, and report what to resume from.
@@ -330,8 +348,22 @@ def run_cycle(
     # consumed. Derived from the ids, so no state is persisted to know it.
     new_ids = {event.event_id for event in progress}
     fresh = tuple(i for i in incidents if new_ids.intersection(i.event_ids))
+    detection_hits: tuple[DetectionHit, ...] = ()
+    if behavioral_rules is not None:
+        detection_hits = tuple(
+            DetectionHit(
+                item.event_id,
+                rule.name,
+                rule.level,
+                rule.techniques,
+                behavioral_rules.attack_version,
+            )
+            for item in progress
+            for rule in behavioral_rules.evaluate_event(item.event)[1]
+        )
     return CycleResult(
         events_read=len(progress),
+        detection_hits=detection_hits,
         events_correlated=len(window),
         incidents=incidents,
         cursor=advanced,
