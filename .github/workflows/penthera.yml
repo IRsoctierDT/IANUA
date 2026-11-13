@@ -173,7 +173,7 @@ jobs:
         uses: danoszz/penthera@9b67e8dce0267e587deb5ccebd5ffa7a15235806 # v2.4.0
         with:
           mode: deps
-          penthera-version: "2.3.2"
+          penthera-version: "2.4.0"
           fail-on: none
           sarif: "true"
           # A fork pull request gets a read-only token, so the comment API call
@@ -202,7 +202,7 @@ jobs:
         uses: danoszz/penthera@9b67e8dce0267e587deb5ccebd5ffa7a15235806 # v2.4.0
         with:
           mode: agents
-          penthera-version: "2.3.2"
+          penthera-version: "2.4.0"
           fail-on: none
           sarif: "true"
           # No PR to comment on from a manual dispatch; findings go to the
