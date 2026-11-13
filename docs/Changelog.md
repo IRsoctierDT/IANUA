@@ -5,6 +5,19 @@ All notable changes to this project. Versions correspond to git tags.
 ## Unreleased
 
 ### Added
+- **pfSense containment adapter, dry run — stage 8, phase 2 (`agents/tools/pfsense.py`,
+  `docs/PFSENSE_CONTAINMENT.md`).** Turns a `VerifiedApproval` into the exact pfREST v2
+  requests (an alias lookup, then a `PATCH` with `append` or `remove` and `apply`) that
+  would add or remove one address in the operator-created `IANUA_BLOCK` or `IANUA_ISOLATE`
+  alias. It audits both digests and **sends nothing**: the module has no transport,
+  asserted over its AST. The approval is the only input naming an action or a target;
+  only the exact `VerifiedApproval` type is accepted, and nothing else in shipped code may
+  construct one. Targets are single canonical IP literals; protected addresses cannot be
+  added to either alias; `disable_account` and `enable_account` are refused. The request
+  shapes follow pfREST's documentation and have not been run against a live device, which
+  is a phase 3 obligation. Mutation-checked across eight controls. The runbook's dry-run
+  commands were executed end to end. This stage's tests and examples now use a neutral
+  approver id instead of the owner's first name.
 - **Signed per-action execution approval — stage 8, phase 1 of the containment executor
   (`agents/policies/execution_approval.py`, `agents/policies/approvers.json`).** By owner
   direction. The gate an executor must pass, shipped **without** an executor: an

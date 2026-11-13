@@ -48,6 +48,7 @@ RUNBOOKS = {
     "docs/RESTORE.md": "Backup and restore runbook",
     "docs/RETENTION.md": "Event retention runbook",
     "docs/RELEASING.md": "Releasing IANUA",
+    "docs/PFSENSE_CONTAINMENT.md": "pfSense containment runbook",
 }
 
 #: AGENTS.md §9's documentation structure. "Implementation Steps" is optional
@@ -108,7 +109,9 @@ def test_a_runbook_carries_the_section_9_structure(relative: str) -> None:
     assert not missing, f"{relative} is missing §9 section(s): {missing}"
 
 
-@pytest.mark.parametrize("relative", ["docs/RESTORE.md", "docs/RETENTION.md"])
+@pytest.mark.parametrize(
+    "relative", ["docs/RESTORE.md", "docs/RETENTION.md", "docs/PFSENSE_CONTAINMENT.md"]
+)
 def test_an_operational_runbook_states_its_risk_and_skill_level(relative: str) -> None:
     """§9's component fields: an operator needs them before step one."""
     head = "\n".join(_read(relative).split("\n")[:20])

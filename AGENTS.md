@@ -812,6 +812,30 @@ no executor, no adapter, no egress and no change to `agents/response/`;
   removed from the registry; and the gate cannot verify that the caller then does what it
   described — that is phase 2's obligation and phase 2's security tests.
 
+**Containment execution — amended for the pfSense adapter, dry run (stage 8, phase 2).**
+Licensed by the phased plan the owner approved on 2026-11-13. `agents/tools/pfsense.py`
+turns a `VerifiedApproval` into the exact pfREST v2 requests that would edit one
+operator-created alias, audits them, and **sends nothing**. It still licenses no egress,
+no transport and no change to `agents/response/`.
+
+- **No transport exists, by construction.** The module imports no socket, HTTP, TLS,
+  subprocess or `os` module and calls no `open`, asserted over its AST by
+  `tests/security/test_pfsense_adapter.py`. There is no flag that makes it send.
+- **The phase 1 residual is closed for this adapter.** The approval is the adapter's
+  only input that names an action or a target, so the prepared request cannot describe
+  anything but what was signed. Only the exact `VerifiedApproval` type is accepted, and
+  a guard asserts no shipped module other than `execution_approval.py` constructs one.
+- **The blast radius is an alias entry, never a rule.** Every action adds or removes one
+  canonical IP literal (validated by `egress.parse_address`, plus loopback and
+  non-canonical spellings refused) in `IANUA_BLOCK` or `IANUA_ISOLATE`, which the operator
+  creates and references from rules they reviewed. No prefixes. Configured protected
+  addresses cannot be added to either alias, and can always be removed.
+- **Phase 3 still owes** everything the phase 1 bullet lists, plus: verifying the request
+  shapes against the device's own `/api/v2/documentation`, which has not been done; the
+  alias lookup precondition each prepared change carries (exactly one alias, exact name,
+  type `host`, else refuse); and certificate pinning to the firewall. The operator
+  procedure is `docs/PFSENSE_CONTAINMENT.md`.
+
 ### 5.1 Approval Gates (human-in-the-loop)
 
 An agent must **pause and obtain explicit human approval** before any action that is
