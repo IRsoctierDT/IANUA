@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:a373e460-9339-5ca4-aff9-abb03d755134",
+  "serialNumber": "urn:uuid:cdbdf95a-4525-5aec-9580-93fe52f1a691",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-05T06:08:28Z",
+    "timestamp": "2026-11-13T02:00:02Z",
     "tools": {
       "components": [
         {
@@ -798,11 +798,11 @@
       "purl": "pkg:pypi/rpds-py@2026.5.1"
     },
     {
-      "bom-ref": "pkg:pypi/ruff@0.17.3",
+      "bom-ref": "pkg:pypi/ruff@0.17.4",
       "name": "ruff",
       "type": "library",
-      "version": "0.17.3",
-      "purl": "pkg:pypi/ruff@0.17.3"
+      "version": "0.17.4",
+      "purl": "pkg:pypi/ruff@0.17.4"
     },
     {
       "bom-ref": "pkg:pypi/safetensors@0.8.0",
