@@ -132,3 +132,52 @@ the corpus to that budget deliberately.
   performed, the integrity gate honestly claims corruption-detection only.
 - Replace the `* @owner` CODEOWNERS placeholder so §8's mandatory-review
   rule enforces.
+
+
+## Operate the behavioral detections
+
+The scheduled pipeline evaluates all seven rules against new normalized endpoint events.
+Its text and JSON reports carry the rule, severity, stored event reference and pinned
+ATT&CK version. It evaluates only events beyond the pipeline cursor. The dashboard
+also replays up to 500 stored endpoint events with source timestamps in the last
+24 hours and marks coverage by sensor prerequisites. Recent matching events appear
+below the coverage table. Reload the dashboard to refresh the sample.
+
+| Signal | Operator input |
+| --- | --- |
+| Sysmon process creation and lineage | Export Event ID 1 from Microsoft-Windows-Sysmon as newline-delimited JSON in the supported ingest shape. Include the source timestamp, Image, ParentImage and CommandLine. [Microsoft Sysmon events](https://learn.microsoft.com/en-us/windows/security/operating-system-security/sysmon/sysmon-events) |
+| Linux commands | Provide auditd EXECVE, USER_CMD or SYSCALL records that include command evidence. Linux shell built-ins and redirected writes can be invisible to process-only telemetry. Use authorized audit rules and validate the resulting records for your environment. |
+| Linux audit daemon lifecycle | Preserve DAEMON_START, DAEMON_END and DAEMON_ABORT. Planned service maintenance can legitimately trigger the stop rule. |
+| Linux anonymous-memory execution | Provide successful execve/execveat SYSCALL records including the executable path and syscall name or architecture/number. Native x86-64, AArch64 and x86 mappings are supported. The rule looks for an executable path of the form `/memfd:… (deleted)`. |
+
+From an IANUA checkout on the collector host, point the existing collector at an
+authorized file. Repeat `--source` for each source on that host.
+
+```sh
+python scripts/run_collector.py --root "$PWD" --caller soc-collector --source /absolute/path/to/authorized-log
+python scripts/run_pipeline.py --root "$PWD" --caller soc-timer --dry-run --json
+```
+
+Use the configured collector and pipeline grants and the same lab root for both.
+A separate Mac dashboard needs an authorized local copy of the event store or
+local exported telemetry collected into its own store. Existing stored auditd events
+retain their original normalized representation. Collect new events for the updated
+syscall and command projections. Keep collected data under the lab root.
+
+## Maintain atomic intelligence
+
+The six bundled atomic records are synthetic and continue to decay. For operational
+enrichment, stage an operator-reviewed, redistributable TLP:CLEAR JSON snapshot as
+`data/intel/snapshot.json`. Use a top-level object with `sources` and `indicators`.
+The files in `intel/sources.json` and `intel/seed/indicators.json` show the exact record
+fields. Use registered source IDs, independently reviewed upstream names, an
+allowlisted license and original source dates. Keep real snapshot data gitignored.
+
+Compare the file's SHA-256 to the digest recorded at review. Launch the dashboard with
+`IANUA_INTEL_SNAPSHOT_SHA256` set to the reviewed digest and keep the existing loopback
+binding. The snapshot replaces the synthetic atomic set in dashboard triage, leaving
+the committed behavioral catalog available. Freshness uses the actual UTC day and
+reports current, expired, decayed and future-dated records separately. A new snapshot
+requires a new operator-reviewed digest. Indicator dates should reflect observed
+source data. Review behavioral records when due and use the existing digest check
+after revising the committed catalog.

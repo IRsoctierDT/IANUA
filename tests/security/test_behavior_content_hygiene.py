@@ -131,31 +131,14 @@ def test_fixture_addresses_are_synthetic() -> None:
 
 
 @pytest.mark.security
-def test_validation_markers_are_honest() -> None:
-    """Rules claiming live telemetry must match what the platform ingests.
+def test_runtime_rule_signals_are_explicit() -> None:
+    """Runtime rules may only depend on declared typed sensor projections."""
+    from agents.tools.behavior_runtime import SIGNALS
 
-    Today the platform ingests syslog-shaped text only. Any rule keyed on
-    process-creation fields (parent_image, command_line) therefore cannot
-    fire in production and must say so, rather than inflating coverage.
-    """
     index = json.loads(_INDEX.read_text(encoding="utf-8"))
-    by_name = {entry["name"]: entry for entry in index["behaviors"]}
-    process_fields = ("command_line", "parent_image", "image")
-    for path, rule in _rule_docs():
-        selections = {key: value for key, value in rule["detection"].items() if key != "condition"}
-        keys = {
-            field.split("|")[0]
-            for selection in selections.values()
-            if isinstance(selection, dict)
-            for field in selection
-        }
-        needs_endpoint = bool(keys & set(process_fields))
-        entry = by_name[str(rule["name"])]
-        if needs_endpoint:
-            assert entry["validation"] == "telemetry-required", (
-                f"{path.name}: keys on endpoint process telemetry the platform does not "
-                "ingest, so it must be marked telemetry-required"
-            )
+    for entry in index["behaviors"]:
+        assert entry["signals"]
+        assert set(entry["signals"]) <= SIGNALS.keys()
 
 
 @pytest.mark.security
@@ -169,3 +152,5 @@ def test_index_is_a_faithful_projection() -> None:
         assert entry["level"] == str(rule["level"]), f"{path.name}: level drift"
         assert entry["validation"] == str(rule["validation"]), f"{path.name}: marker drift"
         assert entry["file"] == path.name
+        assert entry["signals"] == rule["signals"]
+        assert entry["detection"] == rule["detection"]

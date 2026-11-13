@@ -44,3 +44,6 @@ belong in gitignored `data/intel/`.
 
 Every data change regenerates the digest in the same PR:
 `python scripts/check_intel_store.py --update`.
+
+For snapshot schema, SHA-256 pinning, and dashboard activation, follow
+[Maintain atomic intelligence](../docs/DETECTION_INTELLIGENCE_PLAN.md#maintain-atomic-intelligence).

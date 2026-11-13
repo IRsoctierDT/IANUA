@@ -26,6 +26,7 @@ detection twice a year.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import re
@@ -108,7 +109,7 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return document
 
 
-def _read_json(path: Path, *, literal: bool = False) -> object:
+def _read_json(path: Path, *, literal: bool = False, sha256: str | None = None) -> object:
     """Parse one data file, refusing these ways for a diff to omit what loads.
 
     Refused: anything but strict UTF-8 (``json.loads`` on bytes also reads
@@ -130,6 +131,8 @@ def _read_json(path: Path, *, literal: bool = False) -> object:
         raw = handle.read(MAX_FILE_BYTES + 1)
     if len(raw) > MAX_FILE_BYTES:
         raise _reject(f"{path.name} exceeds {MAX_FILE_BYTES} bytes")
+    if sha256 is not None and hashlib.sha256(raw).hexdigest() != sha256:
+        raise _reject("snapshot SHA-256 does not match the operator pin")
     if re.search(rb"\r(?!\n)", raw):
         raise _reject(f"{path.name} has a carriage return that does not end a line")
     if literal and (not re.fullmatch(rb"[\x20-\x7e\r\n]*", raw) or b"\\" in raw):
@@ -231,7 +234,10 @@ def never_flagged(value: str, never_flag: tuple[str, ...]) -> bool:
 
 
 def _load_sources(path: Path) -> dict[str, Source]:
-    document = _read_json(path)
+    return _parse_sources(_read_json(path))
+
+
+def _parse_sources(document: object) -> dict[str, Source]:
     if not isinstance(document, dict) or set(document) != {"sources"}:
         raise _reject("sources.json must carry exactly a 'sources' list")
     # The value's type, not only the key set: measured, null, 5, true and 1.5
@@ -415,4 +421,41 @@ def load_store(intel_dir: Path | None = None, *, corpus: Corpus | None = None) -
         behaviors=tuple(behaviors),
         never_flag=never_flag,
         attack_version=resolved_corpus.attack_version,
+    )
+
+
+def load_local_snapshot(root: Path, *, sha256: str) -> IntelStore:
+    """Load a pinned, operator-staged TLP:CLEAR atomic snapshot beneath the lab root."""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise _reject("snapshot pin must be a lowercase SHA-256")
+    root = root.resolve()
+    directory = root / "data" / "intel"
+    if (root / "data").is_symlink() or directory.is_symlink():
+        raise _reject("snapshot directory must be inside the lab root")
+    snapshot = _read_json(directory / "snapshot.json", sha256=sha256)
+    if not isinstance(snapshot, dict) or set(snapshot) != {"sources", "indicators"}:
+        raise _reject("snapshot must contain sources and indicators")
+    if not isinstance(snapshot["sources"], list) or not 1 <= len(snapshot["sources"]) <= 100:
+        raise _reject("snapshot must have between 1 and 100 sources")
+    raw_indicators = snapshot["indicators"]
+    if not isinstance(raw_indicators, list) or not 1 <= len(raw_indicators) <= MAX_ATOMIC_RECORDS:
+        raise _reject("snapshot indicator count is outside its bounds")
+    base = load_store()
+    sources = _parse_sources({"sources": snapshot["sources"]})
+    if base.sources.keys() & sources.keys() or any(
+        source.upstream.endswith((".example", ".local", ".test", ".invalid"))
+        for source in sources.values()
+    ):
+        raise _reject("snapshot sources must be independent of bundled demonstration sources")
+    atomic: dict[str, AtomicIndicator] = {}
+    for raw in raw_indicators:
+        indicator = _parse_atomic(raw, sources, base.never_flag)
+        if not indicator.first_seen <= indicator.retrieved <= indicator.expires:
+            raise _reject("snapshot dates must be ordered first seen, retrieved, then expiry")
+        key = f"{indicator.indicator_type}:{indicator.value}:{indicator.source_id}"
+        if key in atomic:
+            raise _reject("duplicate snapshot indicator")
+        atomic[key] = indicator
+    return IntelStore(
+        base.sources | sources, atomic, base.behaviors, base.never_flag, base.attack_version
     )

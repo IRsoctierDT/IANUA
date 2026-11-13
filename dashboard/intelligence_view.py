@@ -25,9 +25,14 @@ and unit-testable, matching the layers they read.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
+
+from agents.tools.behavior_runtime import load_behavioral_rules
+from ingest.schema import NormalizedEvent
+from intel import IntelStore
 
 _UNAVAILABLE = "unavailable"
 
@@ -93,43 +98,78 @@ def mapping_status() -> LayerStatus:
     )
 
 
-def intel_status(*, as_of: date) -> LayerStatus:
-    """Threat-intel library health: sources, live indicators, review debt."""
+def intel_status(*, as_of: date, local: IntelStore | None = None) -> LayerStatus:
+    """Distinguish demo indicator aging from an operator-staged snapshot."""
     try:
         from intel import load_store
         from intel.decay import FLOOR, decayed_score
 
-        store = load_store()
+        store = load_store() if local is None else local
     except Exception as exc:
         return LayerStatus("Threat-intel library", _badge(False), f"{_UNAVAILABLE}: {exc}")
 
-    live = sum(1 for ind in store.atomic.values() if decayed_score(ind, as_of=as_of) >= FLOOR)
-    expired = len(store.atomic) - live
+    live = sum(decayed_score(ind, as_of=as_of) >= FLOOR for ind in store.atomic.values())
+    inactive = len(store.atomic) - live
+    scope = "synthetic demo" if local is None else "pinned local snapshot"
     detail = (
-        f"{len(store.sources)} sources · {len(store.behaviors)} behavioral records · "
-        f"{live} live / {expired} decayed atomic indicators"
+        f"{len(store.sources)} registered sources · {len(store.behaviors)} behavioral records · "
+        f"{live} current / {inactive} inactive atomic records ({scope})"
     )
-    return LayerStatus("Threat-intel library", _badge(True, warn=expired > live), detail)
+    if local is None:
+        return LayerStatus("Threat-intel library", "demo data", detail)
+    return LayerStatus("Threat-intel library", _badge(True, warn=inactive > live), detail)
 
 
-def behavior_status() -> LayerStatus:
-    """Behavioral corpus health, with the telemetry-honesty split."""
+def intel_source_rows(*, as_of: date, local: IntelStore | None) -> list[dict[str, str | int]]:
+    """Show snapshot provenance and distinguish expired, decayed and future records."""
+    from intel import load_store
+    from intel.decay import FLOOR, decayed_score
+
     try:
-        from agents.detection_matcher_agent import DetectionMatcherAgent
-
-        entries = DetectionMatcherAgent()._load_behavior_index()
-    except Exception as exc:
-        return LayerStatus("Behavioral detections", _badge(False), f"{_UNAVAILABLE}: {exc}")
-    if not entries:
-        return LayerStatus(
-            "Behavioral detections", _badge(False), f"{_UNAVAILABLE}: index empty or missing"
+        store = load_store() if local is None else local
+    except (ValueError, OSError):
+        return []
+    rows: dict[str, dict[str, str | int]] = {}
+    for indicator in store.atomic.values():
+        source = store.sources[indicator.source_id]
+        row = rows.setdefault(
+            source.source_id,
+            {
+                "Source": source.source_id,
+                "Upstream": source.upstream,
+                "License": source.license,
+                "Source retrieved": source.retrieved,
+                "Current": 0,
+                "Expired": 0,
+                "Decayed": 0,
+                "Future-dated": 0,
+            },
         )
-    available = sum(1 for e in entries if e.get("validation") == "telemetry-available")
-    required = len(entries) - available
+        if as_of < date.fromisoformat(indicator.retrieved):
+            status = "Future-dated"
+        elif as_of > date.fromisoformat(indicator.expires):
+            status = "Expired"
+        elif decayed_score(indicator, as_of=as_of) < FLOOR:
+            status = "Decayed"
+        else:
+            status = "Current"
+        row[status] = int(row[status]) + 1
+    return [rows[key] for key in sorted(rows)]
+
+
+def behavior_status(observed: frozenset[str] = frozenset()) -> LayerStatus:
+    """Separate executable coverage from recent sensor evidence."""
+    try:
+        catalog = load_behavioral_rules()
+    except (ValueError, OSError):
+        return LayerStatus("Behavioral detections", _badge(False), "rule index unavailable")
+    total = len(catalog.rules)
+    seen = sum(bool(observed.intersection(rule.signals)) for rule in catalog.rules)
     return LayerStatus(
         "Behavioral detections",
-        _badge(True, warn=required > 0),
-        f"{len(entries)} rules · {available} live · {required} awaiting telemetry",
+        _badge(True, warn=seen < total),
+        f"{total} executable rules · {seen} with observed telemetry · "
+        f"{total - seen} awaiting telemetry verification",
     )
 
 
@@ -177,7 +217,12 @@ def response_status() -> LayerStatus:
     )
 
 
-def layer_rows(*, as_of: date) -> list[dict[str, str]]:
+def layer_rows(
+    *,
+    as_of: date,
+    observed: frozenset[str] = frozenset(),
+    local: IntelStore | None = None,
+) -> list[dict[str, str]]:
     """Headline table across every detection-intelligence layer."""
     return [
         status.as_row()
@@ -185,37 +230,64 @@ def layer_rows(*, as_of: date) -> list[dict[str, str]]:
             ingest_status(),
             attack_corpus_status(as_of=as_of),
             mapping_status(),
-            intel_status(as_of=as_of),
-            behavior_status(),
+            intel_status(as_of=as_of, local=local),
+            behavior_status(observed),
             response_status(),
         )
     ]
 
 
-def behavior_rows() -> list[dict[str, str]]:
-    """One row per behavioral rule, telemetry status first."""
+def behavior_rows(
+    observed: frozenset[str] = frozenset(),
+) -> list[dict[str, str]]:
+    """Show runtime prerequisites for each rule and which signals were observed."""
     try:
-        from agents.detection_matcher_agent import DetectionMatcherAgent
-
-        entries = DetectionMatcherAgent()._load_behavior_index()
-    except Exception:
+        rules = load_behavioral_rules().rules
+    except (ValueError, OSError):
         return []
-    rows = []
-    for entry in sorted(entries, key=lambda e: (str(e.get("validation")), str(e.get("title")))):
-        live = entry.get("validation") == "telemetry-available"
-        rows.append(
-            {
-                "Telemetry": "✅ live" if live else "⏳ required",
-                "Rule": str(entry.get("title", "")),
-                "Level": str(entry.get("level", "")),
-                "Techniques": ", ".join(str(t) for t in entry.get("techniques", [])),
-                "File": str(entry.get("file", "")),
-            }
+    return [
+        {
+            "Telemetry": "Observed" if observed.intersection(rule.signals) else "Awaiting evidence",
+            "Rule": rule.name,
+            "Level": rule.level,
+            "Techniques": ", ".join(rule.techniques),
+            "Signals (any)": ", ".join(rule.signals),
+        }
+        for rule in sorted(
+            rules, key=lambda rule: (not observed.intersection(rule.signals), rule.name)
         )
-    return rows
+    ]
 
 
-def review_due_rows(*, as_of: date) -> list[dict[str, str]]:
+def behavior_evidence(
+    events: Iterable[NormalizedEvent],
+) -> tuple[frozenset[str], list[dict[str, str]]]:
+    """Evaluate sampled endpoint events and return metadata-only evidence rows."""
+    catalog = load_behavioral_rules()
+    observed: set[str] = set()
+    hits: list[dict[str, str]] = []
+    for event in events:
+        signals, matches = catalog.evaluate_event(event)
+        observed.update(signals)
+        for rule in matches:
+            stamp = (
+                datetime.fromtimestamp(event.timestamp, UTC).isoformat()
+                if event.timestamp is not None and 0 <= event.timestamp <= 253402300799
+                else "unavailable"
+            )
+            hits.append(
+                {
+                    "Rule": rule.name,
+                    "Severity": rule.level,
+                    "Source time (UTC)": stamp,
+                    "ATT&CK": ", ".join(rule.techniques),
+                    "Version": catalog.attack_version,
+                }
+            )
+    return frozenset(observed), hits
+
+
+def review_due_rows(*, as_of: date) -> list[dict[str, str]] | None:
     """Behavioral intel records whose human review interval has lapsed.
 
     This is the maintenance-debt view: an "ongoing" library that nobody
@@ -228,8 +300,8 @@ def review_due_rows(*, as_of: date) -> list[dict[str, str]]:
 
         store = load_store()
         corpus = load_corpus()
-    except Exception:
-        return []
+    except (ValueError, OSError):
+        return None
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
     for record in store.behaviors:

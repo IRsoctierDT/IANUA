@@ -3,6 +3,8 @@ name: cron_reboot_persistence
 id: 1d3f5b7a-9c8e-4a2d-b6f4-5c6d7e8f9aa4
 status: experimental
 validation: telemetry-required
+signals:
+  - auditd-command
 description: >-
   Writing an @reboot cron entry — or dropping a file into /etc/cron.d — gives
   a payload execution that survives restarts. The persistence mechanism is the

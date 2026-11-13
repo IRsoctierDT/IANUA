@@ -225,6 +225,7 @@ _AUDITD_TYPES = frozenset(
         "ADD_USER",
         "ADD_GROUP",
         "CONFIG_CHANGE",
+        "DAEMON_START",
         "DAEMON_END",
         "DAEMON_ABORT",
         "SERVICE_START",
@@ -244,7 +245,14 @@ _AUDITD_TYPES = frozenset(
 #: spelling and is not claimed; ``collect/`` reads raw ``audit.log``, which is.
 _AUDIT_MSG_CLOCK = re.compile(r"^audit\((\d+\.\d+):(\d+)\)")
 #: EXECVE splits a command line across a0, a1, a2 … in argv order.
-_EXECVE_ARG = re.compile(r"^a(\d+)$")
+_EXECVE_ARG = re.compile(r"^a(\d{1,3})$")
+_AUDIT_HEX = re.compile(r"(?:[0-9a-fA-F]{2})+")
+_MEMFD_EXE = re.compile(r"^/memfd:[^\r\n]* \(deleted\)$")
+_EXEC_SYSCALLS = {
+    "c000003e": {"59", "322"},  # x86-64
+    "c00000b7": {"221", "281"},  # AArch64
+    "40000003": {"11", "358"},  # x86
+}
 
 
 #: Fields that corroborate ``type`` because only auditd writes them beside
@@ -302,6 +310,12 @@ def _execve_command(payload: Mapping[str, Any]) -> str | None:
     return " ".join(value for _, value in sorted(args))
 
 
+def _decode_audit_hex(value: str | None) -> str | None:
+    if value and len(value) <= 8192 and _AUDIT_HEX.fullmatch(value):
+        return bytes.fromhex(value).decode("utf-8", errors="replace").replace("\x00", " ")
+    return value
+
+
 def _parse_auditd(payload: Mapping[str, Any]) -> NormalizedEvent:
     notes: list[str] = []
     record_type = (text(payload.get("type")) or "").upper()
@@ -316,11 +330,22 @@ def _parse_auditd(payload: Mapping[str, Any]) -> NormalizedEvent:
     if timestamp is None:
         notes.append("no usable timestamp on the record")
 
-    command_line = first(payload.get("proctitle"), _execve_command(payload), payload.get("cmd"))
-    exe = first(payload.get("exe"), payload.get("comm"))
+    proctitle = _decode_audit_hex(text(payload.get("proctitle")))
+    command_line = first(_execve_command(payload), proctitle, payload.get("cmd"))
+    exe = first(_decode_audit_hex(text(payload.get("exe"))), payload.get("comm"))
     user = first(payload.get("acct"), payload.get("auid"), payload.get("uid"))
     host = first(payload.get("node"), payload.get("hostname"))
     result = first(payload.get("res"), payload.get("success"))
+    activity = record_type.lower() or None
+    syscall = text(payload.get("syscall"))
+    arch = (text(payload.get("arch")) or "").lower().removeprefix("0x")
+    if (
+        record_type == "SYSCALL"
+        and result in {"yes", "success"}
+        and (syscall in {"execve", "execveat"} or syscall in _EXEC_SYSCALLS.get(arch, set()))
+        and exe
+    ):
+        activity = "memfd execution" if _MEMFD_EXE.fullmatch(exe) else "exec syscall"
 
     message = " ".join(
         part
@@ -340,7 +365,7 @@ def _parse_auditd(payload: Mapping[str, Any]) -> NormalizedEvent:
         vendor_event_id=record_type or None,
         timestamp=timestamp,
         message=message,
-        activity=record_type.lower() or None,
+        activity=activity,
         parse_status="partial" if notes else "structured",
         actor=Actor(
             user_name=user,
@@ -368,6 +393,7 @@ _AUDITD_FIELDS: tuple[FieldPath, ...] = (
     ("acct",),
     ("addr",),
     ("auid",),
+    ("arch",),
     ("cmd",),
     ("comm",),
     ("exe",),

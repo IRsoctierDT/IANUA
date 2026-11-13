@@ -3,6 +3,8 @@ name: ssh_authorized_keys_appended
 id: 8a1c3e5d-7f9b-4d2c-a4e6-6d7e8f9a0bb5
 status: experimental
 validation: telemetry-required
+signals:
+  - auditd-command
 description: >-
   Appending to ~/.ssh/authorized_keys from a shell grants credential-free
   access that survives password rotation — key-based persistence in one line.

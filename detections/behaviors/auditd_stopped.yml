@@ -3,6 +3,8 @@ name: auditd_stopped
 id: 7f4a2b1c-9d3e-4f5a-8b6c-1e2d3c4b5a60
 status: experimental
 validation: telemetry-available
+signals:
+  - auditd-lifecycle
 description: >-
   The Linux audit daemon was stopped or disabled. Turning off the sensor that
   records what happens next is defense impairment in its plainest form —
@@ -20,19 +22,11 @@ logsource:
   product: linux
   service: auditd
 detection:
-  selection_daemon:
-    message|contains: "auditd"
-  selection_action:
-    message|contains:
-      - "stopped"
-      - "disabled"
-      - "shutting down"
-  filter_startup:
-    message|contains:
-      - "starting"
-      - "started"
-      - "restarting"
-  condition: selection_daemon and selection_action and not filter_startup
+  selection:
+    activity:
+      - daemon_end
+      - daemon_abort
+  condition: selection
 fields:
   - host
   - user
