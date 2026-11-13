@@ -46,3 +46,42 @@ pytest -q tests/unit/test_live_analytics.py
 ```
 
 No write operation, network fetch, or automated response action is added.
+
+## Governance and access additions
+
+The dashboard now validates dataset provenance and freshness before calculating
+phishing totals, vulnerability priorities or PCI evidence counts. Invalid rows
+suppress derived metrics and show an explicit data-quality failure. The
+`dashboard/analytics_governance.py` module defines metric semantics, required
+columns, numeric ranges and source timestamp checks. A 24-hour freshness target
+is illustrative and must be calibrated per source.
+
+Contextual vulnerability priority is a separate **0–100 heuristic**:
+35% normalized CVSS, 25% exploitability (1–4), 15% exposure (1–3),
+15% asset criticality (1–4), and 10% PCI-scope flag. This is not an official
+PCI DSS formula or a substitute for an approved risk analysis.
+
+For PCI evidence, the `requirement` field accepts detailed identifiers such
+as `8.3.1`; the `test_procedure`, `owner`, `ticket` and `evidence_id`
+columns are mandatory. This is a traceability record, not an official
+Requirements and Testing Procedures reproduction.
+
+**Authorization:** `IANUA_ANALYTICS_CLASSIFICATION` defaults to `synthetic`.
+Non-public classification (`internal` or `confidential`) requires an
+authenticated Streamlit OIDC identity and an explicit server-side role mapping
+under `[analytics_roles]` in Streamlit secrets. Example:
+
+```toml
+[analytics_roles]
+"analyst@example.test" = "analyst"
+"reviewer@example.test" = "compliance"
+```
+
+Configure Streamlit OIDC per its official documentation, with an organizational
+IdP and MFA. Never commit client secrets. Do not use demo mode with non-public
+records; no application-only control can safely enforce that prohibition if
+an operator deliberately misclassifies a dataset.
+
+**Important:** live source integrations for phishing platforms, vulnerability
+scanners and PCI evidence systems remain pending. The current views consume
+local exported snapshots, and 15-second UI refresh does not make them live.
