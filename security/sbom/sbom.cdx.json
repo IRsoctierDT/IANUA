@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:cdbdf95a-4525-5aec-9580-93fe52f1a691",
+  "serialNumber": "urn:uuid:dd33c6a0-1851-5865-abfd-687cf3c64b9d",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-11-13T02:00:02Z",
+    "timestamp": "2026-11-13T02:23:45Z",
     "tools": {
       "components": [
         {
@@ -875,11 +875,11 @@
       "purl": "pkg:pypi/stevedore@5.8.0"
     },
     {
-      "bom-ref": "pkg:pypi/streamlit@1.66.1",
+      "bom-ref": "pkg:pypi/streamlit@1.67.0",
       "name": "streamlit",
       "type": "library",
-      "version": "1.66.1",
-      "purl": "pkg:pypi/streamlit@1.66.1"
+      "version": "1.67.0",
+      "purl": "pkg:pypi/streamlit@1.67.0"
     },
     {
       "bom-ref": "pkg:pypi/sympy@1.14.0",
