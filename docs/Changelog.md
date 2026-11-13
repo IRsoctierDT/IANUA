@@ -4,6 +4,22 @@ All notable changes to this project. Versions correspond to git tags.
 
 ## Unreleased
 
+### Added
+- **Signed per-action execution approval — stage 8, phase 1 of the containment executor
+  (`agents/policies/execution_approval.py`, `agents/policies/approvers.json`).** By owner
+  direction. The gate an executor must pass, shipped **without** an executor: an
+  Ed25519-signed approval bound to one capability, one target and one plan, expiring within
+  900 s, consumed once in a durable owner-only ledger, and audited on both outcomes with
+  its digest in the hashed `reason` field. Approvers are public keys declared in a
+  committed registry that ships empty, so the default is deny. HMAC is refused at issue and
+  at verify. `tests/security/test_execution_approval.py` covers replay, cross-action reuse,
+  field tampering, key substitution, the HMAC downgrade, domain separation, both time
+  bounds, malformed and oversized tokens, ledger symlinks and permissions, the registry's
+  failure modes and audit binding, and asserts the module executes nothing. Each of five
+  controls was removed in turn and a test went red; the domain-separation test was vacuous
+  on first writing and is fixed. Boundary 8 stays closed; AGENTS.md §5 records what phases
+  2 (pfSense adapter, dry-run) and 3 (live) each owe.
+
 ## v2.4.0 — Supply-Chain Integrity & Parser Hardening — 2026-11-06
 
 ### Removed
