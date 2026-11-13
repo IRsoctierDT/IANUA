@@ -18,10 +18,15 @@ Three subcommands, in the order an operator uses them:
     Read an approval token on stdin, verify and consume it, and apply the change.
     Needs the ``pfsense:send`` grant, the firewall declared in both local files,
     and ``IANUA_PFSENSE_API_KEY``.
+``verify``
+    Read-only: is the address in the state a capability would have left it?
+    Settles an exit-4 ``send``. Needs only the ``pfsense:probe`` grant, and no
+    approval, because it changes nothing.
 
-Exit codes: ``0`` done · ``1`` refused or failed, nothing changed · ``3`` not
-granted by the policy bundle · ``4`` the change was sent and its outcome is
-unknown — check the alias on the firewall before retrying.
+Exit codes: ``0`` done (for ``verify``: the alias is in the intended state) ·
+``1`` refused or failed, nothing changed · ``3`` not granted by the policy
+bundle · ``4`` the change was sent and its outcome is unknown — run ``verify``
+· ``5`` (``verify`` only) the alias is **not** in the intended state.
 
 Security considerations: no secret is accepted on the command line (argv is
 visible in the process list); every refusal is printed through
@@ -55,7 +60,7 @@ DEFAULT_LEDGER = REPO_ROOT / "data" / "containment" / "approvals.ledger"
 DEFAULT_AUDIT = REPO_ROOT / "data" / "containment" / "audit.log"
 MAX_TOKEN_BYTES = ea.MAX_TOKEN_BYTES
 
-EXIT_OK, EXIT_REFUSED, EXIT_NOT_GRANTED, EXIT_UNKNOWN = 0, 1, 3, 4
+EXIT_OK, EXIT_REFUSED, EXIT_NOT_GRANTED, EXIT_UNKNOWN, EXIT_UNSETTLED = 0, 1, 3, 4, 5
 
 
 def _fail(message: str, code: int = EXIT_REFUSED) -> int:
@@ -80,7 +85,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ttl", type=int, default=300, help=f"seconds, at most {ea.MAX_TTL_SECONDS}"
     )
 
-    for name, text in (("probe", "read-only alias check"), ("send", "apply an approved change")):
+    commands = (
+        ("probe", "read-only alias check"),
+        ("send", "apply an approved change"),
+        ("verify", "read-only: is the address where the capability would leave it?"),
+    )
+    for name, text in commands:
         command = sub.add_parser(name, help=text)
         command.add_argument("--config", type=Path, default=live.DEFAULT_LOCAL_CONFIG)
         command.add_argument("--egress", type=Path, default=live.DEFAULT_LOCAL_EGRESS)
@@ -90,6 +100,9 @@ def _build_parser() -> argparse.ArgumentParser:
             _action_args(command)
             command.add_argument("--approvers", type=Path, default=ea.DEFAULT_APPROVERS)
             command.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
+        if name == "verify":
+            command.add_argument("--capability", required=True, choices=sorted(ea.CAPABILITIES))
+            command.add_argument("--target", required=True, help="one canonical IP literal")
     return parser
 
 
@@ -134,6 +147,13 @@ def _run(args: argparse.Namespace) -> int:
     try:
         if args.command == "probe":
             result: dict[str, object] = {"aliases": client.probe()}
+        elif args.command == "verify":
+            result = client.verify(args.capability, args.target)
+            if not result["settled"]:
+                print(json.dumps(result, sort_keys=True))
+                return _fail(
+                    f"{args.target} is not in the state {args.capability} intends", EXIT_UNSETTLED
+                )
         else:
             token = sys.stdin.read(MAX_TOKEN_BYTES + 1).strip()
             approval = ea.authorize(

@@ -126,6 +126,18 @@ def _handler(state: Firewall) -> type[http.server.BaseHTTPRequestHandler]:
                     "key": self.headers.get("X-API-Key"),
                 }
             )
+            if state.patch_status == 200:
+                # Apply the edit the way pfREST's append/remove would, so a dropped
+                # answer below happens AFTER the change took effect — the real case
+                # an "unknown" outcome and `verify` exist for.
+                for alias in state.aliases:
+                    if alias.get("id") == body.get("id"):
+                        held = alias.setdefault("address", [])
+                        for address in body.get("address", []):
+                            if body.get("append") and address not in held:
+                                held.append(address)
+                            if body.get("remove") and address in held:
+                                held.remove(address)
             if state.drop_patch:
                 self.close_connection = True
                 return
@@ -721,3 +733,118 @@ def test_only_the_operator_cli_imports_the_live_client() -> None:
                     importers.add(path)
     assert importers, "found no importer at all — the guard would be vacuous"
     assert importers <= allowed, sorted(str(p.relative_to(repo)) for p in importers - allowed)
+
+
+# --- verify: read-only settling of an unknown outcome ------------------------------
+
+
+@pytest.mark.security
+def test_verify_settles_an_unknown_send(
+    tmp_path: Path, firewall: tuple[Firewall, int, str], approve: Approve
+) -> None:
+    """The change took effect but its answer was lost; verify reads the alias back."""
+    state, port, pin = firewall
+    state.drop_patch = True
+    with pytest.raises(live.OutcomeUnknownError):
+        _client(tmp_path, port, pin).send(approve())
+    state.seen.clear()
+    result = _client(tmp_path, port, pin, grants=(live.PROBE_LABEL,)).verify(
+        "block_indicator", "203.0.113.7"
+    )
+    assert result == {
+        "capability": "block_indicator",
+        "target": "203.0.113.7",
+        "alias": "IANUA_BLOCK",
+        "present": True,
+        "settled": True,
+    }
+    assert {r["method"] for r in state.seen} == {"GET"}, "verify must never write"
+
+
+@pytest.mark.security
+def test_verify_reports_the_inverse_as_not_settled(
+    tmp_path: Path, firewall: tuple[Firewall, int, str]
+) -> None:
+    state, port, pin = firewall
+    state.aliases[0]["address"] = ["203.0.113.7"]
+    client = _client(tmp_path, port, pin)
+    assert client.verify("block_indicator", "203.0.113.7")["settled"] is True
+    assert client.verify("unblock_indicator", "203.0.113.7")["settled"] is False
+    assert client.verify("restore_host", "203.0.113.7") == {
+        "capability": "restore_host",
+        "target": "203.0.113.7",
+        "alias": "IANUA_ISOLATE",
+        "present": False,
+        "settled": True,
+    }
+
+
+@pytest.mark.security
+def test_verify_needs_only_the_read_only_grant(
+    tmp_path: Path, firewall: tuple[Firewall, int, str]
+) -> None:
+    state, port, pin = firewall
+    with pytest.raises(live.NotGrantedError):
+        _client(tmp_path, port, pin, grants=(live.SEND_LABEL,)).verify(
+            "block_indicator", "203.0.113.7"
+        )
+    assert state.seen == []
+    _client(tmp_path, port, pin, grants=(live.PROBE_LABEL,)).verify(
+        "block_indicator", "203.0.113.7"
+    )
+
+
+@pytest.mark.security
+@pytest.mark.parametrize(
+    ("capability", "target"),
+    [
+        ("disable_account", "203.0.113.7"),
+        ("block_indicator", "2001:DB8::1"),
+        ("block_indicator", "fw.lab"),
+    ],
+)
+def test_verify_refuses_bad_input_before_any_request(
+    tmp_path: Path, firewall: tuple[Firewall, int, str], capability: str, target: str
+) -> None:
+    state, port, pin = firewall
+    with pytest.raises(live.LiveError):
+        _client(tmp_path, port, pin).verify(capability, target)
+    assert state.seen == []
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("address", [None, "203.0.113.7", [7], [None, "203.0.113.7"]])
+def test_verify_refuses_an_unreadable_address_list_rather_than_calling_it_absent(
+    tmp_path: Path, firewall: tuple[Firewall, int, str], address: object
+) -> None:
+    state, port, pin = firewall
+    if address is None:
+        state.aliases[0].pop("address")
+    else:
+        state.aliases[0]["address"] = address
+    with pytest.raises(live.LiveError, match="address list"):
+        _client(tmp_path, port, pin).verify("unblock_indicator", "203.0.113.7")
+
+
+@pytest.mark.security
+def test_verify_checks_the_same_alias_precondition_as_a_send(
+    tmp_path: Path, firewall: tuple[Firewall, int, str]
+) -> None:
+    state, port, pin = firewall
+    state.aliases.append({"id": 9, "name": "IANUA_BLOCK", "type": "host", "address": []})
+    with pytest.raises(live.LiveError, match="exactly one alias"):
+        _client(tmp_path, port, pin).verify("block_indicator", "203.0.113.7")
+
+
+@pytest.mark.security
+def test_cli_verify_exits_0_when_settled_and_5_when_not(
+    tmp_path: Path, firewall: tuple[Firewall, int, str]
+) -> None:
+    state, port, pin = firewall
+    env, _ = _cli_files(tmp_path, port, pin, grants=[live.PROBE_LABEL])
+    base = ["verify", *_local_args(tmp_path), "--target", "203.0.113.7"]
+    code, out, err = _run_cli([*base, "--capability", "unblock_indicator"], env)
+    assert code == 0 and json.loads(out)["settled"] is True, err
+    code, out, err = _run_cli([*base, "--capability", "block_indicator"], env)
+    assert code == 5 and json.loads(out)["present"] is False and "not in the state" in err
+    assert {r["method"] for r in state.seen} == {"GET"}

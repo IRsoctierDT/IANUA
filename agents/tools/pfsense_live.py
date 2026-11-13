@@ -93,6 +93,8 @@ from agents.tools.pfsense import (
     PfSenseError,
     PreparedChange,
     PreparedRequest,
+    operation_for,
+    parse_target,
 )
 
 #: Environment variable holding the pfREST API key, read only at send time.
@@ -356,6 +358,10 @@ class PfSenseLive:
         )
 
     def _resolve_alias(self, lookup: PreparedRequest, alias: str, api_key: str) -> int:
+        return int(self._lookup_entry(lookup, alias, api_key)["id"])
+
+    def _lookup_entry(self, lookup: PreparedRequest, alias: str, api_key: str) -> dict[str, Any]:
+        """Run the alias lookup and return the one validated entry, or refuse."""
         status, document = self._connection.exchange(lookup, api_key)
         if status != 200 or document.get("code") != 200:
             raise LiveError(f"alias lookup for {alias} answered HTTP {status}")
@@ -369,7 +375,56 @@ class PfSenseLive:
         alias_id = entry.get("id")
         if type(alias_id) is not int or alias_id < 0:
             raise LiveError(f"alias {alias} has no usable integer id")
-        return alias_id
+        return entry
+
+    def verify(self, capability: str, target: str) -> dict[str, Any]:
+        """Read-only: is ``target`` in the state ``capability`` would have left it?
+
+        Settles an :class:`OutcomeUnknownError`: after an unknown ``block``, this
+        answers whether the address is now in the block alias. Gated by the same
+        read-only :data:`PROBE_LABEL` grant as :meth:`probe`, needs no approval
+        because it changes nothing, and checks the same alias precondition as a
+        send. The alias's ``address`` list must be a list of strings; anything
+        else refuses rather than being read as "absent".
+        """
+        actor = Principal(component="pfsense")
+        summary = f"verify {capability} {target}"
+        try:
+            role, operation = operation_for(capability)
+            parse_target(target)
+        except PfSenseError as exc:
+            raise LiveError(str(exc)) from exc
+        alias = self.config.alias_for(role)
+        self._gate(PROBE_LABEL, actor)
+        api_key = _api_key()
+        lookup = PreparedRequest(
+            method="GET", path="/api/v2/firewall/aliases", query=(("name", alias),)
+        )
+        try:
+            entry = self._lookup_entry(lookup, alias, api_key)
+            addresses = entry.get("address")
+            if not isinstance(addresses, list) or not all(type(a) is str for a in addresses):
+                raise LiveError(f"alias {alias} did not report an address list")
+        except LiveError as exc:
+            self._record("pfsense", summary, "deny", str(exc))
+            raise
+        present = target in addresses
+        intended = operation == "append"
+        settled = present is intended
+        self._record(
+            "pfsense",
+            summary,
+            "allow",
+            f"alias {alias}: {target} {'present' if present else 'absent'}; "
+            f"{'settled' if settled else 'NOT in the state ' + capability + ' intends'}",
+        )
+        return {
+            "capability": capability,
+            "target": target,
+            "alias": alias,
+            "present": present,
+            "settled": settled,
+        }
 
     def probe(self) -> dict[str, int]:
         """Read-only: confirm both aliases resolve, returning ``{alias: id}``.
