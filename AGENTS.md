@@ -770,6 +770,48 @@ allow-list **raises** rather than resolving to "empty, so deny" — both refuse 
 but one of them tells the operator their file is broken instead of behaving as though
 they had declared nothing.
 
+**Containment execution — amended for the approval primitive (stage 8, phase 1).** On
+2026-11-13 the owner directed that IANUA gain a containment executor: first against the
+lab pfSense firewall, authorized **per action by a signed approval**, delivered as phased
+pull requests. This amendment licenses **phase 1 only — the approval gate**. It licenses
+no executor, no adapter, no egress and no change to `agents/response/`;
+`tests/security/test_response_no_executor.py` stands unchanged and still passes.
+
+- **What phase 1 is.** `agents/policies/execution_approval.py`: an Ed25519-signed
+  approval bound to exactly one capability, one target and one plan, with a lifetime of
+  at most 900 seconds, consumed once in a durable owner-only ledger, and recorded to the
+  audit chain on **both** outcomes. It answers *did a named human authorize exactly this
+  action, recently, and is the authorization unspent?* and executes nothing — the
+  module's import surface and function names are asserted by
+  `tests/security/test_execution_approval.py`, which also proves each control by
+  failing against a version with that control removed.
+- **It answers the four gaps `docs/RESPONSE_LAYER.md` names.** Not a standing grant (one
+  capability, one target, one plan, expiring); no reporting mode (verify-or-raise, no
+  flag); a payload slot (the approval's sha256 digest rides in the hashed `reason`
+  field); and a **verified** identity, which `principal.py` deliberately is not — the
+  approver is whoever holds the private key registered under that id.
+- **Approvers are declared, never discovered.** `agents/policies/approvers.json` names
+  each approver's public key beside an authorization basis, and ships **empty**, so the
+  default answer is no for the same reason `egress.json`'s is. Adding an approver is a
+  reviewed diff. A missing or malformed registry raises rather than meaning "nobody".
+- **Private keys never enter this repository** — not source, tests, fixtures, `.env`
+  files, CI secrets or logs. The human approver generates and holds theirs; this is the
+  §5.1 secret-handling row, unchanged. **Ed25519 only**: HMAC is refused at issue and at
+  verify, because a symmetric verifier holds the key that forges.
+- **What each later phase owes, stated now so it cannot be argued later.** *Phase 2*
+  (pfSense adapter, dry-run): computes and audits the exact API request and sends
+  nothing, and takes a `VerifiedApproval` as a required argument rather than the fields
+  separately. *Phase 3* (live): its own amendment here; one declared pfSense address in
+  `egress.json` plus a committed grant naming the action — neither alone sufficient, as
+  stage 7 established; the API credential through the secure credential form, never in
+  chat or the repository; and the §5.1 external-network gate, approved again. Whether a
+  `ResponsePlan` may feed the adapter at all is a phase 3 decision and is **not** made
+  here.
+- **Residuals.** The ledger grows by one line per consumed approval and is not pruned
+  yet; a compromised approver key authorizes anything in `CAPABILITIES` until it is
+  removed from the registry; and the gate cannot verify that the caller then does what it
+  described — that is phase 2's obligation and phase 2's security tests.
+
 ### 5.1 Approval Gates (human-in-the-loop)
 
 An agent must **pause and obtain explicit human approval** before any action that is

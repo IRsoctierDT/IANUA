@@ -37,6 +37,21 @@ privilege-escalation target. The detection substrate here is a keyword
 classifier plus a modest rule corpus with an unquantified false-positive
 rate. Automating disruption on that basis would be indefensible.
 
+## Status — 2026-11-13: the approval primitive exists; execution does not
+
+The primitive the paragraph above calls for now ships, as **stage 8, phase 1**:
+`agents/policies/execution_approval.py`. An approval is Ed25519-signed, bound to one
+capability, one target and one plan, expires within 900 seconds, is consumed once, and
+is audited on both outcomes with its digest in a hashed field — which answers the
+standing-grant, report-only and payload-slot rows of the table above, and the identity
+row with a *verified* approver rather than a claimed one. Approvers are declared in
+`agents/policies/approvers.json`, which ships empty.
+
+**Nothing in this document's first sentence has changed yet.** `agents/response/` still
+ships no executor and `tests/security/test_response_no_executor.py` still enforces it.
+Phase 2 adds a pfSense adapter that runs dry; phase 3 makes it live under its own egress
+amendment. `AGENTS.md` §5 records what each owes.
+
 ## The tiered model
 
 | Tier | What | Who acts |
